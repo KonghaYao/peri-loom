@@ -12,6 +12,8 @@ use turso_core::{
 struct FaultIO {
     inner: Arc<dyn IO>,
     fail: Arc<AtomicBool>,
+    fail_write: Arc<AtomicBool>,
+    fail_read_only: Arc<AtomicBool>,
     wal_syncs: Arc<AtomicUsize>,
 }
 impl Clock for FaultIO {
@@ -34,6 +36,8 @@ impl IO for FaultIO {
             Ok(Arc::new(FaultFile {
                 inner,
                 fail: self.fail.clone(),
+                fail_write: self.fail_write.clone(),
+                fail_read_only: self.fail_read_only.clone(),
                 wal_syncs: self.wal_syncs.clone(),
             }))
         } else {
@@ -53,6 +57,8 @@ impl IO for FaultIO {
 struct FaultFile {
     inner: Arc<dyn File>,
     fail: Arc<AtomicBool>,
+    fail_write: Arc<AtomicBool>,
+    fail_read_only: Arc<AtomicBool>,
     wal_syncs: Arc<AtomicUsize>,
 }
 impl File for FaultFile {
@@ -71,6 +77,20 @@ impl File for FaultFile {
         buffer: Arc<Buffer>,
         c: Completion,
     ) -> turso_core::Result<Completion> {
+        if self.fail_read_only.swap(false, Ordering::SeqCst) {
+            c.error(CompletionError::IOError(
+                ErrorKind::PermissionDenied,
+                "injected read-only WAL",
+            ));
+            return Ok(c);
+        }
+        if self.fail_write.swap(false, Ordering::SeqCst) {
+            c.error(CompletionError::IOError(
+                ErrorKind::StorageFull,
+                "injected ENOSPC",
+            ));
+            return Ok(c);
+        }
         self.inner.pwrite(pos, buffer, c)
     }
     fn sync(&self, c: Completion, sync_type: FileSyncType) -> turso_core::Result<Completion> {
@@ -101,6 +121,8 @@ fn autocommit_and_explicit_commit_wait_for_wal_sync() {
     let io: Arc<dyn IO> = Arc::new(FaultIO {
         inner: Arc::new(turso_core::UnixIO::new().unwrap()),
         fail: fail.clone(),
+        fail_write: Arc::new(AtomicBool::new(false)),
+        fail_read_only: Arc::new(AtomicBool::new(false)),
         wal_syncs: wal_syncs.clone(),
     });
     let db = EngineAdapter::open(
@@ -146,6 +168,8 @@ fn power_loss_model_discards_unsynced_wal_bytes() {
     let io: Arc<dyn IO> = Arc::new(FaultIO {
         inner: Arc::new(turso_core::UnixIO::new().unwrap()),
         fail: fail.clone(),
+        fail_write: Arc::new(AtomicBool::new(false)),
+        fail_read_only: Arc::new(AtomicBool::new(false)),
         wal_syncs: Arc::new(AtomicUsize::new(0)),
     });
     let db = EngineAdapter::open(
@@ -211,6 +235,8 @@ fn explicit_commit_sync_failure_is_reported() {
     let io: Arc<dyn IO> = Arc::new(FaultIO {
         inner: Arc::new(turso_core::UnixIO::new().unwrap()),
         fail: fail.clone(),
+        fail_write: Arc::new(AtomicBool::new(false)),
+        fail_read_only: Arc::new(AtomicBool::new(false)),
         wal_syncs: Arc::new(AtomicUsize::new(0)),
     });
     let db = EngineAdapter::open(
@@ -231,5 +257,67 @@ fn explicit_commit_sync_failure_is_reported() {
     assert!(
         conn.commit().is_err(),
         "explicit COMMIT acknowledged failed WAL sync"
+    );
+}
+
+#[test]
+fn wal_write_enospc_is_not_acknowledged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.db");
+    let fail_write = Arc::new(AtomicBool::new(false));
+    let io: Arc<dyn IO> = Arc::new(FaultIO {
+        inner: Arc::new(turso_core::UnixIO::new().unwrap()),
+        fail: Arc::new(AtomicBool::new(false)),
+        fail_write: fail_write.clone(),
+        fail_read_only: Arc::new(AtomicBool::new(false)),
+        wal_syncs: Arc::new(AtomicUsize::new(0)),
+    });
+    let db = EngineAdapter::open(
+        io,
+        EngineOpenConfig {
+            db_path: path,
+            durable_io: None,
+            owner_epoch: 0,
+        },
+    )
+    .unwrap();
+    let conn = db.connect().unwrap();
+    conn.enforce_full_sync();
+    conn.execute("CREATE TABLE t(v INTEGER)").unwrap();
+    fail_write.store(true, Ordering::SeqCst);
+    assert!(
+        conn.execute("INSERT INTO t VALUES (1)").is_err(),
+        "ENOSPC write was acknowledged"
+    );
+}
+
+#[test]
+fn read_only_wal_write_is_not_acknowledged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.db");
+    let read_only = Arc::new(AtomicBool::new(false));
+    let io: Arc<dyn IO> = Arc::new(FaultIO {
+        inner: Arc::new(turso_core::UnixIO::new().unwrap()),
+        fail: Arc::new(AtomicBool::new(false)),
+        fail_write: Arc::new(AtomicBool::new(false)),
+        fail_read_only: read_only.clone(),
+        wal_syncs: Arc::new(AtomicUsize::new(0)),
+    });
+    let db = EngineAdapter::open(
+        io,
+        EngineOpenConfig {
+            db_path: path,
+            durable_io: None,
+            owner_epoch: 0,
+        },
+    )
+    .unwrap();
+    let conn = db.connect().unwrap();
+    conn.enforce_full_sync();
+    conn.execute("CREATE TABLE t(v INTEGER)").unwrap();
+    read_only.store(true, Ordering::SeqCst);
+    assert!(
+        conn.execute("INSERT INTO t VALUES (1)").is_err(),
+        "read-only WAL write was acknowledged"
     );
 }

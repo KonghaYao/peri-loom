@@ -21,6 +21,7 @@ pub struct LocalHostConfig {
     pub max_sessions_per_database: usize,
     pub queue_capacity: usize,
     pub row_batch_size: usize,
+    pub max_result_frame_bytes: usize,
     pub session_idle_timeout: Duration,
     pub transaction_timeout: Duration,
 }
@@ -32,6 +33,7 @@ impl Default for LocalHostConfig {
             max_sessions_per_database: 128,
             queue_capacity: 64,
             row_batch_size: 64,
+            max_result_frame_bytes: 256 * 1024,
             session_idle_timeout: Duration::from_secs(60),
             transaction_timeout: Duration::from_secs(30),
         }
@@ -125,6 +127,7 @@ impl LocalHost {
         if config.max_open_databases == 0
             || config.queue_capacity == 0
             || config.row_batch_size == 0
+            || config.max_result_frame_bytes == 0
         {
             return Err(PlatformError::invalid_argument("宿主容量必须大于零"));
         }
@@ -314,7 +317,18 @@ impl LocalHost {
                 .join("databases")
                 .join(format!(".{db}.restore-backup"));
             if backup.exists() {
-                return Err(PlatformError::unavailable("存在未完成的旧恢复备份"));
+                // 两个 rename 之间崩溃：旧库仍在 backup，先回退到已知可用状态。
+                if !target.exists() {
+                    fs::rename(&backup, &target).map_err(io_error)?;
+                    sync_dir(target.parent().unwrap())?;
+                } else {
+                    // 第二个 rename 已发布：暂存快照仍由作业重建；保留旧库备份，
+                    // 丢弃这份待确认的新目录后重新发布已校验的暂存内容。
+                    fs::remove_dir_all(&target).map_err(io_error)?;
+                    sync_dir(target.parent().unwrap())?;
+                    fs::rename(&backup, &target).map_err(io_error)?;
+                    sync_dir(target.parent().unwrap())?;
+                }
             }
             if target.exists() {
                 fs::rename(&target, &backup).map_err(io_error)?;
@@ -368,6 +382,14 @@ impl LocalHost {
             ));
         }
         let path = self.root.join("databases").join(db.to_string());
+        if self
+            .root
+            .join("databases")
+            .join(format!(".{db}.restore-backup"))
+            .exists()
+        {
+            return Err(PlatformError::unavailable("数据库恢复仍有未完成的目录替换"));
+        }
         fs::create_dir_all(&path).map_err(io_error)?;
         sync_dir(path.parent().unwrap())?;
         let (sender, receiver) = mpsc::channel(self.config.queue_capacity);
@@ -621,6 +643,7 @@ fn execute_command(
             &cancel,
             &output,
             config,
+            false,
         );
         if result.is_err()
             && (cancel.load(Ordering::Relaxed) || Instant::now() >= deadline || output.is_closed())
@@ -638,7 +661,7 @@ fn execute_command(
     let ephemeral = adapter.connect()?;
     ephemeral.enforce_full_sync();
     let result = execute_on_connection(
-        adapter, &ephemeral, &sql, &params, deadline, &cancel, &output, config,
+        adapter, &ephemeral, &sql, &params, deadline, &cancel, &output, config, true,
     );
     if !ephemeral.is_autocommit() {
         ephemeral.rollback()?;
@@ -657,18 +680,54 @@ fn execute_on_connection(
     cancel: &Arc<AtomicBool>,
     output: &mpsc::Sender<Result<ExecutionFrame>>,
     config: &LocalHostConfig,
+    require_autocommit: bool,
 ) -> Result<()> {
     connection.set_cancel_flag(cancel.clone());
     connection.set_query_timeout(deadline.saturating_duration_since(Instant::now()));
     let mut batch = Vec::with_capacity(config.row_batch_size);
+    let mut batch_bytes = 0usize;
     let affected = connection.stream_with_params(
         sql,
         params,
-        |columns| send_frame(output, ExecutionFrame::Columns(columns), cancel, deadline),
+        |columns| {
+            let bytes = columns
+                .iter()
+                .map(|column| {
+                    column
+                        .name
+                        .len()
+                        .saturating_add(column.type_name.len())
+                        .saturating_add(16)
+                })
+                .sum::<usize>();
+            if bytes > config.max_result_frame_bytes {
+                return Err(result_too_large());
+            }
+            send_frame(output, ExecutionFrame::Columns(columns), cancel, deadline)
+        },
         |row| {
             if cancel.load(Ordering::Relaxed) || Instant::now() >= deadline {
                 return Err(timeout_error());
             }
+            let row_bytes = row
+                .iter()
+                .map(|value| value.estimated_size().saturating_add(16))
+                .sum::<usize>();
+            if row_bytes > config.max_result_frame_bytes {
+                return Err(result_too_large());
+            }
+            if !batch.is_empty()
+                && batch_bytes.saturating_add(row_bytes) > config.max_result_frame_bytes
+            {
+                send_frame(
+                    output,
+                    ExecutionFrame::Rows(std::mem::take(&mut batch)),
+                    cancel,
+                    deadline,
+                )?;
+                batch_bytes = 0;
+            }
+            batch_bytes = batch_bytes.saturating_add(row_bytes);
             batch.push(row);
             if batch.len() >= config.row_batch_size {
                 send_frame(
@@ -677,6 +736,7 @@ fn execute_on_connection(
                     cancel,
                     deadline,
                 )?;
+                batch_bytes = 0;
             }
             Ok(())
         },
@@ -685,6 +745,9 @@ fn execute_on_connection(
         send_frame(output, ExecutionFrame::Rows(batch), cancel, deadline)?;
     }
     let autocommit = connection.is_autocommit();
+    if require_autocommit && !autocommit {
+        return Err(PlatformError::invalid_argument("显式事务需要会话"));
+    }
     let last_insert_rowid = connection.last_insert_rowid();
     // 新建 WAL 的目录项也要落盘，否则文件 fsync 成功后掉电仍可能丢失其名称。
     sync_dir(adapter.db_path().parent().expect("数据库文件有父目录"))?;
@@ -750,6 +813,8 @@ fn validate_sql(sql: &str) -> Result<()> {
                         | "FOREIGN_KEY_LIST"
                         | "DATABASE_LIST"
                         | "COMPILE_OPTIONS"
+                        | "USER_VERSION"
+                        | "APPLICATION_ID"
                 )
             }) {
                 return Err(PlatformError::invalid_argument(
@@ -876,6 +941,9 @@ fn io_error(error: std::io::Error) -> PlatformError {
 }
 fn timeout_error() -> PlatformError {
     PlatformError::new(ErrorCode::TransactionMaxLifetimeExceeded, "请求超时")
+}
+fn result_too_large() -> PlatformError {
+    PlatformError::new(ErrorCode::ResultTooLarge, "结果帧超过本地内存上限")
 }
 fn worker_lost() -> PlatformError {
     PlatformError::unavailable("数据库执行线程已停止")
@@ -1365,6 +1433,97 @@ mod tests {
         assert!(host.open_session(db).await.is_err());
         std::fs::remove_dir(db_dir.join("main.db")).unwrap();
         assert!(host.open_session(db).await.is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stateless_begin_has_no_success_trailer_and_large_row_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DatabaseId::new_v7();
+        let config = LocalHostConfig {
+            max_result_frame_bytes: 64,
+            ..Default::default()
+        };
+        let host = LocalHost::new(dir.path().to_path_buf(), config).unwrap();
+        let mut begin = host
+            .execute(db, None, "BEGIN".into(), vec![], Duration::from_secs(2))
+            .await
+            .unwrap();
+        let mut frames = Vec::new();
+        while let Some(frame) = begin.frames.recv().await {
+            frames.push(frame);
+        }
+        assert!(frames.iter().any(Result::is_err));
+        assert!(!frames
+            .iter()
+            .any(|frame| matches!(frame, Ok(ExecutionFrame::End { .. }))));
+        let mut oversized = host
+            .execute(
+                db,
+                None,
+                "SELECT ?1".into(),
+                vec![SqlValue::Text("x".repeat(1024))],
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert!(collect(&mut oversized).await.is_err());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_retries_both_directory_rename_crash_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DatabaseId::new_v7();
+        let host = LocalHost::new(dir.path().to_path_buf(), LocalHostConfig::default()).unwrap();
+        for sql in ["CREATE TABLE t(v INTEGER)", "INSERT INTO t VALUES (8)"] {
+            let mut stream = host
+                .execute(db, None, sql.into(), vec![], Duration::from_secs(2))
+                .await
+                .unwrap();
+            collect(&mut stream).await.unwrap();
+        }
+        let target = dir.path().join("databases").join(db.to_string());
+        let backup = dir
+            .path()
+            .join("databases")
+            .join(format!(".{db}.restore-backup"));
+        let stage_one = dir.path().join("stage-one");
+        host.snapshot(db, stage_one.clone()).await.unwrap();
+        host.close_db(db).await.unwrap();
+        std::fs::rename(&target, &backup).unwrap();
+        assert!(host.open_session(db).await.is_err());
+        assert!(
+            !target.exists(),
+            "lazy open created an empty DB during restore recovery"
+        );
+        host.restore(db, stage_one).await.unwrap();
+        let stage_two = dir.path().join("stage-two");
+        host.snapshot(db, stage_two.clone()).await.unwrap();
+        host.close_db(db).await.unwrap();
+        std::fs::rename(&target, &backup).unwrap();
+        std::fs::rename(&stage_two, &target).unwrap();
+        std::fs::create_dir(&stage_two).unwrap();
+        for entry in std::fs::read_dir(&target).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), stage_two.join(entry.file_name())).unwrap();
+            }
+        }
+        assert!(host.open_session(db).await.is_err());
+        host.restore(db, stage_two).await.unwrap();
+        let mut read = host
+            .execute(
+                db,
+                None,
+                "SELECT v FROM t".into(),
+                vec![],
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        let frames = collect(&mut read).await.unwrap();
+        assert!(frames.iter().any(|frame| matches!(frame, ExecutionFrame::Rows(rows) if rows == &vec![vec![SqlValue::Integer(8)]])));
         host.shutdown().await.unwrap();
     }
 }

@@ -37,8 +37,8 @@
 //!
 //! # 与 `/data/v1` 的差别（刻意的，不是遗漏）
 //!
-//! - **缓冲响应**：pipeline 返回一次性 JSON，v3 cursor 也先缓冲再编码为 NDJSON，
-//!   因此这里对结果集有估算上限（[`MAX_RESULT_BYTES`]），超限明确报错而不是无上限缓存；
+//! - **响应形态**：pipeline 返回有上限的一次性 JSON；v3 cursor 按帧发送 NDJSON，
+//!   客户端断开时取消尚未结束的执行流；
 //! - **权限仍是 `db:write`**：与 `/data/v1` 同档。平台不解析 SQL，无法可靠区分
 //!   `SELECT` 与 `WITH ... DELETE`，给只读主体放行就等于开了越权旁路；
 //! - **`last_insert_rowid` 来自流式 trailer**：保留同一引擎连接的语句结束观测，
@@ -67,18 +67,13 @@ use crate::middleware::current_request_id;
 use crate::router::StreamTarget;
 use crate::state::{AppState, SessionBinding};
 
-/// 单条语句结果的**估算**内存上限。
+/// pipeline 单条语句的估算内存上限；cursor 逐帧输出，不经过该结果集缓冲。
 ///
-/// Hrana 兼容层先缓冲再编码：整个结果集必须装在同一个响应体里，没有真流式出口
-/// （平台的 NDJSON 出口在 `/data/v1/*`）。所以这里必须有上限，否则一条
-/// `select * from 大表` 就能把 Server 的内存吃光。取值与请求体上限一致（16 MiB）：
-/// 超过它的结果集更合理的做法是加 `LIMIT` 分页。
-///
-/// 注意这是**估算值**上限：实际比较的是 `api::data::stream::approximate_bytes` 的估算
-/// 结果，标量一律按 8 字节计；而 Hrana JSON 的真实编码（`{"type":"integer","value":"1"}`
-/// 这类包装、Blob 的 base64）要大一至数倍，因此编码后的响应体可能明显超过本值。
-/// 它防的是「一个大结果集把内存吃光」，不是精确的响应体预算。
+/// pipeline 还在完整 JSON 响应中返回结果，因此另用编码计数预算限制整批结果。
+/// 单条估算使用 `approximate_bytes`，标量按 8 字节计；实际 Hrana JSON 更大。
 pub const MAX_RESULT_BYTES: usize = MAX_REQUEST_BODY_BYTES;
+const MAX_PIPELINE_ITEMS: usize = 4096;
+const PIPELINE_RESULT_BUDGET: usize = MAX_RESULT_BYTES - 1024 * 1024;
 
 /// 单个会话最多缓存多少条 `store_sql` 的 SQL 文本。
 ///
@@ -114,7 +109,7 @@ pub async fn pipeline(
     }
 }
 
-/// `POST /db/{db_id}/v3/cursor`：缓冲后一次性返回 NDJSON。
+/// `POST /db/{db_id}/v3/cursor`：按需输出 NDJSON。
 async fn cursor(
     State(state): State<AppState>,
     principal: Principal,
@@ -142,9 +137,12 @@ async fn run_cursor(
     principal: &Principal,
     raw_db_id: &str,
     request: wire::CursorRequest,
-) -> ApiResult<Vec<u8>> {
+) -> ApiResult<axum::body::Body> {
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(raw_db_id)?;
+    if request.batch.steps.len() > MAX_PIPELINE_ITEMS {
+        return Err(ApiError::invalid_argument("Hrana cursor 步骤过多"));
+    }
     // SDK 1.4.0 dist/index.js 的 executeRaw（495–523 行）和 batch（699–713 行）
     // 都会保存并复用 baton，普通查询也不例外；只有 Session.close（825–840 行）
     // 才通过 pipeline 显式关闭。因此 cursor 不能按「不在事务中」擅自销毁连接，
@@ -158,17 +156,156 @@ async fn run_cursor(
         baton: Some(binding.session_id.clone()),
         base_url: None,
     };
-    let pipeline = Pipeline {
-        state,
-        database_id,
-        request_id: current_request_id(),
-        autocommit: AtomicBool::new(session_autocommit(&state.sessions, Some(&binding))),
-        session: Some(binding),
-        local_sql: HashMap::new(),
+    let request_id = current_request_id();
+    let state = state.clone();
+    let body = async_stream::stream! {
+        macro_rules! emit {
+            ($entry:expr) => {{
+                let mut line = Vec::new();
+                if let Err(error) = write_cursor_line(&mut line, &$entry) {
+                    yield Err::<Vec<u8>, std::io::Error>(std::io::Error::other(error.to_string()));
+                    return;
+                }
+                yield Ok::<Vec<u8>, std::io::Error>(line);
+            }};
+        }
+        let pipeline = Pipeline {
+            state: &state,
+            database_id,
+            request_id,
+            autocommit: AtomicBool::new(session_autocommit(&state.sessions, Some(&binding))),
+            session: Some(binding),
+            local_sql: HashMap::new(),
+        };
+        emit!(header);
+        let total = request.batch.steps.len();
+        let mut completed = vec![false; total];
+        let mut step_errors: Vec<Option<wire::WireError>> = vec![None; total];
+        for (index, step) in request.batch.steps.iter().enumerate() {
+            if let Some(condition) = step.condition.as_ref() {
+                let autocommit = pipeline.session.as_ref().map_or_else(
+                    || pipeline.autocommit.load(Ordering::SeqCst),
+                    |binding| session_autocommit(&state.sessions, Some(binding)),
+                );
+                match eval_condition(condition, &completed, &step_errors, total, autocommit) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        completed[index] = true;
+                        let error = wire_error(&error);
+                        step_errors[index] = Some(error.clone());
+                        emit!(wire::CursorEntry::StepError { step: index, error });
+                        continue;
+                    }
+                }
+            }
+            completed[index] = true;
+            let (sql, params) = match pipeline.prepare(&step.stmt) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let error = wire_error(&error);
+                    step_errors[index] = Some(error.clone());
+                    emit!(wire::CursorEntry::StepError { step: index, error });
+                    continue;
+                }
+            };
+            let target = match pipeline.session.as_ref() {
+                Some(binding) => StreamTarget::Session { session_id: binding.session_id.clone(), sql, params },
+                None => StreamTarget::Stateless { sql, params },
+            };
+            let execution = match state.execution.open_stream(database_id, target, &pipeline.request_id, None).await {
+                Ok(execution) => execution,
+                Err(error) => {
+                    let error = wire_error(&error);
+                    step_errors[index] = Some(error.clone());
+                    emit!(wire::CursorEntry::StepError { step: index, error });
+                    continue;
+                }
+            };
+            let mut events = Box::pin(cursor_frame_events(execution, index, step.stmt.want_rows));
+            while let Some(event) = events.next().await {
+                match event {
+                    CursorFrameEvent::Entry(entry) => emit!(entry),
+                    CursorFrameEvent::Autocommit(value) => observe_autocommit(
+                        &pipeline.autocommit, &state.sessions, pipeline.session.as_ref(), value,
+                    ),
+                    CursorFrameEvent::Error(error) => {
+                        step_errors[index] = Some(error.clone());
+                        emit!(wire::CursorEntry::StepError { step: index, error });
+                    }
+                }
+            }
+        }
     };
-    cursor_body(header, pipeline.execute_steps(&request.batch).await?)
+    Ok(axum::body::Body::from_stream(body))
 }
 
+enum CursorFrameEvent {
+    Entry(wire::CursorEntry),
+    Autocommit(Option<bool>),
+    Error(wire::WireError),
+}
+
+/// 每消费一帧才交付下一帧；流被丢弃时 guard 取消仍在运行的查询。
+fn cursor_frame_events(
+    execution: crate::execution::DataStream,
+    step: usize,
+    want_rows: bool,
+) -> impl futures::Stream<Item = CursorFrameEvent> + Send {
+    async_stream::stream! {
+        let mut frames = execution.frames;
+        let mut guard = execution.guard;
+        let mut begun = false;
+        while let Some(item) = frames.next().await {
+            let frame = match item {
+                Ok(frame) => frame,
+                Err(error) => { yield CursorFrameEvent::Error(wire_error(&error)); return; }
+            };
+            if let Some(error) = stream::proto_error(frame.error.as_ref()) {
+                yield CursorFrameEvent::Error(wire_error(&ApiError::from(error)));
+                return;
+            }
+            match frame.frame {
+                Some(protocol::data::stream_frame::Frame::Header(header)) => {
+                    begun = true;
+                    let cols = if want_rows {
+                        header.columns.iter().map(|column| {
+                            let column = stream::column_meta(column);
+                            wire::WireCol { name: column.name, decltype: column.type_name }
+                        }).collect()
+                    } else { Vec::new() };
+                    yield CursorFrameEvent::Entry(wire::CursorEntry::StepBegin { step, cols });
+                }
+                Some(protocol::data::stream_frame::Frame::Rows(batch)) => {
+                    if want_rows {
+                        for row in batch.rows {
+                            let row = protocol::convert::row_from_proto(row)
+                                .iter().map(wire::value_to_wire).collect();
+                            yield CursorFrameEvent::Entry(wire::CursorEntry::Row { step, row });
+                        }
+                    }
+                }
+                Some(protocol::data::stream_frame::Frame::Trailer(trailer)) => {
+                    yield CursorFrameEvent::Autocommit(trailer.is_autocommit);
+                    if !begun {
+                        yield CursorFrameEvent::Entry(wire::CursorEntry::StepBegin { step, cols: Vec::new() });
+                    }
+                    guard.disarm();
+                    yield CursorFrameEvent::Entry(wire::CursorEntry::StepEnd {
+                        step,
+                        affected_row_count: trailer.affected_rows,
+                        last_insert_rowid: trailer.last_insert_rowid.map(|value| value.to_string()),
+                    });
+                    return;
+                }
+                None => {}
+            }
+        }
+        yield CursorFrameEvent::Error(wire_error(&ApiError::internal("执行流缺少完成帧")));
+    }
+}
+
+#[cfg(test)]
 fn cursor_body(header: wire::CursorHeader, result: wire::BatchResult) -> ApiResult<Vec<u8>> {
     let mut body = Vec::new();
     write_cursor_line(&mut body, &header)?;
@@ -329,6 +466,9 @@ async fn run(
     if request.requests.is_empty() {
         return Err(ApiError::invalid_argument("requests 不能为空"));
     }
+    if request.requests.len() > MAX_PIPELINE_ITEMS {
+        return Err(ApiError::invalid_argument("Hrana pipeline 请求项过多"));
+    }
 
     let closes = request
         .requests
@@ -369,8 +509,30 @@ async fn run(
     };
 
     let mut results = Vec::with_capacity(request.requests.len());
+    let mut response_bytes = 0usize;
+    let mut exhausted = false;
     for item in request.requests {
-        results.push(pipeline.handle(item).await);
+        if exhausted && !matches!(&item, wire::StreamRequest::Close) {
+            results.push(wire::StreamResult::error(wire_error(&ApiError::new(
+                ErrorCode::ResultTooLarge,
+                "Hrana pipeline 总响应超过上限",
+            ))));
+            continue;
+        }
+        let result = pipeline.handle(item).await;
+        match encoded_size_within(&result, PIPELINE_RESULT_BUDGET - response_bytes) {
+            Ok(bytes) => {
+                response_bytes += bytes;
+                results.push(result);
+            }
+            Err(_) => {
+                exhausted = true;
+                results.push(wire::StreamResult::error(wire_error(&ApiError::new(
+                    ErrorCode::ResultTooLarge,
+                    "Hrana pipeline 总响应超过上限",
+                ))));
+            }
+        }
     }
 
     Ok(wire::PipelineResponse {
@@ -659,9 +821,13 @@ impl Pipeline<'_> {
     /// 一旦遇到错误就停，回滚步骤永远不会被执行。
     async fn execute_steps(&self, batch: &wire::Batch) -> ApiResult<wire::BatchResult> {
         let total = batch.steps.len();
+        if total > MAX_PIPELINE_ITEMS {
+            return Err(ApiError::invalid_argument("Hrana batch 步骤过多"));
+        }
         let mut completed = vec![false; total];
         let mut step_results: Vec<Option<wire::StmtResult>> = vec![None; total];
         let mut step_errors: Vec<Option<wire::WireError>> = vec![None; total];
+        let mut result_bytes = 0usize;
 
         for (index, step) in batch.steps.iter().enumerate() {
             if let Some(condition) = step.condition.as_ref() {
@@ -682,7 +848,20 @@ impl Pipeline<'_> {
             }
             completed[index] = true;
             match self.exec(&step.stmt).await {
-                Ok(result) => step_results[index] = Some(result),
+                Ok(result) => {
+                    match encoded_size_within(&result, PIPELINE_RESULT_BUDGET - result_bytes) {
+                        Ok(bytes) => {
+                            result_bytes += bytes;
+                            step_results[index] = Some(result);
+                        }
+                        Err(_) => {
+                            step_errors[index] = Some(wire_error(&ApiError::new(
+                                ErrorCode::ResultTooLarge,
+                                "Hrana batch 总响应超过上限",
+                            )))
+                        }
+                    }
+                }
                 Err(err) => step_errors[index] = Some(wire_error(&err)),
             }
         }
@@ -943,9 +1122,72 @@ fn wire_error(err: &ApiError) -> wire::WireError {
     wire::WireError::new(err.code().as_str(), err.error.message.clone())
 }
 
+/// JSON 大小只计数，不为预算检查再分配一份响应体。
+fn encoded_size_within(value: &impl serde::Serialize, limit: usize) -> ApiResult<usize> {
+    struct Counter {
+        size: usize,
+        limit: usize,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.size) {
+                return Err(std::io::Error::other("Hrana response budget exceeded"));
+            }
+            self.size += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter { size: 0, limit };
+    serde_json::to_writer(&mut counter, value)
+        .map_err(|_| ApiError::new(ErrorCode::ResultTooLarge, "Hrana 总响应超过上限"))?;
+    Ok(counter.size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cursor_yields_header_before_query_finishes_and_drop_cancels() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let marker = cancelled.clone();
+        let execution = crate::execution::DataStream {
+            frames: Box::pin(tokio_stream::wrappers::ReceiverStream::new(receiver)),
+            guard: crate::execution::ExecutionGuard::new(move || {
+                marker.store(true, Ordering::SeqCst);
+            }),
+            remote_lsn: false,
+        };
+        let mut events = Box::pin(cursor_frame_events(execution, 0, true));
+        sender
+            .send(Ok(protocol::data::StreamFrame {
+                error: None,
+                frame: Some(protocol::data::stream_frame::Frame::Header(
+                    protocol::data::StreamHeader {
+                        columns: Vec::new(),
+                        row_count_estimate: 0,
+                    },
+                )),
+            }))
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_millis(100), events.next())
+            .await
+            .expect("header should arrive before trailer")
+            .unwrap();
+        assert!(matches!(
+            first,
+            CursorFrameEvent::Entry(wire::CursorEntry::StepBegin { step: 0, .. })
+        ));
+        assert!(!cancelled.load(Ordering::SeqCst));
+        drop(events);
+        assert!(cancelled.load(Ordering::SeqCst));
+        drop(sender);
+    }
 
     fn cond_ok(step: usize) -> wire::BatchCond {
         wire::BatchCond::Ok { step }
