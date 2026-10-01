@@ -1061,17 +1061,28 @@ impl DbRouter {
     ) -> ApiResult<protocol::data::DescribeResponse> {
         let route = self.resolve_target(database_id, None).await?;
         if let Some(binding) = session {
-            if binding.worker_id != route.worker_id || binding.owner_epoch != route.owner_epoch {
-                return Err(ApiError::new(ErrorCode::SessionLost, "describe 会话所属路由已失效"));
+            if binding.worker_id.as_ref() != Some(&route.worker_id)
+                || binding.owner_epoch != Some(route.owner_epoch)
+            {
+                return Err(ApiError::new(
+                    ErrorCode::SessionLost,
+                    "describe 会话所属路由已失效",
+                ));
             }
         }
         let mut client = self.channels.data(&route.worker_endpoint).await?;
         let context = data_request_context(
-            request_id, database_id, &route.worker_id, route.owner_epoch,
-            session.map(|binding| binding.session_id.clone()), 0,
+            request_id,
+            database_id,
+            &route.worker_id,
+            route.owner_epoch,
+            session.map(|binding| binding.session_id.clone()),
+            0,
         );
         let mut guard = CancelGuard::new(client.clone(), context.clone());
-        let response = client.describe(crate::clients::describe_request(context, sql)).await
+        let response = client
+            .describe(crate::clients::describe_request(context, sql))
+            .await
             .map_err(|status| status_to_api_error(status, route.worker_id.as_ref()))?
             .into_inner();
         guard.disarm();

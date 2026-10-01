@@ -84,7 +84,10 @@ pub async fn list_snapshots(
         .await
         .api()?;
     Ok(Json(
-        snapshots.iter().map(dto::SnapshotView::from).collect(),
+        snapshots
+            .iter()
+            .map(|record| dto::SnapshotView::for_deployment(record, state.execution.remote_lsn()))
+            .collect(),
     ))
 }
 

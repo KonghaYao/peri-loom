@@ -280,16 +280,17 @@ where
     F: FnOnce(OperationId) -> Fut,
     Fut: std::future::Future<Output = ApiResult<PreparedOperation>>,
 {
+    if let crate::deployment::Deployment::Simple(local) = &state.deployment {
+        return local
+            .submit(principal, headers, method, path, body, spec, None)
+            .await;
+    }
+    let catalog = &state.distributed()?.catalog;
     let key = extract_idempotency_key(headers).map_err(ApiError::invalid_argument)?;
     let fingerprint = request_fingerprint(method, path, body);
 
     let (operation_id, replayed) = match key.as_deref() {
-        Some(key) => match state
-            .catalog
-            .begin_idempotent(key, &fingerprint)
-            .await
-            .api()?
-        {
+        Some(key) => match catalog.begin_idempotent(key, &fingerprint).await.api()? {
             IdempotencyOutcome::First { operation_id } => (operation_id, false),
             IdempotencyOutcome::Replay { body, .. } => {
                 // 回放：首次请求的 202 响应体就是权威答案，不再产生任何副作用。
@@ -321,8 +322,7 @@ where
     let prepared = prepare(operation_id).await?;
     let database_id = prepared.database_id.or(spec.database_id);
 
-    state
-        .catalog
+    catalog
         .create_operation_with_id(
             operation_id,
             spec.kind,
@@ -374,8 +374,7 @@ where
 
     if let Some(key) = key.as_deref() {
         // 写失败不影响受理结果（operation 已经存在），但会导致重放拿不到原响应。
-        if let Err(err) = state
-            .catalog
+        if let Err(err) = catalog
             .complete_idempotent(
                 key,
                 202,

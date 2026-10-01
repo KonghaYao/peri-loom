@@ -30,17 +30,17 @@ use protocol::control::{
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
-use crate::state::AppState;
+use crate::state::DistributedState;
 
 /// Worker 上报服务实现。
 pub struct ServerIngressService {
-    state: Arc<AppState>,
+    state: Arc<DistributedState>,
 }
 
 impl ServerIngressService {
     /// 构造。
     #[must_use]
-    pub fn new(state: Arc<AppState>) -> Self {
+    pub fn new(state: Arc<DistributedState>) -> Self {
         Self { state }
     }
 
@@ -210,7 +210,7 @@ fn status_for(code: ErrorCode, message: impl Into<String>) -> Status {
 
 /// 供 `app` 组装 gRPC server 的便捷函数。
 #[must_use]
-pub fn server(state: Arc<AppState>) -> ServerIngressServer<ServerIngressService> {
+pub fn server(state: Arc<DistributedState>) -> ServerIngressServer<ServerIngressService> {
     ServerIngressService::new(state).into_server()
 }
 

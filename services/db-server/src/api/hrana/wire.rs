@@ -519,7 +519,10 @@ mod tests {
 
     #[test]
     fn non_finite_floats_degrade_to_null_instead_of_invalid_json() {
-        assert_eq!(value_to_wire(&SqlValue::Real(f64::NAN)), json!({"type":"null"}));
+        assert_eq!(
+            value_to_wire(&SqlValue::Real(f64::NAN)),
+            json!({"type":"null"})
+        );
         assert_eq!(
             value_to_wire(&SqlValue::Real(f64::INFINITY)),
             json!({"type":"null"})

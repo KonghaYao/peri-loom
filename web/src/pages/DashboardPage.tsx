@@ -11,6 +11,7 @@ import { ErrorAlert } from '../components/ErrorAlert';
 import { SaturationBar } from '../components/SaturationBar';
 import { DatabaseStateTag, OperationStateTag, WorkerStateTag } from '../components/StatusTag';
 import { useOperationsListQuery } from '../hooks/useOperationQuery';
+import { useDeployment } from '../hooks/useDeployment';
 import { operationDbId, operationKind } from '../utils/database';
 import { formatTime, shortId } from '../utils/format';
 import { SAT_TARGET_MAX, SAT_TARGET_MIN, SAT_WARN, SAT_DANGER, saturationColor } from '../utils/saturation';
@@ -99,11 +100,14 @@ const RECENT_OPERATION_COLUMNS: ColumnsType<Operation> = [
 ];
 
 export function DashboardPage(): JSX.Element {
+  const deployment = useDeployment().data;
+  const hasWorkers = deployment?.capabilities.workers ?? false;
   const dbStats = useQuery({ queryKey: ['dashboard', 'db-stats'], queryFn: loadDbStats, staleTime: 15_000 });
   const workersQuery = useQuery({
     queryKey: ['workers'],
     queryFn: () => api.workers.list(),
     staleTime: 10_000,
+    enabled: hasWorkers,
   });
   const operationsQuery = useOperationsListQuery(10, 0);
 
@@ -123,7 +127,7 @@ export function DashboardPage(): JSX.Element {
   return (
     <div>
       <ErrorAlert error={dbStats.error} onRetry={() => dbStats.refetch()} />
-      <ErrorAlert error={workersQuery.error} onRetry={() => workersQuery.refetch()} />
+      {hasWorkers && <ErrorAlert error={workersQuery.error} onRetry={() => workersQuery.refetch()} />}
 
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} lg={6}>
@@ -131,22 +135,23 @@ export function DashboardPage(): JSX.Element {
             <Statistic title="数据库总数" value={dbStats.data?.total ?? 0} />
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        {hasWorkers && <Col xs={24} sm={12} lg={6}>
           <Card loading={workersQuery.isLoading}>
             <Statistic title="Worker 数量" value={workers.length} />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               预警水位 ≥ {SAT_WARN}%：{hotWorkers.length} 个
             </Typography.Text>
           </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
+        </Col>}
+        {hasWorkers && <Col xs={24} sm={12} lg={6}>
           <Card loading={workersQuery.isLoading}>
             <div className="stat-card__value" style={{ color: avgSaturation === null ? undefined : saturationColor(avgSaturation) }}>
               {avgSaturation === null ? '-' : `${avgSaturation.toFixed(1)}%`}
             </div>
             <Typography.Text type="secondary">平均饱和度（目标 {SAT_TARGET_MIN}%~{SAT_TARGET_MAX}%）</Typography.Text>
           </Card>
-        </Col>
+        </Col>}
+        {!hasWorkers && <Col xs={24} sm={12} lg={8}><Card title="本机实例"><Typography.Text>本地同步持久化；数据库共享主进程资源，无逐库硬隔离。</Typography.Text></Card></Col>}
         <Col xs={24} sm={12} lg={6}>
           <Card loading={operationsQuery.isLoading}>
             <Statistic title="进行中的操作" value={runningOps} />
@@ -197,7 +202,7 @@ export function DashboardPage(): JSX.Element {
       </Card>
 
       {/* Worker 饱和度 */}
-      <Card
+      {hasWorkers && <Card
         title="Worker 饱和度"
         style={{ marginTop: 16 }}
         loading={workersQuery.isLoading}
@@ -252,7 +257,7 @@ export function DashboardPage(): JSX.Element {
         ) : (
           <Empty description="暂无 Worker 数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         )}
-      </Card>
+      </Card>}
 
       {/* 最近操作 */}
       <Card

@@ -29,12 +29,13 @@ pub struct HealthStatus {
 pub struct ReadinessStatus {
     /// 是否整体就绪。
     pub ready: bool,
+    pub metadata: bool,
     /// PostgreSQL Catalog 是否可达（权威事实源，不可用则不接控制面流量）。
-    pub postgres: bool,
+    pub postgres: Option<bool>,
     /// Worker 心跳监控是否已启动。
-    pub heartbeat_monitor: bool,
+    pub heartbeat_monitor: Option<bool>,
     /// Route Cache 是否完成过至少一次全量 reconcile。
-    pub route_reconciler: bool,
+    pub route_reconciler: Option<bool>,
     /// 未就绪时的原因说明。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -44,6 +45,7 @@ pub struct ReadinessStatus {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/v1/deployment", get(deployment))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
 }
@@ -92,7 +94,11 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
     };
     let heartbeat_monitor = state.readiness.heartbeat_monitor_ready();
     let route_reconciler = state.readiness.reconciler_ready();
-    let ready = postgres && heartbeat_monitor && route_reconciler;
+    let distributed = matches!(
+        state.deployment,
+        crate::deployment::Deployment::Distributed(_)
+    );
+    let ready = postgres && state.readiness.is_ready();
 
     let detail = if ready {
         None
@@ -106,9 +112,10 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
 
     let body = ReadinessStatus {
         ready,
-        postgres,
-        heartbeat_monitor,
-        route_reconciler,
+        metadata: postgres,
+        postgres: distributed.then_some(postgres),
+        heartbeat_monitor: distributed.then_some(heartbeat_monitor),
+        route_reconciler: distributed.then_some(route_reconciler),
         detail,
     };
     let status = if ready {
@@ -132,7 +139,16 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
         (status = 200, description = "Prometheus 文本格式指标（仅集群内抓取）", body = String)
     )
 )]
-pub async fn metrics(State(state): State<AppState>) -> Response {
+pub async fn metrics(
+    State(state): State<AppState>,
+    principal: Result<crate::auth::Principal, crate::error::ApiError>,
+) -> Response {
+    if matches!(state.deployment, crate::deployment::Deployment::Simple(_)) {
+        match principal.and_then(|p| p.require(crate::auth::permission::DB_ADMIN)) {
+            Ok(()) => {}
+            Err(error) => return error.into_response(),
+        }
+    }
     let body = state.metrics.render();
     (
         StatusCode::OK,
@@ -165,4 +181,9 @@ pub async fn swagger_redirect() -> impl IntoResponse {
         StatusCode::FOUND,
         [(header::LOCATION, "/api/v1/openapi.json")],
     )
+}
+
+/// 客户端在执行管理动作前读取能力；这里不包含任何凭据或拓扑地址。
+pub async fn deployment(State(state): State<AppState>) -> Json<crate::deployment::DeploymentInfo> {
+    Json(state.deployment.info())
 }

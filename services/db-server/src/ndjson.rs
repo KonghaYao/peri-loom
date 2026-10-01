@@ -97,11 +97,15 @@ pub fn row_line(values: &[SqlValue]) -> Bytes {
 
 /// 结束行。
 #[must_use]
-pub fn trailer_line(affected_rows: u64, wal_lsn: u64, elapsed_micros: u64) -> Bytes {
+pub fn trailer_line(
+    affected_rows: u64,
+    wal_lsn: impl Into<Option<u64>>,
+    elapsed_micros: u64,
+) -> Bytes {
     line(&serde_json::json!({
         "type": LINE_TYPE_TRAILER,
         "affected_rows": affected_rows,
-        "wal_lsn": wal_lsn,
+        "wal_lsn": wal_lsn.into(),
         "elapsed_micros": elapsed_micros,
     }))
 }

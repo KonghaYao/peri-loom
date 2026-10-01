@@ -122,6 +122,18 @@ pub async fn login(
     }
     state.catalog.append_audit(entry).await.api()?;
 
+    if let crate::deployment::Deployment::Simple(local) = &state.deployment {
+        let path = local.root.join("secrets/initial-admin.json");
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {
+                std::fs::File::open(local.root.join("secrets"))
+                    .and_then(|file| file.sync_all())
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ApiError::internal(error.to_string())),
+        }
+    }
     Ok(Json(dto::LoginResponse {
         access_token: issued.token,
         token_type: "Bearer".to_owned(),

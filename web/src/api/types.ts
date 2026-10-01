@@ -133,7 +133,7 @@ export interface Database {
   name: string;
   state: DatabaseState;
   owner_worker_id?: string | null;
-  owner_epoch: number;
+  owner_epoch: number | null;
   priority: number;
   evictable: boolean;
   wakeup_in_progress: boolean;
@@ -236,12 +236,12 @@ export interface Snapshot {
   database_id: string;
   state: string;
   size_bytes: number;
-  base_lsn: number;
+  base_lsn: number | null;
   checksum: string;
   compression: string;
   engine_version: string;
   object_key: string;
-  owner_epoch: number;
+  owner_epoch: number | null;
   created_at: string;
   verified_at?: string | null;
 }
@@ -379,7 +379,7 @@ export interface ResultSetView {
 
 /** 单条查询响应（QueryResponse）：比 ResultSetView 多出 elapsed_micros / request_id / wal_lsn */
 export interface QueryResult extends ResultSetView {
-  wal_lsn: number;
+  wal_lsn: number | null;
   elapsed_micros: number;
   request_id: string;
 }
@@ -387,7 +387,7 @@ export interface QueryResult extends ResultSetView {
 /** 批量执行响应（BatchResponse）：结果是 `results` 数组 */
 export interface BatchResponse {
   results: ResultSetView[];
-  wal_lsn: number;
+  wal_lsn: number | null;
   elapsed_micros: number;
   request_id: string;
 }
@@ -409,7 +409,7 @@ export interface BatchRequest {
 export interface SessionOpened {
   session_id: string;
   database_id: string;
-  worker_id: string;
+  worker_id: string | null;
   expires_at_unix_ms: number;
   request_id: string;
 }
@@ -431,7 +431,7 @@ export interface StreamRowChunk {
 export interface StreamTrailerChunk {
   type: 'trailer';
   affected_rows: number;
-  wal_lsn: number;
+  wal_lsn: number | null;
   elapsed_micros: number;
 }
 
@@ -451,4 +451,18 @@ export function isTrailerChunk(c: QueryStreamChunk): c is StreamTrailerChunk {
 export function columnNames(columns?: Array<ColumnView | string> | null): string[] {
   if (!columns) return [];
   return columns.map((c) => (typeof c === 'string' ? c : c.name));
+}
+
+/** /api/v1/deployment 的版本化能力契约。 */
+export interface DeploymentInfo {
+  mode: 'simple' | 'distributed';
+  contract_version: number;
+  durability: 'local_fsync' | 'remote_quorum';
+  capabilities: {
+    workers: boolean;
+    database_move: boolean;
+    remote_durability_lsn: boolean;
+    local_backup: boolean;
+    per_database_hard_isolation: boolean;
+  };
 }

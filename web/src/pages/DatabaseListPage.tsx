@@ -29,6 +29,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, hasMorePage, toItems } from '../api/client';
 import { DATABASE_STATE_META, type Database, type OperationAccepted } from '../api/types';
 import { CreateDatabaseModal, MoveDatabaseModal, RestoreDatabaseModal } from '../components/database/DatabaseModals';
+import { useDeployment } from '../hooks/useDeployment';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { OperationModal } from '../components/OperationModal';
 import { DatabaseStateTag } from '../components/StatusTag';
@@ -76,6 +77,8 @@ const LIFECYCLE_ACTIONS: LifecycleAction[] = [
 ];
 
 export function DatabaseListPage(): JSX.Element {
+  const deployment = useDeployment().data;
+  const canMove = deployment?.capabilities.database_move ?? false;
   const { modal, message } = AntdApp.useApp();
   const { get } = usePreferences();
   const defaultPageSize = get<number>(PREF_KEYS.pageSize, 20);
@@ -172,11 +175,11 @@ export function DatabaseListPage(): JSX.Element {
       width: 110,
       render: (state: string) => <DatabaseStateTag state={state} />,
     },
-    {
+    ...(deployment?.capabilities.workers ? [{
       title: 'Owner Worker',
       key: 'owner_worker_id',
       width: 180,
-      render: (_: unknown, db) => {
+      render: (_: unknown, db: Database) => {
         const workerId = dbWorkerId(db);
         return workerId === '-' ? '-' : <Link to={`/workers/${workerId}`}>{shortId(workerId, 14, 6)}</Link>;
       },
@@ -185,8 +188,8 @@ export function DatabaseListPage(): JSX.Element {
       title: 'Epoch',
       key: 'epoch',
       width: 90,
-      render: (_: unknown, db) => <Tag>{dbEpoch(db)}</Tag>,
-    },
+      render: (_: unknown, db: Database) => <Tag>{dbEpoch(db)}</Tag>,
+    }] as ColumnsType<Database> : []),
     {
       title: '创建时间',
       key: 'created_at',
@@ -213,7 +216,7 @@ export function DatabaseListPage(): JSX.Element {
             menu={{
               items: [
                 { key: 'restart', label: '重启' },
-                { key: 'move', label: '迁移' },
+                ...(canMove ? [{ key: 'move', label: '迁移' }] : []),
                 { key: 'snapshot', label: '快照' },
                 { key: 'backup', label: '备份' },
                 { key: 'restore', label: '恢复' },
@@ -315,7 +318,7 @@ export function DatabaseListPage(): JSX.Element {
         }}
       />
 
-      {moveTarget ? (
+      {moveTarget && canMove ? (
         <MoveDatabaseModal
           open
           dbId={moveTarget}

@@ -2,10 +2,12 @@
  * 应用外壳：未登录只暴露登录页；登录后按 Panel 偏好注入主题，并挂载完整路由。
  */
 import { useEffect } from 'react';
+import { Alert, Spin } from 'antd';
 import { App as AntdApp, ConfigProvider, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
+import { useDeployment } from './hooks/useDeployment';
 import { PREF_KEYS, PreferencesProvider, usePreferences, type ThemeMode } from './hooks/usePreferences';
 import { AppLayout } from './layouts/AppLayout';
 import { LoginPage } from './pages/LoginPage';
@@ -34,6 +36,10 @@ export function useResolvedTheme(mode: ThemeMode): 'light' | 'dark' {
 
 /** 已认证路由树 */
 function AuthenticatedRoutes(): JSX.Element {
+  const deployment = useDeployment();
+  if (deployment.isPending) return <Spin fullscreen tip="读取部署能力…" />;
+  if (deployment.isError) return <Alert type="error" showIcon message="无法读取部署能力" description="请检查服务端连接后刷新页面。" />;
+  const workers = deployment.data.capabilities.workers;
   return (
     <Routes>
       <Route path="/login" element={<Navigate to="/" replace />} />
@@ -43,8 +49,8 @@ function AuthenticatedRoutes(): JSX.Element {
         <Route path="/databases" element={<DatabaseListPage />} />
         <Route path="/databases/:dbId" element={<DatabaseDetailPage />} />
         <Route path="/sql" element={<SqlConsolePage />} />
-        <Route path="/workers" element={<WorkerListPage />} />
-        <Route path="/workers/:workerId" element={<WorkerDetailPage />} />
+        <Route path="/workers" element={workers ? <WorkerListPage /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/workers/:workerId" element={workers ? <WorkerDetailPage /> : <Navigate to="/dashboard" replace />} />
         <Route path="/operations" element={<OperationsPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/settings" element={<SettingsPage />} />

@@ -25,9 +25,9 @@ use domain::value::{ColumnMeta, SqlValue};
 use futures::StreamExt;
 
 use crate::api::dto;
-use crate::clients::{status_to_api_error, CancelGuard};
 use crate::error::{ApiError, ApiResult};
-use crate::router::{DbRouter, FrameStream, StreamTarget};
+use crate::execution::{DatabaseExecutor, ExecutionGuard, FrameStream};
+use crate::router::StreamTarget;
 
 /// NDJSON 的 MIME 类型。
 pub const NDJSON_CONTENT_TYPE: &str = "application/x-ndjson";
@@ -38,7 +38,7 @@ pub const NDJSON_CONTENT_TYPE: &str = "application/x-ndjson";
 /// 路由解析失败、Worker 不可达、或**首帧**即错误时返回错误（此时还没写出任何字节，
 /// 可以给出正确的 HTTP 状态码）。
 pub async fn execute(
-    router: &DbRouter,
+    router: &dyn DatabaseExecutor,
     inline_limit_bytes: usize,
     database_id: DatabaseId,
     target: StreamTarget,
@@ -46,17 +46,19 @@ pub async fn execute(
     deadline: Option<Instant>,
     want_ndjson: bool,
 ) -> ApiResult<Response> {
-    let (route, mut frames, guard) = router
+    let execution = router
         .open_stream(database_id, target, request_id, deadline)
         .await?;
-    let worker_id = route.worker_id.to_string();
+    let mut frames = execution.frames;
+    let guard = execution.guard;
+    let remote_lsn = execution.remote_lsn;
 
     if want_ndjson {
         return ndjson_response(ndjson_stream(
             frames,
             guard,
             request_id,
-            worker_id,
+            remote_lsn,
             Vec::new(),
             Vec::new(),
         ));
@@ -68,7 +70,7 @@ pub async fn execute(
     let mut trailer: Option<(u64, u64, u64)> = None;
 
     while let Some(item) = frames.next().await {
-        let frame = item.map_err(|status| status_to_api_error(status, &worker_id))?;
+        let frame = item?;
         if let Some(error) = proto_error(frame.error.as_ref()) {
             // 流中途的结构化错误：此时仍未写出任何字节，可以正常返回错误响应。
             return Err(ApiError::from(error));
@@ -86,7 +88,7 @@ pub async fn execute(
                 if buffered_bytes > inline_limit_bytes {
                     // 超过内联上限：切成 NDJSON，已缓冲的部分作为前缀先写出去。
                     return ndjson_response(ndjson_stream(
-                        frames, guard, request_id, worker_id, columns, rows,
+                        frames, guard, request_id, remote_lsn, columns, rows,
                     ));
                 }
             }
@@ -97,7 +99,8 @@ pub async fn execute(
         }
     }
 
-    let (affected_rows, wal_lsn, elapsed_micros) = trailer.unwrap_or((0, 0, 0));
+    let (affected_rows, wal_lsn, elapsed_micros) =
+        trailer.ok_or_else(|| ApiError::internal("执行流缺少完成帧"))?;
     let body = dto::QueryResponse {
         columns: columns.iter().map(dto::ColumnView::from).collect(),
         rows: rows
@@ -108,7 +111,7 @@ pub async fn execute(
         // 流式路径下 Worker 会发完全部行，不存在「被截断」的语义（truncated 只在内联
         // 单次执行里由 Worker 依据 inline_row_limit 置位）。
         truncated: false,
-        wal_lsn,
+        wal_lsn: remote_lsn.then_some(wal_lsn),
         elapsed_micros,
         request_id: request_id.to_string(),
     };
@@ -132,16 +135,17 @@ where
 /// NDJSON 行生成器（前缀行 + 余下帧）。
 fn ndjson_stream(
     mut frames: FrameStream,
-    guard: CancelGuard,
+    guard: ExecutionGuard,
     request_id: &str,
-    worker_id: String,
+    remote_lsn: bool,
     columns: Vec<ColumnMeta>,
     rows: Vec<Vec<SqlValue>>,
 ) -> impl futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
     let request_id = request_id.to_string();
     async_stream::stream! {
         // guard 与流同生命周期：流被 drop（客户端断开）时它负责把 Cancel 传到 Worker。
-        let _guard = guard;
+        let mut guard = guard;
+        let mut finished = false;
 
         if !columns.is_empty() {
             yield Ok(crate::ndjson::header_line(&columns));
@@ -171,22 +175,23 @@ fn ndjson_stream(
                             }
                         }
                         Some(protocol::data::stream_frame::Frame::Trailer(t)) => {
+                            finished = true; guard.disarm();
                             yield Ok(crate::ndjson::trailer_line(
                                 t.affected_rows,
-                                t.wal_lsn,
+                                remote_lsn.then_some(t.wal_lsn),
                                 t.elapsed_micros,
                             ));
                         }
                         None => {}
                     }
                 }
-                Err(status) => {
-                    let err = status_to_api_error(status, &worker_id);
+                Err(err) => {
                     yield Ok(crate::ndjson::error_line_from(&err.error, &request_id));
                     return;
                 }
             }
         }
+        if !finished { yield Ok(crate::ndjson::error_line_from(&ApiError::internal("执行流缺少完成帧").error, &request_id)); }
     }
 }
 

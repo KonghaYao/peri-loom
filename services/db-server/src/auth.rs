@@ -350,7 +350,7 @@ pub fn generate_api_token() -> String {
 /// # Errors
 /// 口令哈希失败或写库失败时返回错误；调用方应视为启动失败（没有管理员 = 平台不可用）。
 pub async fn bootstrap_admin(
-    catalog: &catalog::Catalog,
+    catalog: &dyn catalog::Metadata,
     username: &str,
     password: &str,
 ) -> domain::error::Result<Option<String>> {

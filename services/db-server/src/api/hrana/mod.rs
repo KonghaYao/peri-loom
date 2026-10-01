@@ -62,7 +62,6 @@ use futures::StreamExt;
 use crate::api::data::stream;
 use crate::api::{db_id, MAX_REQUEST_BODY_BYTES};
 use crate::auth::{permission, Principal};
-use crate::clients::status_to_api_error;
 use crate::error::{ApiError, ApiResult};
 use crate::middleware::current_request_id;
 use crate::router::StreamTarget;
@@ -223,7 +222,10 @@ fn write_cursor_line(body: &mut Vec<u8>, value: &impl serde::Serialize) -> ApiRe
 ///
 /// 为什么必须是响应层而不是 handler 内部：401 / 403 / 413 由认证中间件与提取器直接
 /// 返回，handler 根本没有机会插手；只有包裹整条响应链才能全覆盖。
-async fn hrana_error_shape(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+async fn hrana_error_shape(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
     let response = next.run(request).await;
     if response.status().is_success() {
         // 成功路径一律原样透传：结果集可能很大，绝不能在这里缓冲一遍。
@@ -291,7 +293,9 @@ fn rebuild_json_error(parts: axum::http::response::Parts, body: serde_json::Valu
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
-    rebuilt.headers_mut().remove(axum::http::header::CONTENT_LENGTH);
+    rebuilt
+        .headers_mut()
+        .remove(axum::http::header::CONTENT_LENGTH);
     rebuilt
 }
 
@@ -336,9 +340,14 @@ async fn run(
         .any(|item| matches!(item, wire::StreamRequest::Batch { .. }));
     // 没有 close 说明客户端还会带 baton 回来；有 batch 说明这些步骤必须在同一条连接上。
     // 纯 describe/get_autocommit 不需要新会话；已有 baton 仍照常恢复，避免丢失临时表。
-    let describe_only = request.requests.iter().all(|item| matches!(
-        item, wire::StreamRequest::Describe { .. } | wire::StreamRequest::GetAutocommit | wire::StreamRequest::Close
-    ));
+    let describe_only = request.requests.iter().all(|item| {
+        matches!(
+            item,
+            wire::StreamRequest::Describe { .. }
+                | wire::StreamRequest::GetAutocommit
+                | wire::StreamRequest::Close
+        )
+    });
     let needs_session = (!closes || batches) && !describe_only;
 
     let mut session = match request.baton.as_deref() {
@@ -365,7 +374,10 @@ async fn run(
     }
 
     Ok(wire::PipelineResponse {
-        baton: pipeline.session.as_ref().map(|binding| binding.session_id.clone()),
+        baton: pipeline
+            .session
+            .as_ref()
+            .map(|binding| binding.session_id.clone()),
         // 本实现不做连接迁移，客户端应继续用自己配置的地址。
         base_url: None,
         results,
@@ -448,17 +460,31 @@ impl Pipeline<'_> {
         if text.trim().is_empty() {
             return Err(ApiError::invalid_argument("sql 不能为空"));
         }
-        let response = self.state.router.describe(
-            self.database_id, self.session.as_ref(), &text, &self.request_id,
-        ).await?;
+        let response = self
+            .state
+            .execution
+            .describe(
+                self.database_id,
+                self.session.as_ref(),
+                &text,
+                &self.request_id,
+            )
+            .await?;
         // 不执行语句，也不更新 autocommit / rowid；独立的 get_autocommit 请求仍照常处理。
         Ok(wire::DescribeResult {
-            params: response.params.into_iter()
-                .map(|param| wire::DescribeParam { name: param.name }).collect(),
-            cols: response.cols.into_iter().map(|column| wire::WireCol {
-                name: column.name,
-                decltype: column.type_name,
-            }).collect(),
+            params: response
+                .params
+                .into_iter()
+                .map(|param| wire::DescribeParam { name: param.name })
+                .collect(),
+            cols: response
+                .cols
+                .into_iter()
+                .map(|column| wire::WireCol {
+                    name: column.name,
+                    decltype: column.type_name,
+                })
+                .collect(),
             is_explain: response.is_explain,
             is_readonly: response.is_readonly,
         })
@@ -514,14 +540,24 @@ impl Pipeline<'_> {
             .collect::<ApiResult<Vec<_>>>()?;
         let bind = sql::bind_named_args(&sql, &named).map_err(ApiError::invalid_argument)?;
         sql = bind.sql;
-        Ok((sql, bind.args.into_iter().map(protocol::data::Value::from).collect()))
+        Ok((
+            sql,
+            bind.args
+                .into_iter()
+                .map(protocol::data::Value::from)
+                .collect(),
+        ))
     }
 
     /// 执行一条语句并转成线上结果。
     async fn exec(&self, stmt: &wire::Stmt) -> ApiResult<wire::StmtResult> {
         let (sql, params) = self.prepare(stmt)?;
         let result = self.run_statement(sql, params).await?;
-        Ok(stmt_result(&result.result, stmt.want_rows, result.last_insert_rowid))
+        Ok(stmt_result(
+            &result.result,
+            stmt.want_rows,
+            result.last_insert_rowid,
+        ))
     }
 
     /// 执行一条语句，取回完整结果集及本条 trailer 的连接级观测。
@@ -541,21 +577,23 @@ impl Pipeline<'_> {
             None => StreamTarget::Stateless { sql, params },
         };
 
-        let (route, mut frames, mut guard) = self
+        let execution = self
             .state
-            .router
+            .execution
             .open_stream(self.database_id, target, &self.request_id, None)
             .await?;
-        let worker_id = route.worker_id.to_string();
+        let mut frames = execution.frames;
+        let mut guard = execution.guard;
 
         let mut columns: Vec<ColumnMeta> = Vec::new();
         let mut rows: Vec<Vec<SqlValue>> = Vec::new();
         let mut affected_rows = 0u64;
+        let mut finished = false;
         let mut last_insert_rowid = None;
         let mut buffered_bytes = 0usize;
 
         while let Some(item) = frames.next().await {
-            let frame = item.map_err(|status| status_to_api_error(status, &worker_id))?;
+            let frame = item?;
             if let Some(error) = stream::proto_error(frame.error.as_ref()) {
                 return Err(ApiError::from(error));
             }
@@ -580,6 +618,7 @@ impl Pipeline<'_> {
                     }
                 }
                 Some(protocol::data::stream_frame::Frame::Trailer(trailer)) => {
+                    finished = true;
                     affected_rows = trailer.affected_rows;
                     last_insert_rowid = trailer.last_insert_rowid;
                     observe_autocommit(
@@ -591,6 +630,9 @@ impl Pipeline<'_> {
                 }
                 None => {}
             }
+        }
+        if !finished {
+            return Err(ApiError::internal("执行流缺少完成帧"));
         }
         // 执行已正常结束：解除守卫，不再向 Worker 发表 Cancel。
         guard.disarm();
@@ -684,9 +726,9 @@ impl Pipeline<'_> {
                 .get(&id)
                 .cloned()
                 .or_else(|| {
-                    self.session
-                        .as_ref()
-                        .and_then(|binding| self.state.sessions.sql_cache_get(&binding.session_id, id))
+                    self.session.as_ref().and_then(|binding| {
+                        self.state.sessions.sql_cache_get(&binding.session_id, id)
+                    })
                 })
                 .ok_or_else(|| {
                     ApiError::invalid_argument(format!(
@@ -760,32 +802,17 @@ async fn resume_binding(
 
 /// 执行前校验会话 pin 的 Worker / epoch 仍然有效。
 async fn ensure_binding_route(state: &AppState, binding: &SessionBinding) -> ApiResult<()> {
-    let route = state
-        .router
-        .resolve_target(binding.database_id, None)
-        .await?;
-    if route.worker_id != binding.worker_id || route.owner_epoch != binding.owner_epoch {
-        state.sessions.remove(&binding.session_id);
-        return Err(ApiError::new(
-            ErrorCode::SessionLost,
-            "会话所属数据库已发生 failover，会话不可恢复；请重新开始事务",
-        ));
-    }
-    Ok(())
+    state.execution.validate_session(binding).await
 }
 
 /// 关闭会话：先尽力通知 Worker，再注销本地绑定。
 async fn close_binding(state: &AppState, binding: &SessionBinding) {
-    if let Err(err) = state
-        .router
-        .close_session(&binding.database_id, &binding.worker_id, &binding.session_id)
-        .await
-    {
+    if let Err(err) = state.execution.close_session(binding).await {
         // 失败不致命：Worker 侧还有空闲计时兜底。但必须留下日志，否则"关闭变慢"
         // 会变成无头案。
         tracing::warn!(
             session_id = %binding.session_id,
-            worker_id = %binding.worker_id,
+            worker_id = ?binding.worker_id,
             code = err.code().as_str(),
             "通知 Worker 关闭 Hrana 会话失败（依赖 Worker 侧空闲回收）"
         );
@@ -1001,8 +1028,8 @@ mod tests {
         SessionBinding {
             session_id: "hrana-test-session".to_string(),
             database_id: DatabaseId::new_v7(),
-            worker_id: domain::ids::WorkerId::new("w1"),
-            owner_epoch: 1,
+            worker_id: Some(domain::ids::WorkerId::new("w1")),
+            owner_epoch: Some(1),
             created_at: now,
             expires_at: now + chrono::Duration::minutes(5),
         }
@@ -1064,29 +1091,50 @@ mod tests {
     fn describe_response_uses_hrana_json_shape() {
         let response = wire::StreamResult::ok(wire::StreamResponse::Describe {
             result: wire::DescribeResult {
-                params: vec![wire::DescribeParam { name: None }, wire::DescribeParam { name: Some(":x".into()) }],
-                cols: vec![wire::WireCol { name: "answer".into(), decltype: "INTEGER".into() }],
+                params: vec![
+                    wire::DescribeParam { name: None },
+                    wire::DescribeParam {
+                        name: Some(":x".into()),
+                    },
+                ],
+                cols: vec![wire::WireCol {
+                    name: "answer".into(),
+                    decltype: "INTEGER".into(),
+                }],
                 is_explain: false,
                 is_readonly: true,
             },
         });
-        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({
-            "type":"ok", "response":{"type":"describe", "result":{
-                "params":[{"name":null},{"name":":x"}],
-                "cols":[{"name":"answer","decltype":"INTEGER"}],
-                "is_explain":false,"is_readonly":true
-            }}
-        }));
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({
+                "type":"ok", "response":{"type":"describe", "result":{
+                    "params":[{"name":null},{"name":":x"}],
+                    "cols":[{"name":"answer","decltype":"INTEGER"}],
+                    "is_explain":false,"is_readonly":true
+                }}
+            })
+        );
     }
 
     #[test]
     fn describe_accepts_sql_and_sql_id() {
         for (input, expected_sql, expected_id) in [
-            (serde_json::json!({"type":"describe","sql":"SELECT 42"}), Some("SELECT 42"), None),
-            (serde_json::json!({"type":"describe","sql_id":7}), None, Some(7)),
+            (
+                serde_json::json!({"type":"describe","sql":"SELECT 42"}),
+                Some("SELECT 42"),
+                None,
+            ),
+            (
+                serde_json::json!({"type":"describe","sql_id":7}),
+                None,
+                Some(7),
+            ),
         ] {
             let request: wire::StreamRequest = serde_json::from_value(input).unwrap();
-            let wire::StreamRequest::Describe { sql, sql_id } = request else { panic!("期望 describe") };
+            let wire::StreamRequest::Describe { sql, sql_id } = request else {
+                panic!("期望 describe")
+            };
             assert_eq!(sql.as_deref(), expected_sql);
             assert_eq!(sql_id, expected_id);
         }
@@ -1182,7 +1230,10 @@ mod tests {
         assert_eq!(with_rows.last_insert_rowid.as_deref(), Some("7"));
         assert_eq!(with_rows.cols.len(), 1);
         assert_eq!(with_rows.rows.len(), 1);
-        assert_eq!(with_rows.rows[0][0], serde_json::json!({"type":"integer","value":"1"}));
+        assert_eq!(
+            with_rows.rows[0][0],
+            serde_json::json!({"type":"integer","value":"1"})
+        );
     }
 
     #[test]
@@ -1205,9 +1256,15 @@ mod tests {
                     })],
                 };
                 let json = serde_json::to_value(pipeline).unwrap();
-                assert_eq!(json["results"][0]["response"]["result"]["last_insert_rowid"], expected);
+                assert_eq!(
+                    json["results"][0]["response"]["result"]["last_insert_rowid"],
+                    expected
+                );
                 let body = cursor_body(
-                    wire::CursorHeader { baton: None, base_url: None },
+                    wire::CursorHeader {
+                        baton: None,
+                        base_url: None,
+                    },
                     wire::BatchResult {
                         step_results: vec![Some(stmt)],
                         step_errors: vec![None],
@@ -1260,7 +1317,10 @@ mod tests {
         // 请求体超限时 axum 直接返回 text/plain，根本不经过 handler。
         let response = (
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
             "length limit exceeded",
         )
             .into_response();

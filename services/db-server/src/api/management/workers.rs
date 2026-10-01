@@ -34,7 +34,7 @@ pub async fn list_workers(
     principal: Principal,
 ) -> ApiResult<Json<Vec<dto::WorkerView>>> {
     principal.require(permission::DB_READ)?;
-    let workers = state.catalog.list_workers().await.api()?;
+    let workers = state.distributed()?.catalog.list_workers().await.api()?;
     Ok(Json(
         workers
             .iter()
@@ -62,7 +62,12 @@ pub async fn get_worker(
 ) -> ApiResult<Json<dto::WorkerView>> {
     principal.require(permission::DB_READ)?;
     let id = worker_id(&raw_worker_id)?;
-    let record = state.catalog.get_worker(id.clone()).await.api()?;
+    let record = state
+        .distributed()?
+        .catalog
+        .get_worker(id.clone())
+        .await
+        .api()?;
 
     let filter = DatabaseFilter {
         worker_id: Some(id),
@@ -102,7 +107,12 @@ pub async fn drain_worker(
     let id = worker_id(&raw_worker_id)?;
     // 先确认 Worker 存在：drain 一个不存在的 Worker 只会在 job 里失败，
     // 那是一条「202 之后才知道参数错了」的糟糕路径。
-    let record = state.catalog.get_worker(id.clone()).await.api()?;
+    let record = state
+        .distributed()?
+        .catalog
+        .get_worker(id.clone())
+        .await
+        .api()?;
     let id_text = record.id.to_string();
     let stop_cold_and_warm = body
         .and_then(|Json(request)| request.stop_cold_and_warm)

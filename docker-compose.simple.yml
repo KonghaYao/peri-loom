@@ -1,0 +1,14 @@
+name: peri-loom-simple
+services:
+  peri-loom:
+    image: peri-loom:simple
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    ports:
+      - "127.0.0.1:${PERI_LOOM_PORT:-8080}:8080"
+    volumes:
+      - peri_data:/data
+    restart: unless-stopped
+volumes:
+  peri_data:

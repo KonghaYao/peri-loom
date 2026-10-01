@@ -17,6 +17,7 @@ import type {
   CreateTokenRequest,
   Database,
   DatabaseListQuery,
+  DeploymentInfo,
   LoginRequest,
   LoginResponse,
   MoveDatabaseRequest,
@@ -274,6 +275,7 @@ const data = <T,>(path: string, options?: RequestOptions) => request<T>(DATA_BAS
 // ---------------------------------------------------------------- 管理面 API
 
 export const api = {
+  deployment: { get: () => mgmt<DeploymentInfo>('/deployment') },
   /** 登录（后端 OIDC/JWT；未实现时前端降级为粘贴 Token，见 pages/LoginPage.tsx） */
   async login(req: LoginRequest): Promise<string> {
     const res = await mgmt<LoginResponse>('/auth/login', {
