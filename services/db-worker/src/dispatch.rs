@@ -349,6 +349,27 @@ impl WorkerDataService {
         Ok((lease, guard, response))
     }
 
+    /// describe 仍绑定原会话连接，避免临时表等连接状态在准备时丢失。
+    async fn describe_once(&self, ctx: &DispatchContext, sql: String) -> Result<rt::Frame> {
+        let (mut lease, _guard) = if ctx.session_id.is_empty() {
+            self.lease_with_inflight(ctx).await?
+        } else {
+            let connection = self.session_connection(&ctx.session_id, &ctx.database_id, ctx.owner_epoch)?;
+            let lease = self.pool.lease_on(&connection).await?;
+            let guard = self.inflight.insert(
+                &ctx.request_id, &ctx.database_id, &ctx.session_id, &connection,
+            );
+            (lease, guard)
+        };
+        let mut abort = StreamAbortGuard::new(Arc::clone(lease.connection()), ctx);
+        let response = Self::send_session_frame(
+            &mut lease, ctx, &ctx.session_id, &ctx.transaction_id,
+            rt::frame::Message::Describe(rt::DescribeRequest { sql }),
+        ).await?;
+        abort.finish();
+        Ok(response)
+    }
+
     /// 把 DB Process 的错误帧转成对外结构化错误（没有错误时返回 `None`）。
     fn frame_error(frame: &rt::Frame) -> Option<common::PlatformError> {
         frame
@@ -595,6 +616,7 @@ macro_rules! impl_error_response {
 }
 
 impl_error_response!(
+    data::DescribeResponse,
     ExecuteBatchResponse,
     OpenSessionResponse,
     TransactionResponse,
@@ -613,6 +635,41 @@ impl From<WorkerError> for CloseSessionResponse {
 
 #[tonic::async_trait]
 impl WorkerData for WorkerDataService {
+    async fn describe(
+        &self,
+        request: Request<data::DescribeRequest>,
+    ) -> std::result::Result<Response<data::DescribeResponse>, Status> {
+        let req = request.into_inner();
+        let ctx = match self.prepare(req.context.as_ref(), FALLBACK_REQUEST_TIMEOUT) {
+            Ok(ctx) => ctx,
+            Err(err) => return Ok(Response::new(err.into())),
+        };
+        let frame = match self.describe_once(&ctx, req.sql).await {
+            Ok(frame) => frame,
+            Err(err) => return Ok(Response::new(err.into())),
+        };
+        self.registry.mark_activity(&ctx.database_id);
+        if let Some(error) = Self::frame_error(&frame) {
+            return Ok(Response::new(data::DescribeResponse {
+                error: Some(error), ..Default::default()
+            }));
+        }
+        match frame.message {
+            Some(rt::frame::Message::DescribeResponse(resp)) => Ok(Response::new(data::DescribeResponse {
+                error: None,
+                params: resp.params.into_iter().map(|param| data::DescribeParam { name: param.name }).collect(),
+                cols: resp.cols.into_iter().map(|column| data::ColumnMeta {
+                    name: column.name,
+                    type_name: column.decltype.unwrap_or_default(),
+                    nullable: true,
+                }).collect(),
+                is_explain: resp.is_explain,
+                is_readonly: resp.is_readonly,
+            })),
+            _ => Err(WorkerError::Uds("期望 DescribeResponse 响应帧".to_string()).to_status()),
+        }
+    }
+
     /// 单次执行（无会话）。
     async fn execute(
         &self,

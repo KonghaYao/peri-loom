@@ -335,7 +335,11 @@ async fn run(
         .iter()
         .any(|item| matches!(item, wire::StreamRequest::Batch { .. }));
     // 没有 close 说明客户端还会带 baton 回来；有 batch 说明这些步骤必须在同一条连接上。
-    let needs_session = !closes || batches;
+    // 纯 describe/get_autocommit 不需要新会话；已有 baton 仍照常恢复，避免丢失临时表。
+    let describe_only = request.requests.iter().all(|item| matches!(
+        item, wire::StreamRequest::Describe { .. } | wire::StreamRequest::GetAutocommit | wire::StreamRequest::Close
+    ));
+    let needs_session = (!closes || batches) && !describe_only;
 
     let mut session = match request.baton.as_deref() {
         Some(baton) => Some(resume_binding(state, database_id, baton).await?),
@@ -418,11 +422,11 @@ impl Pipeline<'_> {
                     Err(err) => wire::StreamResult::error(wire_error(&err)),
                 }
             }
-            // describe 尚未实现，明确报错而不是让客户端把空结果当成功。
-            wire::StreamRequest::Describe { .. } => {
-                wire::StreamResult::error(wire_error(&ApiError::not_implemented(
-                    "Hrana 兼容层暂未实现 describe；列元数据可从 execute 的 cols 里取",
-                )))
+            wire::StreamRequest::Describe { sql, sql_id } => {
+                match self.describe(sql.as_deref(), sql_id).await {
+                    Ok(result) => wire::StreamResult::ok(wire::StreamResponse::Describe { result }),
+                    Err(err) => wire::StreamResult::error(wire_error(&err)),
+                }
             }
             wire::StreamRequest::GetAutocommit => {
                 wire::StreamResult::ok(wire::StreamResponse::GetAutocommit {
@@ -433,6 +437,32 @@ impl Pipeline<'_> {
     }
 
     // ---------------------------------------------------------------- 语句执行
+
+    /// 只编译 SQL；有会话时保留临时表、PRAGMA 等连接状态，无会话则不为 describe 新建会话。
+    async fn describe(
+        &self,
+        sql: Option<&str>,
+        sql_id: Option<i64>,
+    ) -> ApiResult<wire::DescribeResult> {
+        let text = self.resolve_sql(sql, sql_id)?;
+        if text.trim().is_empty() {
+            return Err(ApiError::invalid_argument("sql 不能为空"));
+        }
+        let response = self.state.router.describe(
+            self.database_id, self.session.as_ref(), &text, &self.request_id,
+        ).await?;
+        // 不执行语句，也不更新 autocommit / rowid；独立的 get_autocommit 请求仍照常处理。
+        Ok(wire::DescribeResult {
+            params: response.params.into_iter()
+                .map(|param| wire::DescribeParam { name: param.name }).collect(),
+            cols: response.cols.into_iter().map(|column| wire::WireCol {
+                name: column.name,
+                decltype: column.type_name,
+            }).collect(),
+            is_explain: response.is_explain,
+            is_readonly: response.is_readonly,
+        })
+    }
 
     /// 解析语句文本与绑定参数。
     fn prepare(&self, stmt: &wire::Stmt) -> ApiResult<(String, Vec<protocol::data::Value>)> {
@@ -1028,6 +1058,38 @@ mod tests {
         assert!(!local.load(Ordering::SeqCst));
         assert!(session_autocommit(&sessions, Some(&binding)));
         assert!(session_autocommit(&sessions, None));
+    }
+
+    #[test]
+    fn describe_response_uses_hrana_json_shape() {
+        let response = wire::StreamResult::ok(wire::StreamResponse::Describe {
+            result: wire::DescribeResult {
+                params: vec![wire::DescribeParam { name: None }, wire::DescribeParam { name: Some(":x".into()) }],
+                cols: vec![wire::WireCol { name: "answer".into(), decltype: "INTEGER".into() }],
+                is_explain: false,
+                is_readonly: true,
+            },
+        });
+        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({
+            "type":"ok", "response":{"type":"describe", "result":{
+                "params":[{"name":null},{"name":":x"}],
+                "cols":[{"name":"answer","decltype":"INTEGER"}],
+                "is_explain":false,"is_readonly":true
+            }}
+        }));
+    }
+
+    #[test]
+    fn describe_accepts_sql_and_sql_id() {
+        for (input, expected_sql, expected_id) in [
+            (serde_json::json!({"type":"describe","sql":"SELECT 42"}), Some("SELECT 42"), None),
+            (serde_json::json!({"type":"describe","sql_id":7}), None, Some(7)),
+        ] {
+            let request: wire::StreamRequest = serde_json::from_value(input).unwrap();
+            let wire::StreamRequest::Describe { sql, sql_id } = request else { panic!("期望 describe") };
+            assert_eq!(sql.as_deref(), expected_sql);
+            assert_eq!(sql_id, expected_id);
+        }
     }
 
     #[test]

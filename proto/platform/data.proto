@@ -16,6 +16,9 @@ service WorkerData {
   // 单次执行（无会话）。结果集小于 inline 阈值时一次性返回。
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
 
+  // 只编译 SQL，不执行语句，返回参数与列元数据。
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+
   // 流式执行：大结果集必须走此路径，Server 不得无上限缓存完整结果集。
   // Backpressure 由 HTTP2 flow control 承载，Server 逐帧转发给 Client。
   rpc ExecuteStream(ExecuteRequest) returns (stream StreamFrame);
@@ -52,6 +55,11 @@ message ExecuteRequest {
   uint32 inline_row_limit = 4;
   // true = 请求内包裹原子事务（autocommit 语义）
   bool atomic = 5;
+}
+
+message DescribeRequest {
+  platform.common.v1.RequestContext context = 1;
+  string sql = 2;
 }
 
 message ExecuteBatchRequest {
@@ -123,6 +131,18 @@ message ExecuteResponse {
   uint64 elapsed_micros = 3;
   // 本次执行发生的 WAL durable LSN（用于排障与一致性校验）
   uint64 wal_lsn = 4;
+}
+
+message DescribeResponse {
+  platform.common.v1.PlatformError error = 1;
+  repeated DescribeParam params = 2;
+  repeated ColumnMeta cols = 3;
+  bool is_explain = 4;
+  bool is_readonly = 5;
+}
+
+message DescribeParam {
+  optional string name = 1;
 }
 
 message ExecuteBatchResponse {

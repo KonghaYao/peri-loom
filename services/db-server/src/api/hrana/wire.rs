@@ -66,7 +66,7 @@ pub enum StreamRequest {
         #[serde(default)]
         sql_id: Option<i64>,
     },
-    /// 语句描述（v2 未实现，返回明确错误而不是空结果）。
+    /// 语句描述（只 prepare，不执行）。
     Describe {
         /// SQL 文本。
         #[serde(default)]
@@ -210,6 +210,11 @@ pub enum StreamResponse {
         /// 语句结果。
         result: StmtResult,
     },
+    /// `describe` 的响应。
+    Describe {
+        /// 语句描述。
+        result: DescribeResult,
+    },
     /// `batch` 的响应。
     Batch {
         /// 逐步结果。
@@ -254,6 +259,28 @@ pub struct WireCol {
     pub name: String,
     /// 声明类型（可能为空字符串）。
     pub decltype: String,
+}
+
+/// `describe` 结果。字段名遵循 Hrana JSON 解码器的蛇形拼写。
+#[derive(Debug, Clone, Serialize)]
+pub struct DescribeResult {
+    /// 参数名数组；匿名参数的 name 为 null。
+    pub params: Vec<DescribeParam>,
+    /// 结果列。
+    pub cols: Vec<WireCol>,
+    /// 是否为 EXPLAIN。
+    #[serde(rename = "is_explain")]
+    pub is_explain: bool,
+    /// 语句是否只读。
+    #[serde(rename = "is_readonly")]
+    pub is_readonly: bool,
+}
+
+/// describe 参数。
+#[derive(Debug, Clone, Serialize)]
+pub struct DescribeParam {
+    /// 参数名。
+    pub name: Option<String>,
 }
 
 /// 批处理结果。

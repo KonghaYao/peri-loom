@@ -62,6 +62,8 @@ message Frame {
     SnapshotRequest snapshot_request = 44;
     SnapshotResponse snapshot_response = 45;
     SessionExpiredNotice session_expired = 46;
+    DescribeRequest describe = 47;
+    DescribeResponse describe_response = 48;
   }
 }
 
@@ -102,6 +104,26 @@ message ExecuteResponse {
   uint64 affected_rows = 2;
   uint64 elapsed_micros = 3;
   uint64 wal_lsn = 4;
+}
+
+message DescribeRequest {
+  string sql = 1;
+}
+
+message DescribeParam {
+  optional string name = 1;
+}
+
+message DescribeCol {
+  string name = 1;
+  optional string decltype = 2;
+}
+
+message DescribeResponse {
+  repeated DescribeParam params = 1;
+  repeated DescribeCol cols = 2;
+  bool is_explain = 3;
+  bool is_readonly = 4;
 }
 
 message StreamHeader {

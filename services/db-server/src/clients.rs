@@ -222,6 +222,15 @@ pub fn data_request_context(
     }
 }
 
+/// 组装只编译、不执行的 describe 请求。
+#[must_use]
+pub fn describe_request(context: RequestContext, sql: &str) -> protocol::data::DescribeRequest {
+    protocol::data::DescribeRequest {
+        context: Some(protocol::convert::RequestContext::from(context).into()),
+        sql: sql.to_string(),
+    }
+}
+
 /// 组装 `ExecuteStream` / `Execute` 请求（两者共用 `ExecuteRequest`）。
 #[must_use]
 pub fn execute_request(

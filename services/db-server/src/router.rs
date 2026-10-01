@@ -1051,6 +1051,34 @@ impl DbRouter {
         }
     }
 
+    /// 描述语句时复用会话所属 Worker；不允许把失效会话降级为新连接。
+    pub async fn describe(
+        &self,
+        database_id: DatabaseId,
+        session: Option<&crate::state::SessionBinding>,
+        sql: &str,
+        request_id: &str,
+    ) -> ApiResult<protocol::data::DescribeResponse> {
+        let route = self.resolve_target(database_id, None).await?;
+        if let Some(binding) = session {
+            if binding.worker_id != route.worker_id || binding.owner_epoch != route.owner_epoch {
+                return Err(ApiError::new(ErrorCode::SessionLost, "describe 会话所属路由已失效"));
+            }
+        }
+        let mut client = self.channels.data(&route.worker_endpoint).await?;
+        let context = data_request_context(
+            request_id, database_id, &route.worker_id, route.owner_epoch,
+            session.map(|binding| binding.session_id.clone()), 0,
+        );
+        let mut guard = CancelGuard::new(client.clone(), context.clone());
+        let response = client.describe(crate::clients::describe_request(context, sql)).await
+            .map_err(|status| status_to_api_error(status, route.worker_id.as_ref()))?
+            .into_inner();
+        guard.disarm();
+        check_proto_error(response.error.as_ref(), route.worker_id.as_ref())?;
+        Ok(response)
+    }
+
     /// 打开一条数据面结果流（`ExecuteStream` / `SessionExecuteStream`）。
     ///
     /// 返回的 [`CancelGuard`] 必须随流一起交给响应体：流被 drop（客户端断开）时

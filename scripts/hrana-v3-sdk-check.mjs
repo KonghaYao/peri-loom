@@ -16,7 +16,7 @@
  *      服务端必须在该步骤真正轮到执行时，按当时的 is_autocommit 决定跑还是跳。
  *      跑 -> SDK 认为"不在事务里"；跳 -> SDK 认为"在事务里"。
  *      这一条谎报，SDK 就会在已开启的事务里再发一次 BEGIN。
- *  只要下面 13 条全绿，说明平台的 v3 实现与上游协议是对齐的，而不只是"能通"。
+ *  只要下面 14 条全绿，说明平台的 v3 实现与上游协议是对齐的，而不只是"能通"。
  *
  *  ── 准备 SDK（本脚本零第三方依赖，不负责装包）──────────────────────────
  *      mkdir -p /tmp/tursodb-probe && cd /tmp/tursodb-probe
@@ -696,7 +696,20 @@ async function case13_errorPath() {
   );
 }
 
-/* ────────────────────────── 运行器 ────────────────────────── */
+/**
+ * 用例 14 —— prepare() 的 describe 元数据。
+ * prepare() 只应编译语句；返回的列名与列类型来自 Hrana describe，而不是执行结果。
+ */
+async function case14_prepareDescribe() {
+  await ensureTable();
+  const statement = await conn.prepare(`SELECT i AS answer FROM ${TABLE} LIMIT 1`);
+  const columns = statement.columns();
+  assert(Array.isArray(columns) && columns.length === 1, `prepare() 应返回 1 列，实际 ${show(columns)}`);
+  assert(columns[0].name === 'answer', `prepare() 列名错误：实际 ${show(columns[0].name)}`);
+  assert(columns[0].type === 'INTEGER', `prepare() 列类型错误：实际 ${show(columns[0].type)}`);
+}
+
+
 
 const CASES = [
   ['1. all() 取值与列名', case01_allValueAndColumnName],
@@ -712,6 +725,7 @@ const CASES = [
   ['11. autocommit 真实性（事务内不重复 BEGIN）', case11_autocommitTruthfulness],
   ['12. 值往返 null/i64/浮点/中文/blob', case12_valueRoundtrip],
   ['13. 错误路径返回结构化错误', case13_errorPath],
+  ['14. prepare() describe 列元数据', case14_prepareDescribe],
 ];
 
 function printReason(reason) {

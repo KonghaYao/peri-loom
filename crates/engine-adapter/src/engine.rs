@@ -138,6 +138,19 @@ pub enum QueryOutcome {
     },
 }
 
+/// 只 prepare 得到的语句描述，不会执行 SQL。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeOutcome {
+    /// 参数名；匿名参数按 Hrana 约定保留为 `None`。
+    pub param_names: Vec<Option<String>>,
+    /// 结果列元数据。
+    pub columns: Vec<ColumnMeta>,
+    /// 是否为 EXPLAIN / EXPLAIN QUERY PLAN。
+    pub is_explain: bool,
+    /// 引擎编译出的语句是否只读。
+    pub is_readonly: bool,
+}
+
 /// 引擎连接：语句执行、事务控制与 durable LSN 查询。
 pub struct EngineConnection {
     conn: Arc<Connection>,
@@ -145,6 +158,27 @@ pub struct EngineConnection {
 }
 
 impl EngineConnection {
+    /// 描述 SQL 的参数与结果列，只编译语句，不执行任何一步。
+    pub fn describe(&self, sql: &str) -> Result<DescribeOutcome> {
+        let stmt = self
+            .conn
+            .prepare(sql)
+            .map_err(|err| map_engine_error(&err))?;
+        let param_names = (1..=stmt.parameters_count())
+            .map(|index| NonZero::new(index).and_then(|index| stmt.parameters().name(index)))
+            .collect();
+        let columns = column_metadata(&stmt);
+        let query_mode = stmt.get_query_mode();
+        let is_explain = !matches!(query_mode, turso_core::QueryMode::Normal);
+        let is_readonly = stmt.get_program().is_readonly();
+        Ok(DescribeOutcome {
+            param_names,
+            columns,
+            is_explain,
+            is_readonly,
+        })
+    }
+
     /// 执行 SQL 到结束（可含多条语句），丢弃行，只报告受影响行数。
     ///
     /// 用于 DDL 与写入路径；需要结果集时用 [`Self::query`]。
@@ -464,6 +498,31 @@ mod tests {
             panic!("count(*) 必须返回行");
         };
         assert_eq!(after.rows, vec![vec![SqlValue::Integer(2)]]);
+    }
+
+    #[test]
+    fn describe_metadata_without_execution() {
+        let (_dir, conn) = temp_connection();
+        conn.execute("CREATE TABLE described (id INTEGER PRIMARY KEY, value TEXT)").unwrap();
+        conn.execute("INSERT INTO described VALUES (7, 'before')").unwrap();
+        conn.begin().unwrap();
+        let result = conn.describe("SELECT id AS answer, value FROM described WHERE id = ? AND value = :name").unwrap();
+        assert_eq!(result.param_names, vec![None, Some(":name".into())]);
+        assert_eq!(result.columns[0].name, "answer");
+        assert_eq!(result.columns[0].type_name, "INTEGER");
+        assert_eq!(result.columns[1].type_name, "TEXT");
+        assert!(result.is_readonly);
+        assert!(!result.is_explain);
+        assert!(!conn.describe("INSERT INTO described VALUES (8, 'never')").unwrap().is_readonly);
+        assert!(conn.describe("EXPLAIN SELECT * FROM described").unwrap().is_explain);
+        assert!(conn.describe("EXPLAIN QUERY PLAN SELECT * FROM described").unwrap().is_explain);
+        conn.describe("COMMIT").unwrap();
+        assert!(!conn.is_autocommit());
+        assert_eq!(conn.last_insert_rowid(), 7);
+        let QueryOutcome::Rows(rows) = conn.query("SELECT count(*) FROM described").unwrap() else { panic!("期望行") };
+        assert_eq!(rows.rows, vec![vec![SqlValue::Integer(1)]]);
+        conn.rollback().unwrap();
+        assert!(conn.describe("SELECT * FROM missing_describe_table").is_err());
     }
 
     /// 建一个临时库上的连接（UnixIO，无远程 WAL）：绑定语义与 durability 无关。

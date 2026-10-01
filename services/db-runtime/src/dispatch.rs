@@ -132,6 +132,7 @@ pub async fn dispatch(ctx: Arc<ConnectionCtx>, request: rt::Frame) {
 
     match message {
         rt::frame::Message::Execute(req) => handle_execute(ctx, request, req).await,
+        rt::frame::Message::Describe(req) => handle_describe(ctx, request, req).await,
         rt::frame::Message::OpenSession(req) => handle_open_session(ctx, request, req).await,
         rt::frame::Message::CloseSession(_) => handle_close_session(ctx, request).await,
         rt::frame::Message::Begin(req) => handle_begin(ctx, request, req).await,
@@ -169,6 +170,7 @@ pub async fn dispatch(ctx: Arc<ConnectionCtx>, request: rt::Frame) {
 fn operation_name(request: &rt::Frame) -> &'static str {
     match request.message {
         Some(rt::frame::Message::Execute(_)) => "execute",
+        Some(rt::frame::Message::Describe(_)) => "describe",
         Some(rt::frame::Message::OpenSession(_)) => "open_session",
         Some(rt::frame::Message::CloseSession(_)) => "close_session",
         Some(rt::frame::Message::Begin(_)) => "begin",
@@ -204,6 +206,107 @@ impl ExecOutcome {
     /// 结果集估算字节数（决定是否需要分块）。
     fn estimated_size(&self) -> usize {
         self.result.as_ref().map_or(0, |rs| rs.estimated_size())
+    }
+}
+
+/// prepare 也可能读取 schema，必须在阻塞线程中运行；有会话时持锁保留临时对象上下文。
+async fn handle_describe(ctx: Arc<ConnectionCtx>, request: rt::Frame, req: rt::DescribeRequest) {
+    let host = Arc::clone(&ctx.host);
+    let _cancel_guard = host.cancels.register(&request.request_id, &request.session_id);
+    let flag = host.cancels.flag_for(&request.request_id).unwrap_or_default();
+    let started = Instant::now();
+    let deadline = request_deadline(&request);
+    if deadline.is_zero() {
+        let err = PlatformError::new(
+            ErrorCode::DeadlineExceeded,
+            format!("请求 {} 在到达时已超过截止时间", request.request_id),
+        );
+        reply_error(&ctx, &request, &err).await;
+        return;
+    }
+    let session_id = request.session_id.clone();
+    let sql = req.sql;
+    let result = run_with_deadline(
+        deadline,
+        async move {
+            if flag.is_cancelled() {
+                return Err(cancelled_error(flag.reason()));
+            }
+            if session_id.is_empty() {
+                let adapter = Arc::clone(&host.adapter);
+                tokio::task::spawn_blocking(move || {
+                    let conn = adapter.connect()?;
+                    conn.describe(&sql)
+                })
+                .await
+                .map_err(|err| internal_error(format!("描述线程异常：{err}")))?
+            } else {
+                let session = match host.sessions.lookup(&session_id) {
+                    SessionLookup::Found(session) => session,
+                    SessionLookup::Expired { reason, .. } => {
+                        return Err(reason.to_error(&session_id));
+                    }
+                    SessionLookup::Unknown => {
+                        return Err(session_lost(
+                            &session_id,
+                            "会话不存在（进程可能已重启或发生过 failover）",
+                        ));
+                    }
+                };
+                let state = session.state();
+                let guard = state.lock_owned().await;
+                tokio::task::spawn_blocking(move || {
+                    if let Some(reason) = session.expiry(now_ms()) {
+                        return Err(reason.to_error(&session_id));
+                    }
+                    if flag.is_cancelled() {
+                        return Err(cancelled_error(flag.reason()));
+                    }
+                    let outcome = guard.conn.describe(&sql)?;
+                    session.touch(now_ms());
+                    Ok(outcome)
+                })
+                .await
+                .map_err(|err| internal_error(format!("描述线程异常：{err}")))?
+            }
+        },
+        &request.request_id,
+    )
+    .await;
+    match result {
+        Ok(outcome) => {
+            let response = rt::DescribeResponse {
+                params: outcome
+                    .param_names
+                    .into_iter()
+                    .map(|name| rt::DescribeParam { name })
+                    .collect(),
+                cols: outcome
+                    .columns
+                    .into_iter()
+                    .map(|column| rt::DescribeCol {
+                        name: column.name,
+                        decltype: (!column.type_name.is_empty()).then_some(column.type_name),
+                    })
+                    .collect(),
+                is_explain: outcome.is_explain,
+                is_readonly: outcome.is_readonly,
+            };
+            tracing::debug!(
+                elapsed_micros = started.elapsed().as_micros() as u64,
+                "SQL 描述完成"
+            );
+            send(
+                &ctx,
+                frame::reply(
+                    &request,
+                    ctx.next_seq(),
+                    rt::frame::Message::DescribeResponse(response),
+                ),
+            )
+            .await;
+        }
+        Err(err) => reply_error(&ctx, &request, &err).await,
     }
 }
 
