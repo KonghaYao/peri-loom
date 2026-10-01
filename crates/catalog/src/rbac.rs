@@ -37,7 +37,7 @@ const AUDIT_COLUMNS: &str =
 
 // ------------------------------------------------------------------ 读模型
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserRecord {
     pub id: UserId,
     pub tenant_id: Option<TenantId>,
@@ -82,7 +82,7 @@ impl FromRow<'_, PgRow> for UserRow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ApiTokenRecord {
     pub id: TokenId,
     pub user_id: UserId,
@@ -140,7 +140,7 @@ pub struct AuthenticatedToken {
 }
 
 /// 审计日志读模型。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AuditLogRecord {
     pub id: i64,
     pub actor_id: Option<UserId>,

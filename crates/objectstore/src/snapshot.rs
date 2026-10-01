@@ -235,7 +235,7 @@ pub fn validate_relative_path(relative_path: &str) -> Result<()> {
 }
 
 /// 校验作为对象 key 分段的 id（db_id / snapshot_id）。
-fn validate_component(field: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_component(field: &str, value: &str) -> Result<()> {
     let invalid = |reason: &str| -> Result<()> {
         Err(StorageError::InvalidArgument(format!("{field} {value:?} 非法: {reason}")).into())
     };
@@ -483,7 +483,12 @@ fn validate_manifest(manifest: &SnapshotManifest) -> Result<()> {
 }
 
 /// 逐个文件比对 (原始大小, sha256) 与 manifest 记录是否一致。
-fn check_entry(key: &str, entry: &SnapshotFileEntry, size: u64, checksum: &str) -> Result<()> {
+pub(crate) fn check_entry(
+    key: &str,
+    entry: &SnapshotFileEntry,
+    size: u64,
+    checksum: &str,
+) -> Result<()> {
     if size != entry.size_bytes {
         return Err(mismatch(
             key,
@@ -533,8 +538,9 @@ async fn fetch_to_spool(store: &dyn ObjectStore, key: &str) -> Result<TempPath> 
 
 /// 解压目标：文件或丢弃（用于 verify）。
 #[derive(Debug, Clone)]
-enum WriteTarget {
+pub(crate) enum WriteTarget {
     File(PathBuf),
+    FileLimited(PathBuf, u64),
     Sink,
 }
 
@@ -542,7 +548,7 @@ enum WriteTarget {
 ///
 /// 解压失败按数据损坏处理（`CHECKSUM_MISMATCH`）：能读到对象却解不开，
 /// 说明 artifact 本身坏了，重试存储不会让内容变好。
-async fn decode_entry(
+pub(crate) async fn decode_entry(
     spool: TempPath,
     key: String,
     compression: String,
@@ -554,6 +560,18 @@ async fn decode_entry(
             WriteTarget::File(dest) => {
                 let file = File::create(&dest).map_err(|err| StorageError::io(&dest, err))?;
                 decode_to(&path, &key, &compression, BufWriter::new(file))
+            }
+            WriteTarget::FileLimited(dest, max) => {
+                let file = File::create(&dest).map_err(|err| StorageError::io(&dest, err))?;
+                decode_to(
+                    &path,
+                    &key,
+                    &compression,
+                    LimitedWriter {
+                        inner: BufWriter::new(file),
+                        remaining: max,
+                    },
+                )
             }
             WriteTarget::Sink => decode_to(&path, &key, &compression, io::sink()),
         }
@@ -595,7 +613,7 @@ fn decode_to<W: Write>(
 }
 
 /// 同步压缩：src -> spool，返回 (原始大小, sha256)。
-fn compress_file(src: &Path, spool: &Path) -> Result<(u64, String)> {
+pub(crate) fn compress_file(src: &Path, spool: &Path) -> Result<(u64, String)> {
     let reader = BufReader::with_capacity(IO_BUFFER_BYTES, open_read(src)?);
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, create_write(spool)?);
     let mut hashing = HashingReader::new(reader);
@@ -611,6 +629,27 @@ fn open_read(path: &Path) -> Result<File> {
 
 fn create_write(path: &Path) -> Result<File> {
     File::create(path).map_err(|err| StorageError::io(path, err).into())
+}
+
+struct LimitedWriter<W> {
+    inner: W,
+    remaining: u64,
+}
+impl<W: Write> Write for LimitedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() as u64 > self.remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decompressed snapshot exceeds declared size",
+            ));
+        }
+        let n = self.inner.write(buf)?;
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// 读取时同步计算 sha256 与字节数。
@@ -684,17 +723,22 @@ impl<W: Write> Write for HashingWriter<W> {
 /// 临时文件路径守卫：Drop 时删除。
 ///
 /// 用它包住所有 spool 文件，任何提前返回（含 `?`）都不会残留 GB 级中间文件。
-struct TempPath(PathBuf);
+pub(crate) struct TempPath(PathBuf);
 
 impl TempPath {
     /// 在 spool 目录中预留一个唯一路径（此时并不创建文件）。
-    fn reserve(suffix: &str) -> Result<Self> {
+    pub(crate) fn reserve(suffix: &str) -> Result<Self> {
         let dir = spool_dir();
         std::fs::create_dir_all(&dir).map_err(|err| StorageError::io(&dir, err))?;
         Ok(Self(dir.join(format!("{}{suffix}", Uuid::new_v4()))))
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn reserve_in(dir: &Path, suffix: &str) -> Result<Self> {
+        std::fs::create_dir_all(dir).map_err(|err| StorageError::io(dir, err))?;
+        Ok(Self(dir.join(format!("{}{suffix}", Uuid::new_v4()))))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }

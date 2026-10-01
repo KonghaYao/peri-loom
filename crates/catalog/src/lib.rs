@@ -15,10 +15,12 @@ mod databases;
 mod error;
 mod idempotency;
 mod jobs;
+mod metadata;
 mod operations;
 mod panel;
 mod pg;
 mod rbac;
+mod sqlite;
 mod watcher;
 mod workers;
 
@@ -42,6 +44,7 @@ pub use jobs::{
     is_valid_job_state, job_retry_backoff_millis, DEFAULT_JOB_LEASE, JOB_RETRY_BASE_BACKOFF_MS,
     JOB_RETRY_MAX_BACKOFF_MS, JOB_STATES,
 };
+pub use metadata::{BackupStore, DatabaseStore, IdentityStore, Metadata, PanelStore, TaskStore};
 pub use operations::{
     is_terminal_operation_state, is_valid_operation_kind, is_valid_operation_state, NewOperation,
     OPERATION_KINDS, OPERATION_STATES,
@@ -51,6 +54,7 @@ pub use rbac::{
     ApiTokenRecord, AuditEntry, AuditFilter, AuditLogRecord, AuthenticatedToken, NewApiToken,
     NewUser, UserRecord, AUDIT_RESULTS, PERMISSION_WILDCARD, USER_STATUSES,
 };
+pub use sqlite::{LocalSubmission, LocalSubmissionOutcome, SqliteCatalog};
 pub use watcher::{CatalogChange, CatalogWatcher, CATALOG_CHANGES_CHANNEL};
 pub use workers::{
     inventory_missing_grace, reclaim_reason, LocalDatabaseState, ReclaimedOwnership,
@@ -752,7 +756,12 @@ mod db_tests {
             .unwrap();
 
         // 模拟「bump 之后已经很久」：租约只剩 1s 寿命
-        age_database_lease(&catalog, db.id, DEFAULT_OWNER_LEASE - Duration::from_secs(1)).await;
+        age_database_lease(
+            &catalog,
+            db.id,
+            DEFAULT_OWNER_LEASE - Duration::from_secs(1),
+        )
+        .await;
         let before = catalog
             .get_database(db.id)
             .await
@@ -849,10 +858,7 @@ mod db_tests {
             .unwrap()
             .lease_expires_at
             .expect("租约不应被清空");
-        assert_eq!(
-            before, after,
-            "已被取代的 epoch 不得借心跳给自己的租约续命"
-        );
+        assert_eq!(before, after, "已被取代的 epoch 不得借心跳给自己的租约续命");
     }
 
     /// 已软删除的 DB 不得被心跳续租。
@@ -973,7 +979,10 @@ mod db_tests {
         );
         assert_eq!(outcome.reclaimed[0].from_epoch, 2);
         assert_eq!(outcome.reclaimed[0].to_epoch, 3);
-        assert_eq!(outcome.reclaimed[0].reason, reclaim_reason::INVENTORY_MISSING);
+        assert_eq!(
+            outcome.reclaimed[0].reason,
+            reclaim_reason::INVENTORY_MISSING
+        );
 
         let record = catalog.get_database(db.id).await.unwrap();
         assert_eq!(

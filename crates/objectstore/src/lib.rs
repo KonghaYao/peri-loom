@@ -29,12 +29,19 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod local;
+pub mod local_snapshot;
 pub mod memory;
 pub mod s3;
 pub mod snapshot;
 pub mod store;
 
 pub use error::StorageError;
+pub use local::LocalObjectStore;
+pub use local_snapshot::{
+    load_local_snapshot, restore_local_snapshot, upload_local_snapshot, LocalSnapshotManifest,
+    LOCAL_SNAPSHOT_FORMAT_VERSION,
+};
 pub use memory::InMemoryObjectStore;
 pub use s3::{S3Config, S3ObjectStore};
 pub use snapshot::{
