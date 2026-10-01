@@ -39,8 +39,8 @@ mise exec github:KonghaYao/peri-loom@latest -- peri-loom serve --mode simple --d
 
 Linux 产物面向 glibc 2.35+（如 Ubuntu 22.04+），不用于 Alpine/musl；macOS 最低部署目标为 13。Windows 不在本次支持范围内。
 
-- PR、`main` 推送、分支上的手动运行：构建与验证，上传三个平台的 Actions artifacts，保留 14 天。
-- `v*` 标签推送或在对应标签上手动运行：全部构建成功后上传 GitHub Release，再使用 mise 在三个平台实际下载安装并复验。带 `-` 的版本标签发布为 prerelease，不替换 `latest`。
+- 仅推送 `v*` 标签时触发构建；普通分支推送、PR 不触发，也不提供手动触发入口。构建上传三个平台的 Actions artifacts，保留 14 天。
+- 全部构建成功后上传 GitHub Release，再使用 mise 在三个平台实际下载安装并复验。带 `-` 的版本标签发布为 prerelease，不替换 `latest`。
 - 附件形如 `peri-loom-v1.2.3-aarch64-apple-darwin.tar.gz`，解压只有 `peri-loom`。每个包附带 `.sha256`，Release 同时提供 `SHA256SUMS`；可在安装前校验，mise 项目可用 `mise.lock` 固定版本与校验值。
 - 已发布版本不会原地替换二进制；重试只允许继续未完成的 Release 草稿。代码未推送、工作流未运行时，安装命令不能凭本地构建自动获得远端 Release。
 

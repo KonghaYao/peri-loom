@@ -3,30 +3,14 @@ name: publish-simple
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-    paths:
-      - '.github/workflows/publish-simple.yml'
-      - 'scripts/build-simple.sh'
-      - 'scripts/package-simple.py'
-      - 'scripts/smoke-simple.py'
-      - '.cargo/**'
-      - 'Cargo.*'
-      - 'rust-toolchain.toml'
-      - 'crates/**'
-      - 'services/**'
-      - 'proto/**'
-      - 'migrations/**'
-      - 'web/**'
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: publish-simple-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -91,11 +75,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          version="sha-${GITHUB_SHA:0:12}"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="$GITHUB_REF_NAME"
-          fi
-          python3 scripts/package-simple.py target/release/peri-loom "$TARGET" "$version" dist
+          python3 scripts/package-simple.py target/release/peri-loom "$TARGET" "$GITHUB_REF_NAME" dist
           mkdir unpacked
           tar -xzf dist/*.tar.gz -C unpacked
           python3 scripts/smoke-simple.py unpacked/peri-loom
@@ -110,7 +90,6 @@ jobs:
   release:
     name: Publish native binaries
     needs: build
-    if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
