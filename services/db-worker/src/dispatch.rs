@@ -397,6 +397,10 @@ impl WorkerDataService {
                     affected_rows: end.affected_rows,
                     wal_lsn: end.wal_lsn,
                     elapsed_micros: end.elapsed_micros,
+                    // 原样透传：`None`（DB Process 未上报）与 `Some(false)`（在事务中）
+                    // 语义不同，Worker 不得替它填默认值。
+                    is_autocommit: end.is_autocommit,
+                    last_insert_rowid: end.last_insert_rowid,
                 })),
             }),
             // 通知 / 握手 / 会话类帧不属于本次流式响应

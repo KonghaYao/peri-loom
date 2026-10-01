@@ -118,6 +118,14 @@ message StreamEnd {
   uint64 affected_rows = 1;
   uint64 wal_lsn = 2;
   uint64 elapsed_micros = 3;
+  // 本语句**执行结束之后**该连接的 autocommit 状态（引擎 `sqlite3_get_autocommit()` 的等价物）：
+  // true = 连接当前没有活动事务；false = 仍处于显式事务中（`BEGIN` 后未 `COMMIT`/`ROLLBACK`）。
+  // 必须用 proto3 `optional` 保留显式存在性：字段缺失表示"DB Process 没有上报"，
+  // 与"上报了 false（在事务中）"是两回事，裸 bool 会把前者读成后者。
+  optional bool is_autocommit = 4;
+  // 语句及其包裹事务结束后，同一引擎连接的最后插入 rowid；SELECT 也保留连接旧值。
+  // optional 区分未上报与真实的 0，不能用默认值伪装成引擎观测。
+  optional int64 last_insert_rowid = 5;
 }
 
 // --------------------------------------------------------------- 会话

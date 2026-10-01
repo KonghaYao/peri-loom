@@ -208,6 +208,13 @@ message StreamTrailer {
   uint64 affected_rows = 1;
   uint64 wal_lsn = 2;
   uint64 elapsed_micros = 3;
+  // 本语句**执行结束之后**引擎连接的 autocommit 状态（来自 DB Process 的 `StreamEnd`）。
+  // true = 无活动事务；false = 仍在显式事务中。
+  // 用 proto3 `optional` 保留显式存在性：缺失 ≠ false（false 的语义是"在事务中"，
+  // 任何"默认填 false"的做法都会把"未知"伪装成"客户端处在事务里"）。
+  optional bool is_autocommit = 4;
+  // 原样传递 StreamEnd 的连接级 rowid；缺失表示未知，而不是 0。
+  optional int64 last_insert_rowid = 5;
 }
 
 // ------------------------------------------------------------- 数据模型

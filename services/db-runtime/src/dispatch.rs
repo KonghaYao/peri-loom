@@ -192,6 +192,12 @@ struct ExecOutcome {
     affected_rows: u64,
     /// 已 durable 的末端 LSN。
     wal_lsn: u64,
+    /// 语句执行**结束之后**该连接的 autocommit 状态
+    /// （`true` = 无活动事务，`false` = 仍在显式事务中，见 `EngineConnection::is_autocommit`）。
+    /// 取值时机只能是执行之后：客户端读 trailer 是为了知道"这条语句跑完我还在不在事务里"。
+    is_autocommit: bool,
+    /// 同一连接在语句结束后的最后插入 rowid，不要求本条语句发生插入。
+    last_insert_rowid: i64,
 }
 
 impl ExecOutcome {
@@ -403,16 +409,29 @@ fn exec_on_conn(
         conn.durable_lsn()
     };
 
+    // autocommit 状态在**语句（含本条 `atomic` 包裹事务的 COMMIT/ROLLBACK）全部结束之后**取值：
+    // 客户端要的是"这条语句执行完之后"的状态，执行前取值会把 `BEGIN` 的结果报反。
+    let is_autocommit = conn.is_autocommit();
+    // 与 autocommit 同时采集，不能另开连接查询或在 atomic 的 COMMIT 前读取。
+    // serverless 的 step_end 解码及 run()、libsql 的 Hrana 映射都直接接受上报值，
+    // 并未要求「本条确实插入」；仅凭 SDK 无法断言 sqld 的全部行为，因此遵循 SQLite
+    // 原生连接级语义：SELECT / UPDATE / ROLLBACK 后也报告当前值，而非猜测 SQL 类型。
+    let last_insert_rowid = conn.last_insert_rowid();
+
     let exec = match outcome {
         QueryOutcome::Rows(result) => ExecOutcome {
             affected_rows: result.affected_rows,
             result: Some(result),
             wal_lsn,
+            is_autocommit,
+            last_insert_rowid,
         },
         QueryOutcome::Affected { rows } => ExecOutcome {
             result: None,
             affected_rows: rows,
             wal_lsn,
+            is_autocommit,
+            last_insert_rowid,
         },
     };
 
@@ -502,6 +521,10 @@ async fn emit_result(
         affected_rows: exec.affected_rows,
         wal_lsn: exec.wal_lsn,
         elapsed_micros,
+        // `Some` 而非裸 bool：把"这条语句跑完后是否仍在事务中"显式告诉 Dispatcher；
+        // 缺失与 `false` 语义不同，不能混。
+        is_autocommit: Some(exec.is_autocommit),
+        last_insert_rowid: Some(exec.last_insert_rowid),
     };
     let seq = ctx.next_seq();
     send(

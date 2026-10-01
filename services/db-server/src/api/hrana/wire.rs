@@ -1,4 +1,4 @@
-//! Hrana over HTTP **v2** 的线上格式（JSON）。
+//! Hrana over HTTP **v2 / v3** 的线上格式（JSON）。
 //!
 //! 字段名与标签完全按 `@libsql/hrana-client` 的 `shared/json_encode.js` /
 //! `shared/json_decode.js` 对齐：这套编码是客户端唯一认得的契约，"看起来差不多"
@@ -10,8 +10,18 @@
 //! 2. **`results` 与 `requests` 必须等长、且逐项 `type` 同名**（客户端对不上长度直接抛错）；
 //! 3. **`step_results` / `step_errors` 必须等长**，被条件跳过的步骤两边都填 `null`。
 //!
-//! 只实现 v2：客户端在 HTTP 上只用 v2 + JSON（不探测版本、不降级），
-//! `get_autocommit` / `cursor` 这些 v3 能力在 v2 下不会出现。
+//! 本模块同时描述 v2 与 v3 两套线上格式。官方 SDK 在 HTTP 上只发自己认得的那个版本，
+//! 既不探测也不降级：`@libsql/client` 全程只打 `/v2/pipeline`，而
+//! `@tursodatabase/serverless`（1.0.0 起）全程只打 `/v3/pipeline` 与 `/v3/cursor`。
+//! 所以服务端必须两套都认，不能指望新客户端退回 v2。
+//!
+//! 两套格式在**值编码与 `stmt` 形状上完全同构**（第 1 条对 v3 同样成立），
+//! 差异只在信封与响应形态：
+//!
+//! - **v3 cursor**：请求体是单个 `batch`（没有 `requests` 数组，见 [`CursorRequest`]），
+//!   响应是 NDJSON 的 step 条目流 —— 首行 [`CursorHeader`]，其后逐行 [`CursorEntry`]；
+//! - **v3 pipeline**：比 v2 多一个 `get_autocommit` 请求 / 响应（见
+//!   [`StreamResponse::GetAutocommit`]），v2 下不会出现。
 
 use domain::value::SqlValue;
 use serde::Deserialize;
@@ -208,6 +218,14 @@ pub enum StreamResponse {
     StoreSql,
     /// `close_sql` 的响应（无负载）。
     CloseSql,
+    /// `get_autocommit` 的响应。
+    GetAutocommit {
+        /// 该连接此刻是否处于 autocommit（`false` = 在事务中）。
+        ///
+        /// 取值来自 DB Process 回传的流式 trailer，不由 Server 推断（见
+        /// [`crate::state::SessionRegistry`] 的 `autocommit` 字段说明）。
+        is_autocommit: bool,
+    },
 }
 
 /// 语句结果。
@@ -221,8 +239,8 @@ pub struct StmtResult {
     pub affected_row_count: u64,
     /// 最后一次插入的 rowid。
     ///
-    /// 平台的结果集契约里没有这个字段（见 `domain::value::ResultSet`），
-    /// 因此**恒为 `null`**：宁可如实报告"未知"，也不猜一个可能属于其它连接的值。
+    /// 来自同一引擎连接的语句结束 trailer，以字符串承载完整 i64 精度；
+    /// 未上报才为 `null`，不能补零或猜一个可能属于其它连接的值。
     pub last_insert_rowid: Option<String>,
 }
 
@@ -370,6 +388,74 @@ fn decode_base64(encoded: &str) -> Result<Vec<u8>, base64::DecodeError> {
     base64::engine::general_purpose::STANDARD.decode(encoded)
 }
 
+// ------------------------------------------------------------------ v3 cursor
+
+/// `POST /db/{db_id}/v3/cursor` 的请求体。
+///
+/// 与 pipeline 的差别：cursor **只**提交一个批处理，没有 `requests` 数组、没有 `items`
+/// 的逐条错误信封 —— 步骤级失败改由响应流里的 `step_error` 条目表达（见
+/// [`CursorEntry::StepError`]）。因此不复用 [`PipelineRequest`]。
+#[derive(Debug, Deserialize)]
+pub struct CursorRequest {
+    /// 会话句柄；`null` 表示新建。
+    #[serde(default)]
+    pub baton: Option<String>,
+    /// 要执行的批处理。
+    pub batch: Batch,
+}
+
+/// cursor 响应 NDJSON 的**第一行**（头）。
+///
+/// 客户端先把第一行读成游标响应、再逐行读后续条目，所以这一行必须最先写、
+/// 且自身也以 `\n` 结尾。
+#[derive(Debug, Serialize)]
+pub struct CursorHeader {
+    /// 会话句柄。
+    pub baton: Option<String>,
+    /// 服务端建议的基址。本实现不迁移连接，恒为 `null`。
+    pub base_url: Option<String>,
+}
+
+/// cursor 响应流里的一行条目（首行之后）。
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CursorEntry {
+    /// 某步骤开始产出。
+    StepBegin {
+        /// 步骤下标（与请求 `batch.steps` 的下标一致）。
+        step: usize,
+        /// 列元数据。
+        cols: Vec<WireCol>,
+    },
+    /// 某步骤的一行数据。
+    Row {
+        /// 步骤下标。
+        step: usize,
+        /// 行数据（Hrana 值编码）。
+        row: Vec<serde_json::Value>,
+    },
+    /// 某步骤正常结束。
+    StepEnd {
+        /// 步骤下标。
+        step: usize,
+        /// 受影响行数。
+        affected_row_count: u64,
+        /// 最后一次插入的 rowid；同 [`StmtResult::last_insert_rowid`]，未上报才为 `null`。
+        last_insert_rowid: Option<String>,
+    },
+    /// 某步骤失败。
+    ///
+    /// **不能**把步骤级失败升级成 HTTP 错误：客户端生成的批处理里，回滚靠的是
+    /// `error` / `not(ok, …)` 这类条件（见 `client.batch()` 与 `transaction()`），
+    /// 一旦整请求失败，回滚步骤永远不会被执行，事务也就留在半途。
+    StepError {
+        /// 步骤下标。
+        step: usize,
+        /// 错误详情。
+        error: WireError,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +515,120 @@ mod tests {
         let err = value_from_wire(&json!({"type":"integer","value":"9223372036854775808"}))
             .expect_err("溢出必须报错");
         assert!(err.contains("64 位整数"), "{err}");
+    }
+
+    // -------------------------------------------------------------- v3 线格式
+
+    #[test]
+    fn cursor_request_parses_the_shape_the_sdk_actually_sends() {
+        // 原样照抄 `@tursodatabase/serverless` 的 `client.batch()` 发出的 JSON：
+        // 顶层只有 baton + batch（没有 `requests`），条件走 `is_autocommit`。
+        // baton=null 表示新建会话，不能当成缺字段直接报错。
+        let raw = json!({
+            "baton": null,
+            "batch": {
+                "steps": [{
+                    "stmt": {"sql": "SELECT 1", "args": [], "named_args": [], "want_rows": false},
+                    "condition": {"type": "is_autocommit"}
+                }]
+            }
+        });
+        let request: CursorRequest = serde_json::from_value(raw).expect("cursor 请求必须可解析");
+
+        assert!(request.baton.is_none(), "baton=null 应解成 None");
+        assert_eq!(request.batch.steps.len(), 1);
+        let step = &request.batch.steps[0];
+        assert_eq!(step.stmt.sql.as_deref(), Some("SELECT 1"));
+        assert!(step.stmt.sql_id.is_none());
+        assert!(step.stmt.args.is_empty());
+        assert!(step.stmt.named_args.is_empty());
+        // 显式传了 want_rows=false 就必须是 false，不能被缺省值 true 盖掉。
+        assert!(!step.stmt.want_rows);
+        assert!(matches!(step.condition, Some(BatchCond::IsAutocommit)));
+    }
+
+    #[test]
+    fn batch_cond_is_autocommit_parses_from_its_bare_tag() {
+        // 变体无负载，SDK 只发 `{"type":"is_autocommit"}`，多要求一个字段就解析不了。
+        let cond: BatchCond =
+            serde_json::from_value(json!({"type": "is_autocommit"})).expect("条件必须可解析");
+        assert!(matches!(cond, BatchCond::IsAutocommit));
+    }
+
+    #[test]
+    fn cursor_entry_tags_and_fields_match_the_protocol() {
+        let cols = vec![WireCol {
+            name: "x".to_string(),
+            decltype: "INTEGER".to_string(),
+        }];
+        let cases = [
+            (
+                CursorEntry::StepBegin { step: 0, cols },
+                json!({"type":"step_begin","step":0,"cols":[{"name":"x","decltype":"INTEGER"}]}),
+            ),
+            (
+                CursorEntry::Row {
+                    step: 1,
+                    row: vec![json!({"type":"integer","value":"7"})],
+                },
+                json!({"type":"row","step":1,"row":[{"type":"integer","value":"7"}]}),
+            ),
+            (
+                CursorEntry::StepEnd {
+                    step: 2,
+                    affected_row_count: 3,
+                    last_insert_rowid: None,
+                },
+                json!({"type":"step_end","step":2,"affected_row_count":3,"last_insert_rowid":null}),
+            ),
+            (
+                CursorEntry::StepError {
+                    step: 3,
+                    error: WireError {
+                        message: "boom".to_string(),
+                        code: Some("INTERNAL".to_string()),
+                    },
+                },
+                json!({"type":"step_error","step":3,"error":{"message":"boom","code":"INTERNAL"}}),
+            ),
+        ];
+        for (entry, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(&entry).expect("序列化必须成功"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_step_end_always_carries_last_insert_rowid() {
+        // 客户端逐键读这两个字段；`last_insert_rowid` 为 None 时被 skip 就会读成
+        // undefined，而不是"未知"。
+        let value = serde_json::to_value(CursorEntry::StepEnd {
+            step: 0,
+            affected_row_count: 0,
+            last_insert_rowid: None,
+        })
+        .expect("序列化必须成功");
+        assert_eq!(value["affected_row_count"], json!(0));
+        assert!(
+            value.get("last_insert_rowid").is_some(),
+            "last_insert_rowid 即使为 None 也必须以 null 出现: {value}"
+        );
+    }
+
+    #[test]
+    fn get_autocommit_false_still_carries_the_field() {
+        // 客户端读 `results[].response.is_autocommit`；字段被 skip 会读成 undefined
+        // （假值），于是"在事务中"看起来和"在 autocommit"一样。两种取值都要发字段。
+        for is_autocommit in [true, false] {
+            let value = serde_json::to_value(StreamResponse::GetAutocommit { is_autocommit })
+                .expect("序列化必须成功");
+            assert_eq!(
+                value,
+                json!({"type": "get_autocommit", "is_autocommit": is_autocommit}),
+                "is_autocommit={is_autocommit}"
+            );
+        }
     }
 }

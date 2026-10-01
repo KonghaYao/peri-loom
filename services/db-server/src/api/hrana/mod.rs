@@ -1,4 +1,4 @@
-//! TursoDB / libsql 客户端兼容端点：**Hrana over HTTP v2（JSON）**。
+//! TursoDB / libsql 客户端兼容端点：**Hrana over HTTP v2 / v3**。
 //!
 //! # 为什么需要这一层
 //!
@@ -8,8 +8,8 @@
 //! libsql 客户端直连"不是已有能力的开关，而是**新增的一层协议适配**：
 //!
 //! ```text
-//! @libsql/client / turso CLI
-//!   └─ POST /db/{db_id}/v2/pipeline        <- 本模块（Hrana v2 JSON）
+//! @libsql/client / @tursodatabase/serverless / turso CLI
+//!   └─ POST /db/{db_id}/v2/pipeline 或 /v3/{pipeline,cursor}
 //!        └─ DbRouter / SessionRegistry      <- 复用既有的路由、租约、fencing、透明 Wake
 //!             └─ WorkerData(ExecuteStream / SessionExecuteStream)
 //!                  └─ DB Process（turso_core）
@@ -29,6 +29,7 @@
 //! | `client.batch()` | `[store_sql…, batch, close]` | 瞬态会话：开一条连接跑完即关，`baton=null` |
 //! | `client.transaction()` | `[store_sql, batch]`（**无 close**） | 持久会话，回传 `baton` |
 //! | 事务的后续语句 | `{baton, [execute, close]}` | 复用该会话执行后关闭 |
+//! | v3 cursor | `{baton?, batch}` | 建立或恢复持久会话，总是回传 `baton`，等待显式 close 或过期 |
 //!
 //! `baton` 就是平台会话 ID 本身：会话不进 Catalog、Server 重启即失效（与
 //! `/data/v1/sessions` 完全同一套语义），失效时返回明确错误而不是静默新建一条新连接
@@ -36,17 +37,18 @@
 //!
 //! # 与 `/data/v1` 的差别（刻意的，不是遗漏）
 //!
-//! - **一次性 JSON**：Hrana v2 没有流式出口，整个结果集必须在同一个响应体里，
+//! - **缓冲响应**：pipeline 返回一次性 JSON，v3 cursor 也先缓冲再编码为 NDJSON，
 //!   因此这里对结果集有估算上限（[`MAX_RESULT_BYTES`]），超限明确报错而不是无上限缓存；
 //! - **权限仍是 `db:write`**：与 `/data/v1` 同档。平台不解析 SQL，无法可靠区分
 //!   `SELECT` 与 `WITH ... DELETE`，给只读主体放行就等于开了越权旁路；
-//! - **`last_insert_rowid` 恒为 `null`**：平台结果集契约里没有这个字段
-//!   （见 `domain::value::ResultSet`），如实报告"未知"而不是猜一个可能属于别的连接的值。
+//! - **`last_insert_rowid` 来自流式 trailer**：保留同一引擎连接的语句结束观测，
+//!   不扩展平台 `domain::value::ResultSet`；未上报时才返回 `null`，不猜测或补零。
 
 pub mod sql;
 pub mod wire;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
@@ -68,7 +70,7 @@ use crate::state::{AppState, SessionBinding};
 
 /// 单条语句结果的**估算**内存上限。
 ///
-/// Hrana v2 是**一次性 JSON** 协议：整个结果集必须装在同一个响应体里，没有流式出口
+/// Hrana 兼容层先缓冲再编码：整个结果集必须装在同一个响应体里，没有真流式出口
 /// （平台的 NDJSON 出口在 `/data/v1/*`）。所以这里必须有上限，否则一条
 /// `select * from 大表` 就能把 Server 的内存吃光。取值与请求体上限一致（16 MiB）：
 /// 超过它的结果集更合理的做法是加 `LIMIT` 分页。
@@ -93,10 +95,12 @@ pub const MAX_STORED_SQL_PER_SESSION: usize = 1024;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/db/{db_id}/v2/pipeline", post(pipeline))
+        .route("/db/{db_id}/v3/pipeline", post(pipeline))
+        .route("/db/{db_id}/v3/cursor", post(cursor))
         .layer(axum::middleware::from_fn(hrana_error_shape))
 }
 
-/// `POST /db/{db_id}/v2/pipeline`。
+/// `POST /db/{db_id}/v2/pipeline` 与 `POST /db/{db_id}/v3/pipeline`。
 ///
 /// 错误体形如由 [`hrana_error_shape`] 统一适配，这里只管业务。
 pub async fn pipeline(
@@ -109,6 +113,104 @@ pub async fn pipeline(
         Ok(body) => Json(body).into_response(),
         Err(err) => err.into_response(),
     }
+}
+
+/// `POST /db/{db_id}/v3/cursor`：缓冲后一次性返回 NDJSON。
+async fn cursor(
+    State(state): State<AppState>,
+    principal: Principal,
+    Path(raw_db_id): Path<String>,
+    Json(request): Json<wire::CursorRequest>,
+) -> Response {
+    match run_cursor(&state, &principal, &raw_db_id, request).await {
+        Ok(body) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    stream::NDJSON_CONTENT_TYPE,
+                ),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn run_cursor(
+    state: &AppState,
+    principal: &Principal,
+    raw_db_id: &str,
+    request: wire::CursorRequest,
+) -> ApiResult<Vec<u8>> {
+    principal.require(permission::DB_WRITE)?;
+    let database_id = db_id(raw_db_id)?;
+    // SDK 1.4.0 dist/index.js 的 executeRaw（495–523 行）和 batch（699–713 行）
+    // 都会保存并复用 baton，普通查询也不例外；只有 Session.close（825–840 行）
+    // 才通过 pipeline 显式关闭。因此 cursor 不能按「不在事务中」擅自销毁连接，
+    // 否则会丢失 PRAGMA / store_sql 等会话状态；未显式关闭的由过期回收兜底。
+    let binding = match request.baton.as_deref() {
+        Some(baton) => resume_binding(state, database_id, baton).await?,
+        None => crate::api::data::open_binding(state, database_id).await?.0,
+    };
+    ensure_binding_route(state, &binding).await?;
+    let header = wire::CursorHeader {
+        baton: Some(binding.session_id.clone()),
+        base_url: None,
+    };
+    let pipeline = Pipeline {
+        state,
+        database_id,
+        request_id: current_request_id(),
+        autocommit: AtomicBool::new(session_autocommit(&state.sessions, Some(&binding))),
+        session: Some(binding),
+        local_sql: HashMap::new(),
+    };
+    cursor_body(header, pipeline.execute_steps(&request.batch).await?)
+}
+
+fn cursor_body(header: wire::CursorHeader, result: wire::BatchResult) -> ApiResult<Vec<u8>> {
+    let mut body = Vec::new();
+    write_cursor_line(&mut body, &header)?;
+    for (step, (result, error)) in result
+        .step_results
+        .into_iter()
+        .zip(result.step_errors)
+        .enumerate()
+    {
+        if let Some(error) = error {
+            write_cursor_line(&mut body, &wire::CursorEntry::StepError { step, error })?;
+        } else if let Some(result) = result {
+            write_cursor_line(
+                &mut body,
+                &wire::CursorEntry::StepBegin {
+                    step,
+                    cols: result.cols,
+                },
+            )?;
+            for row in result.rows {
+                write_cursor_line(&mut body, &wire::CursorEntry::Row { step, row })?;
+            }
+            write_cursor_line(
+                &mut body,
+                &wire::CursorEntry::StepEnd {
+                    step,
+                    affected_row_count: result.affected_row_count,
+                    last_insert_rowid: result.last_insert_rowid,
+                },
+            )?;
+        }
+        // 两边都是 None 说明被条件跳过，不能发空条目：SDK 靠探测步有无条目判断事务状态。
+    }
+    Ok(body)
+}
+
+fn write_cursor_line(body: &mut Vec<u8>, value: &impl serde::Serialize) -> ApiResult<()> {
+    serde_json::to_writer(&mut *body, value)
+        .map_err(|_| ApiError::internal("Hrana cursor 响应编码失败"))?;
+    body.push(b'\n');
+    Ok(())
 }
 
 /// 错误体形状适配层：把平台冻结信封改写成 Hrana 客户端能读懂的形状。
@@ -204,7 +306,7 @@ fn non_json_error_message(status: axum::http::StatusCode) -> String {
             "请求的 content-type 必须是 application/json".to_string()
         }
         axum::http::StatusCode::UNPROCESSABLE_ENTITY => {
-            "请求体不是合法的 Hrana v2 请求：字段缺失或类型不符".to_string()
+            "请求体不是合法的 Hrana 请求：字段缺失或类型不符".to_string()
         }
         _ => format!("请求处理失败（HTTP {status}）"),
     }
@@ -248,6 +350,7 @@ async fn run(
         state,
         database_id,
         request_id: current_request_id(),
+        autocommit: AtomicBool::new(session_autocommit(&state.sessions, session.as_ref())),
         session: session.take(),
         local_sql: HashMap::new(),
     };
@@ -274,6 +377,15 @@ struct Pipeline<'a> {
     session: Option<SessionBinding>,
     /// 本请求内 `store_sql` 的临时缓存（无会话时使用，随请求结束丢弃）。
     local_sql: HashMap<i64, String>,
+    // &self 跨 await 使用，不能用非 Sync 的 Cell；每条 trailer 都可能改变后续步骤条件。
+    autocommit: AtomicBool,
+}
+
+/// 按语句携带 Hrana 附属观测，避免污染平台结果集契约；不放入 Pipeline 缓存，
+/// 因为本条 trailer 缺失时必须是未知，不能沿用上一条（甚至另一连接）的 rowid。
+struct StatementOutcome {
+    result: ResultSet,
+    last_insert_rowid: Option<i64>,
 }
 
 impl Pipeline<'_> {
@@ -306,16 +418,17 @@ impl Pipeline<'_> {
                     Err(err) => wire::StreamResult::error(wire_error(&err)),
                 }
             }
-            // 以下两者都在"必须实现的最小集合"之外：报明确错误，而不是回一个空结果
-            // 让调用方以为成功了。
-            wire::StreamRequest::Describe { .. } => wire::StreamResult::error(wire_error(
-                &ApiError::not_implemented(
-                    "Hrana v2 兼容层暂未实现 describe；列元数据可从 execute 的 cols 里取",
-                ),
-            )),
-            wire::StreamRequest::GetAutocommit => wire::StreamResult::error(wire_error(
-                &ApiError::not_implemented("get_autocommit 是 Hrana v3 能力，本端点只实现 v2"),
-            )),
+            // describe 尚未实现，明确报错而不是让客户端把空结果当成功。
+            wire::StreamRequest::Describe { .. } => {
+                wire::StreamResult::error(wire_error(&ApiError::not_implemented(
+                    "Hrana 兼容层暂未实现 describe；列元数据可从 execute 的 cols 里取",
+                )))
+            }
+            wire::StreamRequest::GetAutocommit => {
+                wire::StreamResult::ok(wire::StreamResponse::GetAutocommit {
+                    is_autocommit: session_autocommit(&self.state.sessions, self.session.as_ref()),
+                })
+            }
         }
     }
 
@@ -378,15 +491,15 @@ impl Pipeline<'_> {
     async fn exec(&self, stmt: &wire::Stmt) -> ApiResult<wire::StmtResult> {
         let (sql, params) = self.prepare(stmt)?;
         let result = self.run_statement(sql, params).await?;
-        Ok(stmt_result(&result, stmt.want_rows))
+        Ok(stmt_result(&result.result, stmt.want_rows, result.last_insert_rowid))
     }
 
-    /// 执行一条语句，取回完整结果集。
+    /// 执行一条语句，取回完整结果集及本条 trailer 的连接级观测。
     async fn run_statement(
         &self,
         sql: String,
         params: Vec<protocol::data::Value>,
-    ) -> ApiResult<ResultSet> {
+    ) -> ApiResult<StatementOutcome> {
         let target = match self.session.as_ref() {
             // 会话内执行不做透明重试：会话 pin 在特定 Worker 上，重试到别的 Worker
             // 只会拿到一个必然失败的会话。
@@ -408,6 +521,7 @@ impl Pipeline<'_> {
         let mut columns: Vec<ColumnMeta> = Vec::new();
         let mut rows: Vec<Vec<SqlValue>> = Vec::new();
         let mut affected_rows = 0u64;
+        let mut last_insert_rowid = None;
         let mut buffered_bytes = 0usize;
 
         while let Some(item) = frames.next().await {
@@ -429,7 +543,7 @@ impl Pipeline<'_> {
                         return Err(ApiError::new(
                             ErrorCode::ResultTooLarge,
                             format!(
-                                "结果集超过 {MAX_RESULT_BYTES} 字节：Hrana v2 只能在单个响应体里回传完整结果，\
+                                "结果集超过 {MAX_RESULT_BYTES} 字节：Hrana 兼容层在单个响应体里回传完整结果，\
                                  请加 LIMIT 分页，或改用 /data/v1 的 NDJSON 流式出口"
                             ),
                         ));
@@ -437,6 +551,13 @@ impl Pipeline<'_> {
                 }
                 Some(protocol::data::stream_frame::Frame::Trailer(trailer)) => {
                     affected_rows = trailer.affected_rows;
+                    last_insert_rowid = trailer.last_insert_rowid;
+                    observe_autocommit(
+                        &self.autocommit,
+                        &self.state.sessions,
+                        self.session.as_ref(),
+                        trailer.is_autocommit,
+                    );
                 }
                 None => {}
             }
@@ -444,20 +565,27 @@ impl Pipeline<'_> {
         // 执行已正常结束：解除守卫，不再向 Worker 发表 Cancel。
         guard.disarm();
 
-        Ok(ResultSet {
-            columns,
-            rows,
-            affected_rows,
-            truncated: false,
+        Ok(StatementOutcome {
+            result: ResultSet {
+                columns,
+                rows,
+                affected_rows,
+                truncated: false,
+            },
+            last_insert_rowid,
         })
     }
 
-    /// 批处理：逐步执行 + 条件求值。
+    async fn exec_batch(&self, batch: &wire::Batch) -> ApiResult<wire::BatchResult> {
+        self.execute_steps(batch).await
+    }
+
+    /// pipeline 与 cursor 共用步骤结果，保留原始下标和跳过状态，只有编码不同。
     ///
     /// **失败不中止批处理**：客户端生成的步骤里，回滚本身就是靠
     /// `not(ok, step:COMMIT)` 触发的（见 `client.batch()` 的实际请求），
     /// 一旦遇到错误就停，回滚步骤永远不会被执行。
-    async fn exec_batch(&self, batch: &wire::Batch) -> ApiResult<wire::BatchResult> {
+    async fn execute_steps(&self, batch: &wire::Batch) -> ApiResult<wire::BatchResult> {
         let total = batch.steps.len();
         let mut completed = vec![false; total];
         let mut step_results: Vec<Option<wire::StmtResult>> = vec![None; total];
@@ -465,10 +593,19 @@ impl Pipeline<'_> {
 
         for (index, step) in batch.steps.iter().enumerate() {
             if let Some(condition) = step.condition.as_ref() {
-                let run = eval_condition(condition, &completed, &step_errors, total)?;
-                if !run {
-                    // 被跳过：两边都留 null（客户端要求两个数组等长）。
-                    continue;
+                let autocommit = self.session.as_ref().map_or_else(
+                    || self.autocommit.load(Ordering::SeqCst),
+                    |binding| session_autocommit(&self.state.sessions, Some(binding)),
+                );
+                match eval_condition(condition, &completed, &step_errors, total, autocommit) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(err) => {
+                        // 条件违规也只记到该步骤，后面的错误处理 / 回滚步骤仍有机会执行。
+                        completed[index] = true;
+                        step_errors[index] = Some(wire_error(&err));
+                        continue;
+                    }
                 }
             }
             completed[index] = true;
@@ -628,12 +765,44 @@ async fn close_binding(state: &AppState, binding: &SessionBinding) {
 
 // -------------------------------------------------------------------- 辅助
 
+/// 不能从 SQL 文本猜事务状态：语句失败、引擎回滚、隐式事务都会让猜测失效。
+/// SDK 的 inTransaction 把此值当作「连接是否在事务中」的唯一可靠信号，
+/// 因此只读引擎回传的最新观测；无会话意味着新连接，初值为 true。
+fn session_autocommit(
+    sessions: &crate::state::SessionRegistry,
+    binding: Option<&SessionBinding>,
+) -> bool {
+    binding.is_none_or(|binding| {
+        sessions
+            .autocommit(&binding.session_id)
+            .load(Ordering::SeqCst)
+    })
+}
+
+fn observe_autocommit(
+    local: &AtomicBool,
+    sessions: &crate::state::SessionRegistry,
+    binding: Option<&SessionBinding>,
+    observed: Option<bool>,
+) {
+    // 缺字段是「未上报」，不是 false；旧 DB Process 不能抹掉上一次权威观测。
+    if let Some(value) = observed {
+        local.store(value, Ordering::SeqCst);
+        if let Some(binding) = binding {
+            sessions
+                .autocommit(&binding.session_id)
+                .store(value, Ordering::SeqCst);
+        }
+    }
+}
+
 /// 求值批处理步骤条件。
 fn eval_condition(
     condition: &wire::BatchCond,
     completed: &[bool],
     step_errors: &[Option<wire::WireError>],
     total_steps: usize,
+    autocommit: bool,
 ) -> ApiResult<bool> {
     Ok(match condition {
         wire::BatchCond::Ok { step } => {
@@ -644,10 +813,12 @@ fn eval_condition(
             let index = step_index(*step, total_steps)?;
             completed[index] && step_errors[index].is_some()
         }
-        wire::BatchCond::Not { cond } => !eval_condition(cond, completed, step_errors, total_steps)?,
+        wire::BatchCond::Not { cond } => {
+            !eval_condition(cond, completed, step_errors, total_steps, autocommit)?
+        }
         wire::BatchCond::And { conds } => {
             for cond in conds {
-                if !eval_condition(cond, completed, step_errors, total_steps)? {
+                if !eval_condition(cond, completed, step_errors, total_steps, autocommit)? {
                     return Ok(false);
                 }
             }
@@ -655,19 +826,13 @@ fn eval_condition(
         }
         wire::BatchCond::Or { conds } => {
             for cond in conds {
-                if eval_condition(cond, completed, step_errors, total_steps)? {
+                if eval_condition(cond, completed, step_errors, total_steps, autocommit)? {
                     return Ok(true);
                 }
             }
             false
         }
-        // v2 下客户端不会发这个条件（它是 v3 能力）。真收到就报错，
-        // 而不是随便给个真假让客户端的控制流走向未知分支。
-        wire::BatchCond::IsAutocommit => {
-            return Err(ApiError::not_implemented(
-                "batch 的 is_autocommit 条件需要 Hrana v3，本端点只实现 v2",
-            ));
-        }
+        wire::BatchCond::IsAutocommit => autocommit,
     })
 }
 
@@ -682,11 +847,20 @@ fn step_index(step: usize, total_steps: usize) -> ApiResult<usize> {
 }
 
 /// 领域结果集 -> 线上语句结果。
-fn stmt_result(result: &ResultSet, want_rows: bool) -> wire::StmtResult {
+fn stmt_result(
+    result: &ResultSet,
+    want_rows: bool,
+    last_insert_rowid: Option<i64>,
+) -> wire::StmtResult {
+    // libsql 的 Hrana JSON 解码器用 stringOpt + BigInt；不能发 JSON number 丢失 i64 精度。
+    let last_insert_rowid = last_insert_rowid.map(|rowid| rowid.to_string());
     if !want_rows {
         // 客户端没要行（BEGIN / COMMIT / DDL）。列与行返回空数组，但字段必须在 ——
-        // 客户端的解码器对 `cols` / `rows` 是必填。
-        return wire::StmtResult::empty(result.affected_rows);
+        // 客户端的解码器对 `cols` / `rows` 是必填，且不请求行不等于不需要 rowid。
+        return wire::StmtResult {
+            last_insert_rowid,
+            ..wire::StmtResult::empty(result.affected_rows)
+        };
     }
     wire::StmtResult {
         cols: result
@@ -703,8 +877,7 @@ fn stmt_result(result: &ResultSet, want_rows: bool) -> wire::StmtResult {
             .map(|row| row.iter().map(wire::value_to_wire).collect())
             .collect(),
         affected_row_count: result.affected_rows,
-        // 平台结果集契约里没有 last_insert_rowid，如实报告"未知"。
-        last_insert_rowid: None,
+        last_insert_rowid,
     }
 }
 
@@ -724,16 +897,31 @@ mod tests {
     #[test]
     fn batch_condition_reads_completed_steps_only() {
         let mut completed = vec![false, false];
-        let errors: Vec<Option<wire::WireError>> = vec![None, Some(wire::WireError::new("X", "boom"))];
+        let errors: Vec<Option<wire::WireError>> =
+            vec![None, Some(wire::WireError::new("X", "boom"))];
         // 还没执行的步骤：既不是 ok 也不是 error。
-        assert!(!eval_condition(&cond_ok(0), &completed, &errors, 2).unwrap());
-        assert!(!eval_condition(&wire::BatchCond::Error { step: 1 }, &completed, &errors, 2).unwrap());
+        assert!(!eval_condition(&cond_ok(0), &completed, &errors, 2, true).unwrap());
+        assert!(!eval_condition(
+            &wire::BatchCond::Error { step: 1 },
+            &completed,
+            &errors,
+            2,
+            true
+        )
+        .unwrap());
 
         completed[0] = true;
         completed[1] = true;
-        assert!(eval_condition(&cond_ok(0), &completed, &errors, 2).unwrap());
-        assert!(eval_condition(&wire::BatchCond::Error { step: 1 }, &completed, &errors, 2).unwrap());
-        assert!(!eval_condition(&cond_ok(1), &completed, &errors, 2).unwrap());
+        assert!(eval_condition(&cond_ok(0), &completed, &errors, 2, true).unwrap());
+        assert!(eval_condition(
+            &wire::BatchCond::Error { step: 1 },
+            &completed,
+            &errors,
+            2,
+            true
+        )
+        .unwrap());
+        assert!(!eval_condition(&cond_ok(1), &completed, &errors, 2, true).unwrap());
     }
 
     #[test]
@@ -744,28 +932,174 @@ mod tests {
         let rollback = wire::BatchCond::Not {
             cond: Box::new(cond_ok(1)),
         };
-        assert!(eval_condition(&rollback, &completed, &errors, 2).unwrap());
+        assert!(eval_condition(&rollback, &completed, &errors, 2, true).unwrap());
         let any = wire::BatchCond::Or {
             conds: vec![cond_ok(1), cond_ok(0)],
         };
-        assert!(eval_condition(&any, &completed, &errors, 2).unwrap());
+        assert!(eval_condition(&any, &completed, &errors, 2, true).unwrap());
         let all = wire::BatchCond::And {
             conds: vec![cond_ok(0), cond_ok(1)],
         };
-        assert!(!eval_condition(&all, &completed, &errors, 2).unwrap());
+        assert!(!eval_condition(&all, &completed, &errors, 2, true).unwrap());
     }
 
     #[test]
     fn out_of_range_step_is_a_protocol_error_not_false() {
-        let err = eval_condition(&cond_ok(9), &[true], &[None], 1).expect_err("越界必须报错");
+        let err = eval_condition(&cond_ok(9), &[true], &[None], 1, true).expect_err("越界必须报错");
         assert_eq!(err.code(), ErrorCode::InvalidArgument);
     }
 
     #[test]
-    fn is_autocommit_condition_is_refused_loudly() {
-        let err = eval_condition(&wire::BatchCond::IsAutocommit, &[], &[], 0)
-            .expect_err("v2 不支持 is_autocommit");
-        assert_eq!(err.code(), ErrorCode::NotImplemented);
+    fn is_autocommit_condition_reads_current_observation() {
+        for value in [true, false] {
+            assert_eq!(
+                eval_condition(&wire::BatchCond::IsAutocommit, &[], &[], 0, value).unwrap(),
+                value,
+            );
+            let condition = wire::BatchCond::Not {
+                cond: Box::new(wire::BatchCond::IsAutocommit),
+            };
+            assert_eq!(
+                eval_condition(&condition, &[], &[], 0, value).unwrap(),
+                !value
+            );
+        }
+    }
+
+    fn session_binding() -> SessionBinding {
+        let now = chrono::Utc::now();
+        SessionBinding {
+            session_id: "hrana-test-session".to_string(),
+            database_id: DatabaseId::new_v7(),
+            worker_id: domain::ids::WorkerId::new("w1"),
+            owner_epoch: 1,
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(5),
+        }
+    }
+
+    #[test]
+    fn get_autocommit_reads_session_slot() {
+        let sessions = crate::state::SessionRegistry::new();
+        let binding = session_binding();
+        sessions.insert(binding.session_id.clone(), binding.clone());
+        assert!(session_autocommit(&sessions, Some(&binding)));
+        let slot = sessions.autocommit(&binding.session_id);
+        for value in [false, true] {
+            slot.store(value, Ordering::SeqCst);
+            let response = wire::StreamResponse::GetAutocommit {
+                is_autocommit: session_autocommit(&sessions, Some(&binding)),
+            };
+            assert_eq!(
+                serde_json::to_value(response).unwrap(),
+                serde_json::json!({
+                    "type": "get_autocommit", "is_autocommit": value,
+                })
+            );
+            assert!(session_autocommit(&sessions, None));
+        }
+    }
+
+    #[test]
+    fn trailer_autocommit_updates_local_and_session_but_missing_preserves_both() {
+        let sessions = crate::state::SessionRegistry::new();
+        let binding = session_binding();
+        sessions.insert(binding.session_id.clone(), binding.clone());
+        let local = AtomicBool::new(true);
+        for observed in [Some(false), None, Some(true), None] {
+            let previous = local.load(Ordering::SeqCst);
+            observe_autocommit(&local, &sessions, Some(&binding), observed);
+            let expected = observed.unwrap_or(previous);
+            assert_eq!(local.load(Ordering::SeqCst), expected);
+            assert_eq!(session_autocommit(&sessions, Some(&binding)), expected);
+            assert_eq!(
+                eval_condition(
+                    &wire::BatchCond::IsAutocommit,
+                    &[],
+                    &[],
+                    0,
+                    local.load(Ordering::SeqCst),
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        observe_autocommit(&local, &sessions, None, Some(false));
+        assert!(!local.load(Ordering::SeqCst));
+        assert!(session_autocommit(&sessions, Some(&binding)));
+        assert!(session_autocommit(&sessions, None));
+    }
+
+    #[test]
+    fn cursor_ndjson_preserves_lines_and_indices_without_skipped_entries() {
+        let result = stmt_result(
+            &ResultSet {
+                columns: vec![ColumnMeta::new("x", "INTEGER", true)],
+                rows: vec![vec![SqlValue::Integer(42)]],
+                affected_rows: 1,
+                truncated: false,
+            },
+            true,
+            Some(42),
+        );
+        let body = cursor_body(
+            wire::CursorHeader {
+                baton: Some("session".to_string()),
+                base_url: None,
+            },
+            wire::BatchResult {
+                step_results: vec![None, Some(result), None],
+                step_errors: vec![None, None, None],
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.ends_with('\n'));
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                serde_json::json!({"baton":"session","base_url":null}),
+                serde_json::json!({"type":"step_begin","step":1,"cols":[{"name":"x","decltype":"INTEGER"}]}),
+                serde_json::json!({"type":"row","step":1,"row":[{"type":"integer","value":"42"}]}),
+                serde_json::json!({"type":"step_end","step":1,"affected_row_count":1,"last_insert_rowid":"42"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_step_error_does_not_discard_later_results() {
+        let body = cursor_body(
+            wire::CursorHeader {
+                baton: Some("session".to_string()),
+                base_url: None,
+            },
+            wire::BatchResult {
+                step_results: vec![None, None, Some(wire::StmtResult::empty(0))],
+                step_errors: vec![Some(wire::WireError::new("SQL_ERROR", "失败")), None, None],
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.ends_with('\n'));
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(
+            lines[1],
+            serde_json::json!({
+                "type":"step_error","step":0,"error":{"code":"SQL_ERROR","message":"失败"},
+            })
+        );
+        assert_eq!(lines[2]["type"], "step_begin");
+        assert_eq!(lines[2]["step"], 2);
+        assert_eq!(lines[3]["type"], "step_end");
+        assert_eq!(lines[3]["step"], 2);
     }
 
     #[test]
@@ -776,15 +1110,54 @@ mod tests {
             affected_rows: 7,
             truncated: false,
         };
-        let without_rows = stmt_result(&result, false);
+        let without_rows = stmt_result(&result, false, Some(7));
         assert!(without_rows.cols.is_empty());
         assert!(without_rows.rows.is_empty());
         assert_eq!(without_rows.affected_row_count, 7);
+        assert_eq!(without_rows.last_insert_rowid.as_deref(), Some("7"));
 
-        let with_rows = stmt_result(&result, true);
+        let with_rows = stmt_result(&result, true, Some(7));
+        assert_eq!(with_rows.last_insert_rowid.as_deref(), Some("7"));
         assert_eq!(with_rows.cols.len(), 1);
         assert_eq!(with_rows.rows.len(), 1);
         assert_eq!(with_rows.rows[0][0], serde_json::json!({"type":"integer","value":"1"}));
+    }
+
+    #[test]
+    fn rowid_preserves_missing_zero_and_i64_precision_in_pipeline_and_cursor() {
+        let result = ResultSet {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            affected_rows: 0,
+            truncated: false,
+        };
+        for observed in [Some(0), Some(i64::MIN), Some(i64::MAX), None] {
+            for want_rows in [false, true] {
+                let stmt = stmt_result(&result, want_rows, observed);
+                let expected = serde_json::json!(observed.map(|rowid| rowid.to_string()));
+                let pipeline = wire::PipelineResponse {
+                    baton: None,
+                    base_url: None,
+                    results: vec![wire::StreamResult::ok(wire::StreamResponse::Execute {
+                        result: stmt.clone(),
+                    })],
+                };
+                let json = serde_json::to_value(pipeline).unwrap();
+                assert_eq!(json["results"][0]["response"]["result"]["last_insert_rowid"], expected);
+                let body = cursor_body(
+                    wire::CursorHeader { baton: None, base_url: None },
+                    wire::BatchResult {
+                        step_results: vec![Some(stmt)],
+                        step_errors: vec![None],
+                    },
+                )
+                .unwrap();
+                let text = String::from_utf8(body).unwrap();
+                let end: serde_json::Value =
+                    serde_json::from_str(text.lines().last().unwrap()).unwrap();
+                assert_eq!(end["last_insert_rowid"], expected);
+            }
+        }
     }
 
     /// 冻结信封 -> Hrana 客户端能读懂的形状。

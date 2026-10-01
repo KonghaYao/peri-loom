@@ -60,6 +60,18 @@ pub struct SessionRegistry {
     sessions: DashMap<String, SessionBinding>,
     /// `session_id -> (sql_id -> SQL 文本)`。
     sql_caches: DashMap<String, Arc<DashMap<i64, String>>>,
+    /// `session_id -> 该会话连接当前的 autocommit 状态`。
+    ///
+    /// Hrana v3 的 `get_autocommit` 请求与批处理里的 `is_autocommit` 条件都要求
+    /// **服务端权威回答**「这条连接现在是不是在事务里」。Session Plane 上唯一知道
+    /// 答案的是 DB Process（引擎的 `sqlite3_get_autocommit()` 等价物），所以这里
+    /// 存的是**最近一次执行回传的观测值**（流式 trailer 的 `is_autocommit`），
+    /// 而不是 Server 自己从 SQL 文本猜出来的结论 —— 猜会在语句失败、引擎回滚、
+    /// 隐式事务等情形下出错，而客户端明确把这个值当作「唯一可靠信号」。
+    ///
+    /// 初值 `true`：会话对应的连接刚建立、还没执行过任何语句，必然处于 autocommit。
+    /// 与会话同生命周期地清理（理由同 `sql_caches`）。
+    autocommit: DashMap<String, Arc<AtomicBool>>,
 }
 
 impl SessionRegistry {
@@ -102,15 +114,28 @@ impl SessionRegistry {
         })
     }
 
+    /// 取（必要时创建）会话的 autocommit 状态槽。
+    ///
+    /// 与 [`SessionRegistry::sql_cache`] 同约定：只为**已登记**的会话创建由调用方保证。
+    /// 返回 `Arc` 而不是值，调用方才能在一次请求内持续读到别的路径写入的新观测值。
+    #[must_use]
+    pub fn autocommit(&self, session_id: &str) -> Arc<AtomicBool> {
+        self.autocommit
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(true)))
+            .clone()
+    }
+
     /// 查询会话绑定。
     #[must_use]
     pub fn get(&self, session_id: &str) -> Option<SessionBinding> {
         self.sessions.get(session_id).map(|entry| entry.clone())
     }
 
-    /// 注销会话（关闭 / 失效），同时丢弃会话附属的 SQL 缓存。
+    /// 注销会话（关闭 / 失效），同时丢弃会话附属的 SQL 缓存与 autocommit 观测值。
     pub fn remove(&self, session_id: &str) -> Option<SessionBinding> {
         self.sql_caches.remove(session_id);
+        self.autocommit.remove(session_id);
         self.sessions.remove(session_id).map(|(_, value)| value)
     }
 
@@ -141,6 +166,7 @@ impl SessionRegistry {
             .into_iter()
             .filter_map(|key| {
                 self.sql_caches.remove(&key);
+                self.autocommit.remove(&key);
                 self.sessions.remove(&key).map(|(_, value)| value)
             })
             .collect()

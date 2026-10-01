@@ -242,6 +242,20 @@ impl EngineConnection {
         !self.conn.get_auto_commit()
     }
 
+    /// 连接当前的 autocommit 状态：`true` = 没有活动事务，`false` = 处于显式事务中。
+    ///
+    /// 就是引擎 `Connection::get_auto_commit()`（`sqlite3_get_autocommit()` 的等价物）：
+    /// `BEGIN` 把它置为 `false`，`COMMIT` / `ROLLBACK` 置回 `true`。
+    ///
+    /// 调用方需要它是因为**这个状态无法从 SQL 侧读取**：引擎把 `is_autocommit()` SQL 函数
+    /// 留给内部 CDC 使用，用户语句调用会被拒绝。凡是需要向外报告"语句执行完之后客户端
+    /// 是否还在事务里"的地方（例如流式 trailer 的 `is_autocommit`），都只能在这里取值，
+    /// 且必须在语句执行**结束之后**取 —— 值反映的是取值那一刻的连接状态。
+    #[must_use]
+    pub fn is_autocommit(&self) -> bool {
+        self.conn.get_auto_commit()
+    }
+
     /// 最近一次 INSERT 的 rowid。
     #[must_use]
     pub fn last_insert_rowid(&self) -> i64 {
@@ -480,6 +494,29 @@ mod tests {
             panic!("SELECT 必须返回行");
         };
         assert_eq!(result.rows, vec![vec![SqlValue::Integer(42)]]);
+    }
+
+    /// `is_autocommit()` 必须跟着显式事务走：BEGIN 后 false，COMMIT / ROLLBACK 后 true。
+    ///
+    /// 这是平台向外报告事务状态的唯一来源 —— 引擎把 `is_autocommit()` SQL 函数留给
+    /// 内部 CDC，用户 SQL 调不到，所以只能在这里（Rust API）验证。
+    #[test]
+    fn is_autocommit_tracks_explicit_transaction() {
+        let (_dir, conn) = temp_connection();
+        assert!(conn.is_autocommit(), "新连接必须处于 autocommit 状态");
+
+        conn.begin().expect("BEGIN");
+        assert!(
+            !conn.is_autocommit(),
+            "BEGIN 之后不得再报告 autocommit（就是在事务中）"
+        );
+        conn.commit().expect("COMMIT");
+        assert!(conn.is_autocommit(), "COMMIT 之后必须回到 autocommit");
+
+        conn.begin().expect("BEGIN");
+        assert!(!conn.is_autocommit(), "第二次 BEGIN 之后同样是在事务中");
+        conn.rollback().expect("ROLLBACK");
+        assert!(conn.is_autocommit(), "ROLLBACK 之后必须回到 autocommit");
     }
 
     /// 五类值都要能绑定并原样读回：NULL 与 BLOB 最容易被「丢参」悄悄吃掉。

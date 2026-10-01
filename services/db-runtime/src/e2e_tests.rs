@@ -343,6 +343,32 @@ impl Client {
         self.send(frame).await;
         self.recv_reply(seq).await
     }
+
+    /// 流式执行一条语句，读到 trailer（`StreamEnd`）并返回。
+    ///
+    /// `is_autocommit` 只出现在流式路径的 trailer 上（非流式回的是 `ExecuteResponse`），
+    /// 因此验证该字段必须走 `want_stream = true`。
+    async fn execute_streaming(&mut self, seq: u64, sql: &str) -> rt::StreamEnd {
+        let frame = self.frame(
+            seq,
+            &format!("req-{seq}"),
+            rt::frame::Message::Execute(rt::ExecuteRequest {
+                sql: sql.to_string(),
+                params: Vec::new(),
+                atomic: false,
+                want_stream: true,
+                inline_row_limit: 0,
+            }),
+        );
+        self.send(frame).await;
+        loop {
+            match self.recv_reply(seq).await.message {
+                Some(rt::frame::Message::StreamHeader(_) | rt::frame::Message::Rows(_)) => {}
+                Some(rt::frame::Message::StreamEnd(end)) => return end,
+                other => panic!("流中出现意外帧：{other:?}"),
+            }
+        }
+    }
 }
 
 /// 从响应帧里取出结果集。
@@ -541,6 +567,223 @@ async fn streaming_execute_emits_expected_frame_sequence() {
     }
     assert_eq!(total_rows, 200, "流式返回的行数必须与写入一致");
 
+    env.shutdown().await;
+}
+
+/// trailer 的 `is_autocommit` 必须是**语句执行完之后**引擎连接的真实状态。
+///
+/// 覆盖三点：
+/// 1. 无事务（含 stateless 新连接）=> `true`；
+/// 2. `BEGIN` 之后语句跑完仍在事务里 => `false`；
+/// 3. `COMMIT` / `ROLLBACK` 之后回到 `true`。
+///
+/// 只有真去问引擎（`Connection::get_auto_commit()`）才能同时满足 1 与 2：
+/// 硬编码 `true` 会让 2 失败，缺省不填（`None`）会让 1、3 失败。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_trailer_reports_engine_autocommit_state() {
+    let env = TestEnv::start(1).await;
+    let mut client = env.connect().await;
+    client
+        .execute(10, "CREATE TABLE ac (id INTEGER PRIMARY KEY)")
+        .await;
+
+    // 无会话：每次都是全新连接，执行结束必然是 autocommit。
+    let end = client.execute_streaming(11, "SELECT 1").await;
+    assert_eq!(
+        end.is_autocommit,
+        Some(true),
+        "stateless 执行结束必须报告 autocommit（真取值，不是缺省）"
+    );
+
+    // 会话：打开之后、BEGIN 之前同样是 autocommit。
+    client
+        .send(client.frame(
+            12,
+            "req-open",
+            rt::frame::Message::OpenSession(rt::OpenSessionRequest {
+                idle_timeout_ms: 0,
+                max_transaction_lifetime_ms: 0,
+            }),
+        ))
+        .await;
+    let reply = client.recv_reply(12).await;
+    let Some(rt::frame::Message::OpenSessionResponse(response)) = reply.message else {
+        panic!("期望 OpenSessionResponse，实际 {:?}", reply.message);
+    };
+    client.session_id = response.session_id.clone();
+
+    let end = client.execute_streaming(13, "SELECT 1").await;
+    assert_eq!(
+        end.is_autocommit,
+        Some(true),
+        "会话空闲期必须报告 autocommit"
+    );
+
+    // BEGIN 之后：语句执行完仍在事务里 => false。
+    client
+        .send(client.frame(
+            14,
+            "req-begin",
+            rt::frame::Message::Begin(rt::BeginRequest {
+                read_only: false,
+                max_lifetime_ms: 0,
+            }),
+        ))
+        .await;
+    let reply = client.recv_reply(14).await;
+    let Some(rt::frame::Message::TransactionResponse(txn)) = reply.message else {
+        panic!(
+            "期望 TransactionResponse，实际 {:?} / 错误 {:?}",
+            reply.message, reply.error
+        );
+    };
+
+    let end = client
+        .execute_streaming(15, "INSERT INTO ac (id) VALUES (1)")
+        .await;
+    assert_eq!(
+        end.is_autocommit,
+        Some(false),
+        "BEGIN 之后的语句必须报告「仍在事务中」"
+    );
+
+    // COMMIT 之后：回到 autocommit。
+    let mut commit = client.frame(
+        16,
+        "req-commit",
+        rt::frame::Message::Commit(rt::CommitRequest {}),
+    );
+    commit.transaction_id = txn.transaction_id.clone();
+    client.send(commit).await;
+    let reply = client.recv_reply(16).await;
+    let Some(rt::frame::Message::CommitResponse(_)) = reply.message else {
+        panic!("期望 CommitResponse，实际 {:?}", reply.message);
+    };
+
+    let end = client.execute_streaming(17, "SELECT id FROM ac").await;
+    assert_eq!(
+        end.is_autocommit,
+        Some(true),
+        "COMMIT 之后必须回到 autocommit"
+    );
+
+    // 再开一个事务并 ROLLBACK：同样回到 autocommit。
+    client
+        .send(client.frame(
+            18,
+            "req-begin-2",
+            rt::frame::Message::Begin(rt::BeginRequest {
+                read_only: false,
+                max_lifetime_ms: 0,
+            }),
+        ))
+        .await;
+    let reply = client.recv_reply(18).await;
+    let Some(rt::frame::Message::TransactionResponse(txn)) = reply.message else {
+        panic!("期望 TransactionResponse，实际 {:?}", reply.message);
+    };
+
+    let end = client.execute_streaming(19, "SELECT 1").await;
+    assert_eq!(
+        end.is_autocommit,
+        Some(false),
+        "第二个事务里的语句同样必须报告「仍在事务中」"
+    );
+
+    let mut rollback = client.frame(
+        20,
+        "req-rollback",
+        rt::frame::Message::Rollback(rt::RollbackRequest {}),
+    );
+    rollback.transaction_id = txn.transaction_id.clone();
+    client.send(rollback).await;
+    let reply = client.recv_reply(20).await;
+    let Some(rt::frame::Message::RollbackResponse(_)) = reply.message else {
+        panic!("期望 RollbackResponse，实际 {:?}", reply.message);
+    };
+
+    let end = client.execute_streaming(21, "SELECT 1").await;
+    assert_eq!(
+        end.is_autocommit,
+        Some(true),
+        "ROLLBACK 之后必须回到 autocommit"
+    );
+
+    env.shutdown().await;
+}
+
+/// rowid 是连接级状态，必须经过 UDS trailer 保留，不能根据 SELECT / UPDATE 猜成未知。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_trailer_reports_connection_last_insert_rowid() {
+    let env = TestEnv::start(1).await;
+    let mut client = env.connect().await;
+    client
+        .execute(10, "CREATE TABLE rowids (id INTEGER PRIMARY KEY, value INTEGER)")
+        .await;
+    client
+        .send(client.frame(
+            11,
+            "req-open",
+            rt::frame::Message::OpenSession(rt::OpenSessionRequest {
+                idle_timeout_ms: 0,
+                max_transaction_lifetime_ms: 0,
+            }),
+        ))
+        .await;
+    let reply = client.recv_reply(11).await;
+    let Some(rt::frame::Message::OpenSessionResponse(response)) = reply.message else {
+        panic!("期望 OpenSessionResponse，实际 {:?}", reply.message);
+    };
+    client.session_id = response.session_id;
+
+    // 包括 atomic COMMIT、显式 ROLLBACK、零行插入和超过 JS 安全整数范围的 rowid。
+    let rowid = 9_007_199_254_740_993i64;
+    let statements = [
+        ("SELECT 1", false, 0),
+        ("INSERT INTO rowids VALUES (9007199254740993, 1)", true, rowid),
+        ("SELECT * FROM rowids", false, rowid),
+        ("UPDATE rowids SET value = 2", false, rowid),
+        ("INSERT INTO rowids SELECT 2, 3 WHERE 0", false, rowid),
+        ("BEGIN", false, rowid),
+        ("INSERT INTO rowids VALUES (-7, 3)", false, -7),
+        ("ROLLBACK", false, -7),
+        ("SELECT * FROM rowids", false, -7),
+    ];
+    for (index, (sql, atomic, expected)) in statements.into_iter().enumerate() {
+        let seq = 12 + index as u64;
+        client
+            .send(client.frame(
+                seq,
+                &format!("req-{seq}"),
+                rt::frame::Message::Execute(rt::ExecuteRequest {
+                    sql: sql.to_string(),
+                    params: Vec::new(),
+                    atomic,
+                    want_stream: true,
+                    inline_row_limit: 0,
+                }),
+            ))
+            .await;
+        loop {
+            let reply = client.recv_reply(seq).await;
+            assert!(reply.error.is_none(), "{sql}: {:?}", reply.error);
+            match reply.message {
+                Some(rt::frame::Message::StreamHeader(_) | rt::frame::Message::Rows(_)) => {}
+                Some(rt::frame::Message::StreamEnd(end)) => {
+                    assert_eq!(end.last_insert_rowid, Some(expected), "{sql}");
+                    if atomic {
+                        assert_eq!(end.is_autocommit, Some(true));
+                    }
+                    break;
+                }
+                other => panic!("流中出现意外帧：{other:?}"),
+            }
+        }
+    }
+    // 无会话执行会换连接，不能泄漏之前会话的 rowid。
+    client.session_id.clear();
+    let end = client.execute_streaming(30, "SELECT 1").await;
+    assert_eq!(end.last_insert_rowid, Some(0));
     env.shutdown().await;
 }
 
