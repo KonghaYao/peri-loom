@@ -35,13 +35,12 @@ mise exec github:KonghaYao/peri-loom@latest -- peri-loom serve --mode simple --d
 | --- | --- | --- |
 | Linux x64 | `x86_64-unknown-linux-gnu.tar.gz` | `ubuntu-22.04` |
 | Linux ARM64 | `aarch64-unknown-linux-gnu.tar.gz` | `ubuntu-22.04-arm` |
-| macOS Intel | `x86_64-apple-darwin.tar.gz` | `macos-15-intel` |
 | macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` | `macos-14` |
 
 Linux 产物面向 glibc 2.35+（如 Ubuntu 22.04+），不用于 Alpine/musl；macOS 最低部署目标为 13。Windows 不在本次支持范围内。
 
-- PR、`main` 推送、分支上的手动运行：构建与验证，上传四个平台的 Actions artifacts，保留 14 天。
-- `v*` 标签推送或在对应标签上手动运行：全部构建成功后上传 GitHub Release，再使用 mise 在四个平台实际下载安装并复验。带 `-` 的版本标签发布为 prerelease，不替换 `latest`。
+- PR、`main` 推送、分支上的手动运行：构建与验证，上传三个平台的 Actions artifacts，保留 14 天。
+- `v*` 标签推送或在对应标签上手动运行：全部构建成功后上传 GitHub Release，再使用 mise 在三个平台实际下载安装并复验。带 `-` 的版本标签发布为 prerelease，不替换 `latest`。
 - 附件形如 `peri-loom-v1.2.3-aarch64-apple-darwin.tar.gz`，解压只有 `peri-loom`。每个包附带 `.sha256`，Release 同时提供 `SHA256SUMS`；可在安装前校验，mise 项目可用 `mise.lock` 固定版本与校验值。
 - 已发布版本不会原地替换二进制；重试只允许继续未完成的 Release 草稿。代码未推送、工作流未运行时，安装命令不能凭本地构建自动获得远端 Release。
 

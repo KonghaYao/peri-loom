@@ -1,4 +1,4 @@
-# 原生单文件交付；四个平台全部验证后才发布 GitHub Release。
+# 原生单文件交付；三个平台全部验证后才发布 GitHub Release。
 name: publish-simple
 
 on:
@@ -41,8 +41,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
           - runner: macos-14
             target: aarch64-apple-darwin
     env:
@@ -126,7 +124,7 @@ jobs:
       - name: Verify all release assets
         working-directory: dist
         run: |
-          test "$(find . -name '*.tar.gz' | wc -l)" -eq 4
+          test "$(find . -name '*.tar.gz' | wc -l)" -eq 3
           cat ./*.sha256 > SHA256SUMS
           sha256sum --check SHA256SUMS
 
@@ -156,7 +154,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-14]
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
