@@ -204,13 +204,16 @@ volumes:
 | 能力 | Simple 首版 |
 | --- | --- |
 | 登录、RBAC、令牌、审计、数据库管理 | 保留 |
-| SQL、参数、会话、事务、NDJSON、Hrana HTTP | 保留，逐项做兼容性验证 |
+| SQL、参数、会话、事务、NDJSON、Hrana HTTP（v2/v3 pipeline、v3 cursor） | 保留，逐项做兼容性验证 |
 | 创建/删除、打开/关闭、按需加载 | 保留 |
 | 本地备份、恢复、导出、持久 Operations | 保留 |
 | 跨 Worker Move、自动故障转移、复制管理 | 明确禁用 |
 | Raft quorum、远程 durability LSN、跨节点 fencing | 不承诺、不伪造 |
 | 每库 cgroup 与故障进程隔离 | 不提供；进程崩溃影响整个实例 |
 | Worker/拓扑页面 | 隐藏或显示“本机实例”，不伪造健康 Worker |
+
+Hrana 兼容端点在 db-server 已落地（`/db/{db_id}/v2/pipeline`、`/v3/pipeline`、`/v3/cursor`，权限与
+`/data/v1` 同档 `db:write`）；simple 模式复用同一套 HTTP 逻辑，不另立语义。
 
 提供统一的模式/能力信息，供 Web 和客户端判断；未支持的管理动作返回稳定的
 `UNSUPPORTED_IN_DEPLOYMENT_MODE` 或映射到现有等价错误码，不能返回假成功。

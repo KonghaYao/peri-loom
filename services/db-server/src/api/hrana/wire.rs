@@ -12,8 +12,11 @@
 //!
 //! 本模块同时描述 v2 与 v3 两套线上格式。官方 SDK 在 HTTP 上只发自己认得的那个版本，
 //! 既不探测也不降级：`@libsql/client` 全程只打 `/v2/pipeline`，而
-//! `@tursodatabase/serverless`（1.0.0 起）全程只打 `/v3/pipeline` 与 `/v3/cursor`。
-//! 所以服务端必须两套都认，不能指望新客户端退回 v2。
+//! `@tursodatabase/serverless` 自发布起（0.1.0）就只打 v3，从不请求 `/v2/pipeline` ——
+//! 0.1.0 / 0.1.1 只用 `/v3/cursor`，0.1.2 起 `/v3/pipeline` 才进入调用路径
+//! （`exec()` / `executeMultiple()` / `close()`），0.2.0 起 `prepare()` 触发 `describe`。
+//! 所以服务端必须两套都认、`/v3/pipeline` 与 `/v3/cursor` 也一个都不能少，
+//! 不能指望新客户端退回 v2。
 //!
 //! 两套格式在**值编码与 `stmt` 形状上完全同构**（第 1 条对 v3 同样成立），
 //! 差异只在信封与响应形态：

@@ -159,7 +159,7 @@ npm run gen:api                                      # orval -> src/api/generate
 
 - **后端已落地**：`services/db-server/src/main.rs` 不再是占位实现，而是 CLI 入口（缺省启动服务，`dump-openapi` / `--dump-openapi` 导出 OpenAPI 契约后退出）；服务装配在 `db_server::app::run`（`services/db-server/src/app.rs`）：Catalog 连接 + migrations -> Route Cache 全量 reconcile -> 后台任务 -> HTTP 监听，出口覆盖 `/api/v1/*`（Management / DBA REST）、`/data/v1/*`（SQL / 数据面）与 `/db/{db_id}/v2/pipeline`、`/db/{db_id}/v3/{pipeline,cursor}`（Hrana v2 / v3），本 Panel 的 `/api`、`/data` 直接对接该服务。
 - **Hrana v2 / v3 兼容层只覆盖"可跑通官方客户端"的最小集合**（`services/db-server/src/api/hrana/`，端点 `POST /db/{db_id}/v2/pipeline`、`POST /db/{db_id}/v3/pipeline`、`POST /db/{db_id}/v3/cursor`，数据库详情的连接信息卡片按 SDK 给出接入地址）：
-  - 两个官方 SDK 各打各的版本、互不降级：`@libsql/client` 全程只打 v2，`@tursodatabase/serverless`（1.0.0 起）全程只打 v3；
+  - 两个官方 SDK 各打各的版本、互不降级：`@libsql/client` 全程只打 v2，`@tursodatabase/serverless` 自发布起（0.1.0）全程只打 v3；
   - URL **必须带结尾斜杠**（`.../db/<db_id>/`）——`@libsql/client` 用 `new URL("v2/pipeline", base)` 拼路径，少了斜杠 `db_id` 会被当成目录吃掉；`@tursodatabase/serverless` 只做前缀替换后按 `${url}/v3/...` 拼接，因此给它的地址不能带 query 参数；
   - 只实现 **HTTP + JSON**（v2 与 v3）：无 protobuf 编码，无 `describe`（调用即返回 `NOT_IMPLEMENTED`，不会假装成功）；
   - `execute()` 一次**只接受一条语句**（DB Process 的 prepare 只看第一条，多语句会被静默丢弃，因此宁可拒绝并提示用 `batch()` / `executeMultiple()`）；`CREATE TRIGGER` 含 `;` 的语句体不参与切分；

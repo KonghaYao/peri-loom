@@ -1093,6 +1093,7 @@ Error Rate
 ## 场景：Public HTTP Contract
 
 - Public Browser/SDK 接口中 gRPC 暴露数量：**0**；外部统一 HTTP。
+- Hrana 客户端兼容端点（`/db/{db_id}/v2/pipeline`、`/v3/pipeline`、`/v3/cursor`）gRPC 暴露数量：**0**；仍为 HTTP + JSON/NDJSON，且不属于 OpenAPI 覆盖范围。
 - OpenAPI 对 `/api/v1/*` 与非 streaming `/data/v1/*` public route 覆盖率：**100%**。
 - 相同 `Idempotency-Key` 对 Create/Move/Backup/Restore 等副作用请求重复提交 100 次：实际创建的 Operation 数量 **= 1**。
 - NDJSON streaming 在 Client 降速到 **1 MiB/s** 时，Server 单请求额外 buffered result memory：P95 **<= 8 MiB**。
@@ -1285,10 +1286,15 @@ Axum
 /                         -> Vite/React SPA
 /api/v1/*                 -> Management / DBA REST JSON
 /data/v1/*                -> SQL / Data HTTP API
+/db/{db_id}/v2/pipeline   -> Hrana v2 客户端兼容入口（JSON）
+/db/{db_id}/v3/pipeline   -> Hrana v3 客户端兼容入口（JSON）
+/db/{db_id}/v3/cursor     -> Hrana v3 cursor 兼容入口（NDJSON）
 /healthz                   -> liveness
 /readyz                    -> readiness
 /metrics                   -> internal only, 不经公网暴露
 ```
+
+`/db/{db_id}/*` 是 **Hrana 客户端兼容入口**，不是平台自有契约：供官方 libSQL / TursoDB 客户端 SDK 直连，`@libsql/client` 只打 v2 pipeline，`@tursodatabase/serverless` 自发布起（0.1.0）只打 v3 pipeline 与 v3 cursor（从不请求 v2、不做版本协商、不降级），两条都不可省。它复用既有路由 / 租约 / fencing / 透明 Wake，权限与 `/data/v1` 同档（`db:write`）；出口仍是 HTTP + JSON/NDJSON，不引入 protobuf，也不计入 OpenAPI 覆盖率。
 
 管理 API：
 
@@ -1926,6 +1932,7 @@ Backend Core Language = Rust
 Catalog source of truth = PostgreSQL + SQLx
 Panel / Control Plane system data = PostgreSQL only
 External API = HTTP/JSON + NDJSON streaming + OpenAPI
+External API（Hrana 客户端兼容入口）= HTTP/JSON v2/v3 pipeline + NDJSON cursor
 Deployment = Dockerfile + Docker Compose
 Remote WAL = Rust + raft-rs + raft-engine
 TursoDB integration isolated in engine-adapter + custom DurableIO
@@ -1938,4 +1945,4 @@ Resource Budget Packing + Failover Reserve
 
 # 19. 当前架构定义
 
-> **Server 是全局 HTTP 入口、路由和管理面；Worker 是高密度 DB Process Host。一个 DB 对应一个独立进程，一个 Worker 同时运行多个 DB。Server 只路由到 Worker，Worker Data Dispatcher 再通过 Unix Domain Socket 路由到本地 DB Process。Control Plane 不进入 SQL 热路径。Catalog/Ownership/Epoch 以及 Panel/Control Plane 系统数据统一以 PostgreSQL 为权威事实源；TursoDB 只承载用户数据库的数据面。外部 API 固定为 HTTP/JSON 与 NDJSON streaming，内部 Server→Worker 固定 gRPC/HTTP2。热数据工作集位于 Local NVMe；事务必须在 Synchronous Remote WAL durable 后才能返回 Commit Success；Object Storage Snapshot 提供 Base Image / Backup / Cold Restore。标准部署使用 Dockerfile + Docker Compose；DB Process 仍由 Worker 容器作为普通子进程管理，不采用 DB-per-container。**
+> **Server 是全局 HTTP 入口、路由和管理面；Worker 是高密度 DB Process Host。一个 DB 对应一个独立进程，一个 Worker 同时运行多个 DB。Server 只路由到 Worker，Worker Data Dispatcher 再通过 Unix Domain Socket 路由到本地 DB Process。Control Plane 不进入 SQL 热路径。Catalog/Ownership/Epoch 以及 Panel/Control Plane 系统数据统一以 PostgreSQL 为权威事实源；TursoDB 只承载用户数据库的数据面。对外出口固定为 HTTP + JSON/NDJSON：平台自有契约 `/api/v1/*`、`/data/v1/*`，另加 Hrana v2/v3 客户端兼容入口 `/db/{db_id}/*`（供官方 libSQL / TursoDB SDK 直连，不引入 protobuf）；内部 Server→Worker 固定 gRPC/HTTP2。热数据工作集位于 Local NVMe；事务必须在 Synchronous Remote WAL durable 后才能返回 Commit Success；Object Storage Snapshot 提供 Base Image / Backup / Cold Restore。标准部署使用 Dockerfile + Docker Compose；DB Process 仍由 Worker 容器作为普通子进程管理，不采用 DB-per-container。**
