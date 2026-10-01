@@ -270,10 +270,7 @@ mod tests {
         // 顺序按占位符出现顺序（:b 在前），不是按参数列表顺序。
         assert_eq!(
             bind.args,
-            vec![
-                SqlValue::Text("x".to_string()),
-                SqlValue::Integer(1)
-            ]
+            vec![SqlValue::Text("x".to_string()), SqlValue::Integer(1)]
         );
     }
 
@@ -298,17 +295,23 @@ mod tests {
     #[test]
     fn placeholders_inside_literals_and_comments_are_left_alone() {
         let sql = "select ':a', \":b\", `:c`, [':d'] -- :e\n, :f /* :g */";
-        let bind = bind_named_args(sql, &named(&[("f", SqlValue::Integer(1))]))
-            .expect("只剩 :f 需要改写");
-        assert_eq!(bind.sql, "select ':a', \":b\", `:c`, [':d'] -- :e\n, ? /* :g */");
+        let bind =
+            bind_named_args(sql, &named(&[("f", SqlValue::Integer(1))])).expect("只剩 :f 需要改写");
+        assert_eq!(
+            bind.sql,
+            "select ':a', \":b\", `:c`, [':d'] -- :e\n, ? /* :g */"
+        );
         assert_eq!(bind.args, vec![SqlValue::Integer(1)]);
     }
 
     #[test]
     fn escaped_quote_does_not_end_the_literal() {
         // 'it''s :a' 是一个整体字面量，里面的 :a 不是占位符。
-        let bind = bind_named_args("select 'it''s :a' , :a", &named(&[("a", SqlValue::Integer(2))]))
-            .expect("改写成功");
+        let bind = bind_named_args(
+            "select 'it''s :a' , :a",
+            &named(&[("a", SqlValue::Integer(2))]),
+        )
+        .expect("改写成功");
         assert_eq!(bind.sql, "select 'it''s :a' , ?");
         assert_eq!(bind.args, vec![SqlValue::Integer(2)]);
     }
@@ -324,11 +327,8 @@ mod tests {
 
     #[test]
     fn unbound_and_unused_named_args_are_both_errors() {
-        let missing = bind_named_args(
-            "select :a, :b",
-            &named(&[("a", SqlValue::Integer(1))]),
-        )
-        .expect_err("SQL 里出现但没给值的参数应当失败");
+        let missing = bind_named_args("select :a, :b", &named(&[("a", SqlValue::Integer(1))]))
+            .expect_err("SQL 里出现但没给值的参数应当失败");
         assert!(missing.contains("b 没有被赋值"), "{missing}");
 
         let unused = bind_named_args("select 1", &named(&[("a", SqlValue::Integer(1))]))
@@ -338,11 +338,8 @@ mod tests {
 
     #[test]
     fn mixing_named_and_positional_is_rejected() {
-        let err = bind_named_args(
-            "select ?, :a",
-            &named(&[("a", SqlValue::Integer(1))]),
-        )
-        .expect_err("混用必须报错");
+        let err = bind_named_args("select ?, :a", &named(&[("a", SqlValue::Integer(1))]))
+            .expect_err("混用必须报错");
         assert!(err.contains("位置占位符"), "{err}");
     }
 
@@ -371,8 +368,12 @@ mod tests {
 
     #[test]
     fn trigger_definitions_are_detected_even_after_comments() {
-        assert!(is_trigger_definition("CREATE TRIGGER t AFTER INSERT ON x BEGIN a; b; END"));
-        assert!(is_trigger_definition("-- c\n/* c2 */ create temp trigger t BEGIN a; END"));
+        assert!(is_trigger_definition(
+            "CREATE TRIGGER t AFTER INSERT ON x BEGIN a; b; END"
+        ));
+        assert!(is_trigger_definition(
+            "-- c\n/* c2 */ create temp trigger t BEGIN a; END"
+        ));
         assert!(!is_trigger_definition("select 1"));
         assert!(!is_trigger_definition("create table triggers(x)"));
     }

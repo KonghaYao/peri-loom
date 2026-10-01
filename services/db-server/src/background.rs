@@ -20,7 +20,8 @@
 
 use std::time::Duration;
 
-use catalog::{Catalog, DatabaseFilter};
+use catalog::DatabaseFilter;
+use std::sync::Arc;
 // JobRecord 属于领域模型（domain::records），catalog 只负责存取
 use chrono::Utc;
 use domain::error::ErrorCode;
@@ -38,7 +39,7 @@ use crate::config::{
     OWNERSHIP_LEASE_TTL, OWNERSHIP_STALE_GRACE, SESSION_SWEEP_INTERVAL, WORKER_CONTROL_TIMEOUT,
 };
 use crate::error::{ApiError, ApiResult, PlatformResultExt};
-use crate::state::AppState;
+use crate::state::DistributedState;
 
 // ==================================================================== Job 种类
 
@@ -89,16 +90,15 @@ pub mod job_kind {
 ///
 /// 存在的意义只有一条：**降低长操作的空转延迟**。job 本身始终写 PostgreSQL，
 /// `Notify` 只是让 Runner 不必等满一个轮询周期；即便通知丢失，兜底轮询也会捞起来。
-#[derive(Debug)]
 pub struct JobQueue {
-    catalog: Catalog,
+    catalog: Arc<dyn catalog::Metadata>,
     notify: Notify,
 }
 
 impl JobQueue {
     /// 构造。
     #[must_use]
-    pub fn new(catalog: Catalog) -> Self {
+    pub fn new(catalog: Arc<dyn catalog::Metadata>) -> Self {
         Self {
             catalog,
             notify: Notify::new(),
@@ -140,7 +140,7 @@ impl JobQueue {
 
 /// 启动全部后台任务；返回的 JoinHandle 交由 `main` 在关闭时统一 abort。
 #[must_use]
-pub fn spawn_all(state: &AppState) -> Vec<tokio::task::JoinHandle<()>> {
+pub fn spawn_all(state: &DistributedState) -> Vec<tokio::task::JoinHandle<()>> {
     vec![
         spawn_reconciler(state.clone()),
         spawn_catalog_watcher(state.clone()),
@@ -148,7 +148,7 @@ pub fn spawn_all(state: &AppState) -> Vec<tokio::task::JoinHandle<()>> {
         spawn_ownership_gc(state.clone()),
         spawn_eviction(state.clone()),
         spawn_job_runner(state.clone()),
-        spawn_session_sweeper(state.clone()),
+        spawn_session_sweeper(state.shared.clone()),
     ]
 }
 
@@ -157,7 +157,7 @@ pub fn spawn_all(state: &AppState) -> Vec<tokio::task::JoinHandle<()>> {
 /// **Control Plane 不可用时不得清空缓存**：本函数在任何失败路径上都只记日志，
 /// 让缓存继续服务已运行的 DB。
 #[must_use]
-pub fn spawn_reconciler(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_reconciler(state: DistributedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let interval = state.config.route_reconcile_interval;
         let mut ticker = tokio::time::interval(interval);
@@ -184,7 +184,7 @@ pub fn spawn_reconciler(state: AppState) -> tokio::task::JoinHandle<()> {
 
 /// 监听 Catalog 变更并即时刷新受影响的路由（**仅加速**，正确性由 reconcile 保证）。
 #[must_use]
-pub fn spawn_catalog_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_catalog_watcher(state: DistributedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // LISTEN 断开后必须重连；重连前做的任何事都不影响正确性，因此失败只退避重试。
         const RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
@@ -230,7 +230,10 @@ pub fn spawn_catalog_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
 }
 
 /// 应用一条 Catalog 变更：只刷新受影响的路由，不做全量拉取。
-async fn apply_catalog_change(state: &AppState, change: &catalog::CatalogChange) -> ApiResult<()> {
+async fn apply_catalog_change(
+    state: &DistributedState,
+    change: &catalog::CatalogChange,
+) -> ApiResult<()> {
     // 只有 databases 表的变更能定位到具体路由；其它表（workers / operations …）
     // 不改变 db -> worker 的映射，交给周期 reconcile 即可。
     match change_database_id(change) {
@@ -272,7 +275,7 @@ pub fn change_database_id(change: &catalog::CatalogChange) -> Option<DatabaseId>
 /// 判定 `UNAVAILABLE` 后立刻做 Owner 失效接管：为它名下的每个 DB 重新选 Worker、
 /// 推进 ownership epoch（fencing 掉旧进程）、再拉起新进程。
 #[must_use]
-pub fn spawn_heartbeat_monitor(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_heartbeat_monitor(state: DistributedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(HEARTBEAT_CHECK_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -293,7 +296,7 @@ pub fn spawn_heartbeat_monitor(state: AppState) -> tokio::task::JoinHandle<()> {
 }
 
 /// 一次心跳检查。
-async fn heartbeat_tick(state: &AppState) -> ApiResult<()> {
+async fn heartbeat_tick(state: &DistributedState) -> ApiResult<()> {
     // 本轮不做「刚刚收到过心跳」的排除：Catalog 在每次心跳里会把计数清零，
     // 因此这条 SQL 只会命中真正超时的 Worker。
     let missed = state.catalog.mark_missed_heartbeats(&[]).await.api()?;
@@ -321,7 +324,7 @@ async fn heartbeat_tick(state: &AppState) -> ApiResult<()> {
 }
 
 async fn mark_worker_state(
-    state: &AppState,
+    state: &DistributedState,
     worker_id: &WorkerId,
     new_state: WorkerState,
 ) -> ApiResult<()> {
@@ -342,7 +345,7 @@ async fn mark_worker_state(
 }
 
 /// 为故障 Worker 名下的 DB 做 Owner 失效接管（架构 §11.2 / §12.2）。
-async fn failover_worker(state: &AppState, dead_worker: &WorkerId) -> ApiResult<()> {
+async fn failover_worker(state: &DistributedState, dead_worker: &WorkerId) -> ApiResult<()> {
     let databases = state
         .catalog
         .list_databases(DatabaseFilter {
@@ -377,7 +380,7 @@ async fn failover_worker(state: &AppState, dead_worker: &WorkerId) -> ApiResult<
 
 /// 单个 DB 的失效接管：选新家 -> 推进 epoch -> 拉起进程。
 async fn failover_one(
-    state: &AppState,
+    state: &DistributedState,
     record: &DatabaseRecord,
     dead_worker: &WorkerId,
 ) -> ApiResult<WorkerId> {
@@ -429,7 +432,7 @@ async fn failover_one(
 
 /// 周期性回收租约过期的 ownership（架构 §10 / §16「超时自动过期」）。
 #[must_use]
-pub fn spawn_ownership_gc(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_ownership_gc(state: DistributedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(OWNERSHIP_GC_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -487,7 +490,7 @@ pub fn spawn_ownership_gc(state: AppState) -> tokio::task::JoinHandle<()> {
 /// 4. Owner Worker 的资源水位达到停止线（[`policy::STOP_NEW_PLACEMENT`]）——
 ///    没有资源压力时驱逐只会造成后续请求的冷启动抖动。
 #[must_use]
-pub fn spawn_eviction(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_eviction(state: DistributedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(EVICTION_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -504,7 +507,7 @@ pub fn spawn_eviction(state: AppState) -> tokio::task::JoinHandle<()> {
     })
 }
 
-async fn eviction_tick(state: &AppState) -> ApiResult<()> {
+async fn eviction_tick(state: &DistributedState) -> ApiResult<()> {
     let idle_after = chrono::Duration::from_std(state.background.warm_idle_eviction_after)
         .unwrap_or_else(|_| chrono::Duration::minutes(10));
     let cutoff = Utc::now() - idle_after;
@@ -577,7 +580,7 @@ async fn eviction_tick(state: &AppState) -> ApiResult<()> {
 }
 
 /// 停止 DB 并把 Catalog 状态置回 COLD（释放 Owner）。
-async fn stop_and_cool(state: &AppState, record: &DatabaseRecord) -> ApiResult<()> {
+async fn stop_and_cool(state: &DistributedState, record: &DatabaseRecord) -> ApiResult<()> {
     if let Some(worker_id) = record.owner_worker_id.clone() {
         // 尽力停止：Worker 不可达时不阻塞状态推进（进程会被 Worker 侧回收）。
         if let Err(err) = state
@@ -612,7 +615,7 @@ async fn stop_and_cool(state: &AppState, record: &DatabaseRecord) -> ApiResult<(
 
 /// 长操作 Job Runner。
 #[must_use]
-pub fn spawn_job_runner(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_job_runner(state: DistributedState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let lease_owner = format!("db-server-{}", std::process::id());
         loop {
@@ -642,7 +645,7 @@ pub fn spawn_job_runner(state: AppState) -> tokio::task::JoinHandle<()> {
 }
 
 /// 执行一个 job，并把结果同步到关联的 operation。
-async fn run_job(state: &AppState, job: &JobRecord) {
+async fn run_job(state: &DistributedState, job: &JobRecord) {
     let operation_id = job
         .payload
         .get("operation_id")
@@ -719,7 +722,7 @@ async fn run_job(state: &AppState, job: &JobRecord) {
 ///
 /// # Errors
 /// 任一业务步骤失败即返回错误；Runner 负责把它写进 operation 与 job。
-async fn execute_job(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn execute_job(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     match job.kind.as_str() {
         job_kind::DB_CREATE => job_db_create(state, job).await,
         job_kind::DB_START => job_db_start(state, job).await,
@@ -767,7 +770,7 @@ fn payload_bool(job: &JobRecord, key: &str) -> bool {
 /// 创建在 Serverless 模型下**不需要**预先物化工作集：DB 落地即 COLD，
 /// 首次访问由冷启动路径把进程拉起来（架构 §7 / §8）。这个 job 因此只做
 /// 「确认元数据就绪」这一件可验证的事，不做无意义的等待。
-async fn job_db_create(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_create(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     let record = state.catalog.get_database(database_id).await.api()?;
     Ok(json!({
@@ -778,7 +781,7 @@ async fn job_db_create(state: &AppState, job: &JobRecord) -> ApiResult<serde_jso
 }
 
 /// DB_START：走与冷启动完全相同的路径（Coalesce + Placement + StartDatabase）。
-async fn job_db_start(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_start(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     let record = state.catalog.get_database(database_id).await.api()?;
     if record.state.is_serving() {
@@ -797,7 +800,7 @@ async fn job_db_start(state: &AppState, job: &JobRecord) -> ApiResult<serde_json
 }
 
 /// DB_STOP：停止进程并把状态置回 COLD。
-async fn job_db_stop(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_stop(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     let record = state.catalog.get_database(database_id).await.api()?;
     if record.is_deleted() {
@@ -809,7 +812,7 @@ async fn job_db_stop(state: &AppState, job: &JobRecord) -> ApiResult<serde_json:
 
 /// DB_RESTART：先停后起；不等 Worker 的 Restart RPC，因为「停 + 起」的语义
 /// 与 Worker 内部实现无关，且能复用同一条冷启动路径（含 placement 复查）。
-async fn job_db_restart(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_restart(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     let record = state.catalog.get_database(database_id).await.api()?;
     stop_and_cool(state, &record).await?;
@@ -833,7 +836,7 @@ async fn job_db_restart(state: &AppState, job: &JobRecord) -> ApiResult<serde_js
 ///
 /// 这是「正确但非最优」的迁移：语义（epoch 推进 + 旧进程失效）是完备的，
 /// 代价是一次冷启动；热迁移的 `PrepareMove` 预拉取留待后续优化。
-async fn job_db_move(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_move(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     let record = state.catalog.get_database(database_id).await.api()?;
     if record.is_deleted() {
@@ -935,7 +938,7 @@ async fn job_db_move(state: &AppState, job: &JobRecord) -> ApiResult<serde_json:
 }
 
 /// DB_DELETE：先停（尽力），再软删除。
-async fn job_db_delete(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_delete(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     match state.catalog.get_database(database_id).await {
         Ok(record) => {
@@ -969,7 +972,7 @@ async fn job_db_delete(state: &AppState, job: &JobRecord) -> ApiResult<serde_jso
 ///
 /// `backup = true` 时额外写 `backup_jobs`（对外可查询的备份历史）。
 async fn job_db_snapshot(
-    state: &AppState,
+    state: &DistributedState,
     job: &JobRecord,
     backup: bool,
 ) -> ApiResult<serde_json::Value> {
@@ -1087,7 +1090,7 @@ async fn job_db_snapshot(
 ///
 /// 简化说明：不做 PITR（目标时间点回放），只恢复快照 + 从快照 LSN 之后重放 Remote WAL，
 /// 后者由 Worker 侧在启动时完成（它知道本地 working set 的 LSN）。
-async fn job_db_restore(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_db_restore(state: &DistributedState, job: &JobRecord) -> ApiResult<serde_json::Value> {
     let database_id = payload_database_id(job)?;
     let record = state.catalog.get_database(database_id).await.api()?;
 
@@ -1141,7 +1144,10 @@ async fn job_db_restore(state: &AppState, job: &JobRecord) -> ApiResult<serde_js
 }
 
 /// WORKER_DRAIN：标记 DRAINING 并请求 Worker 迁移 / 停止其上的 DB。
-async fn job_worker_drain(state: &AppState, job: &JobRecord) -> ApiResult<serde_json::Value> {
+async fn job_worker_drain(
+    state: &DistributedState,
+    job: &JobRecord,
+) -> ApiResult<serde_json::Value> {
     let worker_id = WorkerId::new(payload_str(job, "worker_id")?);
     let stop_cold_and_warm = payload_bool(job, "stop_cold_and_warm");
 
@@ -1192,7 +1198,7 @@ async fn job_worker_drain(state: &AppState, job: &JobRecord) -> ApiResult<serde_
 
 /// 定期清理本地过期会话，并尽力关闭 Worker 侧会话（架构 §13.2）。
 #[must_use]
-pub fn spawn_session_sweeper(state: AppState) -> tokio::task::JoinHandle<()> {
+pub fn spawn_session_sweeper(state: crate::state::AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SESSION_SWEEP_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1200,15 +1206,7 @@ pub fn spawn_session_sweeper(state: AppState) -> tokio::task::JoinHandle<()> {
             ticker.tick().await;
             let expired = state.sessions.take_expired(Utc::now());
             for binding in expired {
-                if let Err(err) = state
-                    .router
-                    .close_session(
-                        &binding.database_id,
-                        &binding.worker_id,
-                        &binding.session_id,
-                    )
-                    .await
-                {
+                if let Err(err) = state.execution.close_session(&binding).await {
                     tracing::debug!(
                         session_id = %binding.session_id,
                         message = %err,

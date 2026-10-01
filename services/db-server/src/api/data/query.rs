@@ -12,7 +12,6 @@ use axum::Json;
 use super::stream;
 use crate::api::{db_id, dto};
 use crate::auth::{permission, Principal};
-use crate::clients::{data_request_context, execute_batch_request};
 use crate::error::{ApiError, ApiResult};
 use crate::middleware::current_request_id;
 use crate::router::StreamTarget;
@@ -66,7 +65,7 @@ pub async fn query_database(
     let params = proto_params(&request.params)?;
 
     stream::execute(
-        &state.router,
+        state.execution.as_ref(),
         state.config.inline_result_limit_bytes,
         database_id,
         StreamTarget::Stateless {
@@ -119,39 +118,9 @@ pub async fn batch_database(
     }
 
     let request_id = current_request_id();
-    let call_state = state.clone();
-    let call_request_id = request_id.clone();
-    // call_data 自带「路由过期 -> 刷新后重试一次」的透明重试（会话内执行没有这个待遇）。
     let response = state
-        .router
-        .call_data(database_id, None, move |route| {
-            let call_state = call_state.clone();
-            let call_request_id = call_request_id.clone();
-            let statements = statements.clone();
-            async move {
-                let mut client = call_state
-                    .channels
-                    .data(&route.worker_endpoint)
-                    .await
-                    .map_err(|err| tonic::Status::unavailable(err.to_string()))?;
-                let context = data_request_context(
-                    &call_request_id,
-                    route.database_id,
-                    &route.worker_id,
-                    route.owner_epoch,
-                    None,
-                    protocol::convert::deadline_ms_from(None),
-                );
-                let response = client
-                    .execute_batch(execute_batch_request(context, statements, atomic))
-                    .await?
-                    .into_inner();
-                if let Some(error) = stream::proto_error(response.error.as_ref()) {
-                    return Ok(Err(error));
-                }
-                Ok(Ok(response))
-            }
-        })
+        .execution
+        .batch(database_id, statements, atomic, &request_id)
         .await?;
 
     let results = response
@@ -162,7 +131,7 @@ pub async fn batch_database(
 
     Ok(Json(dto::BatchResponse {
         results,
-        wal_lsn: response.wal_lsn,
+        wal_lsn: state.execution.remote_lsn().then_some(response.wal_lsn),
         elapsed_micros: response.elapsed_micros,
         request_id,
     }))

@@ -34,6 +34,7 @@ import { JsonBlock } from '../components/JsonBlock';
 import { OperationModal } from '../components/OperationModal';
 import { DatabaseStateTag } from '../components/StatusTag';
 import { MoveDatabaseModal, RestoreDatabaseModal } from '../components/database/DatabaseModals';
+import { useDeployment } from '../hooks/useDeployment';
 import { useSubmitOperation } from '../hooks/useSubmitOperation';
 import { dbName, dbWorkerId, slowQueryMillis, slowQuerySql } from '../utils/database';
 import { formatBytes, formatMillis, formatTime, shortId } from '../utils/format';
@@ -57,6 +58,8 @@ const ACTIONS: ActionDef[] = [
 
 export function DatabaseDetailPage(): JSX.Element {
   const { dbId = '' } = useParams<{ dbId: string }>();
+  const deployment = useDeployment().data;
+  const canMove = deployment?.capabilities.database_move ?? false;
   const { modal, message } = AntdApp.useApp();
   const { pending, operationId, error, run, track, clearOperation, clearError } = useSubmitOperation();
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -143,12 +146,12 @@ export function DatabaseDetailPage(): JSX.Element {
       width: 110,
       render: (_: unknown, s) => formatBytes(s.size_bytes),
     },
-    {
+    ...(deployment?.capabilities.remote_durability_lsn ? [{
       title: 'Base LSN',
       key: 'base_lsn',
       width: 130,
-      render: (_: unknown, s) => (s.base_lsn === undefined || s.base_lsn === null ? '-' : String(s.base_lsn)),
-    },
+      render: (_: unknown, s: Snapshot) => (s.base_lsn === undefined || s.base_lsn === null ? '-' : String(s.base_lsn)),
+    }] as ColumnsType<Snapshot> : []),
     { title: '创建时间', key: 'created_at', width: 175, render: (_: unknown, s) => formatTime(s.created_at) },
   ];
 
@@ -218,9 +221,9 @@ export function DatabaseDetailPage(): JSX.Element {
             <Button size="small" danger icon={<UndoOutlined />} disabled={pending} onClick={() => setRestoreOpen(true)}>
               恢复
             </Button>
-            <Button size="small" icon={<SwapOutlined />} disabled={pending} onClick={() => setMoveOpen(true)}>
+            {canMove && <Button size="small" icon={<SwapOutlined />} disabled={pending} onClick={() => setMoveOpen(true)}>
               迁移
-            </Button>
+            </Button>}
           </Space>
         }
       >
@@ -233,7 +236,7 @@ export function DatabaseDetailPage(): JSX.Element {
                 </Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="名称">{db ? dbName(db) : '-'}</Descriptions.Item>
-              <Descriptions.Item label="磁盘配额">{typeof db?.budget?.disk_mib === 'number' ? `${db.budget.disk_mib} MiB` : '-'}</Descriptions.Item>
+              <Descriptions.Item label={deployment?.capabilities.per_database_hard_isolation ? "磁盘配额" : "磁盘预算"}>{typeof db?.budget?.disk_mib === 'number' ? `${db.budget.disk_mib} MiB` : '-'}</Descriptions.Item>
               <Descriptions.Item label="创建时间">{formatTime(db?.created_at)}</Descriptions.Item>
               <Descriptions.Item label="更新时间">{formatTime(db?.updated_at)}</Descriptions.Item>
             </Descriptions>
@@ -244,18 +247,18 @@ export function DatabaseDetailPage(): JSX.Element {
               <Descriptions.Item label="状态">
                 <DatabaseStateTag state={db?.state} />
               </Descriptions.Item>
-              <Descriptions.Item label="Owner Worker">
+              {deployment?.capabilities.workers && <Descriptions.Item label="Owner Worker">
                 {db && dbWorkerId(db) !== '-' ? (
                   <Link to={`/workers/${dbWorkerId(db)}`}>{dbWorkerId(db)}</Link>
                 ) : (
                   '-'
                 )}
-              </Descriptions.Item>
-              <Descriptions.Item label="Epoch">
+              </Descriptions.Item>}
+              {deployment?.capabilities.workers && <Descriptions.Item label="Epoch">
                 <Tooltip title="迁移 / 故障切换后递增，用于识别陈旧路由">
                   <Tag>{db?.owner_epoch ?? '-'}</Tag>
                 </Tooltip>
-              </Descriptions.Item>
+              </Descriptions.Item>}
               <Descriptions.Item label="引擎版本">{db?.engine_version ?? '-'}</Descriptions.Item>
               <Descriptions.Item label="存储区域">{db?.storage_region ?? '-'}</Descriptions.Item>
               <Descriptions.Item label="存储前缀">
@@ -368,7 +371,7 @@ export function DatabaseDetailPage(): JSX.Element {
       </Card>
 
       <MoveDatabaseModal
-        open={moveOpen}
+        open={moveOpen && canMove}
         dbId={dbId}
         onClose={() => setMoveOpen(false)}
         onSubmitted={(opId) => {

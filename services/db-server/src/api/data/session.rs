@@ -12,23 +12,16 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::Json;
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::Utc;
 use domain::error::ErrorCode;
 
 use super::stream;
 use crate::api::{db_id, dto};
 use crate::auth::{permission, Principal};
-use crate::clients::{data_request_context, open_session_request};
 use crate::error::{ApiError, ApiResult};
 use crate::middleware::current_request_id;
 use crate::router::StreamTarget;
 use crate::state::{AppState, SessionBinding};
-
-/// proto 的毫秒时间戳 -> `DateTime<Utc>`；缺失 / 非法时按本地空闲超时兜底。
-fn expires_at(unix_ms: u64, idle_timeout_ms: u32) -> DateTime<Utc> {
-    DateTime::<Utc>::from_timestamp_millis(unix_ms as i64)
-        .unwrap_or_else(|| Utc::now() + ChronoDuration::milliseconds(i64::from(idle_timeout_ms)))
-}
 
 /// 打开显式会话。
 #[utoipa::path(
@@ -54,7 +47,7 @@ pub async fn open_session(
 
     Ok(Json(dto::SessionOpened {
         session_id: binding.session_id,
-        worker_id: binding.worker_id.to_string(),
+        worker_id: binding.worker_id.as_ref().map(ToString::to_string),
         database_id: database_id.to_string(),
         expires_at_unix_ms,
         request_id: current_request_id(),
@@ -70,58 +63,19 @@ pub(crate) async fn open_binding(
     state: &AppState,
     database_id: domain::ids::DatabaseId,
 ) -> ApiResult<(SessionBinding, u64)> {
-    let idle_timeout_ms = state.config.session_idle_timeout_ms;
-    let call_request_id = current_request_id();
-    let call_state = state.clone();
-
-    // call_data 负责「路由过期 -> 刷新后重试一次」；会话本身不参与重试（还没建立）。
-    let (response, route) = state
-        .router
-        .call_data(database_id, None, move |route| {
-            let call_state = call_state.clone();
-            let call_request_id = call_request_id.clone();
-            async move {
-                let mut client = call_state
-                    .channels
-                    .data(&route.worker_endpoint)
-                    .await
-                    .map_err(|err| tonic::Status::unavailable(err.to_string()))?;
-                let context = data_request_context(
-                    &call_request_id,
-                    route.database_id,
-                    &route.worker_id,
-                    route.owner_epoch,
-                    None,
-                    protocol::convert::deadline_ms_from(None),
-                );
-                let response = client
-                    .open_session(open_session_request(context, idle_timeout_ms))
-                    .await?
-                    .into_inner();
-                if let Some(error) = stream::proto_error(response.error.as_ref()) {
-                    return Ok(Err(error));
-                }
-                Ok(Ok((response, route)))
-            }
-        })
+    let binding = state
+        .execution
+        .open_session(
+            database_id,
+            &current_request_id(),
+            state.config.session_idle_timeout_ms,
+        )
         .await?;
-
-    if response.session_id.trim().is_empty() {
-        return Err(ApiError::internal("Worker 返回了空 session_id"));
-    }
-
-    let binding = SessionBinding {
-        session_id: response.session_id.clone(),
-        database_id,
-        worker_id: route.worker_id,
-        owner_epoch: route.owner_epoch,
-        created_at: Utc::now(),
-        expires_at: expires_at(response.expires_at_unix_ms, idle_timeout_ms),
-    };
+    let expires = binding.expires_at.timestamp_millis() as u64;
     state
         .sessions
-        .insert(response.session_id, binding.clone());
-    Ok((binding, response.expires_at_unix_ms))
+        .insert(binding.session_id.clone(), binding.clone());
+    Ok((binding, expires))
 }
 
 /// 会话内查询（结果集出口形态与无会话查询完全一致）。
@@ -150,22 +104,10 @@ pub async fn session_query(
     let binding = live_binding(&state, &session_id)?;
     let params = super::query::proto_params(&request.params)?;
 
-    // epoch 校验必须在真正执行之前：会话 pin 的进程若已被 failover 顶掉，
-    // 把语句发过去只会得到一条 fenced 错误，不如直接给客户端「会话已失效」。
-    let route = state
-        .router
-        .resolve_target(binding.database_id, None)
-        .await?;
-    if route.worker_id != binding.worker_id || route.owner_epoch != binding.owner_epoch {
-        state.sessions.remove(&session_id);
-        return Err(ApiError::new(
-            ErrorCode::SessionLost,
-            format!("会话 {session_id} 所属数据库已发生 failover，会话不可恢复"),
-        ));
-    }
+    state.execution.validate_session(&binding).await?;
 
     stream::execute(
-        &state.router,
+        state.execution.as_ref(),
         state.config.inline_result_limit_bytes,
         binding.database_id,
         StreamTarget::Session {
@@ -193,6 +135,9 @@ pub(crate) fn live_binding(state: &AppState, session_id: &str) -> ApiResult<Sess
             format!("会话 {session_id} 已空闲超时"),
         ));
     }
+    state
+        .sessions
+        .touch(session_id, state.config.session_idle_timeout_ms);
     Ok(binding)
 }
 
@@ -223,14 +168,10 @@ pub async fn close_session(
     if let Some(binding) = binding {
         // 通知 Worker 立即释放连接上下文；失败不致命（Worker 侧还有空闲计时兜底），
         // 但要让调用方在日志里看得到，否则「关闭变慢」会变成无头案。
-        if let Err(err) = state
-            .router
-            .close_session(&binding.database_id, &binding.worker_id, &session_id)
-            .await
-        {
+        if let Err(err) = state.execution.close_session(&binding).await {
             tracing::warn!(
                 session_id,
-                worker_id = %binding.worker_id,
+                worker_id = ?binding.worker_id,
                 code = err.code().as_str(),
                 "通知 Worker 关闭会话失败（依赖 Worker 侧空闲回收）"
             );

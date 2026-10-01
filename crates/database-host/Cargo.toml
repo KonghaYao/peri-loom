@@ -1,0 +1,16 @@
+[package]
+name = "database-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain.workspace = true
+engine-adapter.workspace = true
+turso_core.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

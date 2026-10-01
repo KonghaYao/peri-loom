@@ -75,7 +75,10 @@ pub async fn list_databases(
 
     let records = state.catalog.list_databases(filter).await.api()?;
     Ok(Json(dto::Page {
-        items: records.iter().map(dto::DatabaseView::from).collect(),
+        items: records
+            .iter()
+            .map(|record| dto::DatabaseView::for_deployment(record, state.execution.remote_lsn()))
+            .collect(),
         limit,
         offset,
     }))
@@ -145,23 +148,47 @@ pub async fn create_database(
     let body = stable_body_bytes(&request);
     let prepare_state = state.clone();
 
-    let outcome = submit_long_operation(
-        &state,
-        &principal,
-        &headers,
-        post_method(),
-        uri.path(),
-        &body,
-        spec,
-        |_operation_id| async move {
-            let record = prepare_state.catalog.create_database(params).await.api()?;
-            Ok(PreparedOperation {
-                database_id: Some(record.id),
-                extra: serde_json::json!({ "database_id": record.id.to_string() }),
-            })
-        },
-    )
-    .await;
+    let outcome = if let crate::deployment::Deployment::Simple(local) = &state.deployment {
+        if request.cpu_milli.is_some()
+            || request.memory_mib.is_some()
+            || request.fd_limit.is_some()
+            || request.disk_mib.is_some()
+            || request.iops_limit.is_some()
+            || request.storage_region.is_some()
+        {
+            Err(crate::deployment::unsupported())
+        } else {
+            local
+                .submit(
+                    &principal,
+                    &headers,
+                    post_method(),
+                    uri.path(),
+                    &body,
+                    spec,
+                    Some(params),
+                )
+                .await
+        }
+    } else {
+        submit_long_operation(
+            &state,
+            &principal,
+            &headers,
+            post_method(),
+            uri.path(),
+            &body,
+            spec,
+            |_operation_id| async move {
+                let record = prepare_state.catalog.create_database(params).await.api()?;
+                Ok(PreparedOperation {
+                    database_id: Some(record.id),
+                    extra: serde_json::json!({ "database_id": record.id.to_string() }),
+                })
+            },
+        )
+        .await
+    };
 
     let database_id = outcome.as_ref().ok().and_then(|accepted| {
         accepted
@@ -199,7 +226,10 @@ pub async fn get_database(
     principal.require(permission::DB_READ)?;
     let database_id = db_id(&raw_db_id)?;
     let record = load_database(&state, database_id).await?;
-    Ok(Json(dto::DatabaseView::from(&record)))
+    Ok(Json(dto::DatabaseView::for_deployment(
+        &record,
+        state.execution.remote_lsn(),
+    )))
 }
 
 /// 删除数据库（先停进程，再软删记录）。
@@ -445,6 +475,7 @@ pub async fn move_database(
     Json(request): Json<dto::MoveDatabaseRequest>,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
     principal.require(permission::DB_ADMIN)?;
+    state.deployment.require_cluster()?;
     let database_id = db_id(&raw_db_id)?;
     let record = load_database(&state, database_id).await?;
     let id_text = database_id.to_string();

@@ -41,7 +41,7 @@ const BACKUP_JOB_COLUMNS: &str =
      actual_point, bytes_transferred, error_message, created_at, finished_at";
 
 /// backup_jobs 行（domain 目前没有对应记录类型，读模型定义在 Catalog 内）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackupJobRecord {
     pub id: Uuid,
     pub database_id: DatabaseId,

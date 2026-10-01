@@ -5,6 +5,8 @@
 架构契约见 [`tursodb-db-platform-architecture.md`](./tursodb-db-platform-architecture.md)（状态：FINAL / Development Contract）。
 本仓库的任何实现不得改变该文档第 15 章与第 18.4 节冻结的系统语义。
 
+单机部署可使用独立的 **Simple 模式**：一个内嵌管理后台的二进制、一个端口和一个数据目录，使用 SQLite 元数据与本地可靠提交，无需外部服务。启动、备份与迁移见 [Simple 部署指南](deploy/simple-deployment.md)。下述远程 WAL 与 Worker 契约适用于 distributed 模式。
+
 ## 架构一句话
 
 > Server 是全局 HTTP 入口、路由与管理面；Worker 是高密度 DB Process Host。

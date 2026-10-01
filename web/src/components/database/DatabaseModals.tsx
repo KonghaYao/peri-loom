@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { App as AntdApp, Form, Input, Modal, Select, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
+import { useDeployment } from '../../hooks/useDeployment';
 import { api, toItems } from '../../api/client';
 import { ErrorAlert } from '../ErrorAlert';
 import { workerSaturation, workerState } from '../../utils/worker';
@@ -100,10 +101,11 @@ export function MoveDatabaseModal({
   const [submitting, setSubmitting] = useState(false);
   const [target, setTarget] = useState<string | undefined>(undefined);
 
+  const canMove = useDeployment().data?.capabilities.database_move ?? false;
   const workersQuery = useQuery({
     queryKey: ['workers'],
     queryFn: () => api.workers.list(),
-    enabled: open,
+    enabled: open && canMove,
   });
   const workers = toItems(workersQuery.data);
 

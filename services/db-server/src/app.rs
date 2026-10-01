@@ -34,7 +34,7 @@ use crate::background::{self, JobQueue};
 use crate::clients::ChannelPool;
 use crate::config::ServerConfig;
 use crate::router::{DbRouter, RouterConfig};
-use crate::state::{AppState, BackgroundConfig, Readiness};
+use crate::state::{AppState, BackgroundConfig, DistributedState, HttpConfig, Readiness};
 
 /// 服务名（日志 / trace 的 service 标识，冻结）。
 pub const SERVICE_NAME: &str = "db-server";
@@ -105,7 +105,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
             inline_result_limit_bytes: config.inline_result_limit_bytes,
         },
     ));
-    let jobs = Arc::new(JobQueue::new(catalog.clone()));
+    let jobs = Arc::new(JobQueue::new(Arc::new(catalog.clone())));
     let jwt = config
         .jwt_secret
         .as_deref()
@@ -123,19 +123,38 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         warn!("未配置 JWT_SECRET_FILE / JWT_SECRET：本次只接受 x-api-token 认证");
     }
 
-    let state = AppState::new(
-        config.clone(),
-        Arc::new(BackgroundConfig::default()),
-        catalog,
-        router,
-        routes,
-        channels,
-        Arc::new(Readiness::new()),
+    let shared = AppState {
+        config: Arc::new(HttpConfig {
+            inline_result_limit_bytes: config.inline_result_limit_bytes,
+            session_idle_timeout_ms: config.session_idle_timeout_ms,
+        }),
+        catalog: Arc::new(catalog.clone()),
+        execution: Arc::new(crate::execution::DistributedExecutor {
+            router: router.clone(),
+            channels: channels.clone(),
+        }),
+        sessions: Arc::new(crate::state::SessionRegistry::new()),
+        readiness: Arc::new(Readiness::new()),
         jwt,
         jwt_issuer,
         metrics,
         jobs,
-    );
+        deployment: crate::deployment::Deployment::Distributed(Arc::new(
+            crate::deployment::DistributedServices {
+                catalog: catalog.clone(),
+                router: router.clone(),
+            },
+        )),
+    };
+    let state = DistributedState {
+        shared,
+        config: config.clone(),
+        background: Arc::new(BackgroundConfig::default()),
+        catalog,
+        router,
+        routes,
+        channels,
+    };
 
     // 先 bind 再跑后台任务：端口占用这类错误必须在启动早期暴露，而不是等一堆后台
     // 任务起来了、对外却接不了请求。
@@ -180,7 +199,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         }
     });
 
-    let http_router = crate::api::build_router(state.clone());
+    let http_router = crate::api::build_router(state.shared.clone());
     info!(addr = %local_addr(&http_listener), "HTTP 服务启动");
     let http_task = tokio::spawn(serve(http_listener, http_router, shutdown_rx.clone()));
 
@@ -194,7 +213,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
 
     let ops_task = ops_listener.map(|listener| {
         // OPS 端口只服务 /healthz /readyz /metrics：探针与指标口不应该混在对外 HTTP 出口上
-        let ops_router = crate::api::system::routes().with_state(state.clone());
+        let ops_router = crate::api::system::routes().with_state(state.shared.clone());
         info!(addr = %local_addr(&listener), "OPS 服务启动（/healthz /readyz /metrics）");
         tokio::spawn(serve(listener, ops_router, shutdown_rx.clone()))
     });
@@ -265,7 +284,7 @@ fn install_telemetry() -> Option<TelemetryGuard> {
 ///
 /// 分桶与 observability 保持一致（延迟类指标按**微秒**分桶），否则同一条曲线在两个
 /// 端点上会呈现不同的分位数语义。
-fn install_prometheus() -> PrometheusHandle {
+pub(crate) fn install_prometheus() -> PrometheusHandle {
     let installed = PrometheusBuilder::new()
         .set_buckets_for_metric(
             metrics_exporter_prometheus::Matcher::Suffix("_micros".to_owned()),
@@ -431,7 +450,7 @@ fn retry_backoff(attempt: u32) -> Duration {
 ///
 /// 两个都要接：SIGINT 对应本地 Ctrl-C，SIGTERM 对应容器编排（docker stop / 滚动更新）。
 /// 不接 SIGTERM 会让每次发布都退化成「强杀 + 重放」。
-async fn wait_for_shutdown_signal() {
+pub(crate) async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -463,7 +482,7 @@ async fn wait_for_shutdown_signal() {
 /// 绑定失败属于启动期致命错误：没有心跳入口就没有任何 Worker 可用，服务起来也是废的。
 /// 因此这里返回 error 而不是静默降级。
 async fn serve_ingress(
-    state: Arc<AppState>,
+    state: Arc<DistributedState>,
     addr: SocketAddr,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {

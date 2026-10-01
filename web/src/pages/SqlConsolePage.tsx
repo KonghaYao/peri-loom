@@ -74,7 +74,7 @@ interface DisplayResult {
   /** 已接收行数（可能大于已渲染行数） */
   received: number;
   affectedRows?: number;
-  walLsn?: string | number;
+  walLsn?: string | number | null;
   elapsedMicros?: number;
   /** 流式 chunk 计数，用于展示接收进度 */
   chunks: number;
@@ -239,7 +239,7 @@ export function SqlConsolePage(): JSX.Element {
           let columns: string[] = [];
           let rows: unknown[][] = [];
           let affectedRows: number | undefined;
-          let walLsn: string | number | undefined;
+          let walLsn: string | number | null | undefined;
           let elapsedMicros: number | undefined;
           let chunks = 0;
           let lastFlush = 0;
@@ -494,7 +494,7 @@ export function SqlConsolePage(): JSX.Element {
           </Row>
         ) : null}
 
-        {result?.walLsn !== undefined ? (
+        {result?.walLsn != null ? (
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
             WAL LSN：<Typography.Text code>{String(result.walLsn)}</Typography.Text>
           </Typography.Text>
@@ -526,7 +526,7 @@ export function SqlConsolePage(): JSX.Element {
                 {result.affectedRows !== undefined ? (
                   <Descriptions.Item label="affected_rows">{result.affectedRows}</Descriptions.Item>
                 ) : null}
-                {result.walLsn !== undefined ? (
+                {result.walLsn != null ? (
                   <Descriptions.Item label="wal_lsn">{String(result.walLsn)}</Descriptions.Item>
                 ) : null}
                 {result.elapsedMicros !== undefined ? (

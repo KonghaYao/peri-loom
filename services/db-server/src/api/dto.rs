@@ -156,7 +156,7 @@ pub struct DatabaseView {
     /// 当前 Owner Worker。
     pub owner_worker_id: Option<String>,
     /// Owner Epoch（fencing 依据；每次接管单调递增）。
-    pub owner_epoch: u64,
+    pub owner_epoch: Option<u64>,
     /// ownership 租约到期时间。
     pub lease_expires_at: Option<DateTime<Utc>>,
     /// 是否有冷启动正在进行（内部协调位；对外只作为可观测信息，不代表可重试语义）。
@@ -193,7 +193,7 @@ impl From<&DatabaseRecord> for DatabaseView {
             name: record.name.clone(),
             state: record.state.to_db_str().to_string(),
             owner_worker_id: record.owner_worker_id.as_ref().map(ToString::to_string),
-            owner_epoch: record.owner_epoch.get(),
+            owner_epoch: Some(record.owner_epoch.get()),
             lease_expires_at: record.lease_expires_at,
             wakeup_in_progress: record.wakeup_in_progress,
             storage_region: record.storage_region.clone(),
@@ -500,7 +500,7 @@ pub struct SnapshotView {
     /// 所属数据库。
     pub database_id: String,
     /// 快照起点的 WAL LSN。
-    pub base_lsn: u64,
+    pub base_lsn: Option<u64>,
     /// 校验和。
     pub checksum: String,
     /// 大小（字节）。
@@ -510,7 +510,7 @@ pub struct SnapshotView {
     /// 压缩算法。
     pub compression: String,
     /// 生成快照时的 Owner Epoch。
-    pub owner_epoch: u64,
+    pub owner_epoch: Option<u64>,
     /// 引擎版本。
     pub engine_version: String,
     /// 状态（PENDING / AVAILABLE / CORRUPTED / DELETED）。
@@ -526,12 +526,12 @@ impl From<&SnapshotRecord> for SnapshotView {
         Self {
             id: record.id.to_string(),
             database_id: record.database_id.to_string(),
-            base_lsn: record.base_lsn.get(),
+            base_lsn: Some(record.base_lsn.get()),
             checksum: record.checksum.clone(),
             size_bytes: record.size_bytes,
             object_key: record.object_key.clone(),
             compression: record.compression.clone(),
-            owner_epoch: record.owner_epoch.get(),
+            owner_epoch: Some(record.owner_epoch.get()),
             engine_version: record.engine_version.clone(),
             state: record.state.clone(),
             created_at: record.created_at,
@@ -900,7 +900,7 @@ pub struct QueryResponse {
     /// 是否被截断。
     pub truncated: bool,
     /// 本次执行 durable 的 WAL LSN。
-    pub wal_lsn: u64,
+    pub wal_lsn: Option<u64>,
     /// Worker 侧执行耗时（微秒）。
     pub elapsed_micros: u64,
     /// 请求 ID（与响应头 `x-request-id` 一致）。
@@ -913,7 +913,7 @@ pub struct BatchResponse {
     /// 每条语句的结果集。
     pub results: Vec<ResultSetView>,
     /// durable WAL LSN。
-    pub wal_lsn: u64,
+    pub wal_lsn: Option<u64>,
     /// 执行耗时（微秒）。
     pub elapsed_micros: u64,
     /// 请求 ID。
@@ -926,7 +926,7 @@ pub struct SessionOpened {
     /// 会话 ID。
     pub session_id: String,
     /// 会话 pin 住的 Worker。
-    pub worker_id: String,
+    pub worker_id: Option<String>,
     /// 数据库。
     pub database_id: String,
     /// 会话过期时间（Unix 毫秒）。
@@ -1095,4 +1095,24 @@ pub struct Viewer {
     pub permissions: Vec<String>,
     /// 默认租户。
     pub tenant_id: Option<String>,
+}
+
+impl DatabaseView {
+    pub fn for_deployment(record: &domain::records::DatabaseRecord, remote: bool) -> Self {
+        let mut view = Self::from(record);
+        if !remote {
+            view.owner_epoch = None;
+        }
+        view
+    }
+}
+impl SnapshotView {
+    pub fn for_deployment(record: &domain::records::SnapshotRecord, remote: bool) -> Self {
+        let mut view = Self::from(record);
+        if !remote {
+            view.owner_epoch = None;
+            view.base_lsn = None;
+        }
+        view
+    }
 }

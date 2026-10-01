@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use catalog::Catalog;
+use catalog::{Catalog, Metadata};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use domain::ids::{DatabaseId, WorkerId};
@@ -33,9 +33,9 @@ pub struct SessionBinding {
     /// 所属数据库。
     pub database_id: DatabaseId,
     /// 会话 pin 住的 Worker。
-    pub worker_id: WorkerId,
+    pub worker_id: Option<WorkerId>,
     /// 建会话时的 Owner Epoch；epoch 变化即说明发生过 failover，会话不可恢复。
-    pub owner_epoch: u64,
+    pub owner_epoch: Option<u64>,
     /// 会话建立时间。
     pub created_at: DateTime<Utc>,
     /// 本地判定的过期时间（Worker 侧还有自己的空闲计时）。
@@ -139,6 +139,24 @@ impl SessionRegistry {
         self.sessions.remove(session_id).map(|(_, value)| value)
     }
 
+    pub fn remove_database(&self, database: DatabaseId) {
+        let ids: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|e| e.database_id == database)
+            .map(|e| e.key().clone())
+            .collect();
+        for id in ids {
+            self.remove(&id);
+        }
+    }
+
+    pub fn touch(&self, id: &str, idle_ms: u32) {
+        if let Some(mut binding) = self.sessions.get_mut(id) {
+            binding.expires_at = Utc::now() + chrono::Duration::milliseconds(i64::from(idle_ms));
+        }
+    }
+
     /// 当前会话数。
     #[must_use]
     pub fn len(&self) -> usize {
@@ -179,6 +197,7 @@ impl SessionRegistry {
 /// 未就绪时返回 503，让负载均衡把实例摘掉，而不是让它带着未知状态接请求。
 #[derive(Debug, Default)]
 pub struct Readiness {
+    local_ready: AtomicBool,
     heartbeat_monitor: AtomicBool,
     reconciler: AtomicBool,
 }
@@ -188,6 +207,13 @@ impl Readiness {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn mark_local_ready(&self) {
+        self.local_ready.store(true, Ordering::Release);
+    }
+    pub fn mark_local_stopping(&self) {
+        self.local_ready.store(false, Ordering::Release);
     }
 
     /// 标记心跳监控已启动。
@@ -215,7 +241,8 @@ impl Readiness {
     /// 是否整体就绪。
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.heartbeat_monitor_ready() && self.reconciler_ready()
+        self.local_ready.load(Ordering::Acquire)
+            || (self.heartbeat_monitor_ready() && self.reconciler_ready())
     }
 }
 
@@ -258,77 +285,60 @@ impl Default for BackgroundConfig {
     }
 }
 
-/// 全局共享状态。
+/// HTTP 层只保留两种部署共用的参数，避免本地启动需要伪造集群配置。
+#[derive(Debug, Clone)]
+pub struct HttpConfig {
+    pub inline_result_limit_bytes: usize,
+    pub session_idle_timeout_ms: u32,
+}
+
 #[derive(Clone)]
 pub struct AppState {
-    /// 运行配置。
-    pub config: Arc<ServerConfig>,
-    /// 后台任务参数。
-    pub background: Arc<BackgroundConfig>,
-    /// Catalog（PostgreSQL）句柄。
-    pub catalog: Catalog,
-    /// DB Router（热路径 + 透明 Wake）。
-    pub router: Arc<DbRouter>,
-    /// Route Cache（供 metrics / reconcile 直接访问）。
-    pub routes: Arc<RouteCache>,
-    /// Worker gRPC 连接池。
-    pub channels: Arc<ChannelPool>,
-    /// 显式会话注册表。
+    pub config: Arc<HttpConfig>,
+    pub catalog: Arc<dyn Metadata>,
+    pub execution: Arc<dyn crate::execution::DatabaseExecutor>,
     pub sessions: Arc<SessionRegistry>,
-    /// 长操作 job 投递器（写 PostgreSQL + 唤醒本地 Runner）。
     pub jobs: Arc<JobQueue>,
-    /// 就绪标记。
     pub readiness: Arc<Readiness>,
-    /// JWT 校验器（未配置密钥时为 `None`，此时只能用 API Token）。
     pub jwt: Option<Arc<JwtVerifier>>,
-    /// JWT 签发器（与校验器同时配置；未配置时登录接口返回有明确语义的错误）。
     pub jwt_issuer: Option<Arc<JwtIssuer>>,
-    /// Prometheus 渲染句柄。
     pub metrics: PrometheusHandle,
+    pub deployment: crate::deployment::Deployment,
+}
+
+/// 分布式后台任务的依赖不会进入本地启动路径。
+#[derive(Clone)]
+pub struct DistributedState {
+    pub shared: AppState,
+    pub config: Arc<ServerConfig>,
+    pub background: Arc<BackgroundConfig>,
+    pub catalog: Catalog,
+    pub router: Arc<DbRouter>,
+    pub routes: Arc<RouteCache>,
+    pub channels: Arc<ChannelPool>,
+}
+
+impl std::ops::Deref for DistributedState {
+    type Target = AppState;
+    fn deref(&self) -> &AppState {
+        &self.shared
+    }
 }
 
 impl AppState {
-    /// 组装状态。
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn new(
-        config: Arc<ServerConfig>,
-        background: Arc<BackgroundConfig>,
-        catalog: Catalog,
-        router: Arc<DbRouter>,
-        routes: Arc<RouteCache>,
-        channels: Arc<ChannelPool>,
-        readiness: Arc<Readiness>,
-        jwt: Option<Arc<JwtVerifier>>,
-        jwt_issuer: Option<Arc<JwtIssuer>>,
-        metrics: PrometheusHandle,
-        jobs: Arc<JobQueue>,
-    ) -> Self {
-        Self {
-            config,
-            background,
-            catalog,
-            router,
-            routes,
-            channels,
-            sessions: Arc::new(SessionRegistry::new()),
-            jobs,
-            readiness,
-            jwt,
-            jwt_issuer,
-            metrics,
+    pub fn distributed(&self) -> crate::error::ApiResult<&crate::deployment::DistributedServices> {
+        match &self.deployment {
+            crate::deployment::Deployment::Distributed(services) => Ok(services),
+            crate::deployment::Deployment::Simple(_) => Err(crate::deployment::unsupported()),
         }
     }
 }
 
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // 不打印 config（含密钥字段）与 catalog（连接串）
         f.debug_struct("AppState")
-            .field("routes", &self.routes.stats())
             .field("sessions", &self.sessions.len())
             .field("ready", &self.readiness.is_ready())
-            .field("jwt_enabled", &self.jwt.is_some())
             .finish()
     }
 }
@@ -343,8 +353,8 @@ mod tests {
         SessionBinding {
             session_id: "s1".to_string(),
             database_id: DatabaseId::new_v7(),
-            worker_id: WorkerId::new("w1"),
-            owner_epoch: 3,
+            worker_id: Some(WorkerId::new("w1")),
+            owner_epoch: Some(3),
             created_at: now,
             expires_at: now + ChronoDuration::minutes(minutes),
         }
@@ -370,7 +380,7 @@ mod tests {
         let expired = registry.take_expired(Utc::now());
         assert_eq!(expired.len(), 1);
         // 返回的绑定必须能定位到 Worker —— 清理任务要靠它把 CloseSession 送出去。
-        assert_eq!(expired[0].worker_id, WorkerId::new("w1"));
+        assert_eq!(expired[0].worker_id, Some(WorkerId::new("w1")));
         assert!(registry.get("alive").is_some());
         assert!(registry.get("dead").is_none());
     }

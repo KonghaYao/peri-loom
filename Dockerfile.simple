@@ -1,0 +1,44 @@
+# 单机镜像：前端仅在构建阶段需要 Node，运行时只有 peri-loom 主进程。
+ARG NODE_IMAGE=node:22-alpine
+ARG RUST_IMAGE=rust:1.98-slim-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+
+FROM ${NODE_IMAGE} AS web-build
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+FROM ${RUST_IMAGE} AS rust-build
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
+    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+    CARGO_TERM_COLOR=never
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates pkg-config libssl-dev protobuf-compiler git && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY .cargo .cargo
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY services ./services
+COPY proto ./proto
+COPY migrations ./migrations
+COPY --from=web-build /web/dist ./web/dist
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --locked --bin peri-loom && \
+    cp target/release/peri-loom /usr/local/bin/peri-loom
+
+FROM ${RUNTIME_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 10001 platform && \
+    useradd -u 10001 -g platform -m -s /usr/sbin/nologin platform && \
+    mkdir -p /data && chown platform:platform /data
+COPY --from=rust-build /usr/local/bin/peri-loom /usr/local/bin/peri-loom
+USER platform
+EXPOSE 8080
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/peri-loom"]
+CMD ["serve", "--mode", "simple", "--listen", "0.0.0.0:8080", "--data-dir", "/data"]

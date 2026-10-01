@@ -19,6 +19,7 @@ import {
 } from '@ant-design/icons';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useDeployment } from '../hooks/useDeployment';
 import { PREF_KEYS, usePreferences, type ThemeMode } from '../hooks/usePreferences';
 
 const { Header, Sider, Content } = Layout;
@@ -49,6 +50,7 @@ export function AppLayout(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
+  const deployment = useDeployment().data;
   const { get, set } = usePreferences();
   const { message } = AntdApp.useApp();
   const [collapsed, setCollapsed] = useState(false);
@@ -73,7 +75,7 @@ export function AppLayout(): JSX.Element {
           {!collapsed && (
             <div className="brand__text">
               <div className="brand__title">Peri Loom</div>
-              <div className="brand__sub">DBA Panel</div>
+              <div className="brand__sub">{deployment?.mode === 'simple' ? '本机实例' : 'DBA Panel'}</div>
             </div>
           )}
         </div>
@@ -81,7 +83,7 @@ export function AppLayout(): JSX.Element {
           theme="dark"
           mode="inline"
           selectedKeys={[active]}
-          items={NAV_ITEMS.map((item) => ({
+          items={NAV_ITEMS.filter((item) => item.key !== '/workers' || deployment?.capabilities.workers).map((item) => ({
             key: item.key,
             icon: item.icon,
             label: <Link to={item.key}>{item.label}</Link>,

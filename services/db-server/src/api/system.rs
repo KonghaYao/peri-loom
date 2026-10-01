@@ -29,12 +29,13 @@ pub struct HealthStatus {
 pub struct ReadinessStatus {
     /// 是否整体就绪。
     pub ready: bool,
+    pub metadata: bool,
     /// PostgreSQL Catalog 是否可达（权威事实源，不可用则不接控制面流量）。
-    pub postgres: bool,
+    pub postgres: Option<bool>,
     /// Worker 心跳监控是否已启动。
-    pub heartbeat_monitor: bool,
+    pub heartbeat_monitor: Option<bool>,
     /// Route Cache 是否完成过至少一次全量 reconcile。
-    pub route_reconciler: bool,
+    pub route_reconciler: Option<bool>,
     /// 未就绪时的原因说明。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -44,6 +45,7 @@ pub struct ReadinessStatus {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/v1/deployment", get(deployment))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
 }
@@ -82,22 +84,28 @@ pub async fn healthz() -> Json<HealthStatus> {
     )
 )]
 pub async fn readyz(State(state): State<AppState>) -> Response {
-    // 每次探针都真查一次 PostgreSQL：缓存「上次可用」会让已经失联的实例继续接流量。
+    // 每次探针都检查当前元数据后端。
     let postgres = match state.catalog.health_check().await {
         Ok(()) => true,
         Err(err) => {
-            tracing::warn!(code = err.code.as_str(), message = %err.message, "readyz: PostgreSQL 不可达");
+            tracing::warn!(code = err.code.as_str(), message = %err.message, "readyz: 元数据不可用");
             false
         }
     };
     let heartbeat_monitor = state.readiness.heartbeat_monitor_ready();
     let route_reconciler = state.readiness.reconciler_ready();
-    let ready = postgres && heartbeat_monitor && route_reconciler;
+    let distributed = matches!(
+        state.deployment,
+        crate::deployment::Deployment::Distributed(_)
+    );
+    let ready = postgres && state.readiness.is_ready();
 
     let detail = if ready {
         None
     } else if !postgres {
-        Some("PostgreSQL Catalog 不可达".to_string())
+        Some("元数据 Catalog 不可用".to_string())
+    } else if !distributed {
+        Some("本地实例尚未就绪或正在停止".to_string())
     } else if !heartbeat_monitor {
         Some("Worker 心跳监控尚未就绪".to_string())
     } else {
@@ -106,9 +114,10 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
 
     let body = ReadinessStatus {
         ready,
-        postgres,
-        heartbeat_monitor,
-        route_reconciler,
+        metadata: postgres,
+        postgres: distributed.then_some(postgres),
+        heartbeat_monitor: distributed.then_some(heartbeat_monitor),
+        route_reconciler: distributed.then_some(route_reconciler),
         detail,
     };
     let status = if ready {
@@ -132,7 +141,16 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
         (status = 200, description = "Prometheus 文本格式指标（仅集群内抓取）", body = String)
     )
 )]
-pub async fn metrics(State(state): State<AppState>) -> Response {
+pub async fn metrics(
+    State(state): State<AppState>,
+    principal: Result<crate::auth::Principal, crate::error::ApiError>,
+) -> Response {
+    if matches!(state.deployment, crate::deployment::Deployment::Simple(_)) {
+        match principal.and_then(|p| p.require(crate::auth::permission::DB_ADMIN)) {
+            Ok(()) => {}
+            Err(error) => return error.into_response(),
+        }
+    }
     let body = state.metrics.render();
     (
         StatusCode::OK,
@@ -165,4 +183,15 @@ pub async fn swagger_redirect() -> impl IntoResponse {
         StatusCode::FOUND,
         [(header::LOCATION, "/api/v1/openapi.json")],
     )
+}
+
+/// 客户端在执行管理动作前读取能力；这里不包含任何凭据或拓扑地址。
+#[utoipa::path(
+    get,
+    path = "/api/v1/deployment",
+    tag = "system",
+    responses((status = 200, description = "部署模式与能力", body = crate::deployment::DeploymentInfo))
+)]
+pub async fn deployment(State(state): State<AppState>) -> Json<crate::deployment::DeploymentInfo> {
+    Json(state.deployment.info())
 }

@@ -1,10 +1,10 @@
-# Simple 单机部署方案（草稿）
+# Simple 单机部署方案
 
-状态：草稿，仅记录讨论，未批准实施。
+状态：已按用户后续明确授权实施首版（2026-10-01）。
 
-当前意愿：暂时推进意愿不高，不启动实现或架构重构，不视为当前开发计划。
-后续仅在明确决定推进时，重新评估必要性、成本与代码现状。
-本文中的命令、配置、模块名和接口均为拟议目标；实施顺序只供未来评估参考，不代表排期。
+本文保留原设计目标与架构讨论；实际启动、功能边界与验收结果分别见
+[部署指南](simple-deployment.md)、[实施记录](simple-deployment-progress.md) 和
+[隔离回归记录](simple-validation.md)。首版省略自动 LRU 与跨模式迁移，使用停机整实例导出、持久任务轮询及显式容量限制。
 
 ## 1. 目标与约束
 
@@ -175,7 +175,7 @@ Jobs 重启后恢复未完成任务，重试步骤必须幂等，不能因进程
 - TLS 可以通过主进程显式配置；不把外置反代作为必要依赖。未配置 TLS 时不宣称适合公网直连。
 - Simple 配置缺失时不能偷偷退回 distributed；不需要任何集群地址或 S3 凭据。
 
-## 8. 用户最终体验（目标示例，当前不可执行）
+## 8. 用户最终体验
 
 ```bash
 ./peri-loom serve --mode simple --data-dir ./data
@@ -184,19 +184,12 @@ Jobs 重启后恢复未完成任务，重试步骤必须幂等，不能因进程
 可选配置：监听地址、数据目录、日志等级、打开库上限、内存预算、初始化凭据、TLS。
 采用明确部署模式和独立配置解析，不复用要求 `DATABASE_URL` / `WAL_CLUSTER` 的校验。
 
-```yaml
-services:
-  peri-loom:
-    image: peri-loom:<固定版本>
-    command: ["serve", "--mode", "simple", "--listen", "0.0.0.0:8080", "--data-dir", "/data"]
-    ports: ["127.0.0.1:8080:8080"]
-    volumes: ["peri_data:/data"]
-    restart: unless-stopped
-volumes:
-  peri_data:
+```sh
+mise use -g github:KonghaYao/peri-loom@latest
+mise exec github:KonghaYao/peri-loom@latest -- peri-loom serve --mode simple --data-dir ./data
 ```
 
-这里的命名卷只是本地持久存储，不是额外服务。升级替换可执行文件或镜像，不删除 data。
+GitHub Actions 生成分平台原生二进制 Release 供 mise 安装；保留 Dockerfile 作为可选包装，不维护独立 Simple Compose。升级替换可执行文件，不删除 data。
 升级前导出备份；migration 版本与二进制版本绑定，不支持任意降级打开新格式。
 
 ## 9. 功能取舍与界面
@@ -227,7 +220,7 @@ Hrana 兼容端点在 db-server 已落地（`/db/{db_id}/v2/pipeline`、`/v3/pip
 3. **共享业务接口**：逐步把身份权限、生命周期和执行调用接入双 Adapter；保留 distributed
    行为，复用 domain/protocol 和可复用的 HTTP 逻辑，不复制一整套 db-server。
 4. **补齐产品闭环**：持久作业、本地对象存储、一致性备份恢复、Web 内嵌、能力适配和初始化安全。
-5. **交付**：单文件与单镜像发布、simple 文档、升级/导出流程；现有 Compose 继续作为 distributed 部署。
+5. **交付**：mise 可安装的原生单文件 Release、可选 Dockerfile、simple 文档、升级/导出流程；现有 Compose 继续作为 distributed 部署。
 
 验收标准：
 

@@ -18,7 +18,7 @@ use crate::Catalog;
 // ------------------------------------------------------------------ 读模型
 
 /// panel_preferences 行。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PreferenceRecord {
     pub user_id: UserId,
     pub key: String,
@@ -40,7 +40,7 @@ impl FromRow<'_, PgRow> for PreferenceRow {
 }
 
 /// saved_queries 行（id 用原始 uuid：domain 没有 SavedQueryId）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SavedQueryRecord {
     pub id: Uuid,
     pub user_id: UserId,
@@ -76,7 +76,7 @@ impl FromRow<'_, PgRow> for SavedQueryRow {
 }
 
 /// slow_queries 行。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlowQueryRecord {
     pub id: i64,
     pub database_id: DatabaseId,

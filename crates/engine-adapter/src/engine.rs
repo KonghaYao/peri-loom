@@ -25,11 +25,15 @@
 use std::fmt;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use domain::error::{ErrorCode, PlatformError, Result};
 use domain::value::{ColumnMeta, ResultSet, SqlValue};
-use turso_core::{Connection, Database, Numeric, OpenOptions, SqliteDialect, Statement, Value, IO};
+use turso_core::{
+    Connection, Database, Numeric, OpenOptions, SqliteDialect, Statement, SyncMode, Value, IO,
+};
 
 use crate::durable::PlatformDurableIO;
 use crate::error::map_engine_error;
@@ -158,6 +162,68 @@ pub struct EngineConnection {
 }
 
 impl EngineConnection {
+    /// 本地持久模式强制 FULL；调用方仍须拒绝修改同步策略的 SQL。
+    pub fn enforce_full_sync(&self) {
+        self.conn.set_sync_mode(SyncMode::Full);
+        self.conn
+            .set_sync_type(turso_core::io::FileSyncType::FullFsync);
+        // fsync 失败必须作为请求错误返回；引擎默认策略可能直接 panic。
+        self.conn.set_data_sync_retry(true);
+    }
+
+    /// 无活动写事务时把 WAL 完整回填；一致性快照只复制 checkpoint 后的文件。
+    pub fn checkpoint_full(&self) -> Result<()> {
+        self.conn
+            .checkpoint(turso_core::CheckpointMode::Full)
+            .map_err(|err| map_engine_error(&err))?;
+        Ok(())
+    }
+
+    /// 中断当前语句。连接由宿主线程持有，Arc 内部的中断标志可由请求侧设置。
+    pub fn interrupt(&self) {
+        self.conn.interrupt();
+    }
+
+    pub fn set_cancel_flag(&self, flag: Arc<AtomicBool>) {
+        self.conn
+            .set_progress_handler(1000, Some(Box::new(move || flag.load(Ordering::Relaxed))));
+    }
+
+    pub fn set_query_timeout(&self, timeout: Duration) {
+        self.conn.set_query_timeout(timeout);
+    }
+
+    /// 逐行交给调用方；回调可阻塞以实现有界背压。返回受影响行数。
+    pub fn stream_with_params(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+        mut on_columns: impl FnMut(Vec<ColumnMeta>) -> Result<()>,
+        mut on_row: impl FnMut(Vec<SqlValue>) -> Result<()>,
+    ) -> Result<u64> {
+        let mut stmt = self.conn.query(sql).map_err(|err| map_engine_error(&err))?;
+        let Some(stmt) = stmt.as_mut() else {
+            empty_statement_outcome(params)?;
+            on_columns(Vec::new())?;
+            return Ok(0);
+        };
+        bind_statement_params(stmt, params)?;
+        on_columns(column_metadata(stmt))?;
+        let mut callback_error = None;
+        let run = stmt.run_with_row_callback(|row| {
+            let values = row.get_values().map(to_sql_value).collect();
+            if let Err(error) = on_row(values) {
+                callback_error = Some(error);
+                return Err(turso_core::LimboError::Interrupt);
+            }
+            Ok(())
+        });
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        run.map_err(|err| map_engine_error(&err))?;
+        Ok(u64::try_from(stmt.n_change().max(0)).unwrap_or(u64::MAX))
+    }
     /// 描述 SQL 的参数与结果列，只编译语句，不执行任何一步。
     pub fn describe(&self, sql: &str) -> Result<DescribeOutcome> {
         let stmt = self
@@ -503,26 +569,47 @@ mod tests {
     #[test]
     fn describe_metadata_without_execution() {
         let (_dir, conn) = temp_connection();
-        conn.execute("CREATE TABLE described (id INTEGER PRIMARY KEY, value TEXT)").unwrap();
-        conn.execute("INSERT INTO described VALUES (7, 'before')").unwrap();
+        conn.execute("CREATE TABLE described (id INTEGER PRIMARY KEY, value TEXT)")
+            .unwrap();
+        conn.execute("INSERT INTO described VALUES (7, 'before')")
+            .unwrap();
         conn.begin().unwrap();
-        let result = conn.describe("SELECT id AS answer, value FROM described WHERE id = ? AND value = :name").unwrap();
+        let result = conn
+            .describe("SELECT id AS answer, value FROM described WHERE id = ? AND value = :name")
+            .unwrap();
         assert_eq!(result.param_names, vec![None, Some(":name".into())]);
         assert_eq!(result.columns[0].name, "answer");
         assert_eq!(result.columns[0].type_name, "INTEGER");
         assert_eq!(result.columns[1].type_name, "TEXT");
         assert!(result.is_readonly);
         assert!(!result.is_explain);
-        assert!(!conn.describe("INSERT INTO described VALUES (8, 'never')").unwrap().is_readonly);
-        assert!(conn.describe("EXPLAIN SELECT * FROM described").unwrap().is_explain);
-        assert!(conn.describe("EXPLAIN QUERY PLAN SELECT * FROM described").unwrap().is_explain);
+        assert!(
+            !conn
+                .describe("INSERT INTO described VALUES (8, 'never')")
+                .unwrap()
+                .is_readonly
+        );
+        assert!(
+            conn.describe("EXPLAIN SELECT * FROM described")
+                .unwrap()
+                .is_explain
+        );
+        assert!(
+            conn.describe("EXPLAIN QUERY PLAN SELECT * FROM described")
+                .unwrap()
+                .is_explain
+        );
         conn.describe("COMMIT").unwrap();
         assert!(!conn.is_autocommit());
         assert_eq!(conn.last_insert_rowid(), 7);
-        let QueryOutcome::Rows(rows) = conn.query("SELECT count(*) FROM described").unwrap() else { panic!("期望行") };
+        let QueryOutcome::Rows(rows) = conn.query("SELECT count(*) FROM described").unwrap() else {
+            panic!("期望行")
+        };
         assert_eq!(rows.rows, vec![vec![SqlValue::Integer(1)]]);
         conn.rollback().unwrap();
-        assert!(conn.describe("SELECT * FROM missing_describe_table").is_err());
+        assert!(conn
+            .describe("SELECT * FROM missing_describe_table")
+            .is_err());
     }
 
     /// 建一个临时库上的连接（UnixIO，无远程 WAL）：绑定语义与 durability 无关。
