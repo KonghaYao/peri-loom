@@ -1,0 +1,193 @@
+# ============================================================================
+# 发布平台镜像到 GHCR（架构 §17.14 标准交付物）
+#
+# 触发与产物 tag：
+#   * push tag vX.Y.Z -> X.Y.Z / X.Y / latest
+#   * push main       -> main / latest
+#
+# 镜像：ghcr.io/<owner>/<repo>/{db-server,db-worker,wal-service,web}
+#       db-server / db-worker / wal-service 来自根 Dockerfile 的三个 target，
+#       web 来自 web/Dockerfile。
+#
+# 为什么三个 Rust 镜像串行构建：
+#   它们共享同一个 builder 阶段。第一个 target 把全部 Cargo 依赖编译进 BuildKit
+#   缓存后，后两个只做增量链接；并行 / 矩阵构建会让每个 target 都从零编译一遍。
+#
+# 已知限制（不是配置能绕过的）：
+#   * Dockerfile 用 cache mount 承载 /app/target，而 cache mount 不进入 gha 缓存，
+#     GitHub 托管 runner 每次都是干净机器 —— 因此源码一变更就是一次全量 release
+#     编译（数十分钟量级）。要显著提速需改造 Dockerfile（依赖层与源码层分离，
+#     如 cargo-chef）或改用自托管 runner。
+#   * 首次推送后 GHCR 包默认私有：生产主机需 docker login ghcr.io，或把包改为 public。
+# ============================================================================
+
+name: publish-images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# 生成 GHCR 包需要 packages: write；读代码与分析元数据只需 contents: read。
+permissions:
+  contents: read
+  packages: write
+
+# 同一 ref 上的并发只保留最新一次（正在推送的 tag 构建属于独立 ref，不会被中断）。
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: build & push images
+    # 版本固定，不使用 ubuntu-latest（与 rust-toolchain.toml 的做法一致）
+    runs-on: ubuntu-24.04
+    # 全量 Rust release 编译较慢；超时只用于兜底，防止异常挂起占满 6 小时上限
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Rust release 构建会占用大量磁盘，托管 runner 根分区可用空间有限。
+      # 先清掉与构建无关的预装 SDK，并回收可能残留的镜像。
+      - name: Free disk space
+        run: |
+          set -eux
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo docker image prune -af
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR 镜像名必须全小写，而 github.repository 保留仓库原大小写，
+      # 这里统一在同一个 step 里推导镜像前缀。
+      - name: Compute image prefix
+        id: prefix
+        run: echo "value=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------ metadata
+      - name: Metadata (db-server)
+        id: meta-db-server
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prefix.outputs.value }}/db-server
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Metadata (db-worker)
+        id: meta-db-worker
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prefix.outputs.value }}/db-worker
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Metadata (wal-service)
+        id: meta-wal-service
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prefix.outputs.value }}/wal-service
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Metadata (web)
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prefix.outputs.value }}/web
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # ------------------------------------------------------------ Rust 镜像（串行，共享 builder 阶段）
+      - name: Build & push db-server
+        id: build-db-server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: db-server
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-db-server.outputs.tags }}
+          labels: ${{ steps.meta-db-server.outputs.labels }}
+          cache-from: type=gha,scope=rust
+          cache-to: type=gha,mode=max,scope=rust
+
+      - name: Build & push db-worker
+        id: build-db-worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: db-worker
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-db-worker.outputs.tags }}
+          labels: ${{ steps.meta-db-worker.outputs.labels }}
+          cache-from: type=gha,scope=rust
+          cache-to: type=gha,mode=max,scope=rust
+
+      - name: Build & push wal-service
+        id: build-wal-service
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: wal-service
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-wal-service.outputs.tags }}
+          labels: ${{ steps.meta-wal-service.outputs.labels }}
+          cache-from: type=gha,scope=rust
+          cache-to: type=gha,mode=max,scope=rust
+
+      # ------------------------------------------------------------ web 镜像（与 Rust 镜像无共享层，独立缓存域）
+      - name: Build & push web
+        id: build-web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      # ------------------------------------------------------------ 发布记录
+      - name: Summary
+        run: |
+          {
+            echo "## 已发布镜像"
+            echo ""
+            echo "| 镜像 | digest |"
+            echo "|---|---|"
+            echo "| db-server | \`${{ steps.build-db-server.outputs.digest }}\` |"
+            echo "| db-worker | \`${{ steps.build-db-worker.outputs.digest }}\` |"
+            echo "| wal-service | \`${{ steps.build-wal-service.outputs.digest }}\` |"
+            echo "| web | \`${{ steps.build-web.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
