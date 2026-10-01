@@ -5,7 +5,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 struct Server {
     child: Child,
@@ -60,6 +60,20 @@ async fn request(
     token: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    let response = request_response(client, url, method, path, token, body).await;
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    let body = serde_json::from_str(&text).unwrap_or_else(|_| json!({"raw": text}));
+    (status, body)
+}
+async fn request_response(
+    client: &Client,
+    url: &str,
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> reqwest::Response {
     let mut builder = client.request(method, format!("{url}{path}"));
     if let Some(token) = token {
         builder = builder.bearer_auth(token);
@@ -67,11 +81,7 @@ async fn request(
     if let Some(body) = body {
         builder = builder.json(&body);
     }
-    let response = builder.send().await.unwrap();
-    let status = response.status();
-    let text = response.text().await.unwrap();
-    let body = serde_json::from_str(&text).unwrap_or_else(|_| json!({"raw": text}));
-    (status, body)
+    builder.send().await.unwrap()
 }
 async fn accepted(
     client: &Client,
@@ -187,12 +197,14 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .await
         .unwrap();
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
-    assert!(!unknown
-        .headers()
-        .get("content-type")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .contains("text/html"));
+    assert!(
+        !unknown
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .contains("text/html")
+    );
     let unauth_metrics = client
         .get(format!("{}/metrics", server.url))
         .send()
@@ -224,6 +236,16 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
     )
     .await;
     let db = created["database_id"].as_str().unwrap().to_owned();
+    let other_created = accepted(
+        &client,
+        &server.url,
+        &token,
+        Method::POST,
+        "/api/v1/databases",
+        Some(json!({"name":"smoke-other"})),
+    )
+    .await;
+    let other_db = other_created["database_id"].as_str().unwrap().to_owned();
     query(
         &client,
         &server.url,
@@ -248,17 +270,6 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         rows["wal_lsn"].is_null(),
         "local mode must not claim remote LSN"
     );
-    for version in ["v2", "v3"] {
-        let (status, response) = request(&client, &server.url, Method::POST, &format!("/db/{db}/{version}/pipeline"), Some(&token), Some(json!({
-            "requests":[{"type":"execute","stmt":{"sql":"SELECT ?1 AS n","args":[{"type":"integer","value":"42"}]}}]
-        }))).await;
-        assert_eq!(status, StatusCode::OK, "Hrana {version}: {response}");
-        assert_eq!(response["results"][0]["type"], "ok");
-        assert_eq!(
-            response["results"][0]["response"]["result"]["rows"][0][0]["value"],
-            "42"
-        );
-    }
     let ndjson_response = client
         .post(format!("{}/data/v1/databases/{db}/query", server.url))
         .bearer_auth(&token)
@@ -268,12 +279,14 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .await
         .unwrap();
     assert_eq!(ndjson_response.status(), StatusCode::OK);
-    assert!(ndjson_response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .starts_with("application/x-ndjson"));
+    assert!(
+        ndjson_response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .starts_with("application/x-ndjson")
+    );
     let lines: Vec<Value> = ndjson_response
         .text()
         .await
@@ -282,21 +295,207 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(lines.first().unwrap()["type"], "header");
-    assert!(lines
-        .iter()
-        .any(|line| line["type"] == "row" && line["values"] == json!([41])));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["type"] == "row" && line["values"] == json!([41]))
+    );
     assert_eq!(lines.last().unwrap()["type"], "trailer");
-    let (status, created_token) = request(
+    let created_token_response = request_response(
         &client,
         &server.url,
         Method::POST,
         "/api/v1/tokens",
         Some(&token),
-        Some(json!({"name":"crash-survivor"})),
+        Some(json!({"name":"crash-survivor", "database_id":db})),
+    )
+    .await;
+    let status = created_token_response.status();
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        created_token_response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let created_token: Value = created_token_response.json().await.unwrap();
+    let first_api_token = created_token["token"].as_str().unwrap().to_owned();
+    assert_eq!(
+        created_token["permissions"],
+        json!(["db:read", "db:write"]),
+        "new tokens should default to database read/write only"
+    );
+    assert_eq!(created_token["database_id"], db);
+    for invalid_permissions in [json!([]), json!(["db:admin"]), json!(["token:admin"])] {
+        let (status, _) = request(
+            &client,
+            &server.url,
+            Method::POST,
+            "/api/v1/tokens",
+            Some(&token),
+            Some(json!({
+                "name":"invalid-permissions",
+                "database_id":db,
+                "permissions":invalid_permissions,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    for version in ["v2", "v3"] {
+        let (status, response) = request(
+            &client,
+            &server.url,
+            Method::POST,
+            &format!("/db/{db}/{version}/pipeline"),
+            Some(&first_api_token),
+            Some(json!({
+                "requests":[{"type":"execute","stmt":{"sql":"SELECT ?1 AS n","args":[{"type":"integer","value":"42"}]}}]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "Hrana {version}: {response}");
+        assert_eq!(response["results"][0]["type"], "ok");
+        assert_eq!(
+            response["results"][0]["response"]["result"]["rows"][0][0]["value"],
+            "42"
+        );
+    }
+    let jwt_hrana = client
+        .post(format!("{}/db/{db}/v3/pipeline", server.url))
+        .bearer_auth(&token)
+        .json(&json!({"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(jwt_hrana.status(), StatusCode::UNAUTHORIZED);
+    let collision = request(
+        &client,
+        &server.url,
+        Method::POST,
+        "/api/v1/tokens",
+        Some(&token),
+        Some(json!({"name":"second-active-token", "database_id":db})),
+    )
+    .await;
+    assert_ne!(collision.0, StatusCode::CREATED, "one active token per DB");
+    let (status, rotated) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        "/api/v1/tokens",
+        Some(&token),
+        Some(json!({"name":"crash-survivor-rotated", "database_id":db, "rotate":true})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let api_token = created_token["token"].as_str().unwrap().to_owned();
+    let api_token = rotated["token"].as_str().unwrap().to_owned();
+    let api_token_id = rotated["id"].as_str().unwrap().to_owned();
+    let old_bearer = client
+        .post(format!("{}/data/v1/databases/{db}/query", server.url))
+        .bearer_auth(&first_api_token)
+        .json(&json!({"sql":"SELECT v FROM t"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_bearer.status(), StatusCode::UNAUTHORIZED);
+
+    let cross_db_query = client
+        .post(format!("{}/data/v1/databases/{other_db}/query", server.url))
+        .bearer_auth(&api_token)
+        .json(&json!({"sql":"SELECT 1"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_db_query.status(), StatusCode::FORBIDDEN);
+    let cross_db_hrana = client
+        .post(format!("{}/db/{other_db}/v3/pipeline", server.url))
+        .bearer_auth(&api_token)
+        .json(&json!({"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_db_hrana.status(), StatusCode::FORBIDDEN);
+    let (status, other_session) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        &format!("/data/v1/databases/{other_db}/sessions"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "admin open other DB session: {other_session}"
+    );
+    let cross_session_query = client
+        .post(format!(
+            "{}/data/v1/sessions/{}/query",
+            server.url,
+            other_session["session_id"].as_str().unwrap()
+        ))
+        .bearer_auth(&api_token)
+        .json(&json!({"sql":"SELECT 1"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_session_query.status(), StatusCode::FORBIDDEN);
+    let (status, scoped_databases) = request(
+        &client,
+        &server.url,
+        Method::GET,
+        "/api/v1/databases",
+        Some(&api_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(scoped_databases["items"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped_databases["items"][0]["id"], db);
+    let api_token_cannot_mint = request(
+        &client,
+        &server.url,
+        Method::POST,
+        "/api/v1/tokens",
+        Some(&api_token),
+        Some(json!({"name":"nested", "database_id":db})),
+    )
+    .await;
+    assert_eq!(api_token_cannot_mint.0, StatusCode::FORBIDDEN);
+    let token_cannot_stop_database = request(
+        &client,
+        &server.url,
+        Method::POST,
+        &format!("/api/v1/databases/{db}/stop"),
+        Some(&api_token),
+        None,
+    )
+    .await;
+    assert_eq!(token_cannot_stop_database.0, StatusCode::FORBIDDEN);
+    let token_cannot_list_operations = request(
+        &client,
+        &server.url,
+        Method::GET,
+        "/api/v1/operations",
+        Some(&api_token),
+        None,
+    )
+    .await;
+    assert_eq!(token_cannot_list_operations.0, StatusCode::FORBIDDEN);
+    let sdk_auth_token_response = client
+        .post(format!("{}/data/v1/databases/{db}/query", server.url))
+        .bearer_auth(&api_token)
+        .json(&json!({"sql":"SELECT v FROM t"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        sdk_auth_token_response.status(),
+        StatusCode::OK,
+        "libSQL/Turso authToken uses Authorization: Bearer"
+    );
     let (status, opened) = request(
         &client,
         &server.url,
@@ -406,6 +605,24 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         StatusCode::OK,
         "API token did not survive crash"
     );
+    let (status, _) = request(
+        &client,
+        &restarted.url,
+        Method::DELETE,
+        &format!("/api/v1/tokens/{api_token_id}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let revoked_bearer = client
+        .post(format!("{}/data/v1/databases/{db}/query", restarted.url))
+        .bearer_auth(&api_token)
+        .json(&json!({"sql":"SELECT v FROM t"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked_bearer.status(), StatusCode::UNAUTHORIZED);
     let (status, audit) = request(
         &client,
         &restarted.url,
@@ -416,9 +633,11 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(audit["items"]
-        .as_array()
-        .is_some_and(|items| !items.is_empty()));
+    assert!(
+        audit["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
     let (status, operation) = request(
         &client,
         &restarted.url,

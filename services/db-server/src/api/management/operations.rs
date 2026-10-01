@@ -3,8 +3,8 @@
 //! 这两个接口是「202 异步语义」的另一半：客户端拿到 `operation_id` 之后唯一的权威
 //! 进展来源就是这里（job 的物理形态不对外暴露）。
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 
 use crate::api::{dto, operation_id};
 use crate::auth::{permission, Principal};
@@ -30,6 +30,11 @@ pub async fn get_operation(
     principal.require(permission::DB_READ)?;
     let id = operation_id(&raw_operation_id)?;
     let record = state.catalog.get_operation(id).await.api()?;
+    if let Some(database_id) = record.database_id {
+        crate::api::authorize_database(&state, &principal, database_id).await?;
+    } else {
+        principal.require_control_plane()?;
+    }
     Ok(Json(dto::OperationView::from(&record)))
 }
 
@@ -47,6 +52,7 @@ pub async fn list_operations(
     principal: Principal,
     Query(params): Query<dto::PageParams>,
 ) -> ApiResult<Json<dto::Page<dto::OperationView>>> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let (limit, offset) = params.normalized();
     let records = state.catalog.list_operations(limit, offset).await.api()?;

@@ -20,6 +20,7 @@ import { WorkerDetailPage } from './pages/WorkerDetailPage';
 import { OperationsPage } from './pages/OperationsPage';
 import { AuditPage } from './pages/AuditPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { TokensPage } from './pages/TokensPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 /** 解析实际生效的明暗主题（system 跟随操作系统） */
@@ -54,6 +55,7 @@ function AuthenticatedRoutes(): JSX.Element {
         <Route path="/operations" element={<OperationsPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/tokens" element={<TokensPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

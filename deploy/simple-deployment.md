@@ -61,6 +61,16 @@ docker run --rm --name peri-loom-simple -p 127.0.0.1:8080:8080 -v peri_data:/dat
 
 首次启动生成随机管理员密码，写入 `data/secrets/initial-admin.json`，以及持久化的 JWT 签名密钥。读取凭据后应按本机权限管理该文件；登录与授权继续使用现有 API。实例锁阻止两个进程同时打开同一数据目录。不要把该目录放在共享网络盘，也不要将同一目录直接切换为 distributed 模式。
 
+## 连接数据库与申请 Token
+
+建库成功后会显示 libSQL 和 TursoDB 的连接地址、端口；数据库详情首屏也保留这些信息。两种 SDK 共用当前入口端口，通过数据库路径区分各库。
+
+在**数据库详情 → 数据库连接 → 申请本库 Token** 一键申请，将本次弹窗中的 Token 复制到应用的 `DB_TOKEN` 环境变量，并填入 SDK 的 `authToken`。明文只显示一次，关闭后无法再次查看；后台只保存哈希。管理台的账号密码/JWT 用于管理登录，不能当作 SDK Token。
+
+每个数据库最多保留一个未吊销 Token。再次申请需明确轮换，旧 Token 随即失效；同一个 Token 不能跨库访问、管理数据库生命周期或签发其他凭据。建库、启停、备份和恢复等管理操作需要管理 JWT。凭据列表可查看绑定库、状态和吊销凭据，申请和轮换回到对应数据库详情。SQL SDK 需要 `db:write`，`db:read` 仅允许读取数据库信息，并不代表 SQL 只读权限。
+
+管理 API `POST /api/v1/tokens` 必须提供 `database_id` 与 `name`；省略权限时默认 `db:read`、`db:write`，`rotate: true` 表示明确轮换本库 Token。需要管理 JWT 和 `token:admin` 权限。旧版未绑定数据库的 Token 不再接受认证，需要在对应数据库详情重新申请；升级不会影响管理员登录 JWT。
+
 ## 备份与恢复
 
 数据库备份由后台作业通过引擎 checkpoint 产生一致文件集。操作完成后会校验本地快照的压缩数据与 SHA-256，恢复时在暂存目录验证全部文件后替换目标库。数据库恢复会使原有会话失效。快照在 `data/objects`，临时文件在 `data/tmp`；不要只复制单个 `main.db` 作为在线备份。

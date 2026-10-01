@@ -1,8 +1,8 @@
 /**
  * 登录页：
- *   1) 账号密码（后端 OIDC/JWT 换 Token）；
- *   2) 粘贴 API Token（后端未实现登录接口时的降级模式，也是 DBA 常用方式）。
- * 两者的结果都落到 localStorage 的 Bearer Token，由 src/api/client.ts 统一注入请求头。
+ *   1) 账号密码换取管理员 JWT；
+ *   2) 登录接口不可用时粘贴管理员 JWT。
+ * dbp_ API Token 只供数据库 SDK 使用，不能作为管理台登录凭据。
  */
 import { useState } from 'react';
 import {
@@ -43,7 +43,7 @@ export function LoginPage(): JSX.Element {
   const [error, setError] = useState<unknown>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  /** 账号密码登录：接口未实现时自动切换到 Token 模式 */
+  /** 账号密码登录：接口未实现时自动切换到管理员 JWT 输入 */
   const handleAccountLogin = async (values: AccountForm) => {
     setSubmitting(true);
     setError(null);
@@ -56,7 +56,7 @@ export function LoginPage(): JSX.Element {
     } catch (err) {
       if (isUnimplementedError(err)) {
         setTab('token');
-        setNotice('后端未提供账号密码登录接口，已切换到「粘贴 Token」模式。');
+        setNotice('后端未提供账号密码登录接口，已切换到「粘贴管理员 JWT」模式。dbp_ API Token 仅供数据库 SDK 使用，不能登录管理台。');
       } else {
         setError(err);
       }
@@ -139,7 +139,7 @@ export function LoginPage(): JSX.Element {
                     登录
                   </Button>
                   <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-                    若后端未实现该接口，将自动提示切换到「粘贴 Token」。
+                    若后端未实现该接口，可切换为粘贴管理员 JWT；dbp_ API Token 不能登录。
                   </Typography.Text>
                 </Form>
               ),
@@ -148,19 +148,19 @@ export function LoginPage(): JSX.Element {
               key: 'token',
               label: (
                 <span>
-                  <KeyOutlined /> 粘贴 Token
+                  <KeyOutlined /> 粘贴管理员 JWT
                 </span>
               ),
               children: (
                 <Form<TokenForm> layout="vertical" onFinish={handleTokenLogin} disabled={submitting}>
                   <Form.Item
                     name="token"
-                    label="API Token"
-                    rules={[{ required: true, message: '请粘贴 API Token' }]}
+                    label="管理员 JWT"
+                    rules={[{ required: true, message: '请粘贴管理员 JWT' }]}
                   >
                     <Input.TextArea
                       rows={3}
-                      placeholder="eyJhbGciOi..."
+                      placeholder="eyJhbGciOi...（dbp_ API Token 不可用于登录）"
                       autoComplete="off"
                       spellCheck={false}
                     />
@@ -169,12 +169,12 @@ export function LoginPage(): JSX.Element {
                     <Input placeholder="例如：dba-alice" autoComplete="off" />
                   </Form.Item>
                   <Button type="primary" htmlType="submit" block loading={submitting}>
-                    使用 Token 进入
+                    使用 JWT 登录
                   </Button>
                   <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-                    Token 仅保存在浏览器 localStorage，并在每次请求以
+                    管理员 JWT 保存在浏览器 localStorage，并在每次请求以
                     <Typography.Text code>Authorization: Bearer</Typography.Text> 发送。
-                    可在「设置 → API Token」中创建与吊销。
+                    <Typography.Text type="danger"> dbp_ 开头的数据库 API Token 不能登录管理台，只能配置在数据库 SDK 中。</Typography.Text>
                   </Typography.Text>
                 </Form>
               ),

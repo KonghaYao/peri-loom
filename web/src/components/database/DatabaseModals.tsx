@@ -3,7 +3,7 @@
  * 提交成功后由调用方拿到 operation_id 并轮询进度。
  */
 import { useState } from 'react';
-import { App as AntdApp, Form, Input, Modal, Select, Space, Typography } from 'antd';
+import { Alert, App as AntdApp, Form, Input, Modal, Select, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useDeployment } from '../../hooks/useDeployment';
 import { api, toItems } from '../../api/client';
@@ -69,6 +69,13 @@ export function CreateDatabaseModal({ open, onClose, onSubmitted }: BaseModalPro
       destroyOnClose
     >
       <ErrorAlert error={error} />
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="连接信息会在数据库创建成功后显示"
+        description="libSQL 与 TursoDB SDK 共用当前 Panel 的主机和端口，通过数据库路径区分实例；不会为新库单独开放端口。数据库创建成功后，请前往该库详情页申请本库 Token；明文只在申请成功后显示一次。"
+      />
       <Form<CreateForm> form={form} layout="vertical" preserve={false}>
         <Form.Item
           name="name"
@@ -82,7 +89,7 @@ export function CreateDatabaseModal({ open, onClose, onSubmitted }: BaseModalPro
         </Form.Item>
       </Form>
       <Typography.Text type="secondary">
-        创建是异步长操作：提交后返回 operation_id，可在进度弹窗或「操作中心」跟踪。
+        创建是异步长操作：提交后返回 operation_id，可在进度弹窗或「操作中心」跟踪。操作成功后，进度弹窗会展示 SDK 地址，并提供前往数据库详情申请本库 Token 的链接。
       </Typography.Text>
     </Modal>
   );

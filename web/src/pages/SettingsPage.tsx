@@ -9,7 +9,6 @@ import {
   Card,
   Form,
   Input,
-  InputNumber,
   Modal,
   Select,
   Space,
@@ -20,189 +19,15 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { CopyOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { api, toItems } from '../api/client';
-import type { SavedQuery, TokenCreated, TokenInfo } from '../api/types';
+import type { SavedQuery } from '../api/types';
+import { TokenManager } from '../components/tokens/TokenManager';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { PREF_KEYS, usePreferences, type ThemeMode } from '../hooks/usePreferences';
 import { dbName } from '../utils/database';
-import { copyText, formatTime, shortId } from '../utils/format';
-
-// ---------------------------------------------------------------- API Token
-
-function TokenPanel(): JSX.Element {
-  const { message, modal } = AntdApp.useApp();
-  const [form] = Form.useForm<{ name: string; expires_in_days?: number }>();
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<unknown>(null);
-  const [created, setCreated] = useState<TokenCreated | null>(null);
-
-  const query = useQuery({ queryKey: ['tokens'], queryFn: () => api.tokens.list() });
-  const tokens = toItems(query.data);
-
-  const handleCreate = async () => {
-    const values = await form.validateFields();
-    setCreating(true);
-    setError(null);
-    try {
-      const res = await api.tokens.create({
-        name: values.name.trim(),
-        // 后端只接受绝对时间 expires_at：把「有效期（天）」换算成 ISO 时间戳
-        ...(values.expires_in_days
-          ? { expires_at: new Date(Date.now() + values.expires_in_days * 86_400_000).toISOString() }
-          : {}),
-      });
-      setCreated(res);
-      form.resetFields();
-      void query.refetch();
-    } catch (err) {
-      setError(err);
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleRevoke = (token: TokenInfo) => {
-    modal.confirm({
-      title: '吊销 Token',
-      content: `吊销后使用该 Token 的客户端会立即失去访问权限：${token.name || token.id}`,
-      okText: '确认吊销',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          await api.tokens.revoke(token.id);
-          message.success('已吊销');
-          void query.refetch();
-        } catch (err) {
-          setError(err);
-        }
-      },
-    });
-  };
-
-  const columns: ColumnsType<TokenInfo> = [
-    {
-      title: '名称',
-      key: 'name',
-      render: (_: unknown, t) => t.name ?? '-',
-    },
-    {
-      title: 'Token ID',
-      key: 'id',
-      render: (_: unknown, t) => (
-        <Typography.Text copyable={{ text: t.id }} code>
-          {shortId(t.id, 14, 6)}
-        </Typography.Text>
-      ),
-    },
-    { title: '创建时间', key: 'created_at', width: 175, render: (_: unknown, t) => formatTime(t.created_at) },
-    { title: '过期时间', key: 'expires_at', width: 175, render: (_: unknown, t) => formatTime(t.expires_at) },
-    { title: '最近使用', key: 'last_used_at', width: 175, render: (_: unknown, t) => formatTime(t.last_used_at) },
-    {
-      title: '状态',
-      key: 'revoked',
-      width: 100,
-      render: (_: unknown, t) => (t.revoked_at ? <Tag color="error">已吊销</Tag> : <Tag color="success">有效</Tag>),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 100,
-      render: (_: unknown, t) => (
-        <Button size="small" danger type="link" disabled={Boolean(t.revoked_at)} onClick={() => handleRevoke(t)}>
-          吊销
-        </Button>
-      ),
-    },
-  ];
-
-  return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" title="创建 API Token">
-        <ErrorAlert error={error} onRetry={() => setError(null)} alwaysRetry closable onClose={() => setError(null)} />
-        <Form form={form} layout="inline" onFinish={handleCreate}>
-          <Form.Item name="name" rules={[{ required: true, message: '请输入名称' }]}>
-            <Input placeholder="Token 名称，例如：ci-deploy" style={{ width: 240 }} />
-          </Form.Item>
-          <Form.Item name="expires_in_days" label="有效期（天）">
-            <InputNumber min={1} max={3650} placeholder="留空表示不过期" style={{ width: 180 }} />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={creating}>
-              创建
-            </Button>
-          </Form.Item>
-        </Form>
-      </Card>
-
-      <Card
-        size="small"
-        title={<Space>Token 列表<Tag>{tokens.length}</Tag></Space>}
-        extra={
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => query.refetch()} loading={query.isFetching}>
-            刷新
-          </Button>
-        }
-      >
-        <ErrorAlert error={query.error} onRetry={() => query.refetch()} />
-        <Table<TokenInfo>
-          size="small"
-          rowKey={(t) => t.id}
-          columns={columns}
-          dataSource={tokens}
-          loading={query.isLoading}
-          pagination={{ pageSize: 10, hideOnSinglePage: true }}
-          scroll={{ x: 'max-content' }}
-          locale={{ emptyText: '暂无 Token' }}
-        />
-      </Card>
-
-      <Modal
-        open={Boolean(created)}
-        title="Token 创建成功"
-        onCancel={() => setCreated(null)}
-        footer={[
-          <Button
-            key="copy"
-            type="primary"
-            icon={<CopyOutlined />}
-            onClick={async () => {
-              if (!created) return;
-              const ok = await copyText(created.token);
-              if (ok) message.success('已复制到剪贴板');
-              else message.error('复制失败，请手动选择文本复制');
-            }}
-          >
-            复制 Token
-          </Button>,
-          <Button key="close" onClick={() => setCreated(null)}>
-            我已保存
-          </Button>,
-        ]}
-      >
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="明文 Token 只显示这一次"
-          description="关闭本窗口后无法再次查看；请立即保存到安全位置（如密钥管理系统）。"
-        />
-        <Typography.Paragraph
-          copyable={{ text: created?.token ?? '' }}
-          code
-          style={{ wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}
-        >
-          {created?.token}
-        </Typography.Paragraph>
-        {created?.expires_at ? (
-          <Typography.Text type="secondary">过期时间：{formatTime(created.expires_at)}</Typography.Text>
-        ) : null}
-      </Modal>
-    </Space>
-  );
-}
+import { formatTime } from '../utils/format';
 
 // ---------------------------------------------------------------- Panel 偏好
 
@@ -488,7 +313,7 @@ export function SettingsPage(): JSX.Element {
     <Card title="设置">
       <Tabs
         items={[
-          { key: 'tokens', label: 'API Token', children: <TokenPanel /> },
+          { key: 'tokens', label: 'API Token', children: <TokenManager /> },
           { key: 'preferences', label: 'Panel 偏好', children: <PreferencePanel /> },
           { key: 'saved-queries', label: 'Saved SQL', children: <SavedQueryPanel /> },
         ]}

@@ -4,17 +4,18 @@
 //! 1. `Authorization: Bearer <jwt>` —— OIDC/JWT，本服务用 HS256 校验签名与有效期
 //!    （开发密钥来自 `JWT_SECRET_FILE`；生产接 OIDC 时替换为 JWKS 校验即可，
 //!    调用点不变）。
-//! 2. `x-api-token: <token>` —— 平台自签的不透明 token，只在数据库里存哈希，
-//!    请求时哈希后查 `users`/`api_tokens`。
+//! 2. `Authorization: Bearer dbp_...` 或 `x-api-token: <token>` —— 平台自签的不透明
+//!    token，只在数据库里存哈希，请求时哈希后查 `users`/`api_tokens`。支持 Bearer
+//!    是为了兼容 libSQL/Turso 客户端的 `authToken` 配置。
 //!
 //! RBAC：`catalog.resolve_permissions(user_id)` 汇总用户权限集合，接口按所需权限判定。
 //! 超级管理员得到通配符 `*`（[`catalog::PERMISSION_WILDCARD`]）。
 
 use axum::extract::FromRequestParts;
-use axum::http::request::Parts;
 use axum::http::HeaderMap;
+use axum::http::request::Parts;
 use domain::error::ErrorCode;
-use domain::ids::{TokenId, UserId};
+use domain::ids::{DatabaseId, TokenId, UserId};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
 use crate::error::{ApiError, ApiResult, PlatformResultExt};
@@ -55,6 +56,46 @@ pub fn has_permission(granted: &[String], required: &str) -> bool {
         .any(|p| p == catalog::PERMISSION_WILDCARD || p == required)
 }
 
+/// 将 token 声明的权限与 owner 此刻的权限求交集。
+/// 空 token 权限代表历史记录的 owner 权限；`*` 只在交集两侧都允许时保留。
+#[must_use]
+fn effective_token_permissions(token: &[String], owner: &[String]) -> Vec<String> {
+    let owner_is_superuser = owner.iter().any(|p| p == catalog::PERMISSION_WILDCARD);
+    if token.is_empty() {
+        return owner.to_vec();
+    }
+    if owner_is_superuser {
+        return token.to_vec();
+    }
+    if token.iter().any(|p| p == catalog::PERMISSION_WILDCARD) {
+        return owner.to_vec();
+    }
+    token
+        .iter()
+        .filter(|permission| owner.iter().any(|p| p == *permission))
+        .cloned()
+        .collect()
+}
+
+/// API Token 无论其历史权限字段为何，最终只可拥有单库 SQL 数据面权限。
+#[must_use]
+fn api_token_permissions(token: &[String], owner: &[String]) -> Vec<String> {
+    let effective = effective_token_permissions(token, owner);
+    if effective
+        .iter()
+        .any(|permission| permission == catalog::PERMISSION_WILDCARD)
+    {
+        return vec![
+            permission::DB_READ.to_string(),
+            permission::DB_WRITE.to_string(),
+        ];
+    }
+    effective
+        .into_iter()
+        .filter(|item| item == permission::DB_READ || item == permission::DB_WRITE)
+        .collect()
+}
+
 /// 认证方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMethod {
@@ -75,6 +116,8 @@ pub struct Principal {
     pub display_name: String,
     /// 默认租户。
     pub tenant_id: Option<domain::ids::TenantId>,
+    /// API Token 固定绑定的数据库；JWT 管理凭据为 None。
+    pub database_id: Option<DatabaseId>,
     /// 生效的权限集合。
     pub permissions: Vec<String>,
     /// 是否超级管理员。
@@ -106,6 +149,43 @@ impl Principal {
             ))
             .with_detail(serde_json::json!({ "required_permission": required })))
         }
+    }
+
+    /// 对 API Token 强制单库边界；JWT 管理凭据不限定单库。
+    pub fn require_database(&self, database_id: DatabaseId) -> ApiResult<()> {
+        match self.method {
+            AuthMethod::Jwt => Ok(()),
+            AuthMethod::ApiToken if self.database_id == Some(database_id) => Ok(()),
+            AuthMethod::ApiToken => Err(ApiError::permission_denied(
+                "API Token 仅可访问其绑定的数据库",
+            )
+            .with_detail(serde_json::json!({ "database_id": database_id.to_string() }))),
+        }
+    }
+
+    /// 要求管理面凭据。平台 API Token 仅用于绑定数据库的数据/元数据访问。
+    pub fn require_control_plane(&self) -> ApiResult<()> {
+        if self.method == AuthMethod::Jwt {
+            Ok(())
+        } else {
+            Err(ApiError::permission_denied("此操作需要管理员 JWT 凭据"))
+        }
+    }
+
+    /// Turso/libSQL Hrana 客户端只接受单库平台 Token，避免把管理 JWT 当 SDK 凭据复用。
+    pub fn require_sdk_database(&self, database_id: DatabaseId) -> ApiResult<()> {
+        if self.method != AuthMethod::ApiToken {
+            return Err(ApiError::unauthenticated(
+                "Hrana 端点需要绑定单库的 API Token，请在 SDK authToken 中使用该 Token",
+            ));
+        }
+        self.require_database(database_id)
+    }
+
+    /// 要求管理员 JWT 凭据与 token:admin 权限。
+    pub fn require_token_admin(&self) -> ApiResult<()> {
+        self.require_control_plane()?;
+        self.require(permission::TOKEN_ADMIN)
     }
 }
 
@@ -183,7 +263,8 @@ impl std::fmt::Debug for JwtVerifier {
 /// 从请求头解析凭据。
 ///
 /// 同时给出两种凭据时（都带）优先 `x-api-token`：它更具体，且调用方明确表达了
-/// 「用这个 token」的意图。
+/// 「用这个 token」的意图。Bearer token 仅当符合平台自有 `dbp_` 格式时按 API token
+/// 查库；其余仍严格进入 JWT 校验。
 enum Credential {
     Bearer(String),
     ApiToken(String),
@@ -215,7 +296,11 @@ fn extract_credential(headers: &HeaderMap) -> ApiResult<Credential> {
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .ok_or_else(|| ApiError::unauthenticated("Authorization 必须是 'Bearer <token>'"))?;
-    Ok(Credential::Bearer(token.to_string()))
+    if token.starts_with("dbp_") {
+        Ok(Credential::ApiToken(token.to_string()))
+    } else {
+        Ok(Credential::Bearer(token.to_string()))
+    }
 }
 
 impl FromRequestParts<AppState> for Principal {
@@ -273,6 +358,7 @@ async fn authenticate_jwt(state: &AppState, token: &str) -> ApiResult<Principal>
             user.display_name.clone()
         },
         tenant_id: user.tenant_id,
+        database_id: None,
         permissions,
         is_superuser: user.is_superuser,
         token_id: None,
@@ -292,19 +378,29 @@ async fn authenticate_api_token(state: &AppState, token: &str) -> ApiResult<Prin
     if !authenticated.user.is_active() {
         return Err(ApiError::unauthenticated("用户已被禁用"));
     }
+    let database_id = authenticated.token.database_id.ok_or_else(|| {
+        ApiError::unauthenticated("API Token 未绑定数据库，必须重新申请单库 Token")
+    })?;
 
-    // token 自带的权限列表非空时以它为准（Scoped Token）；为空表示继承用户的角色权限。
-    let permissions = match authenticated.token.permissions.as_array() {
-        Some(items) if !items.is_empty() => items
-            .iter()
-            .filter_map(|v| v.as_str().map(ToString::to_string))
-            .collect(),
-        _ => state
-            .catalog
-            .resolve_permissions(authenticated.user.id)
-            .await
-            .api()?,
-    };
+    // token 权限始终受 owner 当前角色权限约束。这样即使 owner 被降权或 token 中
+    // 留有旧权限，也不会保留已撤销的能力。历史空权限 token 仍按 owner 权限兼容。
+    let owner_permissions = state
+        .catalog
+        .resolve_permissions(authenticated.user.id)
+        .await
+        .api()?;
+    let token_permissions = authenticated
+        .token
+        .permissions
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let permissions = api_token_permissions(&token_permissions, &owner_permissions);
 
     // last_used_at 只是可观测性信息，写失败不影响请求（也不该让请求失败）。
     if let Err(err) = state
@@ -323,8 +419,10 @@ async fn authenticate_api_token(state: &AppState, token: &str) -> ApiResult<Prin
             .token
             .tenant_id
             .or(authenticated.user.tenant_id),
+        database_id: Some(database_id),
         permissions,
-        is_superuser: authenticated.user.is_superuser,
+        // API Token 是单库数据凭据，不继承用户的全局管理员身份。
+        is_superuser: false,
         token_id: Some(authenticated.token.id),
         method: AuthMethod::ApiToken,
     })
@@ -469,6 +567,7 @@ mod tests {
             username: "alice".to_string(),
             display_name: "Alice".to_string(),
             tenant_id: None,
+            database_id: None,
             permissions: perms(&[permission::DB_READ]),
             is_superuser: false,
             token_id: None,
@@ -480,12 +579,88 @@ mod tests {
     }
 
     #[test]
+    fn api_token_requires_a_database_binding_even_if_principal_is_malformed() {
+        let mut principal = Principal {
+            user_id: UserId::new_v7(),
+            username: "alice".to_string(),
+            display_name: "Alice".to_string(),
+            tenant_id: None,
+            database_id: None,
+            permissions: perms(&[permission::DB_READ]),
+            is_superuser: false,
+            token_id: None,
+            method: AuthMethod::ApiToken,
+        };
+        let database_id = DatabaseId::new_v7();
+        assert!(principal.require_database(database_id).is_err());
+        principal.database_id = Some(database_id);
+        assert!(principal.require_database(database_id).is_ok());
+        assert!(principal.require_database(DatabaseId::new_v7()).is_err());
+    }
+
+    #[test]
+    fn api_token_permissions_never_keep_management_rights() {
+        let owner = perms(&[catalog::PERMISSION_WILDCARD]);
+        let legacy = perms(&[catalog::PERMISSION_WILDCARD]);
+        assert_eq!(
+            api_token_permissions(&legacy, &owner),
+            perms(&[permission::DB_READ, permission::DB_WRITE]),
+        );
+        assert!(
+            api_token_permissions(&perms(&[]), &owner)
+                .iter()
+                .all(|item| item == permission::DB_READ || item == permission::DB_WRITE)
+        );
+    }
+
+    #[test]
     fn generated_api_token_has_prefix_and_is_unique() {
         let a = generate_api_token();
         let b = generate_api_token();
         assert!(a.starts_with("dbp_"));
         assert_eq!(a.len(), 4 + 64);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn bearer_platform_token_is_classified_as_api_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer dbp_example".parse().unwrap(),
+        );
+        assert!(matches!(
+            extract_credential(&headers).unwrap(),
+            Credential::ApiToken(_)
+        ));
+
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer ey.jwt.signature".parse().unwrap(),
+        );
+        assert!(matches!(
+            extract_credential(&headers).unwrap(),
+            Credential::Bearer(_)
+        ));
+
+        headers.insert("x-api-token", "explicit-api-token".parse().unwrap());
+        assert!(matches!(
+            extract_credential(&headers).unwrap(),
+            Credential::ApiToken(value) if value == "explicit-api-token"
+        ));
+    }
+
+    #[test]
+    fn explicit_token_permissions_are_bounded_by_current_owner_permissions() {
+        let owner = perms(&[permission::DB_READ, permission::DB_WRITE]);
+        let token = perms(&[permission::DB_READ, permission::DB_ADMIN]);
+        let effective = effective_token_permissions(&token, &owner);
+        assert_eq!(effective, perms(&[permission::DB_READ]));
+        assert_eq!(effective_token_permissions(&perms(&[]), &owner), owner);
+        assert_eq!(
+            effective_token_permissions(&perms(&[catalog::PERMISSION_WILDCARD]), &owner),
+            owner,
+        );
     }
 
     #[test]

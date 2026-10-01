@@ -7,7 +7,7 @@
 //!   但「读不到 README 级别的 UI 设置」会让人以为接口坏了。
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, HeaderMap, header};
 use axum::Json;
 use catalog::{NewApiToken, NewSavedQuery};
 use domain::ids::TokenId;
@@ -82,6 +82,7 @@ pub async fn get_preference(
     principal: Principal,
     Path(key): Path<String>,
 ) -> ApiResult<Json<dto::PreferenceView>> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let key = normalize_key(&key)?;
     let value = state
@@ -110,6 +111,7 @@ pub async fn put_preference(
     Path(key): Path<String>,
     Json(request): Json<dto::PutPreferenceRequest>,
 ) -> ApiResult<Json<dto::PreferenceView>> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let key = normalize_key(&key)?;
 
@@ -153,6 +155,7 @@ pub async fn list_saved_queries(
     principal: Principal,
     Query(params): Query<SavedQueryListParams>,
 ) -> ApiResult<Json<Vec<dto::SavedQueryView>>> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let records = state
         .catalog
@@ -186,6 +189,7 @@ pub async fn create_saved_query(
     principal: Principal,
     Json(request): Json<dto::CreateSavedQueryRequest>,
 ) -> ApiResult<(StatusCode, Json<dto::SavedQueryView>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let name = request.name.trim().to_string();
     if name.is_empty() {
@@ -247,6 +251,7 @@ pub async fn delete_saved_query(
     principal: Principal,
     Path(query_id): Path<String>,
 ) -> ApiResult<StatusCode> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let id = Uuid::parse_str(query_id.trim())
         .map_err(|_| ApiError::invalid_argument(format!("'{query_id}' 不是合法 UUID")))?;
@@ -294,6 +299,7 @@ pub async fn list_slow_queries(
 ) -> ApiResult<Json<Vec<dto::SlowQueryView>>> {
     principal.require(permission::DB_READ)?;
     let database_id = db_id(&params.database_id)?;
+    crate::api::authorize_database(&state, &principal, database_id).await?;
     let records = state
         .catalog
         .list_slow_queries(
@@ -326,35 +332,74 @@ pub async fn create_token(
     State(state): State<AppState>,
     principal: Principal,
     Json(request): Json<dto::CreateTokenRequest>,
-) -> ApiResult<(StatusCode, Json<dto::TokenCreated>)> {
-    principal.require(permission::TOKEN_ADMIN)?;
+) -> ApiResult<(StatusCode, HeaderMap, Json<dto::TokenCreated>)> {
+    principal.require_token_admin()?;
     let name = request.name.trim().to_string();
     if name.is_empty() {
         return Err(ApiError::invalid_argument("Token 名称不能为空"));
     }
-    let tenant_id = match request.tenant_id.as_deref() {
-        Some(raw) => Some(parse_tenant_id(raw)?),
-        None => principal.tenant_id,
-    };
+    let database_id = db_id(&request.database_id)?;
+    let database = crate::api::authorize_database(&state, &principal, database_id).await?;
+    let tenant_id = Some(database.tenant_id);
+    if let Some(raw) = request.tenant_id.as_deref() {
+        if parse_tenant_id(raw)? != database.tenant_id {
+            return Err(ApiError::invalid_argument(
+                "tenant_id 必须与 database_id 对应数据库的租户一致",
+            ));
+        }
+    }
+
+    // 新 token 默认仅授予数据库读写；显式权限必须是当前 Principal 的权限子集。
+    // 空数组通常是 UI 配置错误，拒绝而非意外继承用户角色。
+    let requested_permissions = request.permissions.unwrap_or_else(|| {
+        vec![
+            permission::DB_READ.to_string(),
+            permission::DB_WRITE.to_string(),
+        ]
+    });
+    if requested_permissions.is_empty() {
+        return Err(ApiError::invalid_argument(
+            "Token permissions 不能为空；省略该字段可使用默认的 db:read、db:write",
+        ));
+    }
+    if requested_permissions
+        .iter()
+        .any(|p| p != permission::DB_READ && p != permission::DB_WRITE)
+    {
+        return Err(ApiError::invalid_argument(
+            "单库 API Token 仅支持 db:read 与 db:write 权限",
+        ));
+    }
+    for requested in &requested_permissions {
+        if !principal.can(requested) {
+            return Err(ApiError::permission_denied(format!(
+                "不能签发当前主体不具备的 Token 权限 '{requested}'"
+            ))
+            .with_detail(serde_json::json!({ "requested_permission": requested })));
+        }
+    }
 
     // 明文只在内存里活到响应写出为止：Catalog 只存哈希。
     let plaintext = crate::auth::generate_api_token();
-    let outcome: ApiResult<dto::TokenCreated> = match state
-        .catalog
-        .create_api_token(NewApiToken {
-            user_id: principal.user_id,
-            name: name.clone(),
-            token_hash: hash_secret(&plaintext),
-            tenant_id,
-            database_id: None,
-            permissions: serde_json::json!(request.permissions),
-            expires_at: request.expires_at,
-        })
-        .await
-    {
+    let new_token = NewApiToken {
+        user_id: principal.user_id,
+        name: name.clone(),
+        token_hash: hash_secret(&plaintext),
+        tenant_id,
+        database_id: Some(database_id),
+        permissions: serde_json::json!(requested_permissions),
+        expires_at: request.expires_at,
+    };
+    let created = if request.rotate {
+        state.catalog.rotate_api_token(new_token).await
+    } else {
+        state.catalog.create_api_token(new_token).await
+    };
+    let outcome: ApiResult<dto::TokenCreated> = match created {
         Ok(record) => Ok(dto::TokenCreated {
             id: record.id.to_string(),
             name: record.name.clone(),
+            database_id: database_id.to_string(),
             token: plaintext,
             permissions: dto::permissions_from_json(&record.permissions),
             expires_at: record.expires_at,
@@ -377,7 +422,14 @@ pub async fn create_token(
         &outcome,
     )
     .await;
-    outcome.map(|created| (StatusCode::CREATED, Json(created)))
+    outcome.map(|created| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CACHE_CONTROL,
+            "no-store".parse().expect("static header"),
+        );
+        (StatusCode::CREATED, headers, Json(created))
+    })
 }
 
 /// 当前用户可见的 API Token 列表（不含明文与哈希）。
@@ -393,13 +445,25 @@ pub async fn list_tokens(
     State(state): State<AppState>,
     principal: Principal,
 ) -> ApiResult<Json<Vec<dto::TokenView>>> {
-    principal.require(permission::TOKEN_ADMIN)?;
+    principal.require_token_admin()?;
     let records = state
         .catalog
         .list_tokens_for_user(principal.user_id)
         .await
         .api()?;
-    Ok(Json(records.iter().map(dto::TokenView::from).collect()))
+    let mut visible = Vec::with_capacity(records.len());
+    for record in &records {
+        if let Some(database_id) = record.database_id {
+            if crate::api::authorize_database(&state, &principal, database_id)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+        }
+        visible.push(dto::TokenView::from(record));
+    }
+    Ok(Json(visible))
 }
 
 /// 吊销 API Token。
@@ -418,11 +482,23 @@ pub async fn revoke_token(
     principal: Principal,
     Path(token_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    principal.require(permission::TOKEN_ADMIN)?;
+    principal.require_token_admin()?;
     let id: TokenId = token_id
         .trim()
         .parse()
         .map_err(|_| ApiError::invalid_argument(format!("'{token_id}' 不是合法 UUID")))?;
+
+    let owned = state
+        .catalog
+        .list_tokens_for_user(principal.user_id)
+        .await
+        .api()?;
+    let Some(record) = owned.iter().find(|record| record.id == id) else {
+        return Err(not_found("Token", &token_id));
+    };
+    if let Some(database_id) = record.database_id {
+        crate::api::authorize_database(&state, &principal, database_id).await?;
+    }
 
     let outcome: ApiResult<()> = match state.catalog.revoke_api_token(id).await {
         Ok(true) => Ok(()),

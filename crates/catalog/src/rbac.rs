@@ -412,6 +412,9 @@ impl Catalog {
         if new_token.token_hash.trim().is_empty() {
             return Err(invalid_argument("token_hash 不能为空"));
         }
+        if new_token.database_id.is_none() {
+            return Err(invalid_argument("API token 必须绑定一个数据库"));
+        }
         let id = TokenId::new_v7();
         let sql = format!(
             "INSERT INTO api_tokens (id, user_id, name, token_hash, tenant_id, database_id,
@@ -436,6 +439,67 @@ impl Catalog {
             .bind(new_token.permissions.clone())
             .bind(new_token.expires_at)
             .fetch_one(self.pool())
+            .await
+            .map_err(|e| map_sqlx_error(e, NotFoundAs::User, ConflictAs::ApiToken))?;
+        Ok(row.0)
+    }
+
+    /// 同一事务中吊销目标数据库的现有 token 并创建替代 token。
+    pub async fn rotate_api_token(&self, new_token: NewApiToken) -> Result<ApiTokenRecord> {
+        if new_token.token_hash.trim().is_empty() {
+            return Err(invalid_argument("token_hash 不能为空"));
+        }
+        let database_id = new_token
+            .database_id
+            .ok_or_else(|| invalid_argument("API token 必须绑定一个数据库"))?;
+        let mut tx = self.pool().begin().await.map_err(|e| {
+            map_sqlx_error(e, NotFoundAs::User, ConflictAs::ApiToken)
+        })?;
+        let database_uuid = crate::pg::id_to_uuid(&database_id)?;
+        let database_exists: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM databases WHERE id = $1::uuid FOR UPDATE")
+                .bind(database_uuid)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| map_sqlx_error(e, NotFoundAs::User, ConflictAs::ApiToken))?;
+        if database_exists.is_none() {
+            return Err(invalid_argument("API token database not found"));
+        }
+        let now = Utc::now();
+        sqlx::query(
+            "UPDATE api_tokens SET revoked_at = $1::timestamptz
+             WHERE database_id = $2::uuid AND revoked_at IS NULL",
+        )
+        .bind(now)
+        .bind(database_uuid)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| map_sqlx_error(e, NotFoundAs::User, ConflictAs::ApiToken))?;
+
+        let id = TokenId::new_v7();
+        let sql = format!(
+            "INSERT INTO api_tokens (id, user_id, name, token_hash, tenant_id, database_id,
+                                     permissions, expires_at)
+             VALUES ($1::uuid, $2::uuid, COALESCE($3::text, ''), $4::text, $5::uuid, $6::uuid,
+                     COALESCE($7::jsonb, '[]'::jsonb), $8::timestamptz)
+             RETURNING {API_TOKEN_COLUMNS}"
+        );
+        let row = sqlx::query_as::<_, ApiTokenRow>(&sql)
+            .bind(crate::pg::id_to_uuid(&id)?)
+            .bind(crate::pg::id_to_uuid(&new_token.user_id)?)
+            .bind(new_token.name.as_str())
+            .bind(new_token.token_hash.as_str())
+            .bind(match new_token.tenant_id {
+                Some(t) => Some(crate::pg::id_to_uuid(&t)?),
+                None => None,
+            })
+            .bind(database_uuid)
+            .bind(new_token.permissions.clone())
+            .bind(new_token.expires_at)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| map_sqlx_error(e, NotFoundAs::User, ConflictAs::ApiToken))?;
+        tx.commit()
             .await
             .map_err(|e| map_sqlx_error(e, NotFoundAs::User, ConflictAs::ApiToken))?;
         Ok(row.0)

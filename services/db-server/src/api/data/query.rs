@@ -59,6 +59,7 @@ pub async fn query_database(
 ) -> ApiResult<Response> {
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
+    crate::api::authorize_database(&state, &principal, database_id).await?;
     if request.sql.trim().is_empty() {
         return Err(ApiError::invalid_argument("sql 不能为空"));
     }
@@ -100,6 +101,7 @@ pub async fn batch_database(
 ) -> ApiResult<Json<dto::BatchResponse>> {
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
+    crate::api::authorize_database(&state, &principal, database_id).await?;
     if request.statements.is_empty() {
         return Err(ApiError::invalid_argument("statements 不能为空"));
     }

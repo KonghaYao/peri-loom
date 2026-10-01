@@ -32,7 +32,7 @@ use domain::records::DatabaseRecord;
 
 use crate::api::{audit, dto};
 use crate::auth::Principal;
-use crate::error::{ApiError, ApiResult, PlatformResultExt};
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// 长操作 job 的缺省优先级。
@@ -117,15 +117,10 @@ pub(crate) async fn accepted(
 /// start / snapshot，产生一堆指向墓碑资源的 operation。
 pub(crate) async fn load_database(
     state: &AppState,
+    principal: &Principal,
     database_id: DatabaseId,
 ) -> ApiResult<DatabaseRecord> {
-    let record = state.catalog.get_database(database_id).await.api()?;
-    if record.is_deleted() {
-        return Err(ApiError::not_found(format!(
-            "数据库 {database_id} 不存在或已删除"
-        )));
-    }
-    Ok(record)
+    crate::api::authorize_database(state, principal, database_id).await
 }
 
 /// 非数据库资源的 404。

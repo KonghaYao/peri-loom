@@ -33,6 +33,7 @@ import { ErrorAlert } from '../components/ErrorAlert';
 import { JsonBlock } from '../components/JsonBlock';
 import { OperationModal } from '../components/OperationModal';
 import { DatabaseStateTag } from '../components/StatusTag';
+import { DatabaseConnectionCard } from '../components/database/DatabaseConnectionCard';
 import { MoveDatabaseModal, RestoreDatabaseModal } from '../components/database/DatabaseModals';
 import { useDeployment } from '../hooks/useDeployment';
 import { useSubmitOperation } from '../hooks/useSubmitOperation';
@@ -86,23 +87,6 @@ export function DatabaseDetailPage(): JSX.Element {
   const db = dbQuery.data;
   const snapshots = toItems(snapshotsQuery.data);
   const slowQueries = toItems(slowQueriesQuery.data);
-
-  // 对外出口冻结为 HTTP，且浏览器与 API 同 Origin（生产由 nginx、开发由 vite proxy 反代 /data/*），
-  // 因此 Base URL 必须由 window.location.origin 推导，不能硬编码主机端口。
-  const dataApiBase = `${window.location.origin}/data/v1`;
-  const queryEndpoint = `${dataApiBase}/databases/${dbId}/query`;
-
-  // 两个官方 SDK 共用同一 Origin 的 /db/* 入口（生产由 nginx、开发由 vite proxy 反代）。
-  // **结尾斜杠是硬性要求**：客户端按 <base>/v2/pipeline 拼路径，少了它 db_id 会被当成目录吃掉。
-  // @tursodatabase/serverless 只做前缀替换（libsql://、turso:// → https://），http:// 原样穿过；
-  // 但它按 `${url}/v3/cursor` 朴素拼接，任何 query 都会被并进路径，因此这份地址不能带参数。
-  const hranaEndpoint = `${window.location.origin}/db/${dbId}/`;
-  // @libsql/client 默认按 TLS 连接；只有带 ?tls=0 且显式写出端口时才走明文 HTTP。
-  // 本入口是明文就补 ?tls=0；将来套了 TLS 反代则用不带参数的形式（那时端口也无需显式给出）。
-  const libsqlEndpoint =
-    window.location.protocol === 'https:'
-      ? `libsql://${window.location.host}/db/${dbId}/`
-      : `libsql://${window.location.host}/db/${dbId}/?tls=0`;
 
   const actionByKey = (key: string): ActionDef => {
     const found = ACTIONS.find((a) => a.key === key);
@@ -197,6 +181,8 @@ export function DatabaseDetailPage(): JSX.Element {
       <ErrorAlert error={dbQuery.error} onRetry={() => dbQuery.refetch()} />
       <ErrorAlert error={error} onRetry={clearError} closable onClose={clearError} />
 
+      <DatabaseConnectionCard databaseId={dbId} />
+
       <Card
         title={
           <Space>
@@ -269,53 +255,13 @@ export function DatabaseDetailPage(): JSX.Element {
         </Row>
       </Card>
 
-      {/* 连接信息：平台没有 per-DB 的 host:port / DSN，「连接」= 入口地址 + db_id + Token */}
-      <Card title="连接信息" style={{ marginTop: 16 }}>
-        <Descriptions size="small" column={1} bordered>
-          <Descriptions.Item label="libSQL 客户端">
-            <Typography.Text copyable={{ text: libsqlEndpoint }} code>
-              {libsqlEndpoint}
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-              @libsql/client
-            </Typography.Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="TursoDB SDK">
-            <Typography.Text copyable={{ text: hranaEndpoint }} code>
-              {hranaEndpoint}
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-              @tursodatabase/serverless：HTTP 入口，URL 不能带 query 参数
-            </Typography.Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="数据库标识">
-            <Typography.Text copyable={{ text: dbId }} code>
-              {dbId}
-            </Typography.Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="凭据">
-            <Typography.Text code>{'Authorization: Bearer <token>'}</Typography.Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="Data API 基址">
-            <Typography.Text copyable={{ text: dataApiBase }} code>
-              {dataApiBase}
-            </Typography.Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="查询端点">
-            <Typography.Text copyable={{ text: `POST ${queryEndpoint}` }} code>
-              {`POST ${queryEndpoint}`}
-            </Typography.Text>
-          </Descriptions.Item>
-        </Descriptions>
-        <Typography.Paragraph type="secondary" style={{ margin: '12px 0 0' }}>
-          Token 在 <Link to="/settings">设置</Link> 页创建，明文只在创建成功时展示一次；登录获得的 JWT 同样可用。
-        </Typography.Paragraph>
-        {db?.state === 'COLD' ? (
+      {db?.state === 'COLD' && (
+        <Card title="连接说明" style={{ marginTop: 16 }}>
           <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-            当前数据库处于 COLD：首次请求会触发透明唤醒（WAKEUP_TIMEOUT_MS，默认 3s），可能比平时慢。
+            当前数据库已停止，首次连接会自动唤醒，可能比平时慢。
           </Typography.Paragraph>
-        ) : null}
-      </Card>
+        </Card>
+      )}
 
       <Card
         title={<Space>快照<Link to={`/sql?db=${encodeURIComponent(dbId)}`}>去 SQL 控制台</Link></Space>}

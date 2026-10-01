@@ -11,6 +11,7 @@ import {
   ConsoleSqlOutlined,
   DashboardOutlined,
   DatabaseOutlined,
+  KeyOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -33,6 +34,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { key: '/dashboard', label: '概览', icon: <DashboardOutlined /> },
   { key: '/databases', label: '数据库', icon: <DatabaseOutlined /> },
+  { key: '/tokens', label: 'API 凭据', icon: <KeyOutlined /> },
   { key: '/sql', label: 'SQL 控制台', icon: <ConsoleSqlOutlined /> },
   { key: '/workers', label: 'Worker', icon: <ClusterOutlined /> },
   { key: '/operations', label: '操作中心', icon: <SyncOutlined /> },

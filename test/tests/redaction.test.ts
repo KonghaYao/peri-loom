@@ -37,6 +37,11 @@ describe('输出脱敏', () => {
     assert.match(redact(`别人的 token=${FAKE_JWT}`), /<REDACTED>/, '应当留下 <REDACTED> 占位');
   });
 
+  test('数据库 API Token 无需载入配置也会被脱敏', () => {
+    const token = `dbp_${'0123456789abcdef'.repeat(4)}`;
+    assert.equal(redact(`authToken=${token}`), 'authToken=<REDACTED>');
+  });
+
   test('当前配置的真实凭据不会出现在输出里', (t) => {
     const token = tryResolveToken();
     if (!token) {

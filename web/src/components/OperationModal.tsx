@@ -12,6 +12,7 @@ import { formatTime } from '../utils/format';
 import { JsonBlock } from './JsonBlock';
 import { OperationStateTag } from './StatusTag';
 import { ErrorAlert } from './ErrorAlert';
+import { DatabaseConnectionCard } from './database/DatabaseConnectionCard';
 
 interface OperationModalProps {
   operationId: string | null;
@@ -63,6 +64,9 @@ export function OperationModal({
     >
       {operationId ? (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {op?.kind === 'CREATE_DB' && op.state === 'SUCCEEDED' && operationDbId(op) ? (
+            <DatabaseConnectionCard databaseId={operationDbId(op)!} tokenAction="detail-link" />
+          ) : null}
           <Descriptions size="small" column={1} bordered>
             <Descriptions.Item label="operation_id">
               <Typography.Text copyable={{ text: operationId }} code>

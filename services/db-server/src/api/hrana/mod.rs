@@ -138,8 +138,10 @@ async fn run_cursor(
     raw_db_id: &str,
     request: wire::CursorRequest,
 ) -> ApiResult<axum::body::Body> {
-    principal.require(permission::DB_WRITE)?;
     let database_id = db_id(raw_db_id)?;
+    principal.require_sdk_database(database_id)?;
+    principal.require(permission::DB_WRITE)?;
+    crate::api::authorize_database(state, principal, database_id).await?;
     if request.batch.steps.len() > MAX_PIPELINE_ITEMS {
         return Err(ApiError::invalid_argument("Hrana cursor 步骤过多"));
     }
@@ -461,8 +463,10 @@ async fn run(
     request: wire::PipelineRequest,
 ) -> ApiResult<wire::PipelineResponse> {
     // 数据面一律 `db:write`，与 /data/v1 同档（理由见模块头）。
-    principal.require(permission::DB_WRITE)?;
     let database_id = db_id(raw_db_id)?;
+    principal.require_sdk_database(database_id)?;
+    principal.require(permission::DB_WRITE)?;
+    crate::api::authorize_database(state, principal, database_id).await?;
     if request.requests.is_empty() {
         return Err(ApiError::invalid_argument("requests 不能为空"));
     }

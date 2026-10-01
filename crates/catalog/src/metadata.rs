@@ -21,6 +21,8 @@ pub trait IdentityStore: Send + Sync {
     async fn create_user(&self, user: NewUser) -> Result<UserRecord>;
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<UserRecord>>;
     async fn create_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord>;
+    /// Atomically revoke the active token for this database and create its replacement.
+    async fn rotate_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord>;
     async fn find_user_by_token_hash(&self, hash: &str) -> Result<Option<AuthenticatedToken>>;
     async fn revoke_api_token(&self, id: TokenId) -> Result<bool>;
     async fn list_tokens_for_user(&self, id: UserId) -> Result<Vec<ApiTokenRecord>>;
@@ -159,6 +161,9 @@ impl IdentityStore for crate::Catalog {
     }
     async fn create_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord> {
         self.create_api_token(token).await
+    }
+    async fn rotate_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord> {
+        self.rotate_api_token(token).await
     }
     async fn find_user_by_token_hash(&self, hash: &str) -> Result<Option<AuthenticatedToken>> {
         self.find_user_by_token_hash(hash).await

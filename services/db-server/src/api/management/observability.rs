@@ -3,8 +3,8 @@
 //! 两者都是「读多写少、必须可分页」的表，因此统一夹取 limit（缺省 50，上限 500），
 //! 避免一次请求把整张表读进内存。
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use catalog::AuditFilter;
 use domain::ids::{DatabaseId, TenantId, UserId};
 use serde::Deserialize;
@@ -78,6 +78,7 @@ pub async fn list_snapshots(
 ) -> ApiResult<Json<Vec<dto::SnapshotView>>> {
     principal.require(permission::DB_READ)?;
     let database_id = db_id(&params.database_id)?;
+    crate::api::authorize_database(&state, &principal, database_id).await?;
     let snapshots = state
         .catalog
         .list_snapshots(database_id, clamp_limit(params.limit, DEFAULT_LIST_LIMIT))
@@ -109,6 +110,7 @@ pub async fn list_audit(
     principal: Principal,
     Query(params): Query<AuditListParams>,
 ) -> ApiResult<Json<dto::Page<dto::AuditView>>> {
+    principal.require_control_plane()?;
     principal.require(permission::AUDIT_READ)?;
     let limit = clamp_limit(params.limit, DEFAULT_LIST_LIMIT);
     let offset = params.offset.unwrap_or(0).max(0);

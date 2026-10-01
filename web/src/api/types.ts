@@ -286,6 +286,15 @@ export interface DatabaseScopedQuery {
 
 // ---------------------------------------------------------------- Token / 偏好 / Saved SQL
 
+export interface Viewer {
+  user_id: string;
+  username: string;
+  display_name: string;
+  is_superuser: boolean;
+  permissions: string[];
+  tenant_id?: string | null;
+}
+
 /** Token 视图（TokenView）：主键是 `id`，权限列表是 `permissions` */
 export interface TokenInfo {
   id: string;
@@ -302,6 +311,7 @@ export interface TokenInfo {
 /** 创建 Token 响应（TokenCreated）：明文 token 只返回一次 */
 export interface TokenCreated {
   id: string;
+  database_id: string;
   name: string;
   token: string;
   permissions: string[];
@@ -312,6 +322,8 @@ export interface TokenCreated {
 /** 创建 Token 请求（CreateTokenRequest）：过期时间用绝对时间戳 `expires_at` */
 export interface CreateTokenRequest {
   name: string;
+  database_id: string;
+  rotate?: boolean;
   permissions?: string[];
   expires_at?: string | null;
   tenant_id?: string | null;

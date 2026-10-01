@@ -56,3 +56,13 @@
 按后续要求，Simple 发布改为 Linux x64、Linux ARM64、macOS ARM64 三平台原生二进制 GitHub Release，取消 macOS Intel、独立 Compose 与 Simple GHCR 发布，保留 Dockerfile。工作流包含打包、解压后启动验证、SHA-256 校验及发布后 mise 安装验证。
 
 本地已用现有 macOS ARM64 debug 二进制验证打包、权限、校验和及独立目录启动；`cargo check -p db-server`、Actionlint 1.7.12、Python/Shell 语法及 `git diff --check` 通过。完整三平台 release 构建和远端 mise 安装需在 GitHub 工作流实际运行后确认；这里不将它们记录为已通过。原 Simple 演示容器已移除，命名卷保留。
+
+## 数据库连接与单库 Token（2026-10-01）
+
+建库成功后展示 libSQL / TursoDB 地址与端口，详情首屏提供一键申请本库 Token，明文仅在本次弹窗显示。每库最多一个未吊销 Token，轮换原子撤销旧 Token；管理 JWT 负责发证与生命周期管理，SDK 只接受绑定本库的 API Token。SQLite / PostgreSQL 均新增独立 migration，旧版未绑定 Token 不再接受认证。
+
+- `cargo test -p catalog --lib`：53 项通过，33 项 PostgreSQL 用例默认跳过；新增的 PostgreSQL 并发创建/轮换用例另在临时独立 PostgreSQL 16 容器通过，随后移除容器。SQLite 覆盖旧 schema 升级、重复 Token 归并、跨库不受影响、重开后约束及轮换失败回滚。
+- `cargo test -p db-server --lib`：102 项通过；`cargo test -p db-server --test simple_http` 通过，覆盖跨库 Data/Hrana/session 拒绝、Token 禁止发证及本库生命周期管理、JWT 禁止用于 SDK、重复签发、轮换与吊销、敏感响应 `no-store`，并保留崩溃恢复与导入导出验证。
+- 独立临时 Simple 实例的真实 TursoDB SDK 套件：37/37 通过，包含数据库 Token 日志脱敏回归。
+- Playwright + 本机 Chrome 使用临时实例验证账号登录、建库后展示地址、详情一键申请、关闭清空且不写 localStorage、列表不含明文、轮换旧 Token 失效；真实 `@libsql/client` 与 `@tursodatabase/serverless` 均使用页面生成的地址与单库 Token 查询成功。测试没有读取或修改用户现有数据库。
+- Web 类型检查和生产构建、`cargo clippy -p catalog -p db-server --all-targets -- -D warnings` 与 `git diff --check` 通过；本次未重跑完整 distributed 多节点部署。

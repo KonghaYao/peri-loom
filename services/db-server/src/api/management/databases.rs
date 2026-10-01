@@ -47,11 +47,40 @@ pub async fn list_databases(
     principal.require(permission::DB_READ)?;
     let (limit, offset) = params.page().normalized();
 
+    // API Token 的列表视图只有其绑定库一个条目；JWT 管理用户走常规可筛选列表。
+    if let Some(database_id) = principal.database_id {
+        let record = crate::api::authorize_database(&state, &principal, database_id).await?;
+        return Ok(Json(dto::Page {
+            items: if offset == 0 {
+                vec![dto::DatabaseView::for_deployment(
+                    &record,
+                    state.execution.remote_lsn(),
+                )]
+            } else {
+                Vec::new()
+            },
+            limit,
+            offset,
+        }));
+    }
+
+    let requested_tenant = params
+        .tenant_id
+        .as_deref()
+        .map(parse_tenant_id)
+        .transpose()?;
+    if !principal.is_superuser
+        && principal
+            .tenant_id
+            .zip(requested_tenant)
+            .is_some_and(|(own, requested)| own != requested)
+    {
+        return Err(ApiError::permission_denied(
+            "主体无权列出租户范围之外的数据库",
+        ));
+    }
     let filter = DatabaseFilter {
-        tenant_id: match params.tenant_id.as_deref() {
-            Some(raw) => Some(parse_tenant_id(raw)?),
-            None => principal.tenant_id,
-        },
+        tenant_id: requested_tenant.or(principal.tenant_id),
         worker_id: params
             .worker_id
             .as_deref()
@@ -106,6 +135,7 @@ pub async fn create_database(
     uri: Uri,
     Json(request): Json<dto::CreateDatabaseRequest>,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_WRITE)?;
 
     let name = request.name.trim().to_string();
@@ -116,6 +146,16 @@ pub async fn create_database(
         Some(raw) => Some(parse_tenant_id(raw)?),
         None => principal.tenant_id,
     };
+    if !principal.is_superuser
+        && principal
+            .tenant_id
+            .zip(tenant_id)
+            .is_some_and(|(own, requested)| own != requested)
+    {
+        return Err(ApiError::permission_denied(
+            "不能在主体所属租户之外创建数据库",
+        ));
+    }
 
     let params = CreateDatabaseParams {
         id: None,
@@ -225,7 +265,7 @@ pub async fn get_database(
 ) -> ApiResult<Json<dto::DatabaseView>> {
     principal.require(permission::DB_READ)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     Ok(Json(dto::DatabaseView::for_deployment(
         &record,
         state.execution.remote_lsn(),
@@ -250,9 +290,10 @@ pub async fn delete_database(
     headers: HeaderMap,
     uri: Uri,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_ADMIN)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     let spec = LongOperationSpec {
@@ -303,9 +344,10 @@ pub async fn start_database(
     headers: HeaderMap,
     uri: Uri,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     let outcome = if record.state.is_serving() {
@@ -361,9 +403,10 @@ pub async fn stop_database(
     headers: HeaderMap,
     uri: Uri,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     let outcome = if record.state.occupies_process() {
@@ -419,9 +462,10 @@ pub async fn restart_database(
     headers: HeaderMap,
     uri: Uri,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     let spec = LongOperationSpec {
@@ -474,10 +518,11 @@ pub async fn move_database(
     uri: Uri,
     Json(request): Json<dto::MoveDatabaseRequest>,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_ADMIN)?;
     state.deployment.require_cluster()?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     // target_worker_id 为空表示交给 Scheduler 自动放置（job 侧按缺席处理）。
@@ -533,9 +578,10 @@ pub async fn snapshot_database(
     headers: HeaderMap,
     uri: Uri,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     let spec = LongOperationSpec {
@@ -586,9 +632,10 @@ pub async fn backup_database(
     headers: HeaderMap,
     uri: Uri,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     let spec = LongOperationSpec {
@@ -641,9 +688,10 @@ pub async fn restore_database(
     uri: Uri,
     Json(request): Json<dto::RestoreDatabaseRequest>,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_ADMIN)?;
     let database_id = db_id(&raw_db_id)?;
-    let record = load_database(&state, database_id).await?;
+    let record = load_database(&state, &principal, database_id).await?;
     let id_text = database_id.to_string();
 
     // snapshot_id 缺省（或为 null）时由 job 取最近一个 AVAILABLE 快照。

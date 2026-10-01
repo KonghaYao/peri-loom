@@ -62,6 +62,8 @@ let loadedToken = '';
 
 /** JWT 形状兜底：即使凭据来源未知（例如日志里混进别人的 token），也一并抹掉。 */
 const JWT_SHAPED = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b/g;
+/** 数据库 API Token 形状兜底，覆盖未经 loadConfig 的日志路径。 */
+const API_TOKEN_SHAPED = /\bdbp_[0-9a-f]{64}\b/g;
 /** `Bearer <token>` 形态：打印请求头时只允许留下 `Bearer <REDACTED>`。 */
 const BEARER_SHAPED = /(Bearer\s+)\S+/gi;
 
@@ -75,6 +77,7 @@ export function redact(value: unknown): string {
   let text = typeof value === 'string' ? value : String(value);
   if (loadedToken) text = text.split(loadedToken).join('<REDACTED>');
   text = text.replace(JWT_SHAPED, '<REDACTED>');
+  text = text.replace(API_TOKEN_SHAPED, '<REDACTED>');
   text = text.replace(BEARER_SHAPED, '$1<REDACTED>');
   return text;
 }
@@ -130,10 +133,11 @@ function readTokenFile(path: string): string | null {
  */
 export function tryResolveToken(): string | null {
   const fromEnv = (process.env.DB_PLATFORM_TOKEN ?? '').trim();
-  if (fromEnv) {
-    return readTokenFile(fromEnv) ?? (LOOKS_LIKE_PATH.test(fromEnv) ? null : fromEnv);
-  }
-  return readTokenFile(DEFAULT_TOKEN_FILE);
+  const token = fromEnv
+    ? readTokenFile(fromEnv) ?? (LOOKS_LIKE_PATH.test(fromEnv) ? null : fromEnv)
+    : readTokenFile(DEFAULT_TOKEN_FILE);
+  if (token) loadedToken = token;
+  return token;
 }
 
 /** 解析凭据；解析不到就抛可读的 PreflightError。 */
@@ -143,7 +147,7 @@ export function resolveToken(): string {
     throw new PreflightError(
       '缺少平台凭据：请设置 DB_PLATFORM_TOKEN（token 字面量，或指向含 token 的文件路径），' +
         `或把 token 写入 ${DEFAULT_TOKEN_FILE}。\n` +
-        '  提示：平台签发的是 HS256 JWT，默认 1 小时过期；凭据过期时所有用例都会拿到 401。',
+        '  提示：请在目标数据库详情申请本库 API Token（dbp_ 前缀），管理登录 JWT 不能用于 SDK。',
     );
   }
   return token;
@@ -154,8 +158,6 @@ export function loadConfig(): PlatformConfig {
   const baseUrl = (process.env.BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   const dbId = process.env.DB_ID ?? DEFAULT_DB_ID;
   const token = resolveToken();
-  // 记住凭据，redact() 才能按原文精确擦除。
-  loadedToken = token;
   const queryTimeoutMs = Number(process.env.QUERY_TIMEOUT_MS ?? 20_000);
   return {
     baseUrl,

@@ -35,6 +35,7 @@ use axum::Router;
 use catalog::IdempotencyOutcome;
 use domain::error::{ErrorCode, PlatformError};
 use domain::ids::{DatabaseId, OperationId, WorkerId};
+use domain::records::DatabaseRecord;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, Http, HttpAuthScheme, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
@@ -88,7 +89,7 @@ pub fn build_router(state: AppState) -> Router {
         description = "平台唯一公网出口：Management / DBA REST + SQL Data API。\
                        长操作返回 202 与 operation_id，通过 GET /api/v1/operations/{operation_id} 查询进展。\
                        错误体统一为 {\"error\":{code,message,request_id,retryable}}。\
-                       认证：Authorization: Bearer <JWT> 或 x-api-token: <platform token>。"
+                       认证：Authorization: Bearer <JWT 或 dbp_ 平台 token> 或 x-api-token: <platform token>。"
     ),
     paths(
         // ---- auth
@@ -489,6 +490,30 @@ pub async fn audit<T>(
 
 // ==================================================================== 解析辅助
 
+/// 统一执行数据库资源授权：API Token 必须精确命中绑定库，且有 tenant 的主体只能访问
+/// 本租户的库。所有 DB 路由在执行前调用它，避免只检查 permission 而漏掉资源边界。
+pub async fn authorize_database(
+    state: &AppState,
+    principal: &Principal,
+    database_id: DatabaseId,
+) -> ApiResult<DatabaseRecord> {
+    principal.require_database(database_id)?;
+    let record = state.catalog.get_database(database_id).await.api()?;
+    if record.is_deleted() {
+        return Err(ApiError::not_found(format!(
+            "数据库 {database_id} 不存在或已删除"
+        )));
+    }
+    if !principal.is_superuser
+        && principal
+            .tenant_id
+            .is_some_and(|tenant_id| tenant_id != record.tenant_id)
+    {
+        return Err(ApiError::permission_denied("主体无权访问该租户的数据库"));
+    }
+    Ok(record)
+}
+
 /// 解析数据库 ID 路径参数。
 ///
 /// # Errors
@@ -579,10 +604,12 @@ mod tests {
     fn openapi_json_is_serializable_and_versioned() {
         let json = serde_json::to_value(api_doc()).expect("OpenAPI 必须可序列化");
         assert_eq!(json["openapi"], "3.1.0");
-        assert!(json["info"]["title"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Server Plane"));
+        assert!(
+            json["info"]["title"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Server Plane")
+        );
     }
 
     #[test]

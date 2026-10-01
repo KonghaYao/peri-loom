@@ -930,6 +930,9 @@ impl SqliteCatalog {
         if token.token_hash.trim().is_empty() {
             return Err(err(ErrorCode::InvalidArgument, "token hash is empty"));
         }
+        let database_id = token.database_id.ok_or_else(|| {
+            err(ErrorCode::InvalidArgument, "API token must be bound to a database")
+        })?;
         if self.find_user(token.user_id).await?.is_none() {
             return Err(missing("user"));
         }
@@ -939,15 +942,65 @@ impl SqliteCatalog {
             name: token.name,
             token_hash: token.token_hash,
             tenant_id: token.tenant_id,
-            database_id: token.database_id,
+            database_id: Some(database_id),
             permissions: token.permissions,
             expires_at: token.expires_at,
             last_used_at: None,
             revoked_at: None,
             created_at: now(),
         };
-        sqlx::query("INSERT INTO api_tokens(id,user_id,token_hash,revoked_at,expires_at,created_at,record) VALUES(?,?,?,?,?,?,?)")
-            .bind(rec.id.to_string()).bind(rec.user_id.to_string()).bind(&rec.token_hash).bind(Option::<String>::None).bind(rec.expires_at.map(|v|v.to_rfc3339())).bind(rec.created_at.to_rfc3339()).bind(encode(&rec)?).execute(&self.pool).await.map_err(|e| sqlite_write_error(e, ErrorCode::InvalidArgument))?;
+        sqlx::query("INSERT INTO api_tokens(id,user_id,token_hash,revoked_at,expires_at,created_at,record,database_id) VALUES(?,?,?,?,?,?,?,?)")
+            .bind(rec.id.to_string()).bind(rec.user_id.to_string()).bind(&rec.token_hash).bind(Option::<String>::None).bind(rec.expires_at.map(|v|v.to_rfc3339())).bind(rec.created_at.to_rfc3339()).bind(encode(&rec)?).bind(database_id.to_string()).execute(&self.pool).await.map_err(|e| sqlite_write_error(e, ErrorCode::InvalidArgument))?;
+        Ok(rec)
+    }
+    pub async fn rotate_api_token(
+        &self,
+        token: crate::NewApiToken,
+    ) -> Result<crate::ApiTokenRecord> {
+        if token.token_hash.trim().is_empty() {
+            return Err(err(ErrorCode::InvalidArgument, "token hash is empty"));
+        }
+        let database_id = token.database_id.ok_or_else(|| {
+            err(ErrorCode::InvalidArgument, "API token must be bound to a database")
+        })?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let existing = sqlx::query(
+            "SELECT id,record FROM api_tokens WHERE database_id=? AND revoked_at IS NULL",
+        )
+        .bind(database_id.to_string())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let revoked_at = now();
+        for row in existing {
+            let id: String = row.try_get("id").map_err(storage)?;
+            let mut old: crate::ApiTokenRecord = decode(row.try_get("record").map_err(storage)?)?;
+            old.revoked_at = Some(revoked_at);
+            sqlx::query("UPDATE api_tokens SET revoked_at=?,record=? WHERE id=? AND revoked_at IS NULL")
+                .bind(revoked_at.to_rfc3339())
+                .bind(encode(&old)?)
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?;
+        }
+
+        let rec = crate::ApiTokenRecord {
+            id: TokenId::new_v7(),
+            user_id: token.user_id,
+            name: token.name,
+            token_hash: token.token_hash,
+            tenant_id: token.tenant_id,
+            database_id: Some(database_id),
+            permissions: token.permissions,
+            expires_at: token.expires_at,
+            last_used_at: None,
+            revoked_at: None,
+            created_at: now(),
+        };
+        sqlx::query("INSERT INTO api_tokens(id,user_id,token_hash,revoked_at,expires_at,created_at,record,database_id) VALUES(?,?,?,?,?,?,?,?)")
+            .bind(rec.id.to_string()).bind(rec.user_id.to_string()).bind(&rec.token_hash).bind(Option::<String>::None).bind(rec.expires_at.map(|v|v.to_rfc3339())).bind(rec.created_at.to_rfc3339()).bind(encode(&rec)?).bind(database_id.to_string()).execute(&mut *tx).await.map_err(|e| sqlite_write_error(e, ErrorCode::InvalidArgument))?;
+        tx.commit().await.map_err(storage)?;
         Ok(rec)
     }
     pub async fn find_user_by_token_hash(
@@ -1473,6 +1526,9 @@ impl IdentityStore for SqliteCatalog {
     async fn create_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord> {
         self.create_api_token(token).await
     }
+    async fn rotate_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord> {
+        self.rotate_api_token(token).await
+    }
     async fn find_user_by_token_hash(&self, hash: &str) -> Result<Option<AuthenticatedToken>> {
         self.find_user_by_token_hash(hash).await
     }
@@ -1712,13 +1768,17 @@ mod tests {
         let path = dir.path().join("metadata.db");
         let catalog = SqliteCatalog::connect(&path).await.unwrap();
         let user = catalog.create_user(NewUser::new("alice")).await.unwrap();
+        let database = catalog
+            .create_database(CreateDatabaseParams::new("token-test-db"))
+            .await
+            .unwrap();
         let token = catalog
             .create_api_token(NewApiToken {
                 user_id: user.id,
                 name: "test".into(),
                 token_hash: "sha256:123".into(),
                 tenant_id: None,
-                database_id: None,
+                database_id: Some(database.id),
                 permissions: Value::Array(vec![]),
                 expires_at: None,
             })
@@ -1900,6 +1960,227 @@ mod permission_tests {
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn migration_backfills_scopes_preserves_latest_and_enforces_unique_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old-metadata.db");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        // Apply only the released schema. The production 0001 migration stays untouched.
+        let all_migrations = sqlx::migrate!("./sqlite_migrations");
+        let old_migrations = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(vec![
+                all_migrations
+                    .iter()
+                    .find(|migration| migration.version == 1)
+                    .unwrap()
+                    .clone(),
+            ]),
+            ..sqlx::migrate::Migrator::DEFAULT
+        };
+        old_migrations.run(&pool).await.unwrap();
+
+        let old_catalog = SqliteCatalog { pool: pool.clone() };
+        let user = old_catalog
+            .create_user(NewUser::new("migration-token-user"))
+            .await
+            .unwrap();
+        let database = old_catalog
+            .create_database(CreateDatabaseParams::new("migration-token-db"))
+            .await
+            .unwrap();
+        let other_database = old_catalog
+            .create_database(CreateDatabaseParams::new("migration-other-token-db"))
+            .await
+            .unwrap();
+
+        let before = Utc::now() - chrono::Duration::days(2);
+        let newest = Utc::now() - chrono::Duration::days(1);
+        let records = [
+            crate::ApiTokenRecord {
+                id: TokenId::new_v7(),
+                user_id: user.id,
+                name: "oldest".into(),
+                token_hash: "migration-oldest-hash".into(),
+                tenant_id: None,
+                database_id: Some(database.id),
+                permissions: serde_json::json!(["db:read"]),
+                expires_at: None,
+                last_used_at: None,
+                revoked_at: None,
+                created_at: before,
+            },
+            crate::ApiTokenRecord {
+                id: TokenId::new_v7(),
+                user_id: user.id,
+                name: "latest".into(),
+                token_hash: "migration-latest-hash".into(),
+                tenant_id: None,
+                database_id: Some(database.id),
+                permissions: serde_json::json!(["db:read"]),
+                expires_at: None,
+                last_used_at: None,
+                revoked_at: None,
+                created_at: newest,
+            },
+            crate::ApiTokenRecord {
+                id: TokenId::new_v7(),
+                user_id: user.id,
+                name: "other database".into(),
+                token_hash: "migration-other-hash".into(),
+                tenant_id: None,
+                database_id: Some(other_database.id),
+                permissions: serde_json::json!(["db:read"]),
+                expires_at: None,
+                last_used_at: None,
+                revoked_at: None,
+                created_at: Utc::now(),
+            },
+            crate::ApiTokenRecord {
+                id: TokenId::new_v7(),
+                user_id: user.id,
+                name: "legacy unscoped".into(),
+                token_hash: "migration-null-hash".into(),
+                tenant_id: None,
+                database_id: None,
+                permissions: serde_json::json!(["db:read"]),
+                expires_at: None,
+                last_used_at: None,
+                revoked_at: None,
+                created_at: Utc::now() + chrono::Duration::days(1),
+            },
+        ];
+        for token in &records {
+            sqlx::query("INSERT INTO api_tokens(id,user_id,token_hash,revoked_at,expires_at,created_at,record) VALUES(?,?,?,NULL,NULL,?,?)")
+                .bind(token.id.to_string())
+                .bind(token.user_id.to_string())
+                .bind(&token.token_hash)
+                .bind(token.created_at.to_rfc3339())
+                .bind(encode(token).unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool.close().await;
+
+        // Opening through the normal path applies 0002 to this real old-format database.
+        let catalog = SqliteCatalog::connect(&path).await.unwrap();
+        let tokens = catalog.list_tokens_for_user(user.id).await.unwrap();
+        let oldest = tokens.iter().find(|token| token.id == records[0].id).unwrap();
+        let latest = tokens.iter().find(|token| token.id == records[1].id).unwrap();
+        let other = tokens.iter().find(|token| token.id == records[2].id).unwrap();
+        let legacy = tokens.iter().find(|token| token.id == records[3].id).unwrap();
+        assert!(oldest.is_revoked());
+        assert!(latest.revoked_at.is_none());
+        assert!(other.revoked_at.is_none());
+        assert!(legacy.revoked_at.is_none());
+        assert_eq!(legacy.database_id, None);
+
+        let (revoked_at, record, database_id): (String, String, String) = sqlx::query_as(
+            "SELECT revoked_at,record,database_id FROM api_tokens WHERE id=?",
+        )
+        .bind(records[0].id.to_string())
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&record).unwrap()["revoked_at"],
+            revoked_at
+        );
+        assert_eq!(database_id, database.id.to_string());
+        let other_database_id: String = sqlx::query_scalar(
+            "SELECT database_id FROM api_tokens WHERE id=?",
+        )
+        .bind(records[2].id.to_string())
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(other_database_id, other_database.id.to_string());
+        let null_database_id: Option<String> = sqlx::query_scalar(
+            "SELECT database_id FROM api_tokens WHERE id=?",
+        )
+        .bind(records[3].id.to_string())
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert!(null_database_id.is_none());
+
+        let duplicate_create = || NewApiToken {
+            user_id: user.id,
+            name: "duplicate".into(),
+            token_hash: "fresh-migration-conflict-hash".into(),
+            tenant_id: None,
+            database_id: Some(database.id),
+            permissions: serde_json::json!(["db:read"]),
+            expires_at: None,
+        };
+        assert_eq!(
+            catalog.create_api_token(duplicate_create()).await.unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+
+        // A failed replacement must roll back revocation of the current token.
+        let failed_rotation = NewApiToken {
+            user_id: user.id,
+            name: "duplicate token hash".into(),
+            token_hash: records[1].token_hash.clone(),
+            tenant_id: None,
+            database_id: Some(database.id),
+            permissions: serde_json::json!(["db:read"]),
+            expires_at: None,
+        };
+        assert!(catalog.rotate_api_token(failed_rotation).await.is_err());
+        assert!(catalog
+            .find_user_by_token_hash(&records[1].token_hash)
+            .await
+            .unwrap()
+            .is_some());
+        let missing_user_rotation = NewApiToken {
+            user_id: UserId::new_v7(),
+            name: "missing user".into(),
+            token_hash: "missing-user-rotation-hash".into(),
+            tenant_id: None,
+            database_id: Some(database.id),
+            permissions: serde_json::json!(["db:read"]),
+            expires_at: None,
+        };
+        assert!(catalog
+            .rotate_api_token(missing_user_rotation)
+            .await
+            .is_err());
+        assert!(catalog
+            .find_user_by_token_hash(&records[1].token_hash)
+            .await
+            .unwrap()
+            .is_some());
+
+        drop(catalog);
+        let reopened = SqliteCatalog::connect(&path).await.unwrap();
+        assert_eq!(
+            reopened.create_api_token(duplicate_create()).await.unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        let reopened_tokens = reopened.list_tokens_for_user(user.id).await.unwrap();
+        assert!(reopened_tokens
+            .iter()
+            .any(|token| token.id == records[1].id && !token.is_revoked()));
+        assert!(reopened_tokens
+            .iter()
+            .any(|token| token.id == records[2].id && !token.is_revoked()));
+        assert!(reopened_tokens
+            .iter()
+            .any(|token| token.id == records[3].id && !token.is_revoked()));
+    }
+
     #[tokio::test]
     async fn public_metadata_tables_can_read_their_records() {
         let dir = tempfile::tempdir().unwrap();
@@ -2029,6 +2310,77 @@ mod contract_tests {
         );
         assert!(catalog.revoke_api_token(token.id).await.unwrap());
         assert!(catalog.list_tokens_for_user(user.id).await.unwrap()[0].is_revoked());
+    }
+
+    #[tokio::test]
+    async fn concurrent_token_create_and_rotation_leave_one_active_token_per_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user(NewUser::new("token-race-user"))
+            .await
+            .unwrap();
+        let database = catalog
+            .create_database(CreateDatabaseParams::new("token-race-db"))
+            .await
+            .unwrap();
+        let other_database = catalog
+            .create_database(CreateDatabaseParams::new("token-race-other-db"))
+            .await
+            .unwrap();
+        let make_token = |database_id, hash: String| NewApiToken {
+            user_id: user.id,
+            name: "race".into(),
+            token_hash: hash,
+            tenant_id: None,
+            database_id: Some(database_id),
+            permissions: serde_json::json!(["db:read"]),
+            expires_at: None,
+        };
+        let other = catalog
+            .create_api_token(make_token(other_database.id, "other-db-token".into()))
+            .await
+            .unwrap();
+
+        let (a, b) = tokio::join!(
+            catalog.create_api_token(make_token(database.id, "race-create-a".into())),
+            catalog.create_api_token(make_token(database.id, "race-create-b".into())),
+        );
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+        let tokens = catalog.list_tokens_for_user(user.id).await.unwrap();
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.database_id == Some(database.id) && !token.is_revoked())
+                .count(),
+            1
+        );
+
+        let (a, b) = tokio::join!(
+            catalog.rotate_api_token(make_token(database.id, "race-rotate-a".into())),
+            catalog.rotate_api_token(make_token(database.id, "race-rotate-b".into())),
+        );
+        assert!(a.is_ok() && b.is_ok());
+        let tokens = catalog.list_tokens_for_user(user.id).await.unwrap();
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.database_id == Some(database.id) && !token.is_revoked())
+                .count(),
+            1
+        );
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.database_id == Some(database.id) && token.is_revoked())
+                .count(),
+            2
+        );
+        assert!(tokens
+            .iter()
+            .any(|token| token.id == other.id && !token.is_revoked()));
     }
 }
 

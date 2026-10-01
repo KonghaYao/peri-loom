@@ -43,6 +43,7 @@ pub async fn open_session(
     // 会话内可以执行任意语句（含 DML），与 /query 用同一档权限。
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
+    crate::api::authorize_database(&state, &principal, database_id).await?;
     let (binding, expires_at_unix_ms) = open_binding(&state, database_id).await?;
 
     Ok(Json(dto::SessionOpened {
@@ -102,6 +103,7 @@ pub async fn session_query(
         return Err(ApiError::invalid_argument("sql 不能为空"));
     }
     let binding = live_binding(&state, &session_id)?;
+    crate::api::authorize_database(&state, &principal, binding.database_id).await?;
     let params = super::query::proto_params(&request.params)?;
 
     state.execution.validate_session(&binding).await?;
@@ -162,6 +164,9 @@ pub async fn close_session(
     Path(session_id): Path<String>,
 ) -> ApiResult<Json<dto::SessionClosed>> {
     principal.require(permission::DB_READ)?;
+    if let Some(binding) = state.sessions.get(&session_id) {
+        crate::api::authorize_database(&state, &principal, binding.database_id).await?;
+    }
     let binding = state.sessions.remove(&session_id);
     let known = binding.is_some();
 

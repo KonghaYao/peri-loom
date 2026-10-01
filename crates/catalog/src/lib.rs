@@ -2076,6 +2076,10 @@ mod db_tests {
         let permissions = catalog.resolve_permissions(user.id).await.unwrap();
         assert!(permissions.contains(&"db:admin".to_string()));
         assert!(permissions.contains(&"audit:read".to_string()));
+        let token_database = catalog
+            .create_database(CreateDatabaseParams::new(format!("token-{}", run_nonce())))
+            .await
+            .unwrap();
 
         let token_hash = format!("hash-{}", run_nonce());
         let token = catalog
@@ -2084,7 +2088,7 @@ mod db_tests {
                 name: "itest".into(),
                 token_hash: token_hash.clone(),
                 tenant_id: None,
-                database_id: None,
+                database_id: Some(token_database.id),
                 permissions: serde_json::json!([]),
                 expires_at: None,
             })
@@ -2123,6 +2127,76 @@ mod db_tests {
             .unwrap()
             .iter()
             .any(|u| u.id == user.id));
+    }
+
+    #[tokio::test]
+    #[ignore = "需要隔离 PostgreSQL 测试库：DATABASE_URL"]
+    async fn concurrent_token_create_and_rotation_leave_one_active_per_database() {
+        let catalog = test_catalog().await;
+        let suffix = run_nonce();
+        let user = catalog
+            .create_user(NewUser::new(format!("itest-token-race-{suffix}")))
+            .await
+            .unwrap();
+        let database = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-token-race-{suffix}"
+            )))
+            .await
+            .unwrap();
+        let other_database = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-token-other-{suffix}"
+            )))
+            .await
+            .unwrap();
+        let make_token = |database_id, hash: String| NewApiToken {
+            user_id: user.id,
+            name: "race".into(),
+            token_hash: hash,
+            tenant_id: None,
+            database_id: Some(database_id),
+            permissions: serde_json::json!(["db:read"]),
+            expires_at: None,
+        };
+        let other = catalog
+            .create_api_token(make_token(
+                other_database.id,
+                format!("{suffix}-other-token"),
+            ))
+            .await
+            .unwrap();
+
+        let (a, b) = tokio::join!(
+            catalog.create_api_token(make_token(database.id, format!("{suffix}-create-a"))),
+            catalog.create_api_token(make_token(database.id, format!("{suffix}-create-b"))),
+        );
+        assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+        let tokens = catalog.list_tokens_for_user(user.id).await.unwrap();
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.database_id == Some(database.id) && !token.is_revoked())
+                .count(),
+            1
+        );
+
+        let (a, b) = tokio::join!(
+            catalog.rotate_api_token(make_token(database.id, format!("{suffix}-rotate-a"))),
+            catalog.rotate_api_token(make_token(database.id, format!("{suffix}-rotate-b"))),
+        );
+        assert!(a.is_ok() && b.is_ok());
+        let tokens = catalog.list_tokens_for_user(user.id).await.unwrap();
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|token| token.database_id == Some(database.id) && !token.is_revoked())
+                .count(),
+            1
+        );
+        assert!(tokens
+            .iter()
+            .any(|token| token.id == other.id && !token.is_revoked()));
     }
 
     /// Panel 数据：preferences / saved queries / slow queries。

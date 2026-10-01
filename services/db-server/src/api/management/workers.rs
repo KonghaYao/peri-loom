@@ -3,9 +3,9 @@
 //! Worker 自身不上报 endpoint 之外的信息，这里的用量与容量全部来自 Catalog 的
 //! `workers` 表（由心跳写入），因此读接口永远只走 PostgreSQL，不触碰 Worker。
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
-use axum::Json;
 use catalog::DatabaseFilter;
 
 use super::{accepted, post_method, DEFAULT_JOB_PRIORITY};
@@ -33,6 +33,7 @@ pub async fn list_workers(
     State(state): State<AppState>,
     principal: Principal,
 ) -> ApiResult<Json<Vec<dto::WorkerView>>> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let workers = state.distributed()?.catalog.list_workers().await.api()?;
     Ok(Json(
@@ -60,6 +61,7 @@ pub async fn get_worker(
     principal: Principal,
     Path(raw_worker_id): Path<String>,
 ) -> ApiResult<Json<dto::WorkerView>> {
+    principal.require_control_plane()?;
     principal.require(permission::DB_READ)?;
     let id = worker_id(&raw_worker_id)?;
     let record = state
@@ -103,6 +105,7 @@ pub async fn drain_worker(
     uri: Uri,
     body: Option<Json<dto::DrainWorkerRequest>>,
 ) -> ApiResult<(StatusCode, Json<dto::OperationAccepted>)> {
+    principal.require_control_plane()?;
     principal.require(permission::WORKER_ADMIN)?;
     let id = worker_id(&raw_worker_id)?;
     // 先确认 Worker 存在：drain 一个不存在的 Worker 只会在 job 里失败，

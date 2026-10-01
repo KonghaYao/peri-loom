@@ -580,9 +580,14 @@ pub struct AuditView {
 pub struct CreateTokenRequest {
     /// Token 名称（用途说明）。
     pub name: String,
-    /// 权限子集；为空表示继承用户角色权限。
+    /// 绑定的唯一数据库。
+    pub database_id: String,
+    /// 权限子集；省略时默认为数据库读写权限。显式空数组无效。
     #[serde(default)]
-    pub permissions: Vec<String>,
+    pub permissions: Option<Vec<String>>,
+    /// 已有有效 token 时原子吊销旧 token 并签发新 token。
+    #[serde(default)]
+    pub rotate: bool,
     /// 过期时间；缺省不过期。
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
@@ -598,6 +603,8 @@ pub struct TokenCreated {
     pub id: String,
     /// 名称。
     pub name: String,
+    /// 绑定的唯一数据库。
+    pub database_id: String,
     /// 明文 token（仅本次返回；服务端只保存哈希）。
     pub token: String,
     /// 权限集合。
@@ -615,12 +622,12 @@ pub struct TokenView {
     pub id: String,
     /// 名称。
     pub name: String,
+    /// 绑定的唯一数据库。
+    pub database_id: Option<String>,
     /// 权限集合。
     pub permissions: Vec<String>,
     /// 绑定的租户。
     pub tenant_id: Option<String>,
-    /// 绑定的数据库。
-    pub database_id: Option<String>,
     /// 过期时间。
     pub expires_at: Option<DateTime<Utc>>,
     /// 最近使用时间。

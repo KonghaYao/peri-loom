@@ -1,6 +1,6 @@
 /**
- * 认证上下文：Bearer Token 存 localStorage；支持登录接口换取 Token 或直接粘贴 Token。
- * 后端 OIDC/JWT 未实现时降级为「粘贴 Token」模式（见 pages/LoginPage.tsx）。
+ * 认证上下文：管理台只接受管理员 JWT（账号密码登录换取或手动粘贴）。
+ * dbp_ API Token 是数据库 SDK 凭据，不能进入管理台认证状态。
  */
 import {
   createContext,
@@ -12,11 +12,12 @@ import {
   type ReactNode,
 } from 'react';
 import { api, ApiError, toApiError, tokenStore, UNAUTHORIZED_EVENT } from '../api/client';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface AuthContextValue {
   token: string | null;
   user: string | null;
-  /** 校验并保存 Token；返回校验过程中的告警（后端不可达等），校验失败则抛错 */
+  /** 校验并保存管理员 JWT；返回校验过程中的告警（后端不可达等），校验失败则抛错 */
   signInWithToken: (token: string, user?: string) => Promise<string | null>;
   signOut: () => void;
 }
@@ -31,7 +32,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  */
 async function verifyToken(): Promise<string | null> {
   try {
-    await api.tokens.list();
+    await api.me();
     return null;
   } catch (err) {
     const e = toApiError(err);
@@ -48,13 +49,27 @@ async function verifyToken(): Promise<string | null> {
   }
 }
 
+/** 清掉旧版本可能留在浏览器里的 dbp_ 数据库凭据，避免它被当作管理台会话恢复。 */
+function readManagementToken(): string | null {
+  const stored = tokenStore.get();
+  if (stored?.startsWith('dbp_')) {
+    tokenStore.clear();
+    return null;
+  }
+  return stored;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }): JSX.Element {
-  const [token, setToken] = useState<string | null>(() => tokenStore.get());
+  const queryClient = useQueryClient();
+  const [token, setToken] = useState<string | null>(readManagementToken);
   const [user, setUser] = useState<string | null>(() => tokenStore.getUser());
 
   const signInWithToken = useCallback(async (next: string, userName?: string) => {
     const value = next.trim();
     if (!value) throw new Error('Token 不能为空');
+    if (value.startsWith('dbp_')) {
+      throw new Error('dbp_ API Token 只供数据库 SDK 使用，不能登录管理台。请使用账号密码或管理员 JWT。');
+    }
     tokenStore.set(value);
     let warning: string | null = null;
     try {
@@ -67,25 +82,28 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       tokenStore.setUser(userName);
       setUser(userName);
     }
+    queryClient.clear();
     setToken(value);
     return warning;
-  }, []);
+  }, [queryClient]);
 
   const signOut = useCallback(() => {
+    queryClient.clear();
     tokenStore.clear();
     setToken(null);
     setUser(null);
-  }, []);
+  }, [queryClient]);
 
   // 任意请求返回 401 时，client 会广播事件，这里同步清理本地状态
   useEffect(() => {
     const onUnauthorized = () => {
+      queryClient.clear();
       setToken(null);
       setUser(null);
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-  }, []);
+  }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ token, user, signInWithToken, signOut }),
