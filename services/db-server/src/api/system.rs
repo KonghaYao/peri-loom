@@ -84,11 +84,11 @@ pub async fn healthz() -> Json<HealthStatus> {
     )
 )]
 pub async fn readyz(State(state): State<AppState>) -> Response {
-    // 每次探针都真查一次 PostgreSQL：缓存「上次可用」会让已经失联的实例继续接流量。
+    // 每次探针都检查当前元数据后端。
     let postgres = match state.catalog.health_check().await {
         Ok(()) => true,
         Err(err) => {
-            tracing::warn!(code = err.code.as_str(), message = %err.message, "readyz: PostgreSQL 不可达");
+            tracing::warn!(code = err.code.as_str(), message = %err.message, "readyz: 元数据不可用");
             false
         }
     };
@@ -103,7 +103,9 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
     let detail = if ready {
         None
     } else if !postgres {
-        Some("PostgreSQL Catalog 不可达".to_string())
+        Some("元数据 Catalog 不可用".to_string())
+    } else if !distributed {
+        Some("本地实例尚未就绪或正在停止".to_string())
     } else if !heartbeat_monitor {
         Some("Worker 心跳监控尚未就绪".to_string())
     } else {
@@ -184,6 +186,12 @@ pub async fn swagger_redirect() -> impl IntoResponse {
 }
 
 /// 客户端在执行管理动作前读取能力；这里不包含任何凭据或拓扑地址。
+#[utoipa::path(
+    get,
+    path = "/api/v1/deployment",
+    tag = "system",
+    responses((status = 200, description = "部署模式与能力", body = crate::deployment::DeploymentInfo))
+)]
 pub async fn deployment(State(state): State<AppState>) -> Json<crate::deployment::DeploymentInfo> {
     Json(state.deployment.info())
 }

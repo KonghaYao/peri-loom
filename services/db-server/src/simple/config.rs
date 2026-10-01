@@ -15,6 +15,8 @@ pub struct SimpleConfig {
     #[arg(long, default_value_t = 64)]
     pub queue_capacity: usize,
     #[arg(long, default_value_t = 262144)]
+    pub max_result_frame_bytes: usize,
+    #[arg(long, default_value_t = 262144)]
     pub inline_result_limit_bytes: usize,
     #[arg(long, default_value = "info")]
     pub log_level: String,

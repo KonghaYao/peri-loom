@@ -514,7 +514,7 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         &imported_server.url,
         &token,
         Method::POST,
-        &format!("/api/v1/databases/{db}/snapshot"),
+        &format!("/api/v1/databases/{db}/backup"),
         None,
     )
     .await;
@@ -534,6 +534,17 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .expect("snapshot record");
     let snapshot_id = snapshot["id"].as_str().unwrap();
     let manifest_key = snapshot["object_key"].as_str().unwrap();
+    let metadata = catalog::SqliteCatalog::connect(imported.join("catalog/metadata.db"))
+        .await
+        .unwrap();
+    let backups = metadata
+        .list_backup_jobs(db.parse().unwrap(), 10)
+        .await
+        .unwrap();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].state, "SUCCEEDED");
+    assert_eq!(backups[0].snapshot_id.as_deref(), Some(snapshot_id));
+    metadata.close().await.unwrap();
     query(
         &client,
         &imported_server.url,

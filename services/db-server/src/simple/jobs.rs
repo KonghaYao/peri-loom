@@ -41,9 +41,55 @@ async fn run_job(state: &AppState, local: &Arc<SimpleServices>, job: JobRecord) 
         .parse()
         .map_err(|_| ApiError::internal("作业 operation_id 非法"))?;
     let operation = local.catalog.get_operation(op).await?;
+    let backup = if job.kind == "DB_BACKUP" {
+        let db: DatabaseId = required(&job, "database_id")?
+            .parse()
+            .map_err(|_| ApiError::internal("作业 database_id 非法"))?;
+        Some(
+            local
+                .catalog
+                .ensure_backup_job_for_operation(db, op)
+                .await?,
+        )
+    } else {
+        None
+    };
     if operation.is_terminal() {
+        if let Some(record) = backup {
+            if record.state != "SUCCEEDED" && record.state != "FAILED" {
+                let success = operation.state == "SUCCEEDED";
+                local
+                    .catalog
+                    .update_backup_job_state(
+                        record.id,
+                        catalog::BackupJobUpdate {
+                            state: if success { "SUCCEEDED" } else { "FAILED" }.into(),
+                            snapshot_id: success.then(|| op.to_string()),
+                            error_message: (!success).then(|| {
+                                operation.error_message.unwrap_or_else(|| "操作失败".into())
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+        }
         fenced_complete(local, &job, true, None).await?;
         return Ok(());
+    }
+    if let Some(record) = &backup {
+        if record.state != "SUCCEEDED" {
+            local
+                .catalog
+                .update_backup_job_state(
+                    record.id,
+                    catalog::BackupJobUpdate {
+                        state: "RUNNING".into(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+        }
     }
     local
         .catalog
@@ -61,6 +107,19 @@ async fn run_job(state: &AppState, local: &Arc<SimpleServices>, job: JobRecord) 
         Err(error) => {
             let completed = fenced_complete(local, &job, false, Some(error.to_string())).await?;
             if completed.state == "FAILED" {
+                if let Some(record) = backup {
+                    local
+                        .catalog
+                        .update_backup_job_state(
+                            record.id,
+                            catalog::BackupJobUpdate {
+                                state: "FAILED".into(),
+                                error_message: Some(error.to_string()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                }
                 local
                     .catalog
                     .update_operation(
@@ -105,6 +164,10 @@ async fn execute(
             local.catalog.get_database(db).await?;
         }
         "DB_START" => {
+            if local.catalog.get_database(db).await?.state == LifecycleState::Failed {
+                local.host.close_db(db).await?;
+                cool(local, db).await?;
+            }
             local.ensure_available(db).await?;
         }
         "DB_STOP" | "DB_RESTART" => {
@@ -149,6 +212,7 @@ async fn execute(
                 )
                 .await?
             } else {
+                local.ensure_available(db).await?;
                 let stage = local.root.join("tmp").join(format!("snapshot-{op}"));
                 if stage.exists() {
                     tokio::fs::remove_dir_all(&stage).await.map_err(io_error)?;
@@ -211,6 +275,23 @@ async fn execute(
                     verified_at: Some(Utc::now()),
                 })
                 .await?;
+            if job.kind == "DB_BACKUP" {
+                local
+                    .catalog
+                    .update_backup_job_state(
+                        op.into_uuid(),
+                        catalog::BackupJobUpdate {
+                            state: "SUCCEEDED".into(),
+                            snapshot_id: Some(snapshot_id.clone()),
+                            actual_point: Some(Utc::now()),
+                            bytes_transferred: Some(
+                                i64::try_from(manifest.total_size_bytes).unwrap_or(i64::MAX),
+                            ),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
             return Ok(serde_json::json!({"snapshot_id":snapshot,"format":"local_complete_v1"}));
         }
         "DB_RESTORE" => {

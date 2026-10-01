@@ -129,7 +129,9 @@ pub trait BackupStore: Send + Sync {
     async fn list_backup_jobs(&self, db: DatabaseId, limit: i64) -> Result<Vec<BackupJobRecord>>;
 }
 #[async_trait::async_trait]
-pub trait Metadata: IdentityStore + DatabaseStore + TaskStore + PanelStore + BackupStore + Send + Sync {
+pub trait Metadata:
+    IdentityStore + DatabaseStore + TaskStore + PanelStore + BackupStore + Send + Sync
+{
     async fn health_check(&self) -> Result<()>;
 }
 
@@ -264,8 +266,15 @@ impl TaskStore for crate::Catalog {
     ) -> Result<JobRecord> {
         self.complete_job(id, success, error).await
     }
-    async fn complete_job_fenced(&self, id: JobId, lease_owner: &str, success: bool, error: Option<String>) -> Result<Option<JobRecord>> {
-        self.complete_job_fenced(id, lease_owner, success, error).await
+    async fn complete_job_fenced(
+        &self,
+        id: JobId,
+        lease_owner: &str,
+        success: bool,
+        error: Option<String>,
+    ) -> Result<Option<JobRecord>> {
+        self.complete_job_fenced(id, lease_owner, success, error)
+            .await
     }
     async fn get_job(&self, id: JobId) -> Result<JobRecord> {
         self.get_job(id).await

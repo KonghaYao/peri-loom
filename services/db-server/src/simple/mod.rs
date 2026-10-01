@@ -48,9 +48,12 @@ impl SimpleServices {
         let record = self.catalog.get_database(id).await?;
         if matches!(
             record.state,
-            LifecycleState::Stopping | LifecycleState::Draining
+            LifecycleState::Stopping | LifecycleState::Draining | LifecycleState::Failed
         ) {
-            return Err(ApiError::new(ErrorCode::AdmissionDenied, "数据库正在维护"));
+            return Err(ApiError::new(
+                ErrorCode::AdmissionDenied,
+                "数据库正在维护或已隔离；失败库需显式启动或恢复",
+            ));
         }
         if !record.state.is_serving() {
             self.catalog
@@ -59,7 +62,18 @@ impl SimpleServices {
             if let Err(error) = self.host.describe(id, None, "SELECT 1".into()).await {
                 let _ = self
                     .catalog
-                    .set_lifecycle_state(id, LifecycleState::Failed, None)
+                    .set_lifecycle_state(
+                        id,
+                        if matches!(
+                            error.code,
+                            ErrorCode::AdmissionDenied | ErrorCode::ResourceExhausted
+                        ) {
+                            LifecycleState::Cold
+                        } else {
+                            LifecycleState::Failed
+                        },
+                        None,
+                    )
                     .await;
                 return Err(error.into());
             }
@@ -131,6 +145,15 @@ pub async fn run(config: SimpleConfig) -> Result<()> {
         .with_env_filter(&config.log_level)
         .try_init();
     let instance = instance::Instance::open(&config.data_dir)?;
+    // 持有实例锁后清理崩溃遗留暂存物；持久作业会从已发布对象重建暂存内容。
+    for entry in std::fs::read_dir(instance.root.join("tmp"))? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
     let catalog = SqliteCatalog::connect(instance.root.join("catalog/metadata.db")).await?;
     catalog.recover_local_jobs().await?;
     let secret = instance.jwt_secret()?;
@@ -167,6 +190,7 @@ pub async fn run(config: SimpleConfig) -> Result<()> {
                 max_open_databases: config.max_open_databases,
                 max_sessions_per_database: config.max_sessions_per_database,
                 queue_capacity: config.queue_capacity,
+                max_result_frame_bytes: config.max_result_frame_bytes,
                 ..Default::default()
             },
         )?,
@@ -247,8 +271,9 @@ async fn serve(
         _ = crate::app::wait_for_shutdown_signal() => {
             services.stopping.store(true, Ordering::Release); state.readiness.mark_local_stopping();
             let _ = shutdown_tx.send(());
-            if tokio::time::timeout(Duration::from_secs(35), &mut server).await.is_err() {
-                tracing::warn!("HTTP 排空超时，取消剩余连接并恢复宿主状态");
+            match tokio::time::timeout(Duration::from_secs(35), &mut server).await {
+                Ok(result) => result?,
+                Err(_) => tracing::warn!("HTTP 排空超时，取消剩余连接并恢复宿主状态"),
             }
         }
     }

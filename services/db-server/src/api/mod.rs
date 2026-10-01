@@ -96,6 +96,7 @@ pub fn build_router(state: AppState) -> Router {
         auth_routes::me,
         // ---- system
         system::healthz,
+        system::deployment,
         system::readyz,
         system::metrics,
         system::openapi_json,

@@ -62,7 +62,10 @@ fn sqlite_write_error(error: sqlx::Error, conflict: ErrorCode) -> PlatformError 
             return err(conflict, format!("SQLite metadata conflict: {database}"));
         }
         if database.is_foreign_key_violation() {
-            return err(ErrorCode::InvalidArgument, format!("SQLite metadata reference: {database}"));
+            return err(
+                ErrorCode::InvalidArgument,
+                format!("SQLite metadata reference: {database}"),
+            );
         }
     }
     storage(error)
@@ -104,7 +107,9 @@ impl SqliteCatalog {
             .await
             .map_err(storage)?;
         if integrity != "ok" {
-            return Err(storage(format!("metadata integrity check failed: {integrity}")));
+            return Err(storage(format!(
+                "metadata integrity check failed: {integrity}"
+            )));
         }
         Ok(Self { pool })
     }
@@ -151,17 +156,26 @@ impl SqliteCatalog {
         .map_err(storage)?;
         Ok(pending != 0)
     }
-    async fn bump_version(&self) -> Result<()> {
-        sqlx::query("UPDATE catalog_version SET version=version+1 WHERE id=1")
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(())
-    }
     pub async fn create_database(&self, params: CreateDatabaseParams) -> Result<DatabaseRecord> {
         let record = Self::database_record(params)?;
-        self.insert_database(&record).await?;
-        self.bump_version().await?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query(
+            "INSERT INTO databases(id,tenant_id,name,state,deleted_at,record) VALUES(?,?,?,?,?,?)",
+        )
+        .bind(record.id.to_string())
+        .bind(record.tenant_id.to_string())
+        .bind(&record.name)
+        .bind(record.state.to_string())
+        .bind(Option::<String>::None)
+        .bind(encode(&record)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| sqlite_write_error(e, ErrorCode::DbAlreadyExists))?;
+        sqlx::query("UPDATE catalog_version SET version=version+1 WHERE id=1")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(record)
     }
     fn database_record(params: CreateDatabaseParams) -> Result<DatabaseRecord> {
@@ -202,21 +216,6 @@ impl SqliteCatalog {
             updated_at: at,
             deleted_at: None,
         })
-    }
-    async fn insert_database(&self, db: &DatabaseRecord) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO databases(id,tenant_id,name,state,deleted_at,record) VALUES(?,?,?,?,?,?)",
-        )
-        .bind(db.id.to_string())
-        .bind(db.tenant_id.to_string())
-        .bind(&db.name)
-        .bind(db.state.to_string())
-        .bind(db.deleted_at.map(|v| v.to_rfc3339()))
-        .bind(encode(db)?)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| sqlite_write_error(e, ErrorCode::DbAlreadyExists))?;
-        Ok(())
     }
     pub async fn get_database(&self, id: DatabaseId) -> Result<DatabaseRecord> {
         let value: Option<String> = sqlx::query_scalar("SELECT record FROM databases WHERE id=?")
@@ -309,7 +308,15 @@ impl SqliteCatalog {
         Ok(db)
     }
     pub async fn soft_delete_database(&self, id: DatabaseId) -> Result<DatabaseRecord> {
-        let mut db = self.get_database(id).await?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT record FROM databases WHERE id=?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
+        let mut db: DatabaseRecord =
+            decode(existing.ok_or_else(|| err(ErrorCode::DbNotFound, "database not found"))?)?;
         if db.deleted_at.is_none() {
             db.deleted_at = Some(now());
             db.updated_at = now();
@@ -317,11 +324,15 @@ impl SqliteCatalog {
                 .bind(db.deleted_at.map(|v| v.to_rfc3339()))
                 .bind(encode(&db)?)
                 .bind(id.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(storage)?;
-            self.bump_version().await?;
+            sqlx::query("UPDATE catalog_version SET version=version+1 WHERE id=1")
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?;
         }
+        tx.commit().await.map_err(storage)?;
         Ok(db)
     }
 }
@@ -406,7 +417,14 @@ impl SqliteCatalog {
         if !crate::is_valid_operation_state(state) {
             return Err(err(ErrorCode::InvalidArgument, "invalid operation state"));
         }
-        let mut rec = self.get_operation(id).await?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT record FROM operations WHERE id=?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
+        let mut rec: OperationRecord = decode(existing.ok_or_else(|| missing("operation"))?)?;
         if rec.is_terminal() && rec.state != state {
             return Err(err(
                 ErrorCode::InvalidArgument,
@@ -428,9 +446,10 @@ impl SqliteCatalog {
             .bind(state)
             .bind(encode(&rec)?)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(rec)
     }
     pub async fn enqueue_job(
@@ -505,7 +524,9 @@ impl SqliteCatalog {
         if !kinds.is_empty() {
             builder.push(" AND kind IN (");
             let mut separated = builder.separated(",");
-            for kind in kinds { separated.push_bind(*kind); }
+            for kind in kinds {
+                separated.push_bind(*kind);
+            }
             separated.push_unseparated(")");
         }
         builder.push(" ORDER BY priority,run_after LIMIT 100");
@@ -597,23 +618,40 @@ impl SqliteCatalog {
             .map_err(storage)?;
         let Some(value) = value else { return Ok(None) };
         let mut job: JobRecord = decode(value)?;
-        if job.state != "LEASED" || job.lease_owner.as_deref() != Some(lease_owner)
-            || job.lease_expires_at.is_none_or(|expiry| expiry <= now()) {
+        if job.state != "LEASED"
+            || job.lease_owner.as_deref() != Some(lease_owner)
+            || job.lease_expires_at.is_none_or(|expiry| expiry <= now())
+        {
             return Ok(None);
         }
-        job.state = if success { "DONE" } else if job.can_retry() { "READY" } else { "FAILED" }.into();
+        job.state = if success {
+            "DONE"
+        } else if job.can_retry() {
+            "READY"
+        } else {
+            "FAILED"
+        }
+        .into();
         job.last_error = error;
         job.lease_owner = None;
         job.lease_expires_at = None;
         job.updated_at = now();
         if job.state == "READY" {
-            job.run_after = now() + chrono::Duration::milliseconds(crate::job_retry_backoff_millis(job.attempts));
+            job.run_after = now()
+                + chrono::Duration::milliseconds(crate::job_retry_backoff_millis(job.attempts));
         } else {
             job.finished_at = Some(now());
         }
-        sqlx::query("UPDATE jobs SET state=?,run_after=?,lease_expires_at=NULL,record=? WHERE id=?")
-            .bind(&job.state).bind(job.run_after.to_rfc3339()).bind(encode(&job)?).bind(id.to_string())
-            .execute(&mut *tx).await.map_err(storage)?;
+        sqlx::query(
+            "UPDATE jobs SET state=?,run_after=?,lease_expires_at=NULL,record=? WHERE id=?",
+        )
+        .bind(&job.state)
+        .bind(job.run_after.to_rfc3339())
+        .bind(encode(&job)?)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(Some(job))
     }
@@ -641,6 +679,30 @@ impl SqliteCatalog {
                 .await
                 .map_err(storage)?;
             count += 1;
+        }
+        let operations =
+            sqlx::query("SELECT record FROM operations WHERE state IN ('PENDING','RUNNING')")
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage)?;
+        for row in operations {
+            let mut operation: OperationRecord = decode(row.try_get("record").map_err(storage)?)?;
+            let active: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE json_extract(record,'$.payload.operation_id')=? AND state IN ('READY','LEASED'))",
+            ).bind(operation.id.to_string()).fetch_one(&mut *tx).await.map_err(storage)?;
+            if active == 0 {
+                operation.state = "FAILED".into();
+                operation.error_code = Some(ErrorCode::InternalError);
+                operation.error_message = Some("local job unavailable after recovery".into());
+                operation.updated_at = now();
+                operation.finished_at = Some(now());
+                sqlx::query("UPDATE operations SET state='FAILED',record=? WHERE id=?")
+                    .bind(encode(&operation)?)
+                    .bind(operation.id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?;
+            }
         }
         // 重启后没有本进程的打开句柄，运行态必须重新按需打开。
         let databases = sqlx::query("SELECT record FROM databases WHERE deleted_at IS NULL AND state NOT IN ('COLD','FAILED')")
@@ -675,6 +737,12 @@ impl SqliteCatalog {
         req.operation.validate()?;
         if req.job_kind.trim().is_empty() {
             return Err(err(ErrorCode::InvalidArgument, "job kind is empty"));
+        }
+        if !req.job_payload.is_object() {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                "job payload must be an object",
+            ));
         }
         if req.idempotency_key.is_some() != req.request_hash.is_some() {
             return Err(err(
@@ -719,7 +787,7 @@ impl SqliteCatalog {
         let database = if let Some(params) = req.create_database {
             let db = Self::database_record(params)?;
             sqlx::query("INSERT INTO databases(id,tenant_id,name,state,deleted_at,record) VALUES(?,?,?,?,?,?)")
-                .bind(db.id.to_string()).bind(db.tenant_id.to_string()).bind(&db.name).bind(db.state.to_string()).bind(Option::<String>::None).bind(encode(&db)?).execute(&mut *tx).await.map_err(storage)?;
+                .bind(db.id.to_string()).bind(db.tenant_id.to_string()).bind(&db.name).bind(db.state.to_string()).bind(Option::<String>::None).bind(encode(&db)?).execute(&mut *tx).await.map_err(|e| sqlite_write_error(e, ErrorCode::DbAlreadyExists))?;
             Some(db)
         } else {
             None
@@ -748,7 +816,10 @@ impl SqliteCatalog {
         };
         let mut job_payload = req.job_payload;
         if let Value::Object(fields) = &mut job_payload {
-            fields.insert("operation_id".into(), Value::String(operation.id.to_string()));
+            fields.insert(
+                "operation_id".into(),
+                Value::String(operation.id.to_string()),
+            );
             if let Some(id) = db_id {
                 fields.insert("database_id".into(), Value::String(id.to_string()));
             }
@@ -838,7 +909,7 @@ impl SqliteCatalog {
             .bind(encode(&rec)?)
             .execute(&self.pool)
             .await
-            .map_err(storage)?;
+            .map_err(|e| sqlite_write_error(e, ErrorCode::InvalidArgument))?;
         Ok(rec)
     }
     pub async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<crate::UserRecord>> {
@@ -856,7 +927,9 @@ impl SqliteCatalog {
         &self,
         token: crate::NewApiToken,
     ) -> Result<crate::ApiTokenRecord> {
-        if token.token_hash.trim().is_empty() { return Err(err(ErrorCode::InvalidArgument, "token hash is empty")); }
+        if token.token_hash.trim().is_empty() {
+            return Err(err(ErrorCode::InvalidArgument, "token hash is empty"));
+        }
         if self.find_user(token.user_id).await?.is_none() {
             return Err(missing("user"));
         }
@@ -873,8 +946,8 @@ impl SqliteCatalog {
             revoked_at: None,
             created_at: now(),
         };
-        sqlx::query("INSERT INTO api_tokens(id,user_id,token_hash,revoked_at,expires_at,record) VALUES(?,?,?,?,?,?)")
-            .bind(rec.id.to_string()).bind(rec.user_id.to_string()).bind(&rec.token_hash).bind(Option::<String>::None).bind(rec.expires_at.map(|v|v.to_rfc3339())).bind(encode(&rec)?).execute(&self.pool).await.map_err(storage)?;
+        sqlx::query("INSERT INTO api_tokens(id,user_id,token_hash,revoked_at,expires_at,created_at,record) VALUES(?,?,?,?,?,?,?)")
+            .bind(rec.id.to_string()).bind(rec.user_id.to_string()).bind(&rec.token_hash).bind(Option::<String>::None).bind(rec.expires_at.map(|v|v.to_rfc3339())).bind(rec.created_at.to_rfc3339()).bind(encode(&rec)?).execute(&self.pool).await.map_err(|e| sqlite_write_error(e, ErrorCode::InvalidArgument))?;
         Ok(rec)
     }
     pub async fn find_user_by_token_hash(
@@ -894,10 +967,11 @@ impl SqliteCatalog {
         Ok(Some(crate::AuthenticatedToken { user, token }))
     }
     pub async fn revoke_api_token(&self, id: domain::ids::TokenId) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         let v: Option<String> =
             sqlx::query_scalar("SELECT record FROM api_tokens WHERE id=? AND revoked_at IS NULL")
                 .bind(id.to_string())
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(storage)?;
         let Some(v) = v else { return Ok(false) };
@@ -909,9 +983,10 @@ impl SqliteCatalog {
         .bind(rec.revoked_at.map(|v| v.to_rfc3339()))
         .bind(encode(&rec)?)
         .bind(id.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(true)
     }
     pub async fn list_tokens_for_user(&self, id: UserId) -> Result<Vec<crate::ApiTokenRecord>> {
@@ -926,9 +1001,10 @@ impl SqliteCatalog {
             .collect()
     }
     pub async fn touch_token_last_used(&self, id: domain::ids::TokenId) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         let v: Option<String> = sqlx::query_scalar("SELECT record FROM api_tokens WHERE id=?")
             .bind(id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(storage)?;
         let mut token: crate::ApiTokenRecord = decode(v.ok_or_else(|| missing("token"))?)?;
@@ -936,9 +1012,10 @@ impl SqliteCatalog {
         sqlx::query("UPDATE api_tokens SET record=? WHERE id=?")
             .bind(encode(&token)?)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
     pub async fn resolve_permissions(&self, id: UserId) -> Result<Vec<String>> {
@@ -952,8 +1029,11 @@ impl SqliteCatalog {
         for row in rows {
             permissions.push(row.try_get("permission").map_err(storage)?)
         }
-        if user.is_superuser { permissions.push("*".into()); }
-        permissions.sort(); permissions.dedup();
+        if user.is_superuser {
+            permissions.push("*".into());
+        }
+        permissions.sort();
+        permissions.dedup();
         Ok(permissions)
     }
     pub async fn append_audit(&self, entry: crate::AuditEntry) -> Result<i64> {
@@ -1235,6 +1315,49 @@ impl SqliteCatalog {
             .map_err(storage)?;
         Ok(rec)
     }
+    /// 单机备份以 Operation UUID 作为 backup_jobs 主键，重试不会新增历史行。
+    pub async fn ensure_backup_job_for_operation(
+        &self,
+        database_id: DatabaseId,
+        operation_id: OperationId,
+    ) -> Result<crate::BackupJobRecord> {
+        let id = operation_id.into_uuid();
+        let record = crate::BackupJobRecord {
+            id,
+            database_id,
+            operation_id: Some(operation_id),
+            kind: "BACKUP".into(),
+            state: "PENDING".into(),
+            snapshot_id: None,
+            target_time: None,
+            actual_point: None,
+            bytes_transferred: 0,
+            error_message: None,
+            created_at: now(),
+            finished_at: None,
+        };
+        sqlx::query("INSERT INTO backup_jobs(id,database_id,state,created_at,record) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
+            .bind(id.to_string()).bind(database_id.to_string()).bind(&record.state)
+            .bind(record.created_at.to_rfc3339()).bind(encode(&record)?)
+            .execute(&self.pool).await.map_err(storage)?;
+        let raw: String = sqlx::query_scalar("SELECT record FROM backup_jobs WHERE id=?")
+            .bind(id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(storage)?;
+        let existing: crate::BackupJobRecord = decode(raw)?;
+        if existing.database_id != database_id
+            || existing.operation_id != Some(operation_id)
+            || existing.kind != "BACKUP"
+        {
+            return Err(err(
+                ErrorCode::InvalidArgument,
+                "backup operation identity conflict",
+            ));
+        }
+        Ok(existing)
+    }
+
     pub async fn create_backup_job(
         &self,
         params: crate::CreateBackupJobParams,
@@ -1456,8 +1579,15 @@ impl TaskStore for SqliteCatalog {
     ) -> Result<JobRecord> {
         self.complete_job(id, success, error).await
     }
-    async fn complete_job_fenced(&self, id: JobId, lease_owner: &str, success: bool, error: Option<String>) -> Result<Option<JobRecord>> {
-        self.complete_job_fenced(id, lease_owner, success, error).await
+    async fn complete_job_fenced(
+        &self,
+        id: JobId,
+        lease_owner: &str,
+        success: bool,
+        error: Option<String>,
+    ) -> Result<Option<JobRecord>> {
+        self.complete_job_fenced(id, lease_owner, success, error)
+            .await
     }
     async fn get_job(&self, id: JobId) -> Result<JobRecord> {
         self.get_job(id).await
@@ -1547,12 +1677,25 @@ mod tests {
         };
         let first = catalog.submit_operation_job(request.clone()).await.unwrap();
         assert!(!first.replayed);
+        assert_eq!(
+            first.job.payload["database_id"],
+            first.database.as_ref().unwrap().id.to_string()
+        );
+        assert_eq!(
+            first.job.payload["operation_id"],
+            first.operation.id.to_string()
+        );
+        catalog
+            .update_operation(first.operation.id, "RUNNING", 10, None, None, None)
+            .await
+            .unwrap();
         drop(catalog);
         let reopened = SqliteCatalog::connect(&path).await.unwrap();
         let replay = reopened.submit_operation_job(request).await.unwrap();
         assert!(replay.replayed);
         assert_eq!(first.operation.id, replay.operation.id);
         assert_eq!(first.job.id, replay.job.id);
+        assert_eq!(replay.operation.state, "PENDING");
         assert_eq!(
             reopened
                 .list_databases(DatabaseFilter::default())
@@ -1614,14 +1757,46 @@ mod concurrency_tests {
     use super::*;
     #[tokio::test]
     async fn concurrent_submission_has_one_operation_and_job() {
-        let dir=tempfile::tempdir().unwrap();
-        let catalog=SqliteCatalog::connect(dir.path().join("metadata.db")).await.unwrap();
-        let request=LocalSubmission{operation:NewOperation::new("CREATE_DB"),create_database:Some(CreateDatabaseParams::new("only-once")),job_kind:"CREATE_DB".into(),job_payload:serde_json::json!({}),priority:0,idempotency_key:Some("same-key".into()),request_hash:Some("same-hash".into())};
-        let mut tasks=Vec::new();for _ in 0..100 {let catalog=catalog.clone();let request=request.clone();tasks.push(tokio::spawn(async move{catalog.submit_operation_job(request).await.unwrap()}));}
-        let mut ids=std::collections::HashSet::new();let mut first=0;
-        for task in tasks {let outcome=task.await.unwrap();ids.insert((outcome.operation.id,outcome.job.id));if !outcome.replayed{first+=1}}
-        assert_eq!(ids.len(),1);assert_eq!(first,1);
-        assert_eq!(catalog.list_databases(DatabaseFilter::default()).await.unwrap().len(),1);
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let request = LocalSubmission {
+            operation: NewOperation::new("CREATE_DB"),
+            create_database: Some(CreateDatabaseParams::new("only-once")),
+            job_kind: "CREATE_DB".into(),
+            job_payload: serde_json::json!({}),
+            priority: 0,
+            idempotency_key: Some("same-key".into()),
+            request_hash: Some("same-hash".into()),
+        };
+        let mut tasks = Vec::new();
+        for _ in 0..100 {
+            let catalog = catalog.clone();
+            let request = request.clone();
+            tasks.push(tokio::spawn(async move {
+                catalog.submit_operation_job(request).await.unwrap()
+            }));
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut first = 0;
+        for task in tasks {
+            let outcome = task.await.unwrap();
+            ids.insert((outcome.operation.id, outcome.job.id));
+            if !outcome.replayed {
+                first += 1
+            }
+        }
+        assert_eq!(ids.len(), 1);
+        assert_eq!(first, 1);
+        assert_eq!(
+            catalog
+                .list_databases(DatabaseFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
 
@@ -1630,19 +1805,265 @@ mod lifecycle_tests {
     use super::*;
     #[tokio::test]
     async fn pending_delete_blocks_open_and_stale_job_cannot_complete() {
-        let dir=tempfile::tempdir().unwrap();let catalog=SqliteCatalog::connect(dir.path().join("metadata.db")).await.unwrap();
-        let db=catalog.create_database(CreateDatabaseParams::new("to-delete")).await.unwrap();
-        let job=catalog.enqueue_job("DB_DELETE",serde_json::json!({"database_id":db.id.to_string()}),0,None,None).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("to-delete"))
+            .await
+            .unwrap();
+        let job = catalog
+            .enqueue_job(
+                "DB_DELETE",
+                serde_json::json!({"database_id":db.id.to_string()}),
+                0,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
         assert!(catalog.has_pending_mutation(db.id).await.unwrap());
-        let leased=catalog.lease_job("owner-a",Duration::from_secs(30),&["DB_DELETE"]).await.unwrap().unwrap();assert_eq!(leased.id,job.id);
-        assert!(catalog.complete_job_fenced(job.id,"owner-b",true,None).await.unwrap().is_none());
-        assert!(catalog.complete_job_fenced(job.id,"owner-a",true,None).await.unwrap().is_some());
+        let leased = catalog
+            .lease_job("owner-a", Duration::from_secs(30), &["DB_DELETE"])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(leased.id, job.id);
+        assert!(catalog
+            .complete_job_fenced(job.id, "owner-b", true, None)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(catalog
+            .complete_job_fenced(job.id, "owner-a", true, None)
+            .await
+            .unwrap()
+            .is_some());
         assert!(!catalog.has_pending_mutation(db.id).await.unwrap());
     }
     #[tokio::test]
     async fn audit_record_id_is_durable() {
-        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("metadata.db");
-        let catalog=SqliteCatalog::connect(&path).await.unwrap();let id=catalog.append_audit(crate::AuditEntry::success("test")).await.unwrap();drop(catalog);
-        let reopened=SqliteCatalog::connect(&path).await.unwrap();let audit=reopened.list_audit(10,0,crate::AuditFilter::default()).await.unwrap();assert_eq!(audit[0].id,id);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.db");
+        let catalog = SqliteCatalog::connect(&path).await.unwrap();
+        let id = catalog
+            .append_audit(crate::AuditEntry::success("test"))
+            .await
+            .unwrap();
+        drop(catalog);
+        let reopened = SqliteCatalog::connect(&path).await.unwrap();
+        let audit = reopened
+            .list_audit(10, 0, crate::AuditFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(audit[0].id, id);
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    #[tokio::test]
+    async fn builtin_roles_match_local_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let viewer = catalog.create_user(NewUser::new("viewer")).await.unwrap();
+        sqlx::query("INSERT INTO role_bindings(id,user_id,role_id) VALUES(?,?,?)")
+            .bind(uuid::Uuid::now_v7().to_string())
+            .bind(viewer.id.to_string())
+            .bind("00000000-0000-0000-0000-000000000013")
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.resolve_permissions(viewer.id).await.unwrap(),
+            vec!["db:read"]
+        );
+        let dba = catalog.create_user(NewUser::new("dba")).await.unwrap();
+        sqlx::query("INSERT INTO role_bindings(id,user_id,role_id) VALUES(?,?,?)")
+            .bind(uuid::Uuid::now_v7().to_string())
+            .bind(dba.id.to_string())
+            .bind("00000000-0000-0000-0000-000000000011")
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let permissions = catalog.resolve_permissions(dba.id).await.unwrap();
+        assert!(permissions.contains(&"db:write".into()));
+        assert!(permissions.contains(&"db:admin".into()));
+        assert!(!permissions.contains(&"worker:admin".into()));
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn public_metadata_tables_can_read_their_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user(NewUser::new("metadata-user"))
+            .await
+            .unwrap();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("metadata-db"))
+            .await
+            .unwrap();
+        let token = catalog
+            .create_api_token(NewApiToken {
+                user_id: user.id,
+                name: "t".into(),
+                token_hash: "hash-t".into(),
+                tenant_id: None,
+                database_id: Some(db.id),
+                permissions: Value::Array(vec![]),
+                expires_at: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.list_tokens_for_user(user.id).await.unwrap()[0].id,
+            token.id
+        );
+        catalog.touch_token_last_used(token.id).await.unwrap();
+        assert!(catalog.list_tokens_for_user(user.id).await.unwrap()[0]
+            .last_used_at
+            .is_some());
+        catalog
+            .set_preference(user.id, "theme", &serde_json::json!("dark"))
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.list_preferences(user.id).await.unwrap()[0].value,
+            "dark"
+        );
+        let query = catalog
+            .create_saved_query(NewSavedQuery {
+                user_id: user.id,
+                database_id: Some(db.id),
+                name: "q".into(),
+                sql: "SELECT 1".into(),
+                description: None,
+                tags: vec![],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.list_saved_queries(user.id, 10).await.unwrap()[0].id,
+            query.id
+        );
+        let slow = catalog
+            .insert_slow_query(NewSlowQuery {
+                database_id: db.id,
+                worker_id: None,
+                session_id: None,
+                fingerprint: None,
+                sql_text: "SELECT 1".into(),
+                duration_micros: 101,
+                rows_returned: 1,
+                error_code: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.list_slow_queries(db.id, 10, 100).await.unwrap()[0].id,
+            slow
+        );
+        let snapshot = SnapshotRecord {
+            id: domain::ids::SnapshotId::new_v7(),
+            database_id: db.id,
+            base_lsn: domain::wal::Lsn::new(0),
+            checksum: "abc".into(),
+            size_bytes: 42,
+            object_key: "objects/snap".into(),
+            compression: "zstd".into(),
+            owner_epoch: domain::wal::OwnerEpoch::new(0),
+            engine_version: "local".into(),
+            schema_version: 0,
+            state: "PENDING".into(),
+            created_at: now(),
+            verified_at: None,
+        };
+        catalog.insert_snapshot(snapshot.clone()).await.unwrap();
+        catalog
+            .mark_snapshot_state(snapshot.id, "AVAILABLE")
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.latest_snapshot(db.id).await.unwrap().unwrap().id,
+            snapshot.id
+        );
+        assert_eq!(catalog.list_snapshots(db.id, 10).await.unwrap().len(), 1);
+        let backup = catalog
+            .create_backup_job(CreateBackupJobParams {
+                database_id: db.id,
+                kind: "BACKUP".into(),
+                operation_id: None,
+                snapshot_id: None,
+                target_time: None,
+            })
+            .await
+            .unwrap();
+        let done = catalog
+            .update_backup_job_state(
+                backup.id,
+                BackupJobUpdate {
+                    state: "SUCCEEDED".into(),
+                    snapshot_id: Some(snapshot.id.to_string()),
+                    actual_point: None,
+                    bytes_transferred: Some(42),
+                    error_message: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(done.bytes_transferred, 42);
+        assert_eq!(
+            catalog.list_backup_jobs(db.id, 10).await.unwrap()[0].id,
+            backup.id
+        );
+        assert!(catalog.revoke_api_token(token.id).await.unwrap());
+        assert!(catalog.list_tokens_for_user(user.id).await.unwrap()[0].is_revoked());
+    }
+}
+
+#[cfg(test)]
+mod local_backup_idempotency_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn backup_record_uses_stable_operation_id_across_retries_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.db");
+        let catalog = SqliteCatalog::connect(&path).await.unwrap();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("backup-test"))
+            .await
+            .unwrap();
+        let op = OperationId::new_v7();
+        let first = catalog
+            .ensure_backup_job_for_operation(db.id, op)
+            .await
+            .unwrap();
+        let again = catalog
+            .ensure_backup_job_for_operation(db.id, op)
+            .await
+            .unwrap();
+        assert_eq!(first.id, op.into_uuid());
+        assert_eq!(first, again);
+        assert_eq!(catalog.list_backup_jobs(db.id, 10).await.unwrap().len(), 1);
+        drop(catalog);
+        let reopened = SqliteCatalog::connect(&path).await.unwrap();
+        let after_restart = reopened
+            .ensure_backup_job_for_operation(db.id, op)
+            .await
+            .unwrap();
+        assert_eq!(first, after_restart);
+        assert_eq!(reopened.list_backup_jobs(db.id, 10).await.unwrap().len(), 1);
     }
 }
