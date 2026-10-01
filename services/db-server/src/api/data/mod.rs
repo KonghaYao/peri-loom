@@ -11,7 +11,9 @@
 
 mod query;
 mod session;
-mod stream;
+// 兼容层（`api::hrana`）要复用这里的帧收集辅助：一次执行、两种出口的语义
+// 只应有一份实现。
+pub(crate) mod stream;
 
 // glob 重导出：`#[utoipa::path]` 生成的 `__path_*` 标记与函数同模块，
 // 逐个重导出会让 `data::__path_query_database` 找不到（api::mod 的 paths(...) 依赖它）。

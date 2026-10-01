@@ -207,6 +207,22 @@ async fn serve_connection(host: Arc<Host>, stream: UnixStream) {
 }
 
 /// 握手：本进程主动发 `Hello`，也接受对端先发 `Hello`。
+/// 握手结果：**必须把对方发来的帧读干净**。
+///
+/// 双方都是「先发 Hello，再读对方的消息」（见本函数与 Worker 侧 `uds::handshake`），
+/// 因此一条连接上会交换两条握手帧，方向各一条：
+///
+/// ```text
+/// Worker:  Hello  ------------------->  DB Process
+/// Worker:  HelloAck  <----------------  Hello
+/// Worker:  HelloAck  ----------------->  DB Process  (回应它先发的 Hello)
+/// Worker:  Hello  <-------------------  HelloAck      (回应我先发的 Hello)
+/// ```
+///
+/// 只要有一侧「收到对方的 Hello 就返回」，对方回应**我发的**那条 HelloAck 就会留在读缓冲里，
+/// 被新连接上的**第一个真实请求**当成响应吃掉 —— 而那时请求类型完全对不上，表现为
+/// 「DB Process 返回了非预期的响应帧」这种与服务端毫无关系的错误。所以这里必须
+/// 等到两条握手帧都读完才返回。
 async fn handshake(
     host: &Arc<Host>,
     framed: &mut Framed<tokio::net::unix::OwnedReadHalf, LocalFrameCodec>,
@@ -230,6 +246,8 @@ async fn handshake(
     }
 
     let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    // 已校验并应答过对端的 Hello（此时仍缺「对端回应我们 Hello 的 HelloAck」）。
+    let mut peer_hello_seen = false;
     // 允许跳过少量非握手帧（对端可能先推一条通知）。
     for _ in 0..8 {
         let next = match tokio::time::timeout_at(deadline, framed.next()).await {
@@ -254,6 +272,8 @@ async fn handshake(
 
         match next.message {
             Some(rt::frame::Message::HelloAck(ack)) => {
+                // 对端回应的是**我们先发的那条 Hello**，握手到此才算收尾：收到即返回，
+                // 不会再留下任何握手帧。
                 return match crate::fencing::verify_hello_ack(&ack, host.config.owner_epoch) {
                     crate::fencing::FenceVerdict::Accept => {
                         tracing::info!(
@@ -269,6 +289,10 @@ async fn handshake(
                 };
             }
             Some(rt::frame::Message::Hello(peer)) => {
+                if peer_hello_seen {
+                    // 重复的 Hello：已应答过，忽略即可（继续等 HelloAck）。
+                    continue;
+                }
                 let verdict = crate::fencing::verify_peer_hello(
                     &peer,
                     host.database_id_text(),
@@ -301,7 +325,9 @@ async fn handshake(
                 if !accepted {
                     return HandshakeOutcome::Fenced(reason);
                 }
-                return HandshakeOutcome::Accepted;
+                // 不在这里返回：对端还会回应我们先发的 Hello，那条帧读掉之前不能让
+                // 连接进入请求循环（否则它会成为下一个请求的"响应"）。
+                peer_hello_seen = true;
             }
             _ => continue,
         }

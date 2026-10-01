@@ -136,6 +136,22 @@ pub struct RoutingEntry {
 /// 同时远小于调用方 Deadline 的量级，保证卡死的 wakeup 不会长时间堵住冷启动。
 pub const DEFAULT_WAKEUP_LEASE: Duration = Duration::from_secs(15);
 
+/// Ownership 租约的默认 TTL：Owner 必须在此之前**续约**，否则由
+/// [`Catalog::clear_stale_ownership`] 回收（架构 §10 / §16）。
+///
+/// 与 [`DEFAULT_WAKEUP_LEASE`] 分工不同：wakeup 租约是「某个人正在把 COLD DB 拉起来」
+/// 的**启动**独占标记；本租约是「某台 Worker 正在为这个 DB 提供进程」的**存活**标记。
+///
+/// **发放点与续约点必须用同一个值**：发放点是 [`Catalog::bump_ownership`]，
+/// 续约点是 Worker 心跳（[`Catalog::record_heartbeat`]）。心跳若用更短的 TTL 续约，
+/// 刚发出的租约会在下一个心跳到达之前就过期；用更长的，Worker 掉线后的回收会被推迟。
+/// 生产端以 `db-server::config::OWNERSHIP_LEASE_TTL` 引用的正是本常量。
+///
+/// 30s 的取值：心跳 1 s / 次，30 个心跳周期足以吸收抖动与短暂网络分区；
+/// 与 [`DEFAULT_WAKEUP_LEASE`] 同量级，且「TTL + 回收 grace」仍留在 §16 的
+/// 30s 收敛目标的一个可解释倍数内（Worker 整机故障时按心跳 miss 另行判定）。
+pub const DEFAULT_OWNER_LEASE: Duration = Duration::from_secs(30);
+
 /// [`Catalog::align_ownership_epoch_with_storage`] 的标准审计原因：控制面发现自己的
 /// `owner_epoch` 落后于 Remote WAL，向存储层权威对齐（架构 §11.3）。
 pub const REASON_EPOCH_REALIGN_FROM_STORAGE: &str = "epoch_realign_from_storage";
@@ -539,6 +555,18 @@ impl Catalog {
     }
 
     /// 续租。epoch 不匹配（已被重新 placement）返回 `false`，调用方必须视为失去所有权。
+    ///
+    /// # 生产路径的续租点不在本函数
+    ///
+    /// ownership 租约在**生产环境**是由 Worker 心跳续的：[`Catalog::record_heartbeat`]
+    /// 在「按 `(owner_worker_id, owner_epoch)` 精确匹配」回写本地状态时，用同一条 SQL
+    /// 一并把 `lease_expires_at` 推到 [`DEFAULT_OWNER_LEASE`] 之后。放在那里而不是调用本函数，
+    /// 是因为心跳的四步（Worker 用量 / DB 状态回写 / inventory 对账 / 释放 wakeup）必须在
+    /// **同一个事务**内提交，而本函数走自己的连接池事务。
+    ///
+    /// 本函数保留为**显式续租**的入口（Owner 主动声明「我还活着且仍持有它」），
+    /// 返回 `false` 时调用方必须停止服务该 DB。新代码若只是想让正常心跳维持租约，
+    /// 不要调用它 —— 心跳路径已经覆盖，重复调用只会多一次无谓的写。
     #[tracing::instrument(skip(self), fields(database_id = %db_id, epoch))]
     pub async fn renew_lease(
         &self,

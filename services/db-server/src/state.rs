@@ -51,9 +51,15 @@ impl SessionBinding {
 }
 
 /// 显式会话注册表。
+///
+/// 除了会话绑定本身，还托管**会话附属的 SQL 缓存**（Hrana `store_sql`）：兼容层把
+/// `sql_id -> SQL 文本` 存在这里而不是另起一张表，因为它的生命周期与会话严格一致 ——
+/// 会话失效 / 过期 / 关闭时必须一起丢弃，否则会留下引用已死会话的内存。
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     sessions: DashMap<String, SessionBinding>,
+    /// `session_id -> (sql_id -> SQL 文本)`。
+    sql_caches: DashMap<String, Arc<DashMap<i64, String>>>,
 }
 
 impl SessionRegistry {
@@ -68,14 +74,43 @@ impl SessionRegistry {
         self.sessions.insert(session_id, binding);
     }
 
+    /// 取（必要时创建）会话附属的 SQL 缓存。
+    ///
+    /// 只为**已登记**的会话创建缓存由调用方保证：兼容层总是先取到 [`SessionBinding`]
+    /// 再写入 SQL，不会给不存在的会话开缓存。
+    #[must_use]
+    pub fn sql_cache(&self, session_id: &str) -> Arc<DashMap<i64, String>> {
+        self.sql_caches
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(DashMap::new()))
+            .clone()
+    }
+
+    /// 取会话附属的 SQL 缓存（不存在时返回 `None`，不创建）。
+    #[must_use]
+    pub fn sql_cache_existing(&self, session_id: &str) -> Option<Arc<DashMap<i64, String>>> {
+        self.sql_caches.get(session_id).map(|entry| entry.clone())
+    }
+
+    /// 查一条已缓存的 SQL 文本。
+    #[must_use]
+    pub fn sql_cache_get(&self, session_id: &str, sql_id: i64) -> Option<String> {
+        self.sql_caches.get(session_id).and_then(|cache| {
+            // 必须在闭包里就把值克隆出来：内层 `Ref` 借用的是外层 `Ref` 里的 `Arc`。
+            let entry = cache.get(&sql_id)?;
+            Some(entry.value().clone())
+        })
+    }
+
     /// 查询会话绑定。
     #[must_use]
     pub fn get(&self, session_id: &str) -> Option<SessionBinding> {
         self.sessions.get(session_id).map(|entry| entry.clone())
     }
 
-    /// 注销会话（关闭 / 失效）。
+    /// 注销会话（关闭 / 失效），同时丢弃会话附属的 SQL 缓存。
     pub fn remove(&self, session_id: &str) -> Option<SessionBinding> {
+        self.sql_caches.remove(session_id);
         self.sessions.remove(session_id).map(|(_, value)| value)
     }
 
@@ -104,7 +139,10 @@ impl SessionRegistry {
             .collect();
         expired
             .into_iter()
-            .filter_map(|key| self.sessions.remove(&key).map(|(_, value)| value))
+            .filter_map(|key| {
+                self.sql_caches.remove(&key);
+                self.sessions.remove(&key).map(|(_, value)| value)
+            })
             .collect()
     }
 }

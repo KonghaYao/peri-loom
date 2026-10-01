@@ -121,7 +121,12 @@ pub const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// 连续 miss 次数达到该值即判 UNAVAILABLE（架构 §16）。
 pub const SUSPECT_MISS_THRESHOLD: i32 = 3;
 /// ownership 租约 TTL：Owner 必须在此之前续约，否则被 GC 回收。
-pub const OWNERSHIP_LEASE_TTL: Duration = Duration::from_secs(30);
+///
+/// 取值锁定在 `catalog::DEFAULT_OWNER_LEASE`：发放（`bump_ownership`）与续约
+/// （Worker 心跳回写）必须用**同一个值**，任何一处单独调整都会让另一处失配 ——
+/// 续约端更短则刚发出的租约在下一个心跳到达前就被判过期，更长则 Worker 掉线后
+/// 的回收被推迟。
+pub const OWNERSHIP_LEASE_TTL: Duration = catalog::DEFAULT_OWNER_LEASE;
 /// 租约过期回收的判定余量（超过 TTL 这么多仍未续约才算过期）。
 pub const OWNERSHIP_STALE_GRACE: Duration = Duration::from_secs(60);
 /// ownership GC 周期。

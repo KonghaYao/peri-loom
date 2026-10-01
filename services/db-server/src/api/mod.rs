@@ -6,6 +6,7 @@
 //! /                -> 由 web 容器提供 SPA，db-server 不实现
 //! /api/v1/*        -> Management / DBA REST JSON（OpenAPI 3.1）
 //! /data/v1/*       -> SQL / Data HTTP API
+//! /db/{db_id}/v2/pipeline -> TursoDB / libsql 客户端兼容端点（Hrana over HTTP v2，见 `hrana`）
 //! /healthz         -> liveness
 //! /readyz          -> readiness
 //! /metrics         -> 仅集群内抓取，**不得经公网暴露**
@@ -23,6 +24,7 @@
 pub mod auth_routes;
 pub mod data;
 pub mod dto;
+pub mod hrana;
 pub mod management;
 pub mod system;
 
@@ -68,6 +70,9 @@ pub fn build_router(state: AppState) -> Router {
                 .route("/swagger-ui", get(system::swagger_redirect)),
         )
         .merge(data::routes())
+        // TursoDB / libsql 客户端兼容端点（Hrana over HTTP v2）。它**不是**平台自有
+        // 契约的一部分，因此不进 OpenAPI 文档（见 `hrana` 模块头）。
+        .merge(hrana::routes())
         .with_state(state)
         // 请求上下文（request_id / source_ip）必须在最外层：错误体与审计都依赖它。
         .layer(axum::middleware::from_fn(inject_request_meta))

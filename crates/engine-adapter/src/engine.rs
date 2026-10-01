@@ -7,7 +7,8 @@
 //!   走同一条 durability 路径，不存在「绕开 durable IO 的第二个句柄」。
 //! * [`EngineConnection::query`] / [`EngineConnection::execute`] 把结果映射成
 //!   [`QueryOutcome`]（`Rows` 或 `Affected`），列元信息取自 statement 自身，
-//!   元信息缺失时退化为「未知类型」而不是失败。
+//!   元信息缺失时退化为「未知类型」而不是失败；`*_with_params` 变体在语句开始
+//!   执行前完成参数绑定，并强制「参数数量 = 占位符数量」。
 //! * [`EngineConnection::commit`] 返回**已 quorum durable 的末端 LSN**：COMMIT 只让帧
 //!   进入本地 WAL，真正推进 LSN 的是 [`PlatformDurableIO`] 拿到远程 append 确认的时刻；
 //!   拿不到确认时 COMMIT 会直接以错误返回（引擎侧看到的是 IO 失败）。
@@ -22,6 +23,7 @@
 //! 本模块的查询方法（见 [`crate::durable`] 的线程模型说明）。
 
 use std::fmt;
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -155,17 +157,46 @@ impl EngineConnection {
         })
     }
 
-    /// 执行查询并组装结果集。
+    /// 带绑定参数地执行 SQL，丢弃行，只报告受影响行数。
+    ///
+    /// 与 [`Self::execute`] 的区别不只是「多了绑定」：引擎的 `Connection::execute`
+    /// 只接受纯 SQL 文本、没有任何绑定入口，因此这里改走 prepare 路径。代价是
+    /// **多语句 SQL 只会执行第一条** —— 绑定参数只属于它编译出的那条语句，
+    /// 调用方要跑多语句得显式分批。
+    pub fn execute_with_params(&self, sql: &str, params: &[SqlValue]) -> Result<QueryOutcome> {
+        let mut stmt = self.conn.query(sql).map_err(|err| map_engine_error(&err))?;
+        let Some(stmt) = stmt.as_mut() else {
+            // 空语句 / 纯注释：没有可执行、也没有可绑定的语句。
+            return empty_statement_outcome(params);
+        };
+        bind_statement_params(stmt, params)?;
+        stmt.run_ignore_rows()
+            .map_err(|err| map_engine_error(&err))?;
+        Ok(QueryOutcome::Affected {
+            rows: self.changed_rows(),
+        })
+    }
+
+    /// 执行查询并组装结果集（无绑定参数）。
+    pub fn query(&self, sql: &str) -> Result<QueryOutcome> {
+        self.query_with_params(sql, &[])
+    }
+
+    /// 带绑定参数地执行查询并组装结果集。
     ///
     /// 行数据在 `run_collect_rows` 里被驱动到结束 —— 这一步会等待
     /// [`PlatformDurableIO`] 的远程 append 结果：如果 commit frame 没拿到 quorum
     /// durable，这里返回的是错误（引擎的 IO 失败），绝不返回「看起来成功」的结果集。
-    pub fn query(&self, sql: &str) -> Result<QueryOutcome> {
+    ///
+    /// 绑定在 `run_collect_rows` **之前**完成：语句一旦开始 stepping，参数就该已经
+    /// 就位；顺序颠倒（先跑后绑）在引擎里只会表现为「参数未设置」，也就是 NULL。
+    pub fn query_with_params(&self, sql: &str, params: &[SqlValue]) -> Result<QueryOutcome> {
         let mut stmt = self.conn.query(sql).map_err(|err| map_engine_error(&err))?;
         let Some(stmt) = stmt.as_mut() else {
             // 空语句 / 纯注释：没有执行任何东西。
-            return Ok(QueryOutcome::Affected { rows: 0 });
+            return empty_statement_outcome(params);
         };
+        bind_statement_params(stmt, params)?;
         let columns = column_metadata(stmt);
         let rows = stmt
             .run_collect_rows()
@@ -234,6 +265,45 @@ impl EngineConnection {
             .execute(statement)
             .map_err(|err| map_engine_error(&err))
     }
+}
+
+/// 把平台值按 1-based 索引绑定到语句上。
+///
+/// 数量**必须**与语句声明的占位符完全一致：引擎对未绑定的占位符按 NULL 求值，
+/// 参数不足时静默放行会把「请求写错了」伪装成「查询成功、结果是 NULL」——
+/// 绑定参数被丢弃正是本函数要终结的坏语义。参数过多同样是调用方错误
+/// （多出来的参数没有任何语句槽位承接），一并拒绝而不忽略。
+fn bind_statement_params(stmt: &mut Statement, params: &[SqlValue]) -> Result<()> {
+    let expected = stmt.parameters_count();
+    if params.len() != expected {
+        return Err(PlatformError::invalid_argument(format!(
+            "绑定参数数量不匹配：语句需要 {expected} 个参数，收到 {} 个",
+            params.len()
+        )));
+    }
+    for (offset, value) in params.iter().enumerate() {
+        // 引擎的绑定索引语义与 SQLite 一致：从 1 开始（`?1` 就是 1 号槽位）。
+        let index = NonZero::new(offset + 1).ok_or_else(|| {
+            PlatformError::invalid_argument("绑定参数索引溢出：参数数量超过 usize 上限")
+        })?;
+        stmt.bind_at(index, to_turso_value(value))
+            .map_err(|err| map_engine_error(&err))?;
+    }
+    Ok(())
+}
+
+/// 空语句 / 纯注释（引擎没有编译出 statement）时的结果。
+///
+/// 没有语句可以承接绑定：带了参数必须报错而不是返回空结果集 ——
+/// 否则参数被静默丢弃，调用方拿到的是一个「成功但什么都没跑」的响应。
+fn empty_statement_outcome(params: &[SqlValue]) -> Result<QueryOutcome> {
+    if params.is_empty() {
+        return Ok(QueryOutcome::Affected { rows: 0 });
+    }
+    Err(PlatformError::invalid_argument(format!(
+        "SQL 不包含可执行的语句（空语句或纯注释），但请求携带了 {} 个绑定参数",
+        params.len()
+    )))
 }
 
 /// 平台值 → 引擎值。
@@ -380,5 +450,150 @@ mod tests {
             panic!("count(*) 必须返回行");
         };
         assert_eq!(after.rows, vec![vec![SqlValue::Integer(2)]]);
+    }
+
+    /// 建一个临时库上的连接（UnixIO，无远程 WAL）：绑定语义与 durability 无关。
+    fn temp_connection() -> (tempfile::TempDir, EngineConnection) {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let io: Arc<dyn IO> = Arc::new(UnixIO::new().expect("UnixIO"));
+        let adapter = EngineAdapter::open(
+            io,
+            EngineOpenConfig {
+                db_path: dir.path().join("bind.db"),
+                durable_io: None,
+                owner_epoch: 3,
+            },
+        )
+        .expect("打开数据库");
+        let conn = adapter.connect().expect("建立连接");
+        (dir, conn)
+    }
+
+    /// 复核线上缺陷：`SELECT ?` + `params=[42]` 不能再返回 NULL。
+    #[test]
+    fn bound_param_is_visible_to_the_statement() {
+        let (_dir, conn) = temp_connection();
+        let QueryOutcome::Rows(result) = conn
+            .query_with_params("SELECT ?", &[SqlValue::Integer(42)])
+            .expect("带参查询")
+        else {
+            panic!("SELECT 必须返回行");
+        };
+        assert_eq!(result.rows, vec![vec![SqlValue::Integer(42)]]);
+    }
+
+    /// 五类值都要能绑定并原样读回：NULL 与 BLOB 最容易被「丢参」悄悄吃掉。
+    #[test]
+    fn bound_params_round_trip_all_value_kinds() {
+        let (_dir, conn) = temp_connection();
+        conn.execute("CREATE TABLE v (id INTEGER PRIMARY KEY, value)")
+            .expect("建表");
+
+        let values = [
+            SqlValue::Integer(-7),
+            SqlValue::Real(1.5),
+            SqlValue::text("平台"),
+            SqlValue::blob(vec![0, 1, 2, 255]),
+            SqlValue::Null,
+        ];
+        for (offset, value) in values.iter().enumerate() {
+            let id = i64::try_from(offset).expect("行号") + 1;
+            let outcome = conn
+                .execute_with_params(
+                    "INSERT INTO v (id, value) VALUES (?1, ?2)",
+                    &[SqlValue::Integer(id), value.clone()],
+                )
+                .expect("带参写入");
+            assert_eq!(outcome, QueryOutcome::Affected { rows: 1 });
+        }
+
+        let QueryOutcome::Rows(read_back) = conn
+            .query("SELECT id, value FROM v ORDER BY id")
+            .expect("读回")
+        else {
+            panic!("SELECT 必须返回行");
+        };
+        let expected: Vec<Vec<SqlValue>> = values
+            .iter()
+            .enumerate()
+            .map(|(offset, value)| {
+                vec![
+                    SqlValue::Integer(i64::try_from(offset).expect("行号") + 1),
+                    value.clone(),
+                ]
+            })
+            .collect();
+        assert_eq!(read_back.rows, expected);
+
+        // 查询条件走绑定：第三条（TEXT）必须只命中它自己那一行。
+        let QueryOutcome::Rows(filtered) = conn
+            .query_with_params("SELECT value FROM v WHERE id = ?1", &[SqlValue::Integer(3)])
+            .expect("带参过滤")
+        else {
+            panic!("SELECT 必须返回行");
+        };
+        assert_eq!(filtered.rows, vec![vec![SqlValue::text("平台")]]);
+    }
+
+    /// 参数过多 / 不足 / 无占位符语句带参数：一律明确报错，绝不静默变 NULL。
+    #[test]
+    fn param_count_mismatch_is_rejected() {
+        let (_dir, conn) = temp_connection();
+
+        let too_few = conn
+            .query_with_params("SELECT ?1, ?2", &[SqlValue::Integer(1)])
+            .expect_err("参数不足必须报错");
+        assert_eq!(too_few.code, ErrorCode::InvalidArgument);
+        assert!(
+            too_few.message.contains('2') && too_few.message.contains('1'),
+            "错误消息必须说清需要几个、收到几个：{}",
+            too_few.message
+        );
+
+        let too_many = conn
+            .query_with_params("SELECT ?1", &[SqlValue::Integer(1), SqlValue::Integer(2)])
+            .expect_err("参数过多必须报错");
+        assert_eq!(too_many.code, ErrorCode::InvalidArgument);
+
+        let no_slot = conn
+            .query_with_params("SELECT 1", &[SqlValue::Integer(1)])
+            .expect_err("语句没有占位符时带参数必须报错");
+        assert_eq!(no_slot.code, ErrorCode::InvalidArgument);
+
+        // 写入路径同样受约束：校验不能只在查询路径上做。
+        let ddl_with_params = conn
+            .execute_with_params("CREATE TABLE n (id INTEGER)", &[SqlValue::Integer(1)])
+            .expect_err("无占位符 DDL 带参数必须报错");
+        assert_eq!(ddl_with_params.code, ErrorCode::InvalidArgument);
+
+        // 无参调用不受影响：既有行为不得改变。
+        conn.query("SELECT 1").expect("无参查询照常");
+    }
+
+    /// 空语句 / 纯注释带上参数：没有语句可以承接绑定，必须报错而不是静默返回空结果。
+    #[test]
+    fn params_on_empty_statement_are_rejected() {
+        let (_dir, conn) = temp_connection();
+
+        let comment_only = conn
+            .query_with_params("-- 只有注释", &[SqlValue::Integer(1)])
+            .expect_err("空语句带参数必须报错");
+        assert_eq!(comment_only.code, ErrorCode::InvalidArgument);
+
+        let blank = conn
+            .execute_with_params("   ", &[SqlValue::Integer(1)])
+            .expect_err("空白 SQL 带参数必须报错");
+        assert_eq!(blank.code, ErrorCode::InvalidArgument);
+
+        // 不带参数时既有行为不变：空语句 → 0 行变更。
+        assert_eq!(
+            conn.query("-- 只有注释").expect("空语句"),
+            QueryOutcome::Affected { rows: 0 }
+        );
+        assert_eq!(
+            conn.execute_with_params("-- 只有注释", &[])
+                .expect("空语句（无参）"),
+            QueryOutcome::Affected { rows: 0 }
+        );
     }
 }

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use domain::error::{ErrorCode, PlatformError};
+use domain::value::SqlValue;
 use engine_adapter::{EngineConnection, QueryOutcome};
 use protocol::convert;
 use protocol::data;
@@ -272,11 +273,14 @@ async fn execute_stateless(
 ) -> Result<ExecOutcome, PlatformError> {
     let adapter = Arc::clone(&ctx.host.adapter);
     let sql = req.sql.clone();
+    // 绑定参数在这里就转成平台值：转换必须在进阻塞线程之前完成，
+    // 而且 proto 值只是传输载体，执行路径只认 domain::SqlValue。
+    let params = domain_params(&req.params);
     let atomic = req.atomic;
     let flag = flag.clone();
     tokio::task::spawn_blocking(move || {
         let conn = adapter.connect()?;
-        exec_on_conn(&conn, &sql, atomic, false, &flag)
+        exec_on_conn(&conn, &sql, &params, atomic, false, &flag)
     })
     .await
     .map_err(|err| internal_error(format!("执行线程异常：{err}")))?
@@ -306,15 +310,24 @@ async fn execute_in_session(
     let state = session.state();
     let guard = state.lock_owned().await;
     let sql = req.sql.clone();
+    let params = domain_params(&req.params);
     let atomic = req.atomic;
     let flag = flag.clone();
     let session_ref = Arc::clone(&session);
     tokio::task::spawn_blocking(move || {
         let mut guard = guard;
-        exec_on_session(&session_ref, &mut guard, &sql, atomic, &flag)
+        exec_on_session(&session_ref, &mut guard, &sql, &params, atomic, &flag)
     })
     .await
     .map_err(|err| internal_error(format!("执行线程异常：{err}")))?
+}
+
+/// proto 绑定参数 → 平台值。
+///
+/// 走 [`protocol::convert`] 的 `From` 实现而不是手写 match：proto 的 oneof
+/// （含 `kind = None`、NULL 子消息等边界）只在那一处定义，重复实现迟早会漂移。
+fn domain_params(params: &[data::Value]) -> Vec<SqlValue> {
+    params.iter().cloned().map(SqlValue::from).collect()
 }
 
 /// 会话内执行的阻塞体。
@@ -322,6 +335,7 @@ fn exec_on_session(
     session: &crate::session::Session,
     state: &mut SessionState,
     sql: &str,
+    params: &[SqlValue],
     atomic: bool,
     flag: &CancelFlag,
 ) -> Result<ExecOutcome, PlatformError> {
@@ -345,7 +359,7 @@ fn exec_on_session(
             ));
         }
     }
-    let outcome = exec_on_conn(&state.conn, sql, atomic, in_txn, flag);
+    let outcome = exec_on_conn(&state.conn, sql, params, atomic, in_txn, flag);
     session.touch(now_ms());
     outcome
 }
@@ -354,6 +368,7 @@ fn exec_on_session(
 fn exec_on_conn(
     conn: &EngineConnection,
     sql: &str,
+    params: &[SqlValue],
     atomic: bool,
     in_txn: bool,
     flag: &CancelFlag,
@@ -371,7 +386,9 @@ fn exec_on_conn(
         conn.begin()?;
     }
 
-    let outcome = match conn.query(sql) {
+    // 绑定参数必须与语句一起交给引擎：先前的 `conn.query(sql)` 只传 SQL 文本，
+    // 参数在引擎侧没有任何槽位可落，客户端的 `params` 会被静默丢弃。
+    let outcome = match conn.query_with_params(sql, params) {
         Ok(outcome) => outcome,
         Err(err) => {
             if wrapped {

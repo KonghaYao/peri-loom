@@ -302,7 +302,20 @@ impl ConnectionLease {
     }
 }
 
-/// 握手：Dispatcher 先说 Hello，也兼容 DB Process 主动先说 Hello（两种顺序都接受）。
+/// 握手：双方都是「先发 Hello，再读对方的握手帧」（DB Process 侧见
+/// `db_runtime::server::handshake`），因此一条连接上两条握手帧方向各一条：
+///
+/// ```text
+/// Worker:  Hello  ------------------->  DB Process
+/// Worker:  HelloAck  <----------------  Hello
+/// Worker:  HelloAck  ----------------->  DB Process  (回应它先发的 Hello)
+/// Worker:  Hello  <-------------------  HelloAck      (回应我先发的 Hello)
+/// ```
+///
+/// **收到 HelloAck 才能返回**：只读到对方 Hello 就返回，会把它回应我们 Hello 的那条
+/// HelloAck 留在读缓冲里，被这条连接上的第一个真实请求当成响应吃掉；而帧类型必然对不上，
+/// 表现为「DB Process 返回了非预期的响应帧」——一个和服务端毫无关系的错误。
+/// 兼容只应答、不主动发 Hello 的对端：那种情况下第一条就是 HelloAck，读到即返回。
 async fn handshake(
     framed: &mut Framed<UnixStream, LocalFrameCodec>,
     database_id: &str,
@@ -338,6 +351,10 @@ async fn handshake(
         .map_err(|err| WorkerError::Uds(format!("发送 Hello 失败：{err}")))?;
 
     let deadline = Instant::now() + timeout;
+    // 已处理过对端主动发来的 Hello（此时仍缺「对端回应我们 Hello 的 HelloAck」）。
+    let mut peer_hello_seen = false;
+    // 对端主动发 Hello 时上报的自身信息（要等 HelloAck 到了才能返回它）。
+    let mut peer_hello = HelloInfo::default();
     // 允许跳过少量非握手帧（例如 DB Process 启动后立刻推送的 Health 通知）
     for _ in 0..8 {
         let frame = match tokio::time::timeout_at(deadline.into(), framed.next()).await {
@@ -382,10 +399,15 @@ async fn handshake(
                         local: ack.dispatcher_epoch,
                     });
                 }
-                return Ok(HelloInfo::default());
+                // 对端回应我们 Hello 的收尾帧：握手到此结束。
+                return Ok(peer_hello);
             }
             // DB Process 主动握手：回 HelloAck 确认
             Some(rt::frame::Message::Hello(peer)) => {
+                if peer_hello_seen {
+                    // 重复的 Hello：已应答过，忽略（继续等 HelloAck）。
+                    continue;
+                }
                 if peer.database_id != database_id || peer.owner_epoch != owner_epoch {
                     let reject = rt::Frame {
                         seq: 0,
@@ -435,12 +457,15 @@ async fn handshake(
                     .send(ack)
                     .await
                     .map_err(|err| WorkerError::Uds(format!("回复 HelloAck 失败：{err}")))?;
-                return Ok(HelloInfo {
+                // 不在这里返回：对端还会回应我们先发的 Hello，那条帧读掉之前不能让
+                // 连接进入请求循环（否则它会成为第一个请求的"响应"）。
+                peer_hello = HelloInfo {
                     engine_version: peer.engine_version,
                     snapshot_id: peer.snapshot_id,
                     recovered_lsn: peer.recovered_lsn,
                     pid: peer.pid,
-                });
+                };
+                peer_hello_seen = true;
             }
             // 其它帧：忽略继续等（保持握手健壮）
             _ => continue,
@@ -776,6 +801,30 @@ mod tests {
         Some(reply)
     }
 
+    /// 只回应 `OpenSession`（回真正的 `OpenSessionResponse`），其它帧一律断开。
+    ///
+    /// 用于验证「握手之后的第一个真实请求拿到的是它自己的响应」：只要响应类型对得上，
+    /// 就说明读缓冲里没有残留任何握手帧。
+    fn open_session_responder(frame: &rt::Frame) -> Option<rt::Frame> {
+        if !matches!(frame.message, Some(rt::frame::Message::OpenSession(_))) {
+            return None;
+        }
+        Some(rt::Frame {
+            seq: 0,
+            reply_to_seq: frame.seq,
+            request_id: frame.request_id.clone(),
+            database_id: frame.database_id.clone(),
+            owner_epoch: frame.owner_epoch,
+            message: Some(rt::frame::Message::OpenSessionResponse(
+                rt::OpenSessionResponse {
+                    session_id: "sess-fake".to_string(),
+                    expires_at_unix_ms: 0,
+                },
+            )),
+            ..Default::default()
+        })
+    }
+
     #[test]
     fn pool_config_defaults_are_local_only() {
         let cfg = PoolConfig::default();
@@ -863,6 +912,55 @@ mod tests {
         drop(runtime);
     }
 
+    /// 回归：双向握手必须在交出连接之前把**两条**握手帧都读完。
+    ///
+    /// Worker 与 DB Process 都是「先发 Hello、再读对方握手帧」（时序图见本文件 `handshake`
+    /// 的文档注释），因此一条连接上会有两条握手帧。任何一侧在「收到对方 Hello」处提前返回，
+    /// 都会把对方回应**自己那条 Hello** 的 HelloAck 留在读缓冲里，被该连接上的第一个真实
+    /// 请求当成响应吃掉 —— 线上症状是开会话报「DB Process 返回了非预期的会话响应帧」，
+    /// 而查询路径因为对未知帧直接跳过，反而看起来一切正常。
+    #[tokio::test]
+    async fn two_way_handshake_leaves_no_stray_frames() {
+        let run_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(run_dir.path().join(crate::paths::SOCKET_SUBDIR)).unwrap();
+        let db_id = "db-two-way";
+        let _runtime = spawn_two_way_runtime_at(
+            run_dir
+                .path()
+                .join(crate::paths::SOCKET_SUBDIR)
+                .join(format!("{db_id}.sock")),
+            db_id,
+            7,
+            open_session_responder,
+        )
+        .await;
+
+        let (pool, _registry) = pool_for(run_dir.path(), db_id, 7);
+        let mut lease = pool.lease(db_id).await.expect("建链并握手");
+
+        // 第一个真实请求：必须是它自己的 OpenSessionResponse，而不是残留的 HelloAck。
+        let frame = lease.connection().frame_for(
+            "req-open",
+            rt::frame::Message::OpenSession(rt::OpenSessionRequest {
+                idle_timeout_ms: 1_000,
+                max_transaction_lifetime_ms: 1_000,
+            }),
+        );
+        lease.send(frame).await.unwrap();
+        let reply = lease
+            .recv_required(Some(Instant::now() + Duration::from_secs(1)))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                reply.message,
+                Some(rt::frame::Message::OpenSessionResponse(_))
+            ),
+            "握手帧残留在读缓冲里，第一个请求读到了：{:?}",
+            reply.message
+        );
+    }
+
     #[tokio::test]
     async fn handshake_rejects_epoch_mismatch() {
         let run_dir = tempfile::tempdir().unwrap();
@@ -929,11 +1027,38 @@ mod tests {
     }
 
     /// 在指定路径启动伪造运行时（测试里 socket 路径需要与连接池推导一致）。
+    ///
+    /// 只**回应** Worker 的 Hello，不主动发 —— 够用，但不是真实对端的行为。
     async fn spawn_fake_runtime_at(
         socket: PathBuf,
         db_id: &str,
         epoch: u64,
         responder: Responder,
+    ) -> FakeRuntime {
+        spawn_fake_runtime(socket, db_id, epoch, responder, false).await
+    }
+
+    /// 与真实 db-runtime（`db_runtime::server::handshake`）一致的伪造运行时：
+    /// accept 后**先主动发 Hello**，再读对方的握手帧。
+    ///
+    /// 为什么非要有这个变体：一条连接上的握手帧数量取决于对端是否也主动发 Hello。
+    /// 只回应 Hello 的伪造端在线上根本不存在的「单帧握手」形态下跑测试，
+    /// 于是「握手帧残留在读缓冲里」这类缺陷在测试里完全看不见（线上正是这么炸的）。
+    async fn spawn_two_way_runtime_at(
+        socket: PathBuf,
+        db_id: &str,
+        epoch: u64,
+        responder: Responder,
+    ) -> FakeRuntime {
+        spawn_fake_runtime(socket, db_id, epoch, responder, true).await
+    }
+
+    async fn spawn_fake_runtime(
+        socket: PathBuf,
+        db_id: &str,
+        epoch: u64,
+        responder: Responder,
+        hello_first: bool,
     ) -> FakeRuntime {
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket).unwrap();
@@ -945,6 +1070,32 @@ mod tests {
                 };
                 let db_id = db_id.clone();
                 tokio::spawn(async move {
+                    if hello_first {
+                        let hello = rt::Frame {
+                            seq: 1,
+                            request_id: String::new(),
+                            database_id: db_id.clone(),
+                            owner_epoch: epoch,
+                            message: Some(rt::frame::Message::Hello(rt::Hello {
+                                database_id: db_id.clone(),
+                                owner_epoch: epoch,
+                                process_id: "fake-runtime".to_string(),
+                                pid: 4242,
+                                engine_version: "0.0.0-fake".to_string(),
+                                local_socket: String::new(),
+                                snapshot_id: String::new(),
+                                recovered_lsn: 0,
+                                read_only: false,
+                            })),
+                            ..Default::default()
+                        };
+                        if protocol::framing::write_frame(&mut stream, &hello)
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
                     while let Ok(Some(frame)) = protocol::framing::read_frame(&mut stream).await {
                         if matches!(frame.message, Some(rt::frame::Message::Hello(_))) {
                             let ack = rt::Frame {
@@ -967,6 +1118,10 @@ mod tests {
                             {
                                 break;
                             }
+                            continue;
+                        }
+                        // 对端回应我们主动发的那条 Hello 的 HelloAck：握手收尾帧，不是请求。
+                        if matches!(frame.message, Some(rt::frame::Message::HelloAck(_))) {
                             continue;
                         }
                         match responder(&frame) {

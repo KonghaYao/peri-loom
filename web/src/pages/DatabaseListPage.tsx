@@ -109,10 +109,7 @@ export function DatabaseListPage(): JSX.Element {
     const kw = keyword.trim().toLowerCase();
     if (!kw) return databases;
     return databases.filter(
-      (db) =>
-        dbName(db).toLowerCase().includes(kw) ||
-        db.id.toLowerCase().includes(kw) ||
-        (db.tenant_id ?? '').toLowerCase().includes(kw),
+      (db) => dbName(db).toLowerCase().includes(kw) || db.id.toLowerCase().includes(kw),
     );
   }, [databases, keyword]);
 
@@ -191,13 +188,6 @@ export function DatabaseListPage(): JSX.Element {
       render: (_: unknown, db) => <Tag>{dbEpoch(db)}</Tag>,
     },
     {
-      title: '租户',
-      dataIndex: 'tenant_id',
-      key: 'tenant_id',
-      width: 140,
-      render: (v?: string) => v ?? '-',
-    },
-    {
       title: '创建时间',
       key: 'created_at',
       width: 175,
@@ -260,7 +250,7 @@ export function DatabaseListPage(): JSX.Element {
           <Space wrap>
             <Input.Search
               allowClear
-              placeholder="搜索名称 / ID / 租户（当前页）"
+              placeholder="搜索名称 / ID（当前页）"
               style={{ width: 240 }}
               onSearch={setKeyword}
               onChange={(e) => {

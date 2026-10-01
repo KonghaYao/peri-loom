@@ -72,10 +72,10 @@ web/
 
 | 路由 | 页面 | 说明 |
 | --- | --- | --- |
-| `/login` | 登录 | 账号密码（`POST /api/v1/auth/login`）；接口未实现（404/405/501）时自动降级为**粘贴 Token** 模式 |
+| `/login` | 登录 | 账号密码（`POST /api/v1/auth/login`，用户名 + 密码换 JWT）；接口不可用（404/405/501）时回退为**粘贴 Token** 模式 |
 | `/dashboard` | 概览 | DB 总数与状态分布、Worker 数量与饱和度（目标区间/水位线）、最近操作 |
 | `/databases` | 数据库列表 | 分页、状态过滤、关键字筛选、创建、启动/停止/重启/迁移/快照/备份/恢复/删除（二次确认 + 进度弹窗） |
-| `/databases/:dbId` | 数据库详情 | 基本信息、生命周期、路由（worker/epoch）、快照列表、慢查询 |
+| `/databases/:dbId` | 数据库详情 | 连接信息（Base URL / db_id / 查询端点 / curl 示例，均可复制）、基本信息、生命周期、路由（worker/epoch）、快照列表、慢查询 |
 | `/sql` | SQL 控制台 | SQL 编辑器、执行、结果表格、影响行数/耗时/错误；**大结果集 NDJSON 流式 + 分块渲染**；显式会话模式（BEGIN/COMMIT/ROLLBACK） |
 | `/workers` | Worker 管理 | 状态、CPU/内存/进程进度条、饱和度着色排序、Drain（二次确认 + 进度） |
 | `/workers/:workerId` | Worker 详情 | 容量/用量、饱和度水位、运行中的数据库、Drain |
@@ -156,12 +156,21 @@ npm run gen:api                                      # orval -> src/api/generate
 
 ## 未实现 / 精简项
 
-- **后端尚未落地**：`services/db-server/src/main.rs` 目前是占位实现（仅打印一行），因此本 Panel 只完成了契约对接与前端逻辑，未做真实端到端联调。
-- 登录页的账号密码入口依赖 `POST /api/v1/auth/login`（契约未冻结），未实现时自动降级为粘贴 Token。
+- **后端已落地**：`services/db-server/src/main.rs` 不再是占位实现，而是 CLI 入口（缺省启动服务，`dump-openapi` / `--dump-openapi` 导出 OpenAPI 契约后退出）；服务装配在 `db_server::app::run`（`services/db-server/src/app.rs`）：Catalog 连接 + migrations -> Route Cache 全量 reconcile -> 后台任务 -> HTTP 监听，出口覆盖 `/api/v1/*`（Management / DBA REST）、`/data/v1/*`（SQL / 数据面）与 `/db/{db_id}/v2/pipeline`（Hrana v2），本 Panel 的 `/api`、`/data` 直接对接该服务。
+- **Hrana v2 兼容层只覆盖"可跑通官方客户端"的最小集合**（`services/db-server/src/api/hrana/`，端点 `POST /db/{db_id}/v2/pipeline`，数据库详情的连接信息卡片给出 URL 与 `@libsql/client` 示例）：
+  - URL **必须带结尾斜杠**（`.../db/<db_id>/`）——客户端用 `new URL("v2/pipeline", base)` 拼路径，少了斜杠 `db_id` 会被当成目录吃掉；
+  - 只实现 **HTTP + JSON 的 v2**：无 v3、无 protobuf 编码、无 cursor、无 `describe` / `get_autocommit`（调用即返回 `NOT_IMPLEMENTED`，不会假装成功）；
+  - `execute()` 一次**只接受一条语句**（DB Process 的 prepare 只看第一条，多语句会被静默丢弃，因此宁可拒绝并提示用 `batch()` / `executeMultiple()`）；`CREATE TRIGGER` 含 `;` 的语句体不参与切分；
+  - 结果集**必须整体装进一个响应体**（v2 没有流式出口），上限 16 MiB，超限返回 `RESULT_TOO_LARGE` 并提示加 `LIMIT` 或改用 `/data/v1` 的 NDJSON 出口；
+  - `last_insert_rowid` 恒为 `null`（平台结果集契约里没有该字段，如实报告"未知"而不是猜一个可能属于别的连接的值）；
+  - 权限与 `/data/v1` **同档**（`db:write`）：平台不解析 SQL，无法可靠区分 `SELECT` 与 `WITH ... DELETE`，给只读主体放行就是越权旁路；
+  - `baton` 就是平台会话 ID，**不进 Catalog**：Server 重启或数据库发生 failover 后 baton 失效并返回明确错误，不会静默新建连接（那会让客户端以为事务还在，把数据写到事务外）。
+- 登录页的账号密码入口走 `POST /api/v1/auth/login`（已实现并挂载于 `services/db-server/src/api/auth_routes.rs`：用户名 + 密码换 `access_token`，凭据错误返回 401），仅在该接口不可用（404/405/501）时回退为粘贴 Token。
 - 审计日志的契约只冻结了 `limit/offset`，操作者/动作等筛选在**当前页**做前端过滤（表格标题已注明）。
 - 数据库列表的关键字搜索同样是当前页过滤（契约只提供 state / tenant_id 过滤）。
 - Worker 详情「运行中的数据库」优先使用 `/workers/{id}` 返回的 DB 列表；后端未返回时回退为 `/databases` 首页按 Owner Worker 过滤（分页 200 条）。
 - 概览的状态分布优先用「state 过滤 + total」精确计数；后端忽略该参数时退化为按前 200 条本地聚合并标注。
 - SQL 编辑器为「textarea + 行号」（按需求不引入 Monaco/CodeMirror），无语法高亮与自动补全。
 - 未实现：Active Query 实时列表、用户/角色管理、故障切换（Failover）操作入口——契约内暂无对应接口。
+- **租户（Tenant）概念暂不落地，UI 上不再暴露**：控制面没有租户管理接口，平台当前是单租户——所有资源都落在迁移 seed 的默认租户 `00000000-0000-0000-0000-000000000001`（`migrations/0001_init.sql` 的 `INSERT INTO tenants`；代码侧对应 `crates/catalog/src/databases.rs` 的 `DEFAULT_TENANT_UUID` / `default_tenant_id()`）。创建数据库不带 `tenant_id` 时由服务端按调用主体租户填充（`services/db-server/src/api/management/databases.rs` 的 `None => principal.tenant_id`）。据此已移除：数据库详情的「租户」行、数据库列表的「租户」列与关键字匹配、创建弹窗的「租户（可选）」字段；契约类型里的 `tenant_id` 保留不动。多租户能力（跨租户访问隔离、`tenants` 表的 status / 配额字段落地、租户管理 API）**未实现**，需要时再把 UI 与接口一起补回。
 - 未做前端单测（无 Vitest/Jest 依赖）；已用脚本冒烟验证 NDJSON 解析与错误映射（见 REPORT）。

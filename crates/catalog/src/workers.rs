@@ -12,6 +12,7 @@ use domain::records::WorkerRecord;
 use domain::resources::WorkerResourceUsage;
 use domain::wal::OwnerEpoch;
 
+use crate::databases::DEFAULT_OWNER_LEASE;
 use crate::error::{
     catalog_error, map_sqlx_error, platform_error, CatalogError, ConflictAs, NotFoundAs,
 };
@@ -351,16 +352,35 @@ impl Catalog {
             .ok_or_else(|| catalog_error(CatalogError::WorkerNotFound(worker_key.clone())))?;
 
         for db in dbs {
-            // 仅当 Catalog 记录的 owner 与本 Worker、epoch 一致时才接受其状态上报
+            // 仅当 Catalog 记录的 owner 与本 Worker、epoch 一致时才接受其状态上报。
+            //
+            // 这一条 UPDATE 同时是 ownership 租约的**唯一续约点**：没有它，
+            // `bump_ownership` 发出的租约到期后无人续约，`clear_stale_ownership`
+            // 会把**健康且正在服务**的 DB 一并回收（每 TTL + grace 一次），
+            // DB 被反复踢回 COLD，epoch 空转、请求被迫重新冷启动。
+            // 续约只发生在 (owner_worker_id, owner_epoch) 精确匹配时：
+            // 已被取代的旧 Owner 无法借心跳给自己的租约续命。
+            //
+            // 已软删除的行（`deleted_at IS NOT NULL`）同样排除在外：`soft_delete_database`
+            // 只置 `deleted_at` + `state = 'STOPPING'`，**不清** owner / 租约，所以 Worker 仍以
+            // 当前 epoch 上报时这里照样会命中。那样租约被无限续期，只认「租约超时」的
+            // `clear_stale_ownership` 永远等不到它过期，这一行就会带着 owner + 有效租约
+            // 长期残留（且 `state` 会被上报值覆盖掉 STOPPING）。排除后租约自然过期，
+            // 仍由 `clear_stale_ownership` 兜底回收。
             let updated: Option<uuid::Uuid> = sqlx::query_scalar(
-                "UPDATE databases SET state = $3::text, updated_at = now()
+                "UPDATE databases SET
+                     state = $3::text,
+                     lease_expires_at = now() + ($5::bigint * INTERVAL '1 millisecond'),
+                     updated_at = now()
                  WHERE id = $1::uuid AND owner_worker_id = $2::text AND owner_epoch = $4::bigint
+                   AND deleted_at IS NULL
                  RETURNING id",
             )
             .bind(crate::pg::id_to_uuid(&db.database_id)?)
             .bind(&worker_key)
             .bind(db.state.to_db_str())
             .bind(db.epoch_i64())
+            .bind(millis(DEFAULT_OWNER_LEASE))
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| map_sqlx_error(e, NotFoundAs::Worker, ConflictAs::Database))?;
@@ -421,13 +441,17 @@ impl Catalog {
     ///
     /// 1. Catalog 侧 `owner_worker_id` 就是本 Worker，状态属于 `WARM` / `HOT` / `STARTING`，
     ///    且未软删 —— 只有「本应由该 Worker 提供进程」的 DB 才在讨论范围内；
-    /// 2. 该 DB **不在**本次心跳上报的 inventory 里。Worker 每轮上报的都是本地注册表的
-    ///    **全量**快照（见 db-worker::heartbeat 的说明），因此「缺失」不是采样噪声；
+    /// 2. 本次心跳上报的 inventory 里**没有以当前 Owner epoch 认领它**的条目。Worker 每轮
+    ///    上报的都是本地注册表的**全量**快照（见 db-worker::heartbeat 的说明），但注册表
+    ///    **有意保留**已停止 DB 的 COLD 条目（`on_process_exit`：「保留 epoch 记录，
+    ///    所有权不变」），所以判存在必须带上 epoch —— 只比 id 会让任何停止过的 DB
+    ///    永久留在 inventory 里，对账再也回收不掉它；
     /// 3. 缺失已持续 >= [`MISSING_INVENTORY_HEARTBEATS_BEFORE_RECLAIM`] 个心跳周期。
     ///    锚点用 `databases.updated_at`：它由本函数上方「按 (owner, epoch) 精确匹配」的
-    ///    心跳回写刷新，因此等价于「最后一次被 Worker 确认为存在」的时刻；
-    /// 4. `STARTING` 额外要求 ownership 租约已过期：启动流程可能仍在进行，而 Worker 只在
-    ///    进程 READY 之后才写入注册表，所以「inventory 缺失」在启动窗口内是正常的。
+    ///    心跳回写刷新，因此等价于「最后一次被 Worker 以**当前 epoch** 确认为存在」的时刻；
+    /// 4. `STARTING` 额外要求 ownership 租约已过期：启动流程可能仍在进行（此时 Worker 尚未
+    ///    以新 epoch 认领），所以「inventory 缺失」在启动窗口内是正常的；租约由心跳续期，
+    ///    真正在推进的启动不会被误杀。
     ///
     /// 幂等性：条件不满足时 0 行；并发心跳因 Worker 行锁而串行，后到的事务会重新评估
     /// 条件（此时 owner 已被清空）而不再命中，因此不会写出重复审计。
@@ -438,7 +462,19 @@ impl Catalog {
         dbs: &[LocalDatabaseState],
         reason: &'static str,
     ) -> Result<Vec<ReclaimedOwnership>> {
-        let reported: Vec<String> = dbs.iter().map(|db| db.database_id.to_string()).collect();
+        // 存在性判据是 (id, epoch) 而不是单独的 id。
+        //
+        // Worker 的本地注册表**有意**保留已停止 DB 的条目：正常停止路径把状态转成 COLD
+        // 并注明「保留 epoch 记录，所有权不变」（见 db-worker 的 supervisor
+        // `on_process_exit`）。因此「id 出现在 inventory 里」只证明 Worker **见过**它，
+        // 不证明 Worker 此刻还在为它提供服务 —— 只有携带的 epoch 与 Catalog 当前
+        // `owner_epoch` 一致才作数。
+        //
+        // 用单独 id 判存在会漏掉一整类卡死：启动被中断（StartDatabase 超时/被取消）后
+        // Catalog 停在 STARTING 且 epoch 已推进，而 Worker 侧只剩一个旧 epoch 的 COLD 条目，
+        // 于是对账永远认为「它还在」，只能等 clear_stale_ownership 按租约兜底。
+        let reported_ids: Vec<String> = dbs.iter().map(|db| db.database_id.to_string()).collect();
+        let reported_epochs: Vec<i64> = dbs.iter().map(LocalDatabaseState::epoch_i64).collect();
 
         let rows: Vec<(uuid::Uuid, i64, i64)> = sqlx::query_as(
             "UPDATE databases AS d SET
@@ -450,15 +486,21 @@ impl Catalog {
              WHERE d.owner_worker_id = $1::text
                AND d.deleted_at IS NULL
                AND d.state IN ('WARM', 'HOT', 'STARTING')
-               AND d.updated_at < now() - ($3::bigint * INTERVAL '1 millisecond')
+               AND d.updated_at < now() - ($4::bigint * INTERVAL '1 millisecond')
                AND (d.state <> 'STARTING'
                     OR d.lease_expires_at IS NULL
                     OR d.lease_expires_at < now())
-               AND NOT (d.id::text = ANY($2::text[]))
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM unnest($2::text[], $3::bigint[]) AS reported(id, epoch)
+                    WHERE reported.id = d.id::text
+                      AND reported.epoch = d.owner_epoch
+               )
              RETURNING d.id, d.owner_epoch - 1, d.owner_epoch",
         )
         .bind(worker_key)
-        .bind(&reported)
+        .bind(&reported_ids)
+        .bind(&reported_epochs)
         .bind(millis(inventory_missing_grace()))
         .fetch_all(&mut **tx)
         .await

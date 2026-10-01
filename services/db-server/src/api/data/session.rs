@@ -50,11 +50,29 @@ pub async fn open_session(
     // 会话内可以执行任意语句（含 DML），与 /query 用同一档权限。
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
+    let (binding, expires_at_unix_ms) = open_binding(&state, database_id).await?;
 
+    Ok(Json(dto::SessionOpened {
+        session_id: binding.session_id,
+        worker_id: binding.worker_id.to_string(),
+        database_id: database_id.to_string(),
+        expires_at_unix_ms,
+        request_id: current_request_id(),
+    }))
+}
+
+/// 建立一条显式会话并在本地登记，返回绑定与 Worker 上报的过期时间（Unix 毫秒）。
+///
+/// `/data/v1/databases/{id}/sessions` 与 Hrana 兼容层（`/db/{id}/v2/pipeline` 的 baton）
+/// 共用这段序列：`call_data` 解析路由（含透明 Wake 与 stale-route 重试一次）
+/// -> `OpenSession` -> 登记本地绑定。两处各写一遍必然漂移，因此收敛到这里。
+pub(crate) async fn open_binding(
+    state: &AppState,
+    database_id: domain::ids::DatabaseId,
+) -> ApiResult<(SessionBinding, u64)> {
     let idle_timeout_ms = state.config.session_idle_timeout_ms;
-    let request_id = current_request_id();
+    let call_request_id = current_request_id();
     let call_state = state.clone();
-    let call_request_id = request_id.clone();
 
     // call_data 负责「路由过期 -> 刷新后重试一次」；会话本身不参与重试（还没建立）。
     let (response, route) = state
@@ -92,25 +110,18 @@ pub async fn open_session(
         return Err(ApiError::internal("Worker 返回了空 session_id"));
     }
 
-    state.sessions.insert(
-        response.session_id.clone(),
-        SessionBinding {
-            session_id: response.session_id.clone(),
-            database_id,
-            worker_id: route.worker_id.clone(),
-            owner_epoch: route.owner_epoch,
-            created_at: Utc::now(),
-            expires_at: expires_at(response.expires_at_unix_ms, idle_timeout_ms),
-        },
-    );
-
-    Ok(Json(dto::SessionOpened {
-        session_id: response.session_id,
-        worker_id: response.worker_id,
-        database_id: database_id.to_string(),
-        expires_at_unix_ms: response.expires_at_unix_ms,
-        request_id,
-    }))
+    let binding = SessionBinding {
+        session_id: response.session_id.clone(),
+        database_id,
+        worker_id: route.worker_id,
+        owner_epoch: route.owner_epoch,
+        created_at: Utc::now(),
+        expires_at: expires_at(response.expires_at_unix_ms, idle_timeout_ms),
+    };
+    state
+        .sessions
+        .insert(response.session_id, binding.clone());
+    Ok((binding, response.expires_at_unix_ms))
 }
 
 /// 会话内查询（结果集出口形态与无会话查询完全一致）。
@@ -170,7 +181,7 @@ pub async fn session_query(
 }
 
 /// 取会话绑定，并顺手清理已过期会话（惰性 GC，避免为单个会话起定时任务）。
-fn live_binding(state: &AppState, session_id: &str) -> ApiResult<SessionBinding> {
+pub(crate) fn live_binding(state: &AppState, session_id: &str) -> ApiResult<SessionBinding> {
     let binding = state
         .sessions
         .get(session_id)

@@ -33,8 +33,8 @@ pub use backup::{
 };
 pub use databases::{
     can_take_ownership, default_tenant_id, validate_lifecycle_transition, CreateDatabaseParams,
-    DatabaseFilter, OwnershipEvent, RoutingEntry, WakeupDecision, DEFAULT_TENANT_UUID,
-    DEFAULT_WAKEUP_LEASE, REASON_EPOCH_REALIGN_FROM_STORAGE,
+    DatabaseFilter, OwnershipEvent, RoutingEntry, WakeupDecision, DEFAULT_OWNER_LEASE,
+    DEFAULT_TENANT_UUID, DEFAULT_WAKEUP_LEASE, REASON_EPOCH_REALIGN_FROM_STORAGE,
 };
 pub use error::CatalogError;
 pub use idempotency::{IdempotencyOperationOutcome, IdempotencyOutcome};
@@ -273,6 +273,33 @@ mod db_tests {
         .execute(catalog.pool())
         .await
         .expect("模拟心跳缺失");
+    }
+
+    /// 测试用：把 `lease_expires_at` 挪到 `ago` 之前 —— 等价于「Owner 已经这么久没续约了」。
+    /// 走真实 SQL，验的就是 `clear_stale_ownership` 的判定条件本身。
+    async fn age_database_lease(catalog: &Catalog, id: DatabaseId, ago: Duration) {
+        sqlx::query(
+            "UPDATE databases SET lease_expires_at = now() - ($2::bigint * INTERVAL '1 millisecond')
+             WHERE id = $1::uuid",
+        )
+        .bind(crate::pg::id_to_uuid(&id).expect("database id 是 uuid"))
+        .bind(crate::pg::millis(ago))
+        .execute(catalog.pool())
+        .await
+        .expect("模拟租约未续约");
+    }
+
+    /// 测试用：把某个 DB 的 ownership 推到「以当前 epoch 认领的条目已缺失超过阈值」，
+    /// 即同时满足对账的 `updated_at` 窗口与租约条件。
+    async fn expire_reclaim_window(catalog: &Catalog, id: DatabaseId) {
+        age_database_updated_at(
+            catalog,
+            id,
+            MISSING_INVENTORY_HEARTBEATS_BEFORE_RECLAIM * HEARTBEAT_INTERVAL
+                + Duration::from_secs(1),
+        )
+        .await;
+        age_database_lease(catalog, id, DEFAULT_OWNER_LEASE).await;
     }
 
     #[tokio::test]
@@ -698,6 +725,305 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(next, 3);
+    }
+
+    /// 心跳必须续约 ownership 租约 —— 这是「健康库不被 GC 误杀」的唯一保证。
+    ///
+    /// `bump_ownership` 发出的租约若无人续约，`clear_stale_ownership` 会在 TTL + grace
+    /// 之后把**正在服务**的 DB 一并回收：DB 被反复踢回 COLD，epoch 空转，
+    /// 每次请求都被迫重新冷启动（表现为数据面周期性不可用）。
+    #[tokio::test]
+    #[ignore = "需要 PostgreSQL：DATABASE_URL"]
+    async fn heartbeat_renews_ownership_lease() {
+        let catalog = test_catalog().await;
+        let worker = register_worker(&catalog, "renew").await;
+        let usage = heartbeat_usage();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-renew-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .await
+            .unwrap();
+
+        let epoch = catalog
+            .bump_ownership(db.id, 0, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+
+        // 模拟「bump 之后已经很久」：租约只剩 1s 寿命
+        age_database_lease(&catalog, db.id, DEFAULT_OWNER_LEASE - Duration::from_secs(1)).await;
+        let before = catalog
+            .get_database(db.id)
+            .await
+            .unwrap()
+            .lease_expires_at
+            .expect("bump 之后必须有租约");
+
+        // Worker 以当前 epoch 认领它 -> 必须续约
+        let present = LocalDatabaseState {
+            database_id: db.id,
+            state: LifecycleState::Warm,
+            owner_epoch: OwnerEpoch::new(epoch),
+            pid: Some(4242),
+        };
+        catalog
+            .record_heartbeat(worker.clone(), &usage, 1, &[present], WorkerState::Active)
+            .await
+            .unwrap();
+
+        let after = catalog
+            .get_database(db.id)
+            .await
+            .unwrap()
+            .lease_expires_at
+            .expect("续约之后仍然有租约");
+        assert!(
+            after > before,
+            "心跳必须把 ownership 租约向后推（before={before} after={after}）"
+        );
+
+        // 用最激进的过期口径做 GC：刚被心跳续约的库一个都不许被回收
+        let reclaimed = catalog.clear_stale_ownership(Duration::ZERO).await.unwrap();
+        assert!(
+            !reclaimed.contains(&db.id),
+            "刚被心跳续约的库不得被 ownership GC 回收，实际回收了 {reclaimed:?}"
+        );
+        assert_eq!(
+            catalog.get_database(db.id).await.unwrap().owner_epoch.get(),
+            epoch,
+            "续约只是延长租约，不推进 epoch"
+        );
+    }
+
+    /// 续约只认当前 Owner：携带过期 epoch 的心跳既不能改 Catalog 状态，也不能给租约续命。
+    ///
+    /// 否则「被取代的旧 Owner 只要还在发心跳就能永久占住 DB」，Fencing 就形同虚设。
+    #[tokio::test]
+    #[ignore = "需要 PostgreSQL：DATABASE_URL"]
+    async fn heartbeat_with_stale_epoch_does_not_renew_lease() {
+        let catalog = test_catalog().await;
+        let worker = register_worker(&catalog, "stale-renew").await;
+        let usage = heartbeat_usage();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-stale-renew-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .await
+            .unwrap();
+
+        // epoch=1 的 Owner，随后被 epoch=2 取代（旧 Owner 已经失去所有权）
+        catalog
+            .bump_ownership(db.id, 0, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+        let current = catalog
+            .bump_ownership(db.id, 1, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(current, 2);
+
+        age_database_lease(&catalog, db.id, DEFAULT_OWNER_LEASE).await;
+        let before = catalog
+            .get_database(db.id)
+            .await
+            .unwrap()
+            .lease_expires_at
+            .expect("租约仍在，只是已过期");
+
+        let stale = LocalDatabaseState {
+            database_id: db.id,
+            state: LifecycleState::Warm,
+            owner_epoch: OwnerEpoch::new(1),
+            pid: Some(1),
+        };
+        catalog
+            .record_heartbeat(worker.clone(), &usage, 1, &[stale], WorkerState::Active)
+            .await
+            .unwrap();
+
+        let after = catalog
+            .get_database(db.id)
+            .await
+            .unwrap()
+            .lease_expires_at
+            .expect("租约不应被清空");
+        assert_eq!(
+            before, after,
+            "已被取代的 epoch 不得借心跳给自己的租约续命"
+        );
+    }
+
+    /// 已软删除的 DB 不得被心跳续租。
+    ///
+    /// `soft_delete_database` 只置 `deleted_at` + `state = 'STOPPING'`，**不清** owner 与租约，
+    /// 所以 Worker 仍以当前 epoch 上报时，那条「既是状态回写、又是唯一续约点」的 UPDATE
+    /// 会照样命中。命中的后果是无限续期：`clear_stale_ownership` 只认「租约已过期」，
+    /// 于是这一行长期带着 owner + 有效租约残留（`state` 还会被上报值覆盖掉 STOPPING），
+    /// 而按 `deleted_at IS NULL` 过滤的对账回收又够不着它。租约必须能自然过期。
+    #[tokio::test]
+    #[ignore = "需要 PostgreSQL：DATABASE_URL"]
+    async fn heartbeat_does_not_renew_lease_of_soft_deleted_database() {
+        let catalog = test_catalog().await;
+        let worker = register_worker(&catalog, "deleted-renew").await;
+        let usage = heartbeat_usage();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-deleted-renew-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .await
+            .unwrap();
+
+        let epoch = catalog
+            .bump_ownership(db.id, 0, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+
+        // 控制面软删除：deleted_at 置位、state -> STOPPING，owner 与租约保持原样
+        let deleted = catalog.soft_delete_database(db.id).await.unwrap();
+        assert!(deleted.deleted_at.is_some());
+        assert_eq!(deleted.state, LifecycleState::Stopping);
+
+        // 模拟「租约已过期」：这正是必须让它保持过期的现场
+        age_database_lease(&catalog, db.id, DEFAULT_OWNER_LEASE).await;
+        let before = catalog
+            .get_database(db.id)
+            .await
+            .unwrap()
+            .lease_expires_at
+            .expect("软删除不清租约");
+
+        // Worker 仍带着**当前 epoch** 上报它（本地进程尚未停完）——不得因此续租
+        let present = LocalDatabaseState {
+            database_id: db.id,
+            state: LifecycleState::Warm,
+            owner_epoch: OwnerEpoch::new(epoch),
+            pid: Some(4242),
+        };
+        catalog
+            .record_heartbeat(worker.clone(), &usage, 1, &[present], WorkerState::Active)
+            .await
+            .unwrap();
+
+        let after = catalog.get_database(db.id).await.unwrap();
+        assert_eq!(
+            after.lease_expires_at.expect("软删除不清租约"),
+            before,
+            "已软删除的 DB 不得被心跳续租，租约必须保持已过期"
+        );
+        assert_eq!(
+            after.state,
+            LifecycleState::Stopping,
+            "软删除置的 STOPPING 不得被心跳上报的本地状态覆盖"
+        );
+    }
+
+    /// Worker 注册表里**保留的旧 epoch 条目**不得阻止对账回收。
+    ///
+    /// db-worker 的正常停止路径有意「保留 epoch 记录，所有权不变」
+    /// （见 `supervisor::on_process_exit`），因此停止过的 DB 会一直出现在心跳
+    /// inventory 里。若对账只比 id，它会一直认为「Worker 还持有这个 DB」，
+    /// 于是启动被中断、Catalog 停在 STARTING 的 DB 永远回收不掉，
+    /// 数据面只能等 ownership GC 按租约兜底（数十秒不可用）。
+    #[tokio::test]
+    #[ignore = "需要 PostgreSQL：DATABASE_URL"]
+    async fn inventory_entry_with_stale_epoch_does_not_block_reclaim() {
+        let catalog = test_catalog().await;
+        let worker = register_worker(&catalog, "stale-inv").await;
+        let usage = heartbeat_usage();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-stale-inv-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .await
+            .unwrap();
+
+        // 上一次启动尝试拿到 epoch=1，被中断后重新接管推进到 epoch=2：
+        // 这正是「Catalog 停在 STARTING、Worker 只剩旧条目」的现场
+        catalog
+            .bump_ownership(db.id, 0, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+        let current = catalog
+            .bump_ownership(db.id, 1, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(current, 2);
+
+        expire_reclaim_window(&catalog, db.id).await;
+
+        // 心跳仍带着上个进程留下的 COLD 条目（epoch=1，pid 已清空）
+        let stale = LocalDatabaseState {
+            database_id: db.id,
+            state: LifecycleState::Cold,
+            owner_epoch: OwnerEpoch::new(1),
+            pid: None,
+        };
+        let outcome = catalog
+            .record_heartbeat(worker.clone(), &usage, 1, &[stale], WorkerState::Active)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.reclaimed.len(),
+            1,
+            "携带过期 epoch 的 inventory 条目不能证明 Worker 仍持有该 DB"
+        );
+        assert_eq!(outcome.reclaimed[0].from_epoch, 2);
+        assert_eq!(outcome.reclaimed[0].to_epoch, 3);
+        assert_eq!(outcome.reclaimed[0].reason, reclaim_reason::INVENTORY_MISSING);
+
+        let record = catalog.get_database(db.id).await.unwrap();
+        assert_eq!(
+            record.state,
+            LifecycleState::Cold,
+            "回收后必须回到可被重新放置的 COLD"
+        );
+        assert!(record.owner_worker_id.is_none(), "owner 必须清空");
+    }
+
+    /// 对照：以**当前 epoch** 认领的条目仍然算「Worker 本地存在」，不得被回收。
+    /// 没有这一条，「只比 id」的旧实现固然能通过上面的测试，却会误杀正在服务的库。
+    #[tokio::test]
+    #[ignore = "需要 PostgreSQL：DATABASE_URL"]
+    async fn inventory_entry_with_current_epoch_still_blocks_reclaim() {
+        let catalog = test_catalog().await;
+        let worker = register_worker(&catalog, "cur-inv").await;
+        let usage = heartbeat_usage();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new(format!(
+                "itest-cur-inv-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .await
+            .unwrap();
+
+        let epoch = catalog
+            .bump_ownership(db.id, 0, worker.clone(), DEFAULT_OWNER_LEASE)
+            .await
+            .unwrap();
+        expire_reclaim_window(&catalog, db.id).await;
+
+        let present = LocalDatabaseState {
+            database_id: db.id,
+            state: LifecycleState::Warm,
+            owner_epoch: OwnerEpoch::new(epoch),
+            pid: Some(7),
+        };
+        let outcome = catalog
+            .record_heartbeat(worker.clone(), &usage, 1, &[present], WorkerState::Active)
+            .await
+            .unwrap();
+        assert!(
+            outcome.reclaimed.is_empty(),
+            "以当前 epoch 认领的 DB 仍在 Worker 手上，不得被对账回收"
+        );
+        assert_eq!(
+            catalog.get_database(db.id).await.unwrap().owner_epoch.get(),
+            epoch
+        );
     }
 
     /// §11.3：存储层是 Fencing 的权威。Catalog 落后时只能向它对齐，且对齐必须幂等、留审计。

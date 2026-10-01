@@ -23,7 +23,6 @@ interface BaseModalProps {
 
 interface CreateForm {
   name: string;
-  tenant_id?: string;
 }
 
 export function CreateDatabaseModal({ open, onClose, onSubmitted }: BaseModalProps): JSX.Element {
@@ -37,10 +36,8 @@ export function CreateDatabaseModal({ open, onClose, onSubmitted }: BaseModalPro
     setSubmitting(true);
     setError(null);
     try {
-      const accepted = await api.databases.create({
-        name: values.name.trim(),
-        ...(values.tenant_id?.trim() ? { tenant_id: values.tenant_id.trim() } : {}),
-      });
+      // 不再指定归属租户：由服务端按调用主体缺省填充（既有行为）
+      const accepted = await api.databases.create({ name: values.name.trim() });
       form.resetFields();
       // operation_id 为 null 表示幂等无操作（目标状态已达成），此时没有可跟踪的操作
       if (accepted.operation_id) {
@@ -81,9 +78,6 @@ export function CreateDatabaseModal({ open, onClose, onSubmitted }: BaseModalPro
           ]}
         >
           <Input placeholder="例如：orders_db" autoComplete="off" />
-        </Form.Item>
-        <Form.Item name="tenant_id" label="租户（可选）">
-          <Input placeholder="留空则由服务端决定" autoComplete="off" />
         </Form.Item>
       </Form>
       <Typography.Text type="secondary">

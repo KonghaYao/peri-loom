@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use domain::error::ErrorCode;
+use domain::value::SqlValue;
 use engine_adapter::RemoteWalAppender;
 use protocol::framing::{read_frame, write_frame};
 use protocol::runtime_local as rt;
@@ -318,18 +319,27 @@ impl Client {
 
     /// 执行一条语句并返回响应帧。
     async fn execute(&mut self, seq: u64, sql: &str) -> rt::Frame {
-        let mut frame = self.frame(
+        self.execute_with_params(seq, sql, Vec::new()).await
+    }
+
+    /// 执行一条带绑定参数的语句并返回响应帧。
+    async fn execute_with_params(
+        &mut self,
+        seq: u64,
+        sql: &str,
+        params: Vec<protocol::data::Value>,
+    ) -> rt::Frame {
+        let frame = self.frame(
             seq,
             &format!("req-{seq}"),
             rt::frame::Message::Execute(rt::ExecuteRequest {
                 sql: sql.to_string(),
-                params: Vec::new(),
+                params,
                 atomic: false,
                 want_stream: false,
                 inline_row_limit: 0,
             }),
         );
-        frame.session_id = self.session_id.clone();
         self.send(frame).await;
         self.recv_reply(seq).await
     }
@@ -384,6 +394,102 @@ async fn execute_round_trip_over_uds() {
     assert_eq!(result.rows.len(), 2, "行数不对：{:?}", result.rows);
 
     env.shutdown().await;
+}
+
+/// 契约：`ExecuteRequest.params` 必须真正绑定到语句上 —— 无会话与会话两条路径都不许丢参。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn execute_binds_params_on_stateless_and_session_paths() {
+    let env = TestEnv::start(1).await;
+    let mut client = env.connect().await;
+
+    // 无会话：`SELECT ?` 必须拿到 42，而不是丢参后的 NULL。
+    let stateless = client
+        .execute_with_params(10, "SELECT ?", vec![SqlValue::Integer(42).into()])
+        .await;
+    assert!(
+        stateless.error.is_none(),
+        "无会话带参执行失败：{:?}",
+        stateless.error
+    );
+    assert_eq!(
+        domain_rows(&stateless),
+        vec![vec![SqlValue::Integer(42)]],
+        "绑定参数被丢弃（返回了 NULL）"
+    );
+
+    // 无会话写入也走绑定：建表 + 带参 INSERT。
+    let created = client
+        .execute(11, "CREATE TABLE p (id INTEGER PRIMARY KEY, name TEXT)")
+        .await;
+    assert!(created.error.is_none(), "建表失败：{:?}", created.error);
+    let inserted = client
+        .execute_with_params(
+            12,
+            "INSERT INTO p (id, name) VALUES (?1, ?2)",
+            vec![SqlValue::Integer(1).into(), SqlValue::text("alice").into()],
+        )
+        .await;
+    assert!(
+        inserted.error.is_none(),
+        "带参写入失败：{:?}",
+        inserted.error
+    );
+
+    // 会话路径：同一个绑定值必须能作为查询条件命中刚写入的行。
+    client
+        .send(client.frame(
+            13,
+            "req-open",
+            rt::frame::Message::OpenSession(rt::OpenSessionRequest {
+                idle_timeout_ms: 0,
+                max_transaction_lifetime_ms: 0,
+            }),
+        ))
+        .await;
+    let reply = client.recv_reply(13).await;
+    let Some(rt::frame::Message::OpenSessionResponse(response)) = reply.message else {
+        panic!("期望 OpenSessionResponse");
+    };
+    client.session_id = response.session_id.clone();
+
+    let in_session = client
+        .execute_with_params(
+            14,
+            "SELECT name FROM p WHERE id = ?1",
+            vec![SqlValue::Integer(1).into()],
+        )
+        .await;
+    assert!(
+        in_session.error.is_none(),
+        "会话内带参查询失败：{:?}",
+        in_session.error
+    );
+    assert_eq!(
+        domain_rows(&in_session),
+        vec![vec![SqlValue::text("alice")]]
+    );
+
+    // 参数数量不符必须报 INVALID_ARGUMENT：参数不足绝不能静默变 NULL。
+    let too_few = client
+        .execute_with_params(15, "SELECT ?1, ?2", vec![SqlValue::Integer(1).into()])
+        .await;
+    assert_eq!(
+        error_code_of(&too_few),
+        ErrorCode::InvalidArgument,
+        "参数不足必须被拒绝"
+    );
+
+    env.shutdown().await;
+}
+
+/// 取响应帧里的结果行（转成平台值，避免在断言里手搓 proto 结构）。
+fn domain_rows(frame: &rt::Frame) -> Vec<Vec<domain::value::SqlValue>> {
+    result_of(frame)
+        .rows
+        .iter()
+        .cloned()
+        .map(protocol::convert::row_from_proto)
+        .collect()
 }
 
 /// 流式执行必须按 Header -> RowBatch* -> End 的顺序回帧。

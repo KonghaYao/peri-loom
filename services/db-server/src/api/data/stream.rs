@@ -200,7 +200,7 @@ pub(crate) fn proto_error(
 }
 
 /// proto 列元数据 -> 领域列元数据。
-fn column_meta(column: &protocol::data::ColumnMeta) -> ColumnMeta {
+pub(crate) fn column_meta(column: &protocol::data::ColumnMeta) -> ColumnMeta {
     ColumnMeta::new(
         column.name.clone(),
         column.type_name.clone(),
@@ -212,7 +212,7 @@ fn column_meta(column: &protocol::data::ColumnMeta) -> ColumnMeta {
 ///
 /// 只求量级正确：字符串 / 二进制按实际字节数，其余标量按 8 字节。
 /// 目的是「大结果集不要在 Server 内存里堆积」，不是精确计量。
-fn approximate_bytes(values: &[SqlValue]) -> usize {
+pub(crate) fn approximate_bytes(values: &[SqlValue]) -> usize {
     values
         .iter()
         .map(|value| match value {

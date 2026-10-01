@@ -84,6 +84,29 @@ export function DatabaseDetailPage(): JSX.Element {
   const snapshots = toItems(snapshotsQuery.data);
   const slowQueries = toItems(slowQueriesQuery.data);
 
+  // 对外出口冻结为 HTTP，且浏览器与 API 同 Origin（生产由 nginx、开发由 vite proxy 反代 /data/*），
+  // 因此 Base URL 必须由 window.location.origin 推导，不能硬编码主机端口。
+  const dataApiBase = `${window.location.origin}/data/v1`;
+  const queryEndpoint = `${dataApiBase}/databases/${dbId}/query`;
+  // 示例中的凭据是占位符：Token 明文只在创建时展示一次，Panel 侧不持有任何可用 Token。
+  const curlExample = `curl -X POST '${queryEndpoint}' \\
+  -H "Authorization: Bearer <token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"sql":"select 1","params":[]}'`;
+
+  // Hrana 端点：TursoDB / libsql 客户端直连入口（同一 Origin，由 nginx / dev proxy 转发 /db/*）。
+  // **结尾斜杠是硬性要求**：客户端用 new URL("v2/pipeline", baseUrl) 拼路径，少了它 db_id 会被当目录吃掉。
+  const hranaEndpoint = `${window.location.origin}/db/${dbId}/`;
+  const libsqlExample = `import { createClient } from '@libsql/client';
+
+const client = createClient({
+  url: '${hranaEndpoint}', // 结尾斜杠不能省，否则 db_id 会被当成目录吃掉
+  authToken: '<token>',
+});
+
+const rs = await client.execute('select 1');
+console.log(rs.rows);`;
+
   const actionByKey = (key: string): ActionDef => {
     const found = ACTIONS.find((a) => a.key === key);
     if (!found) throw new Error(`未知动作：${key}`);
@@ -216,7 +239,6 @@ export function DatabaseDetailPage(): JSX.Element {
                 </Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="名称">{db ? dbName(db) : '-'}</Descriptions.Item>
-              <Descriptions.Item label="租户">{db?.tenant_id ?? '-'}</Descriptions.Item>
               <Descriptions.Item label="磁盘配额">{typeof db?.budget?.disk_mib === 'number' ? `${db.budget.disk_mib} MiB` : '-'}</Descriptions.Item>
               <Descriptions.Item label="创建时间">{formatTime(db?.created_at)}</Descriptions.Item>
               <Descriptions.Item label="更新时间">{formatTime(db?.updated_at)}</Descriptions.Item>
@@ -248,6 +270,86 @@ export function DatabaseDetailPage(): JSX.Element {
             </Descriptions>
           </Col>
         </Row>
+      </Card>
+
+      {/* 连接信息：平台没有 per-DB 的 host:port / DSN，客户端的「连接」= Base URL + db_id + Token 三件套 */}
+      <Card title="连接信息" style={{ marginTop: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          本平台不提供每个数据库独立的 host:port / DSN：浏览器与 API 同 Origin（/data/* 由 nginx 或 dev proxy 转发到
+          db-server），客户端的「连接」= 入口 Base URL + 数据库标识 db_id + Token 三件套。
+        </Typography.Paragraph>
+        <Descriptions size="small" column={1} bordered>
+          <Descriptions.Item label="Data API 基址">
+            <Typography.Text copyable={{ text: dataApiBase }} code>
+              {dataApiBase}
+            </Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="数据库标识">
+            <Typography.Text copyable={{ text: dbId }} code>
+              {dbId}
+            </Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="凭据">
+            <Typography.Text code>{'Authorization: Bearer <token>'}</Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="查询端点">
+            <Typography.Text copyable={{ text: `POST ${queryEndpoint}` }} code>
+              {`POST ${queryEndpoint}`}
+            </Typography.Text>
+          </Descriptions.Item>
+        </Descriptions>
+        <Typography.Paragraph type="secondary" style={{ margin: '12px 0 4px' }}>
+          curl 示例（把 {'<token>'} 换成自己的 Token）：
+        </Typography.Paragraph>
+        <Typography.Text
+          code
+          copyable={{ text: curlExample }}
+          style={{ display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+        >
+          {curlExample}
+        </Typography.Text>
+
+        {/* TursoDB / libsql 客户端直连：同一入口的 Hrana over HTTP v2 兼容端点 */}
+        <Typography.Paragraph type="secondary" style={{ margin: '16px 0 12px' }}>
+          TursoDB / libsql 客户端直连（Hrana over HTTP v2，<Typography.Text code>@libsql/client</Typography.Text> /{' '}
+          <Typography.Text code>turso</Typography.Text> CLI 可直接使用）：
+        </Typography.Paragraph>
+        <Descriptions size="small" column={1} bordered>
+          <Descriptions.Item label="Hrana 端点">
+            <Typography.Text copyable={{ text: hranaEndpoint }} code>
+              {hranaEndpoint}
+            </Typography.Text>
+          </Descriptions.Item>
+        </Descriptions>
+        <Typography.Paragraph type="secondary" style={{ margin: '12px 0 4px' }}>
+          结尾斜杠不能省（客户端按 <Typography.Text code>{'new URL("v2/pipeline", base)'}</Typography.Text> 拼路径，
+          少了它 db_id 会被当成目录吃掉）。
+        </Typography.Paragraph>
+        <Typography.Text
+          code
+          copyable={{ text: libsqlExample }}
+          style={{ display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+        >
+          {libsqlExample}
+        </Typography.Text>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+          边界：只实现 Hrana v2（HTTP + JSON），一次 <Typography.Text code>execute()</Typography.Text> 只接受一条语句
+          （多条请用 <Typography.Text code>batch()</Typography.Text> /{' '}
+          <Typography.Text code>executeMultiple()</Typography.Text>）；结果集上限 16 MiB，超限请加{' '}
+          <Typography.Text code>LIMIT</Typography.Text> 分页或改用上面的 Data API 流式出口；
+          未实现 <Typography.Text code>describe</Typography.Text> / <Typography.Text code>get_autocommit</Typography.Text>
+          （v3 能力）与 <Typography.Text code>last_insert_rowid</Typography.Text>。
+        </Typography.Paragraph>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+          Token 在 <Link to="/settings">设置</Link> 页创建，明文只在创建成功时展示一次；登录获得的 JWT 同样可用。数据面一律要求{' '}
+          <Typography.Text code>db:write</Typography.Text> 权限（平台不解析 SQL，无法可靠区分只读语句，因此不为{' '}
+          <Typography.Text code>db:read</Typography.Text> 主体放行）。
+        </Typography.Paragraph>
+        {db?.state === 'COLD' ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
+            当前数据库处于 COLD：首次请求会触发透明唤醒（WAKEUP_TIMEOUT_MS，默认 3s），可能比平时慢。
+          </Typography.Paragraph>
+        ) : null}
       </Card>
 
       <Card
