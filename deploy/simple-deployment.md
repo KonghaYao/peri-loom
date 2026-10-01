@@ -10,40 +10,51 @@ Simple 模式使用一个主进程、一个 HTTP 端口和一个本地数据目�
 ./peri-loom serve --mode simple --data-dir ./data
 ```
 
-从源码构建可运行 `bash scripts/build-simple.sh`，产物为 `target/release/peri-loom`。构建环境需要仓库指定的 Rust、Node 和 protoc 3.x；已有其他 protoc 版本时可用 `PROTOC` 指向 3.x 可执行文件。Node 只在构建时使用。实例数据应放在源码仓库之外；源码压缩包不能作为实例备份。
+从源码构建可运行 `bash scripts/build-simple.sh`，产物为 `target/release/peri-loom`。构建环境需要仓库指定的 Rust、Node 和支持 proto3 optional 的 protoc（流水线使用 28.3）。Node 只在构建时使用。实例数据应放在源码仓库之外；源码压缩包不能作为实例备份。
 
 执行队列与结果帧均有上限，可用 `--queue-capacity` 和 `--max-result-frame-bytes` 调整。默认单行结果必须小于 256 KiB，超限会明确报错；大结果应通过 NDJSON 或 Hrana cursor 流式读取。单机模式不承诺逐库硬内存隔离。
 
 首版达到打开库上限时明确拒绝新库请求，需要停止闲置库释放容量；暂不做自动 LRU 回收。后台任务以持久状态轮询恢复，不引入事件总线。整实例导出采用停机方式；Simple 到 distributed 的跨模式数据迁移尚不支持原地切换。
 
-默认监听 `127.0.0.1:8080`。容器镜像使用 `docker-compose.simple.yml`，默认将宿主的 `127.0.0.1:8080` 映射到容器端口，并使用 `peri_data` 命名卷：
+默认监听 `127.0.0.1:8080`。可用 `--listen`、`--max-open-databases`、`--max-sessions-per-database`、`--queue-capacity`、`--log-level` 调整设置。`--tls-cert` 和 `--tls-key` 必须同时提供。
+
+## mise 安装与 GitHub Release
+
+Simple 以原生二进制发布，不需要独立 Compose。首次正式 Release 发布后，使用 mise 的 [GitHub backend](https://mise.jdx.dev/dev-tools/backends/github.html) 安装：
 
 ```sh
-docker compose -f docker-compose.simple.yml up --build -d
+mise use -g github:KonghaYao/peri-loom@latest
+mise exec github:KonghaYao/peri-loom@latest -- peri-loom serve --mode simple --data-dir ./data
 ```
 
-如需其他端口，可设 `PERI_LOOM_PORT`。也可用 `--listen`、`--max-open-databases`、`--max-sessions-per-database`、`--queue-capacity`、`--log-level` 调整单机设置。`--tls-cert` 和 `--tls-key` 必须同时提供；未配置 TLS 时默认只在回环地址使用。Simple 不读取分布式模式的数据库、对象存储或 WAL 服务地址。
+启用 mise shell integration 后可直接执行 `peri-loom serve --mode simple --data-dir ./data`。固定版本可将 `latest` 替换为 Release 版本；升级前先停止进程并导出数据。服务运行时只需要可执行文件和数据目录，不需要 mise 常驻。
 
-## GitHub Container Registry 构建与启动
+[publish-simple.yml](../.github/workflows/publish-simple.yml) 构建内嵌 Web 后编译以下平台，每个平台都解压产物并启动真实二进制验证：
 
-[publish-simple.yml](../.github/workflows/publish-simple.yml) 独立构建 `Dockerfile.simple`，先启动容器验证 readiness、部署能力、内嵌 Web 和 API 404，再发布镜像。PR 只构建验证；推送 `main`、`v*` 标签或手动触发时发布到 `ghcr.io/konghayao/peri-loom/simple`，目前目标平台为 `linux/amd64`。标签包含分支名、`sha-...` 和版本号；默认分支及正式版本提供 `latest`。原分布式镜像仍由 `publish-images.yml` 发布。
+| 平台 | Release 附件后缀 | 构建 runner |
+| --- | --- | --- |
+| Linux x64 | `x86_64-unknown-linux-gnu.tar.gz` | `ubuntu-22.04` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu.tar.gz` | `ubuntu-22.04-arm` |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` | `macos-15-intel` |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` | `macos-14` |
 
-工作流推送到 GitHub 并成功发布后，可直接拉取运行：
+Linux 产物面向 glibc 2.35+（如 Ubuntu 22.04+），不用于 Alpine/musl；macOS 最低部署目标为 13。Windows 不在本次支持范围内。
+
+- PR、`main` 推送、分支上的手动运行：构建与验证，上传四个平台的 Actions artifacts，保留 14 天。
+- `v*` 标签推送或在对应标签上手动运行：全部构建成功后上传 GitHub Release，再使用 mise 在四个平台实际下载安装并复验。带 `-` 的版本标签发布为 prerelease，不替换 `latest`。
+- 附件形如 `peri-loom-v1.2.3-aarch64-apple-darwin.tar.gz`，解压只有 `peri-loom`。每个包附带 `.sha256`，Release 同时提供 `SHA256SUMS`；可在安装前校验，mise 项目可用 `mise.lock` 固定版本与校验值。
+- 已发布版本不会原地替换二进制；重试只允许继续未完成的 Release 草稿。代码未推送、工作流未运行时，安装命令不能凭本地构建自动获得远端 Release。
+
+## 可选 Docker 包装
+
+保留 `Dockerfile.simple`，需要容器时可自行构建；Simple 发布流水线不再发布 GHCR 镜像：
 
 ```sh
-export PERI_LOOM_IMAGE=ghcr.io/konghayao/peri-loom/simple:latest
-export PERI_LOOM_PORT=18080
-docker compose -f docker-compose.simple.yml pull
-docker compose -f docker-compose.simple.yml up --no-build -d
+docker build -f Dockerfile.simple -t peri-loom:simple .
+docker run --rm --name peri-loom-simple -p 127.0.0.1:8080:8080 -v peri_data:/data peri-loom:simple
 ```
 
-访问 `http://127.0.0.1:18080`。GHCR 包为私有时需先执行 `docker login ghcr.io`；固定版本部署可将 `latest` 替换为发布版本或 digest。容器首次初始化凭据可在本机读取：
-
-```sh
-docker compose -f docker-compose.simple.yml exec peri-loom cat /data/secrets/initial-admin.json
-```
-
-首次成功登录后此文件会删除。停止服务使用 `docker compose -f docker-compose.simple.yml down`，保留命名卷数据。
+运行二进制时按 Ctrl+C 正常停止；容器可用 `docker stop peri-loom-simple` 停止。现有 distributed 的 Compose 和镜像流水线继续保留。
 
 首次启动生成随机管理员密码，写入 `data/secrets/initial-admin.json`，以及持久化的 JWT 签名密钥。读取凭据后应按本机权限管理该文件；登录与授权继续使用现有 API。实例锁阻止两个进程同时打开同一数据目录。不要把该目录放在共享网络盘，也不要将同一目录直接切换为 distributed 模式。
 

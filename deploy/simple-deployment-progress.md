@@ -50,3 +50,9 @@
 ## 首版取舍
 
 单机省略远程 quorum/fencing、Worker/cgroup 隔离、Move/自动故障转移。远程位置字段返回 `null`，不支持的动作明确失败。保留打开库、会话、队列与结果帧上限；暂不做自动 LRU。整实例导出要求停机，跨模式迁移工具不在本次范围内。坏库可显式启动或恢复，不能通过普通请求反复自动打开。
+
+## 原生 Release / mise 交付调整
+
+按后续要求，Simple 发布改为四平台原生二进制 GitHub Release，取消独立 Compose 与 Simple GHCR 发布，保留 Dockerfile。工作流包含打包、解压后启动验证、SHA-256 校验及发布后 mise 安装验证。
+
+本地已用现有 macOS ARM64 debug 二进制验证打包、权限、校验和及独立目录启动；`cargo check -p db-server`、Actionlint 1.7.12、Python/Shell 语法及 `git diff --check` 通过。完整四平台 release 构建和远端 mise 安装需在 GitHub 工作流实际运行后确认；这里不将它们记录为已通过。原 Simple 演示容器已移除，命名卷保留。
