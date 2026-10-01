@@ -18,6 +18,10 @@ Simple 模式使用一个主进程、一个 HTTP 端口和一个本地数据目�
 
 默认监听 `127.0.0.1:8080`。可用 `--listen`、`--max-open-databases`、`--max-sessions-per-database`、`--queue-capacity`、`--log-level` 调整设置。`--tls-cert` 和 `--tls-key` 必须同时提供。
 
+## 本地开发
+
+本地源码开发可执行 `bash scripts/dev-simple.sh`：debug 后端监听 `127.0.0.1:18081`，Vite 热更新页面位于 `http://127.0.0.1:5174`，默认沿用仓库下的 `data`。按 Ctrl+C 同时停止两者。可通过 `PERI_LOOM_API_PORT`、`PERI_LOOM_WEB_PORT`、`PERI_LOOM_DATA_DIR` 覆盖设置；开发脚本需要 Python 3 做端口检查。这里的 Vite 仅用于开发，发布版仍是一个内嵌 Web 的二进制。
+
 ## mise 安装与 GitHub Release
 
 Simple 以原生二进制发布，不需要独立 Compose。首次正式 Release 发布后，使用 mise 的 [GitHub backend](https://mise.jdx.dev/dev-tools/backends/github.html) 安装：

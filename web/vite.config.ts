@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 //   /api/*  -> db-server 管理面
 //   /data/* -> db-server 数据面（NDJSON 流式，必须禁止缓冲）
 //   /db/*   -> db-server 的 TursoDB / libsql 客户端兼容端点（Hrana over HTTP）
-const DB_SERVER = 'http://127.0.0.1:8080';
+const DB_SERVER = process.env.DB_SERVER_URL || 'http://127.0.0.1:8080';
 
 export default defineConfig({
   plugins: [react()],
