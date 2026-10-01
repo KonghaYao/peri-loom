@@ -89,10 +89,12 @@ export function DatabaseDetailPage(): JSX.Element {
   const dataApiBase = `${window.location.origin}/data/v1`;
   const queryEndpoint = `${dataApiBase}/databases/${dbId}/query`;
 
-  // libSQL / TursoDB 客户端直连入口（同一 Origin，由 nginx / dev proxy 转发 /db/*）。
+  // 两个官方 SDK 共用同一 Origin 的 /db/* 入口（生产由 nginx、开发由 vite proxy 反代）。
   // **结尾斜杠是硬性要求**：客户端按 <base>/v2/pipeline 拼路径，少了它 db_id 会被当成目录吃掉。
+  // @tursodatabase/serverless 只做前缀替换（libsql://、turso:// → https://），http:// 原样穿过；
+  // 但它按 `${url}/v3/cursor` 朴素拼接，任何 query 都会被并进路径，因此这份地址不能带参数。
   const hranaEndpoint = `${window.location.origin}/db/${dbId}/`;
-  // 客户端会把 libsql:// 归一化：默认按 TLS（https）；只有带 ?tls=0 且显式写出端口时才走明文 HTTP。
+  // @libsql/client 默认按 TLS 连接；只有带 ?tls=0 且显式写出端口时才走明文 HTTP。
   // 本入口是明文就补 ?tls=0；将来套了 TLS 反代则用不带参数的形式（那时端口也无需显式给出）。
   const libsqlEndpoint =
     window.location.protocol === 'https:'
@@ -267,14 +269,20 @@ export function DatabaseDetailPage(): JSX.Element {
       {/* 连接信息：平台没有 per-DB 的 host:port / DSN，「连接」= 入口地址 + db_id + Token */}
       <Card title="连接信息" style={{ marginTop: 16 }}>
         <Descriptions size="small" column={1} bordered>
-          <Descriptions.Item label="连接地址">
+          <Descriptions.Item label="libSQL 客户端">
             <Typography.Text copyable={{ text: libsqlEndpoint }} code>
               {libsqlEndpoint}
             </Typography.Text>
+            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              @libsql/client
+            </Typography.Text>
           </Descriptions.Item>
-          <Descriptions.Item label="HTTP 地址">
+          <Descriptions.Item label="TursoDB SDK">
             <Typography.Text copyable={{ text: hranaEndpoint }} code>
               {hranaEndpoint}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              @tursodatabase/serverless：HTTP 入口，URL 不能带 query 参数
             </Typography.Text>
           </Descriptions.Item>
           <Descriptions.Item label="数据库标识">

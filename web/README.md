@@ -8,6 +8,7 @@
 ```text
 /api/*   -> http://127.0.0.1:8080（dev proxy） / http://db-server:8080（nginx）
 /data/*  -> 同上（NDJSON 流式，nginx 已关闭 proxy_buffering）
+/db/*    -> 同上（TursoDB / libsql 客户端兼容端点，Hrana over HTTP v2 / v3，同样关闭 buffering）
 ```
 
 ---
@@ -33,9 +34,9 @@ Docker：`web/Dockerfile` 执行 `npm install -> npm run build -> dist/ 拷入 n
 web/
 ├── .npmrc                     # 国内镜像（勿改 registry）
 ├── Dockerfile                 # Vite 构建 + nginx 运行
-├── nginx/default.conf         # SPA + /api /data 反代（/data 关闭 buffering）
+├── nginx/default.conf         # SPA + /api /data /db 反代（/data、/db 关闭 buffering）
 ├── index.html
-├── vite.config.ts             # dev proxy：^/api/、^/data/ -> 127.0.0.1:8080（正则，避免 /databases 被误代理）
+├── vite.config.ts             # dev proxy：^/api/、^/data/、^/db/ -> 127.0.0.1:8080（正则，避免 /databases 被误代理）
 ├── orval.config.ts            # gen:api 配置，input = ./openapi.json
 ├── tsconfig.json              # strict + noUnusedLocals/Parameters
 ├── scripts/gen-api.mjs        # gen:api 预检（缺契约时给出导出指引）
@@ -75,7 +76,7 @@ web/
 | `/login` | 登录 | 账号密码（`POST /api/v1/auth/login`，用户名 + 密码换 JWT）；接口不可用（404/405/501）时回退为**粘贴 Token** 模式 |
 | `/dashboard` | 概览 | DB 总数与状态分布、Worker 数量与饱和度（目标区间/水位线）、最近操作 |
 | `/databases` | 数据库列表 | 分页、状态过滤、关键字筛选、创建、启动/停止/重启/迁移/快照/备份/恢复/删除（二次确认 + 进度弹窗） |
-| `/databases/:dbId` | 数据库详情 | 连接信息（Base URL / db_id / 查询端点 / curl 示例，均可复制）、基本信息、生命周期、路由（worker/epoch）、快照列表、慢查询 |
+| `/databases/:dbId` | 数据库详情 | 连接信息（libSQL 客户端与 TursoDB SDK 的接入地址、db_id、凭据、Data API 基址与查询端点）、基本信息、生命周期、路由（worker/epoch）、快照列表、慢查询 |
 | `/sql` | SQL 控制台 | SQL 编辑器、执行、结果表格、影响行数/耗时/错误；**大结果集 NDJSON 流式 + 分块渲染**；显式会话模式（BEGIN/COMMIT/ROLLBACK） |
 | `/workers` | Worker 管理 | 状态、CPU/内存/进程进度条、饱和度着色排序、Drain（二次确认 + 进度） |
 | `/workers/:workerId` | Worker 详情 | 容量/用量、饱和度水位、运行中的数据库、Drain |
@@ -156,12 +157,13 @@ npm run gen:api                                      # orval -> src/api/generate
 
 ## 未实现 / 精简项
 
-- **后端已落地**：`services/db-server/src/main.rs` 不再是占位实现，而是 CLI 入口（缺省启动服务，`dump-openapi` / `--dump-openapi` 导出 OpenAPI 契约后退出）；服务装配在 `db_server::app::run`（`services/db-server/src/app.rs`）：Catalog 连接 + migrations -> Route Cache 全量 reconcile -> 后台任务 -> HTTP 监听，出口覆盖 `/api/v1/*`（Management / DBA REST）、`/data/v1/*`（SQL / 数据面）与 `/db/{db_id}/v2/pipeline`（Hrana v2），本 Panel 的 `/api`、`/data` 直接对接该服务。
-- **Hrana v2 兼容层只覆盖"可跑通官方客户端"的最小集合**（`services/db-server/src/api/hrana/`，端点 `POST /db/{db_id}/v2/pipeline`，数据库详情的连接信息卡片给出 URL 与 `@libsql/client` 示例）：
-  - URL **必须带结尾斜杠**（`.../db/<db_id>/`）——客户端用 `new URL("v2/pipeline", base)` 拼路径，少了斜杠 `db_id` 会被当成目录吃掉；
-  - 只实现 **HTTP + JSON 的 v2**：无 v3、无 protobuf 编码、无 cursor、无 `describe` / `get_autocommit`（调用即返回 `NOT_IMPLEMENTED`，不会假装成功）；
+- **后端已落地**：`services/db-server/src/main.rs` 不再是占位实现，而是 CLI 入口（缺省启动服务，`dump-openapi` / `--dump-openapi` 导出 OpenAPI 契约后退出）；服务装配在 `db_server::app::run`（`services/db-server/src/app.rs`）：Catalog 连接 + migrations -> Route Cache 全量 reconcile -> 后台任务 -> HTTP 监听，出口覆盖 `/api/v1/*`（Management / DBA REST）、`/data/v1/*`（SQL / 数据面）与 `/db/{db_id}/v2/pipeline`、`/db/{db_id}/v3/{pipeline,cursor}`（Hrana v2 / v3），本 Panel 的 `/api`、`/data` 直接对接该服务。
+- **Hrana v2 / v3 兼容层只覆盖"可跑通官方客户端"的最小集合**（`services/db-server/src/api/hrana/`，端点 `POST /db/{db_id}/v2/pipeline`、`POST /db/{db_id}/v3/pipeline`、`POST /db/{db_id}/v3/cursor`，数据库详情的连接信息卡片按 SDK 给出接入地址）：
+  - 两个官方 SDK 各打各的版本、互不降级：`@libsql/client` 全程只打 v2，`@tursodatabase/serverless`（1.0.0 起）全程只打 v3；
+  - URL **必须带结尾斜杠**（`.../db/<db_id>/`）——`@libsql/client` 用 `new URL("v2/pipeline", base)` 拼路径，少了斜杠 `db_id` 会被当成目录吃掉；`@tursodatabase/serverless` 只做前缀替换后按 `${url}/v3/...` 拼接，因此给它的地址不能带 query 参数；
+  - 只实现 **HTTP + JSON**（v2 与 v3）：无 protobuf 编码，无 `describe`（调用即返回 `NOT_IMPLEMENTED`，不会假装成功）；
   - `execute()` 一次**只接受一条语句**（DB Process 的 prepare 只看第一条，多语句会被静默丢弃，因此宁可拒绝并提示用 `batch()` / `executeMultiple()`）；`CREATE TRIGGER` 含 `;` 的语句体不参与切分；
-  - 结果集**必须整体装进一个响应体**（v2 没有流式出口），上限 16 MiB，超限返回 `RESULT_TOO_LARGE` 并提示加 `LIMIT` 或改用 `/data/v1` 的 NDJSON 出口；
+  - 结果集**先整体缓冲再编码**（没有流式出口，v3 cursor 的 NDJSON 也是一次性写出），上限 16 MiB，超限返回 `RESULT_TOO_LARGE` 并提示加 `LIMIT` 或改用 `/data/v1` 的 NDJSON 出口；
   - `last_insert_rowid` 恒为 `null`（平台结果集契约里没有该字段，如实报告"未知"而不是猜一个可能属于别的连接的值）；
   - 权限与 `/data/v1` **同档**（`db:write`）：平台不解析 SQL，无法可靠区分 `SELECT` 与 `WITH ... DELETE`，给只读主体放行就是越权旁路；
   - `baton` 就是平台会话 ID，**不进 Catalog**：Server 重启或数据库发生 failover 后 baton 失效并返回明确错误，不会静默新建连接（那会让客户端以为事务还在，把数据写到事务外）。
