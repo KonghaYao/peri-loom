@@ -1,6 +1,6 @@
 # 单机镜像：前端仅在构建阶段需要 Node，运行时只有 peri-loom 主进程。
 ARG NODE_IMAGE=node:22-alpine
-ARG RUST_IMAGE=rust:1.98.1-slim-bookworm
+ARG RUST_IMAGE=rust:1.98-slim-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 
 FROM ${NODE_IMAGE} AS web-build

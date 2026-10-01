@@ -9,6 +9,8 @@ web/dist
 # 本地运行态
 .local/
 .run/
+data/
+test/node_modules/
 *.log
 /tmp/
 

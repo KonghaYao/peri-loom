@@ -5,14 +5,14 @@
 
 ## 验收清单
 
-- [ ] 本地 WAL 提交、同步失败、checkpoint、强杀恢复及丢失未同步写验证
-- [ ] SQLite 元数据：身份权限、数据库、审计、幂等、Operations、Jobs、备份、Panel
-- [ ] 有界进程内宿主：会话、事务、取消、超时、流式背压、关闭与恢复
-- [ ] 共享 HTTP / NDJSON / Hrana v2、v3 pipeline / v3 cursor
-- [ ] 本地对象存储、一致性备份、恢复、整实例导出
-- [ ] 单文件启动、实例锁、版本检查、初始化凭据、持久签名密钥
-- [ ] 内嵌 Web、能力信息、不支持动作明确失败、同端口健康检查
-- [ ] 文档、发布包装、Simple 验收、distributed 回归
+- [x] 本地 WAL 提交、同步失败、checkpoint、强杀恢复及丢失未同步写模型验证
+- [x] SQLite 元数据：身份权限、数据库、审计、幂等、Operations、Jobs、备份、Panel
+- [x] 有界进程内宿主：会话、事务、取消、超时、流式背压、关闭与恢复
+- [x] 共享 HTTP / NDJSON / Hrana v2、v3 pipeline / v3 cursor
+- [x] 本地对象存储、一致性备份、恢复、整实例导出
+- [x] 单文件启动、实例锁、版本检查、初始化凭据、持久签名密钥
+- [x] 内嵌 Web、能力信息、不支持动作明确失败、同端口健康检查
+- [x] 文档、发布包装、Simple 验收、distributed 构建与选定回归（范围见下文）
 
 ## 实施前基线
 
@@ -27,3 +27,26 @@
 
 实现按元数据、宿主、存储、服务装配与验收分阶段记录。下方只记录实际完成的验证；
 未运行、被环境阻断或仅有代码检查的项目不能标成通过。
+
+## 已执行的局部检查（2026-10-01）
+
+- `cargo test -p objectstore --lib`：36 passed；本地对象存取、路径逃逸、大文件流式与损坏快照用例通过。后续增加了本地快照解压字节上限及 `main.db` 清单要求，其聚焦用例再次通过。
+- `cargo check -p db-server`：通过；`simple::export::tests::offline_roundtrip_and_corruption_rejected`：通过，覆盖身份密钥与对象文件往返、覆盖目标拒绝、篡改拒绝。
+- `npm run typecheck`、`npm run build`：通过，Simple 能力 UI 可构建。
+- 早期上述局部验证之后，已完成下述集成与故障验证。
+
+## 集成与故障验证
+
+- `cargo test --locked -p db-server -p database-host -p objectstore -p catalog --lib`：Server 98、Host 11、ObjectStore 36、Catalog 51 项通过（SQLite 专项 8 项）。Catalog 的 32 项 PostgreSQL 测试在本机默认跳过，随后已在隔离 Linux + 新 PostgreSQL 中显式运行且全部通过。
+- `cargo test -p db-server --test simple_http`：真实子进程验收通过，覆盖 SQL 参数、事务隔离、Hrana v2/v3 pipeline、NDJSON、SIGKILL 恢复、元数据与认证持久化、实例锁、坏库隔离、备份恢复、损坏快照拒绝及停机导出导入。
+- `cargo test -p engine-adapter --test local_sync_failure`：5 项通过，覆盖自动/显式提交同步、同步失败、WAL 写入磁盘满、只读写入错误，以及丢弃未同步字节的断电模型。此处为确定性 IO 故障注入，不是物理硬件断电测试。
+- 真实 `@tursodatabase/serverless` SDK：36/36 通过，包含 v3 cursor。另有 mock 帧测试验证 cursor 在 trailer 前输出首帧，丢弃响应触发取消。
+- 使用临时自签证书并由客户端验证证书的 HTTPS readiness、内嵌 Web、正常停止均通过。
+- `npm run typecheck`、`npm run build` 通过；未做浏览器像素或全页面交互验收。
+- 修改涉及的 5 个 Rust crate 的 `cargo clippy --all-targets -- -D warnings` 通过；Shell 语法、Compose 配置与 `git diff --check` 通过。
+- Linux 分布式构建、WAL/quorum/fencing 单元回归、PostgreSQL 契约和 Simple 镜像验证见 [隔离回归记录](simple-validation.md)。现有运行中的 `db-platform` 集群没有被替换。
+- 最终 Simple 镜像 `peri-loom-simple:validation-final` 重新构建并通过独立容器的 readiness、能力信息、Web 与未知 API 验证。分布式回归使用此前代码快照；没有对最终版本做完整多节点端到端故障演练。
+
+## 首版取舍
+
+单机省略远程 quorum/fencing、Worker/cgroup 隔离、Move/自动故障转移。远程位置字段返回 `null`，不支持的动作明确失败。保留打开库、会话、队列与结果帧上限；暂不做自动 LRU。整实例导出要求停机，跨模式迁移工具不在本次范围内。坏库可显式启动或恢复，不能通过普通请求反复自动打开。

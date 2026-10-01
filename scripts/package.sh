@@ -51,6 +51,7 @@ tar \
   --exclude='*/.claude' \
   --exclude='*/.local' \
   --exclude='*/.run' \
+  --exclude="$(basename "${REPO_ROOT}")/data" \
   --exclude='*.log' \
   -czf "${OUT}" \
   -C "$(dirname "${REPO_ROOT}")" "$(basename "${REPO_ROOT}")"

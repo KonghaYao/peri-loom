@@ -10,6 +10,12 @@ Simple 模式使用一个主进程、一个 HTTP 端口和一个本地数据目�
 ./peri-loom serve --mode simple --data-dir ./data
 ```
 
+从源码构建可运行 `bash scripts/build-simple.sh`，产物为 `target/release/peri-loom`。构建环境需要仓库指定的 Rust、Node 和 protoc 3.x；已有其他 protoc 版本时可用 `PROTOC` 指向 3.x 可执行文件。Node 只在构建时使用。实例数据应放在源码仓库之外；源码压缩包不能作为实例备份。
+
+执行队列与结果帧均有上限，可用 `--queue-capacity` 和 `--max-result-frame-bytes` 调整。默认单行结果必须小于 256 KiB，超限会明确报错；大结果应通过 NDJSON 或 Hrana cursor 流式读取。单机模式不承诺逐库硬内存隔离。
+
+首版达到打开库上限时明确拒绝新库请求，需要停止闲置库释放容量；暂不做自动 LRU 回收。后台任务以持久状态轮询恢复，不引入事件总线。整实例导出采用停机方式；Simple 到 distributed 的跨模式数据迁移尚不支持原地切换。
+
 默认监听 `127.0.0.1:8080`。容器镜像使用 `docker-compose.simple.yml`，默认将宿主的 `127.0.0.1:8080` 映射到容器端口，并使用 `peri_data` 命名卷：
 
 ```sh
