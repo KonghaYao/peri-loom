@@ -1,0 +1,41 @@
+# Prometheus 抓取配置（observability profile）。
+# 业务代码只产生 tracing/metrics，不绑定具体后端（架构 §17.10）。
+#
+# /metrics 只在内部网络暴露，绝不发布到公网（架构 §17.4）。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: db-platform-compose
+
+scrape_configs:
+  - job_name: db-server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["db-server:9090"]
+        labels:
+          component: server
+
+  - job_name: db-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "db-worker-1:9090"
+          - "db-worker-2:9090"
+        labels:
+          component: worker
+
+  - job_name: wal-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "wal-1:9300"
+          - "wal-2:9300"
+          - "wal-3:9300"
+        labels:
+          component: remote-wal
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

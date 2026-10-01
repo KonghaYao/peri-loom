@@ -1,0 +1,161 @@
+{
+  "title": "DB Platform — 平台总览",
+  "uid": "db-platform-overview",
+  "tags": ["db-platform"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "component",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "Prometheus" },
+        "query": "label_values(dbplatform_request_latency_micros_count, component)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Data Path（架构 §14 Request / Query Latency）",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "请求延迟 P95 / P99（微秒）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(dbplatform_request_latency_micros_bucket{component=~\"$component\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(dbplatform_request_latency_micros_bucket{component=~\"$component\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "µs", "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Router 命中率（验收 >= 99.9%）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(rate(dbplatform_route_cache_hits_total[5m])) / clamp_min(sum(rate(dbplatform_route_cache_hits_total[5m])) + sum(rate(dbplatform_route_cache_misses_total[5m])), 1)",
+          "legendFormat": "hit rate"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0.9, "max": 1 }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "生命周期与容量（架构 §9 / §7）",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "冷启动耗时（微秒，P95 目标 <= 500ms）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(dbplatform_cold_start_micros_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "µs" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker 资源饱和度（目标打包 70%~75%，红线 80%/90%）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "targets": [
+        {
+          "expr": "dbplatform_worker_saturation{resource=\"cpu\"}",
+          "legendFormat": "cpu {{worker_id}}"
+        },
+        {
+          "expr": "dbplatform_worker_saturation{resource=\"memory\"}",
+          "legendFormat": "mem {{worker_id}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.8 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "DB Process Crash（累计）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "targets": [
+        { "expr": "sum(increase(dbplatform_db_process_crash_total[1h]))", "legendFormat": "1h" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Durability（架构 §11 Commit Durability）",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Remote WAL Append 延迟（P95 目标 <= 5ms，P99 <= 15ms）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(dbplatform_wal_append_latency_micros_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(dbplatform_wal_append_latency_micros_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "µs" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL Fencing 拒绝（旧 epoch 写入必须 100% 被拒）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 19 },
+      "targets": [
+        { "expr": "sum(rate(dbplatform_wal_append_error_total[5m])) by (reason)", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Admission 拒绝（水位保护）",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 19 },
+      "targets": [
+        { "expr": "sum(rate(dbplatform_admission_denied_total[5m])) by (reason)", "legendFormat": "{{reason}}" }
+      ]
+    }
+  ]
+}

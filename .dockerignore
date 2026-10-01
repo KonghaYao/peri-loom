@@ -1,0 +1,33 @@
+# Docker 构建上下文裁剪：target/ 与 node_modules 体积巨大，绝不进入构建上下文。
+target/
+**/target/
+
+# 前端依赖与产物（在 web/Dockerfile 内部自行安装）
+web/node_modules
+web/dist
+
+# 本地运行态
+.local/
+.run/
+*.log
+/tmp/
+
+# 密钥与证书（通过 compose secrets 注入，不 bake 进镜像）
+deploy/secrets/*.txt
+deploy/secrets/*.key
+deploy/secrets/*.crt
+.env
+.env.*
+
+# VCS 与工具缓存
+.git/
+.gitignore
+.claude/
+.idea/
+.vscode/
+
+# 文档与测试产物（镜像不需要）
+docs/
+**/*.md
+!README.md
+deploy/k6/

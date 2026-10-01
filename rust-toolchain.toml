@@ -1,0 +1,5 @@
+# 冻结 Rust 工具链版本：CI 与生产环境不得浮动使用 latest（见架构 §17.2）
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

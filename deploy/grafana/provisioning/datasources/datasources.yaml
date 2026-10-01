@@ -1,0 +1,26 @@
+# Grafana 数据源预置（observability profile）
+#
+# 说明：本仓库不引入 Grafana SDK 依赖到业务代码；业务只产生 tracing/metrics，
+# 由 Prometheus / OTLP Collector 汇聚（架构 §17.10）。
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST
+
+  # OTel Collector 以 Prometheus exporter 暴露指标（otel-collector.yaml:8889）
+  - name: OTelCollector
+    type: prometheus
+    access: proxy
+    url: http://otel-collector:8889
+    editable: false
+    jsonData:
+      timeInterval: 15s

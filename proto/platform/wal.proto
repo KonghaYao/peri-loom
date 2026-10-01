@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+// Remote WAL Service 协议（架构 §17.8 / §11.1）。
+//
+// durability contract:
+//   成功 Append 必须意味着 quorum durable。
+//   旧 owner_epoch 的 Append 必须在 WAL Service 内被拒绝（Storage-level Fencing）。
+//
+// 内部分片：hash(db_id) -> wal_shard_id -> Raft Group（非一 DB 一 Raft Group）。
+// 同一 WAL Shard 承载大量 DB，DB 内通过 LSN 保证顺序。
+package platform.wal.v1;
+
+import "platform/common.proto";
+
+service RemoteWal {
+  // 追加 WAL 数据。返回成功 = quorum durable。
+  // 非 leader 返回 WAL_NOT_LEADER + leader 提示，客户端应重试到 leader。
+  rpc Append(AppendRequest) returns (AppendResponse);
+
+  // 读取 [start_lsn, end_lsn) 区间的 WAL 数据（冷启动恢复 / Failover replay）
+  rpc ReadRange(ReadRangeRequest) returns (stream WalChunk);
+
+  // 设置 / 提升 owner epoch（fencing：拒绝所有更低 epoch 的 Append）
+  rpc SetOwnerEpoch(SetOwnerEpochRequest) returns (SetOwnerEpochResponse);
+
+  // 截断 LSN 之前的 WAL（Snapshot 已覆盖该区间）
+  rpc TrimBeforeLsn(TrimBeforeLsnRequest) returns (TrimBeforeLsnResponse);
+
+  // 查询某 DB 的 WAL 当前状态
+  rpc GetWalStatus(GetWalStatusRequest) returns (GetWalStatusResponse);
+
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Raft 组成员变更（运维）
+  rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+}
+
+message AppendRequest {
+  string database_id = 1;
+  // 写入者身份；WAL Service 必须校验此 epoch >= 已记录 epoch，否则拒绝
+  uint64 owner_epoch = 2;
+  // 本批次第一个字节对应的 LSN（全局单调，按 (db_id, lsn) 定位）
+  uint64 start_lsn = 3;
+  bytes wal_bytes = 4;
+  // 客户端幂等键：同一 (db_id, start_lsn, epoch) 的重复 Append 必须幂等
+  string append_id = 5;
+  // commit frame 是否包含在本批次内：允许 WAL Service 观测 commit 点
+  bool contains_commit_frame = 6;
+  uint64 deadline_unix_ms = 7;
+  platform.common.v1.RequestContext context = 8;
+
+  // 本地 WAL 文件内偏移。failover 恢复时按「同偏移回放」重建 Worker 本地 WAL，
+  // 因此该偏移必须随 WAL 字节一起持久化。0 表示这是一代新 WAL 的起始。
+  uint64 wal_file_offset = 9;
+  // true = 本批次属于新的 WAL 代（本地 WAL 经过 checkpoint/reset 后从头写）。
+  // 恢复时先清空本地 WAL 文件，再从 wal_file_offset 开始写入。
+  bool reset_wal = 10;
+}
+
+message AppendResponse {
+  platform.common.v1.PlatformError error = 1;
+  // 已 durable 的末端 LSN（exclusive）
+  uint64 durable_lsn = 2;
+  // 参与 quorum 确认的副本列表
+  repeated string acked_replicas = 3;
+  uint64 append_latency_micros = 4;
+  // 幂等命中：该 Append 之前已成功提交
+  bool deduplicated = 5;
+}
+
+message ReadRangeRequest {
+  string database_id = 1;
+  uint64 start_lsn = 2;
+  uint64 end_lsn = 3;
+  // 每次返回的最大字节数（server 侧 chunk 上限）
+  uint32 max_chunk_bytes = 4;
+  uint64 deadline_unix_ms = 5;
+}
+
+message WalChunk {
+  platform.common.v1.PlatformError error = 1;
+  uint64 start_lsn = 2;
+  bytes data = 3;
+  bool last = 4;
+  // 与 AppendRequest 对应：回放时要写入本地 WAL 文件的哪个偏移
+  uint64 wal_file_offset = 5;
+  // true = 该 chunk 开启新一代 WAL，回放前先截断本地 WAL
+  bool reset_wal = 6;
+}
+
+message SetOwnerEpochRequest {
+  string database_id = 1;
+  // 必须严格大于已记录 epoch，WAL Service 拒绝回退
+  uint64 owner_epoch = 2;
+  string worker_id = 3;
+  string reason = 4;
+  uint64 deadline_unix_ms = 5;
+  platform.common.v1.RequestContext context = 6;
+}
+
+message SetOwnerEpochResponse {
+  platform.common.v1.PlatformError error = 1;
+  uint64 applied_epoch = 2;
+  uint64 known_lsn = 3;
+}
+
+message TrimBeforeLsnRequest {
+  string database_id = 1;
+  uint64 lsn = 2;
+  // 必须提供已包含该区间数据的 snapshot_id，防止误截断
+  string snapshot_id = 3;
+  uint64 deadline_unix_ms = 4;
+}
+
+message TrimBeforeLsnResponse {
+  platform.common.v1.PlatformError error = 1;
+  uint64 trimmed_before_lsn = 2;
+}
+
+message GetWalStatusRequest {
+  string database_id = 1;
+}
+
+message GetWalStatusResponse {
+  platform.common.v1.PlatformError error = 1;
+  bool has_data = 2;
+  uint64 first_lsn = 3;
+  uint64 last_lsn = 4;
+  uint64 owner_epoch = 5;
+  uint64 append_count = 6;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  bool is_leader = 2;
+  uint64 term = 3;
+  string leader_id = 4;
+  uint64 commit_index = 5;
+  uint64 applied_index = 6;
+  string node_id = 7;
+  string shard_id = 8;
+}
+
+message AddMemberRequest {
+  uint64 member_id = 1;
+  string endpoint = 2;
+}
+
+message AddMemberResponse {
+  platform.common.v1.PlatformError error = 1;
+}
+
+message RemoveMemberRequest {
+  uint64 member_id = 1;
+}
+
+message RemoveMemberResponse {
+  platform.common.v1.PlatformError error = 1;
+}

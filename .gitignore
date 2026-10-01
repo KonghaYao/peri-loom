@@ -1,0 +1,38 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# 本地运行数据 / UDS / 测试产物
+/.local
+/.run
+*.log
+/tmp
+
+# Node / Web
+/web/node_modules
+/web/dist
+/web/.vite
+npm-debug.log*
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 工作流运行时产物
+.claude/workflow-runs/
+deploy/secrets/*.txt
+deploy/secrets/*.key
+deploy/secrets/*.crt
+!deploy/secrets/*.example

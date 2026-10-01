@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+// 平台内部共享类型：错误码、请求上下文、资源画像。
+// 该文件是 Server / Worker / WAL Service / DB Runtime 的公共契约。
+package platform.common.v1;
+
+// ---------------------------------------------------------------- 错误码
+// 平台统一结构化错误码。对外 HTTP 错误体中的 code 字符串与此枚举同名。
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  OK = 1;
+
+  // 路由 / 生命周期
+  DB_NOT_FOUND = 100;
+  DB_ALREADY_EXISTS = 101;
+  DATABASE_NOT_READY = 102;
+  NOT_OWNER = 103;
+  EPOCH_MISMATCH = 104;
+  ROUTE_STALE = 105;
+  WORKER_UNAVAILABLE = 106;
+  WORKER_DRAINING = 107;
+  ADMISSION_DENIED = 108;
+  WAKEUP_TIMEOUT = 109;
+
+  // 会话 / 事务
+  SESSION_NOT_FOUND = 200;
+  SESSION_LOST = 201;
+  TRANSACTION_LOST = 202;
+  TRANSACTION_STATE_INVALID = 203;
+  SESSION_IDLE_TIMEOUT = 204;
+  TRANSACTION_MAX_LIFETIME_EXCEEDED = 205;
+
+  // 执行
+  SQL_ERROR = 300;
+  SQL_PARSE_ERROR = 301;
+  CONSTRAINT_VIOLATION = 302;
+  DEADLINE_EXCEEDED = 303;
+  CANCELLED = 304;
+  RESULT_TOO_LARGE = 305;
+  BATCH_PARTIAL_FAILURE = 306;
+
+  // 存储 / durability
+  WAL_NOT_DURABLE = 400;
+  WAL_APPEND_REJECTED = 401;
+  WAL_NOT_LEADER = 402;
+  STORAGE_UNAVAILABLE = 403;
+  SNAPSHOT_UNAVAILABLE = 404;
+  CHECKSUM_MISMATCH = 405;
+
+  // 平台
+  RESOURCE_EXHAUSTED = 500;
+  UNAUTHENTICATED = 501;
+  PERMISSION_DENIED = 502;
+  RATE_LIMITED = 503;
+  QUOTA_EXCEEDED = 504;
+  IDEMPOTENCY_CONFLICT = 505;
+
+  INTERNAL_ERROR = 600;
+  NOT_IMPLEMENTED = 601;
+  INVALID_ARGUMENT = 602;
+}
+
+// 统一结构化错误体。retryable=true 表示调用方可安全重试（且不得改变语义）。
+message PlatformError {
+  ErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+  string request_id = 4;
+  // 附加结构化信息（JSON 字符串），例如 {"epoch_expected":834,"epoch_actual":835}
+  string detail_json = 5;
+  // 单次请求内允许的透明重试序号（stale route 场景，最多 1 次）
+  uint32 route_retry_count = 6;
+}
+
+// ------------------------------------------------------------ 请求上下文
+// 贯穿 Server -> Worker -> DB Process 的最小上下文。
+// 所有内部 RPC 必须携带，用于路由校验、fencing、追踪与取消。
+message RequestContext {
+  string request_id = 1;
+  string trace_id = 2;
+  string tenant_id = 3;
+  string database_id = 4;
+  // 单调递增的 Owner Epoch；Storage 层据此拒绝旧 Owner 写入（fencing）
+  uint64 owner_epoch = 5;
+  // Unix 毫秒时间戳；0 表示无 deadline（不推荐）
+  uint64 deadline_unix_ms = 6;
+  // 显式会话（显式事务）场景必填，Stateless 场景为空
+  string session_id = 7;
+  string transaction_id = 8;
+  // 由 Server 指定、Worker 校验的目标 Worker
+  string worker_id = 9;
+  // 幂等键（仅 Management 副作用请求使用）
+  string idempotency_key = 10;
+}
+
+// ------------------------------------------------------------ 资源画像
+// Worker 资源预算（见架构 §9）。
+message ResourceBudget {
+  // 单位：milli-core（1000 = 1 vCPU）
+  uint64 cpu_milli = 1;
+  // 单位：MiB
+  uint64 memory_mib = 2;
+  uint64 file_descriptors = 3;
+  // 单位：MiB
+  uint64 disk_mib = 4;
+  uint64 process_slots = 5;
+  // 单位：IOPS（读+写合计上限提示）
+  uint64 iops = 6;
+}
+
+// Worker 当前资源占用快照，用于 Scheduler 的 Resource Budget Packing。
+message WorkerResourceUsage {
+  uint64 cpu_used_milli = 1;
+  uint64 cpu_total_milli = 2;
+  uint64 memory_used_mib = 3;
+  uint64 memory_total_mib = 4;
+  uint64 fd_used = 5;
+  uint64 fd_total = 6;
+  uint64 disk_used_mib = 7;
+  uint64 disk_total_mib = 8;
+  uint64 iops_used = 9;
+  uint64 iops_total = 10;
+  uint64 db_process_count = 11;
+  uint64 db_process_limit = 12;
+}
+
+// ------------------------------------------------------------ 生命周期
+// DB 生命周期状态机：COLD -> STARTING -> WARM -> HOT -> WARM -> COLD
+enum LifecycleState {
+  LIFECYCLE_STATE_UNSPECIFIED = 0;
+  COLD = 1;
+  STARTING = 2;
+  WARM = 3;
+  HOT = 4;
+  DRAINING = 5;
+  STOPPING = 6;
+  FAILED = 7;
+}
+
+// Worker 状态机：ACTIVE -> DRAINING -> EMPTY
+// 注：proto3 枚举值遵循 C++ 作用域规则（值名位于 package 级），
+// 因此 WorkerState 的值统一加 WORKER_ 前缀，避免与 LifecycleState 冲突。
+enum WorkerState {
+  WORKER_STATE_UNSPECIFIED = 0;
+  WORKER_STATE_ACTIVE = 1;
+  WORKER_STATE_SUSPECT = 2;
+  WORKER_STATE_DRAINING = 3;
+  WORKER_STATE_EMPTY = 4;
+  WORKER_STATE_UNAVAILABLE = 5;
+}
+
+// 快照元数据（见架构 §11.4）
+message SnapshotMeta {
+  string database_id = 1;
+  string snapshot_id = 2;
+  // 快照基线 LSN：恢复时从此 LSN 之后 replay Remote WAL
+  uint64 base_lsn = 3;
+  string checksum = 4;
+  uint64 created_at_unix_ms = 5;
+  uint64 owner_epoch_at_snapshot = 6;
+  string engine_version = 7;
+  uint64 size_bytes = 8;
+  string object_key = 9;
+}

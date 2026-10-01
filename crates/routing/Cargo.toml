@@ -1,0 +1,21 @@
+[package]
+name = "routing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Server 只维护 db_id -> worker_id -> worker_endpoint（架构 §4.2）。
+# Route Cache 必须允许短时间脱离 Catalog 独立工作。
+[dependencies]
+domain.workspace = true
+# 指标名是冻结契约（架构 §14）：这里只调 observability 的记录入口，不自己拼指标名
+observability.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true

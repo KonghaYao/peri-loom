@@ -1,0 +1,23 @@
+# 国内环境镜像配置（rsproxy.cn）。
+# 该文件随仓库提交，保证任何机器 clone 后无需额外配置即可拉取依赖。
+# 如需切换回官方源，删除 [source.*] 段落即可。
+
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy]
+registry = "https://rsproxy.cn/crates.io-index"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[registries.rsproxy]
+index = "https://rsproxy.cn/crates.io-index"
+
+[net]
+git-fetch-with-cli = true
+retry = 5
+
+[build]
+# 32 vCPU 构建机；如机器规格不同请本地覆盖
+jobs = 16

@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+// Server -> Worker Data Path 协议。
+// 固定契约（架构 §5.2 / §15.6）：gRPC + HTTP2 Streaming，必须支持
+// Execute / ExecuteBatch / StreamRows / Cancel / Deadline / Backpressure /
+// OpenSession / CloseSession / Begin / Commit / Rollback，并携带
+// db_id + owner_epoch + session_id + transaction_id + structured_error_code。
+//
+// 热路径：Client -> Server Router -> Worker Dispatcher -> DB Process
+// Control Plane 不参与本协议。
+package platform.data.v1;
+
+import "platform/common.proto";
+
+service WorkerData {
+  // 单次执行（无会话）。结果集小于 inline 阈值时一次性返回。
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // 流式执行：大结果集必须走此路径，Server 不得无上限缓存完整结果集。
+  // Backpressure 由 HTTP2 flow control 承载，Server 逐帧转发给 Client。
+  rpc ExecuteStream(ExecuteRequest) returns (stream StreamFrame);
+
+  // 同请求内多语句批量执行（原子事务语义由 Server 决定是否包裹）。
+  rpc ExecuteBatch(ExecuteBatchRequest) returns (ExecuteBatchResponse);
+
+  // 显式会话：OpenSession 后 pin worker / db process / connection context。
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+
+  // 显式事务（必须在已打开的 session 内）
+  rpc Begin(BeginRequest) returns (TransactionResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc Rollback(RollbackRequest) returns (TransactionResponse);
+
+  // 会话内流式执行
+  rpc SessionExecuteStream(SessionExecuteRequest) returns (stream StreamFrame);
+
+  // 取消：按 request_id 定位，必须向下传播到 DB Process。
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Worker Data Dispatcher 健康与本地 DB 进程注册表（仅内部使用）
+  rpc DispatcherStatus(DispatcherStatusRequest) returns (DispatcherStatusResponse);
+}
+
+// ------------------------------------------------------------------ 请求
+
+message ExecuteRequest {
+  platform.common.v1.RequestContext context = 1;
+  string sql = 2;
+  repeated Value params = 3;
+  // 结果集内联返回上限（字节）；超出则使用 streaming。
+  uint32 inline_row_limit = 4;
+  // true = 请求内包裹原子事务（autocommit 语义）
+  bool atomic = 5;
+}
+
+message ExecuteBatchRequest {
+  platform.common.v1.RequestContext context = 1;
+  repeated BatchStatement statements = 2;
+  // true = 整批包裹单事务，任一失败则整体回滚
+  bool atomic = 3;
+}
+
+message BatchStatement {
+  string sql = 1;
+  repeated Value params = 2;
+}
+
+message OpenSessionRequest {
+  platform.common.v1.RequestContext context = 1;
+  // 会话空闲超时，默认 60s（架构 §15.3）
+  uint32 idle_timeout_ms = 2;
+}
+
+message CloseSessionRequest {
+  platform.common.v1.RequestContext context = 1;
+  string session_id = 2;
+}
+
+message BeginRequest {
+  platform.common.v1.RequestContext context = 1;
+  string session_id = 2;
+  // 事务最大存活时间，默认 30s（架构 §15.3）
+  uint32 max_lifetime_ms = 3;
+  bool read_only = 4;
+}
+
+message CommitRequest {
+  platform.common.v1.RequestContext context = 1;
+  string session_id = 2;
+  string transaction_id = 3;
+}
+
+message RollbackRequest {
+  platform.common.v1.RequestContext context = 1;
+  string session_id = 2;
+  string transaction_id = 3;
+}
+
+message SessionExecuteRequest {
+  platform.common.v1.RequestContext context = 1;
+  string session_id = 2;
+  string sql = 3;
+  repeated Value params = 4;
+}
+
+message CancelRequest {
+  // 被取消请求的 context（至少携带 request_id + database_id + worker_id）
+  platform.common.v1.RequestContext context = 1;
+  // 空 = 取消该 context.request_id
+  string target_request_id = 2;
+  // 可选：取消整个会话
+  string target_session_id = 3;
+  string reason = 4;
+}
+
+// ------------------------------------------------------------------ 响应
+
+message ExecuteResponse {
+  platform.common.v1.PlatformError error = 1;
+  ResultSet result = 2;
+  // 服务端观测到的执行耗时（微秒）
+  uint64 elapsed_micros = 3;
+  // 本次执行发生的 WAL durable LSN（用于排障与一致性校验）
+  uint64 wal_lsn = 4;
+}
+
+message ExecuteBatchResponse {
+  platform.common.v1.PlatformError error = 1;
+  repeated ResultSet results = 2;
+  uint64 elapsed_micros = 3;
+  uint64 wal_lsn = 4;
+}
+
+message OpenSessionResponse {
+  platform.common.v1.PlatformError error = 1;
+  string session_id = 2;
+  string worker_id = 3;
+  string database_id = 4;
+  // 会话过期时间（Unix 毫秒）
+  uint64 expires_at_unix_ms = 5;
+}
+
+message CloseSessionResponse {
+  platform.common.v1.PlatformError error = 1;
+}
+
+message TransactionResponse {
+  platform.common.v1.PlatformError error = 1;
+  string transaction_id = 2;
+  uint64 expires_at_unix_ms = 3;
+}
+
+message CommitResponse {
+  platform.common.v1.PlatformError error = 1;
+  // commit 成功时必须已经 Remote WAL quorum durable（架构 §11.1）
+  uint64 wal_lsn = 2;
+  uint64 elapsed_micros = 3;
+}
+
+message CancelResponse {
+  platform.common.v1.PlatformError error = 1;
+  bool cancelled = 2;
+}
+
+message DispatcherStatusRequest {}
+
+message DispatcherStatusResponse {
+  string worker_id = 1;
+  platform.common.v1.WorkerResourceUsage usage = 2;
+  uint32 running_db_count = 3;
+  // 本地注册表快照：db_id -> pid/state/epoch
+  repeated LocalDatabaseEntry databases = 4;
+}
+
+message LocalDatabaseEntry {
+  string database_id = 1;
+  string state = 2;
+  int64 pid = 3;
+  uint64 owner_epoch = 4;
+  string local_socket = 5;
+  uint64 rss_kib = 6;
+}
+
+// ------------------------------------------------------------- Streaming
+
+// 流式帧。Backpressure 由 HTTP2 流控承载；Server 必须逐帧转发，
+// 不得聚合为完整 ResultSet（架构 §17.4 NDJSON 契约）。
+message StreamFrame {
+  platform.common.v1.PlatformError error = 1;
+  oneof frame {
+    StreamHeader header = 2;
+    RowBatch rows = 3;
+    StreamTrailer trailer = 4;
+  }
+}
+
+message StreamHeader {
+  repeated ColumnMeta columns = 1;
+  uint64 row_count_estimate = 2;
+}
+
+message RowBatch {
+  repeated Row rows = 1;
+}
+
+message StreamTrailer {
+  uint64 affected_rows = 1;
+  uint64 wal_lsn = 2;
+  uint64 elapsed_micros = 3;
+}
+
+// ------------------------------------------------------------- 数据模型
+
+message ResultSet {
+  repeated ColumnMeta columns = 1;
+  repeated Row rows = 2;
+  uint64 affected_rows = 3;
+  bool truncated = 4;
+}
+
+message ColumnMeta {
+  string name = 1;
+  string type_name = 2;
+  bool nullable = 3;
+}
+
+message Row {
+  repeated Value values = 1;
+}
+
+// 值编码：使用 oneof 保证跨语言确定性；NULL 由 null_value 显式表示。
+message Value {
+  oneof kind {
+    NullValue null_value = 1;
+    int64 integer = 2;
+    double real = 3;
+    string text = 4;
+    bytes blob = 5;
+  }
+}
+
+enum NullValue {
+  NULL_VALUE_NULL = 0;
+}

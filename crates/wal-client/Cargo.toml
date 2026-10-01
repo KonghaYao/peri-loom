@@ -1,0 +1,28 @@
+[package]
+name = "wal-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Remote WAL 客户端：Append(quorum durable) / ReadRange / SetOwnerEpoch(fencing)。
+# 与 wal-service 的 wire contract 是 platform.wal.v1。
+[dependencies]
+domain.workspace = true
+protocol.workspace = true
+tonic.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+# metrics facade（不引入 exporter）：指标名契约见 crates/observability/src/metrics.rs
+metrics.workspace = true
+# PlatformError.detail（fencing 的 expected/actual epoch）是 JSON 载体
+serde_json.workspace = true

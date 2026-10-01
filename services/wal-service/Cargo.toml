@@ -1,0 +1,60 @@
+[package]
+name = "wal-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wal-service"
+path = "src/main.rs"
+
+# Remote WAL Service（架构 §17.8）：Rust + gRPC + raft-rs + raft-engine。
+# 不是消息队列；成功 Append 语义 = quorum durable。
+[dependencies]
+domain.workspace = true
+protocol.workspace = true
+observability.workspace = true
+
+raft.workspace = true
+raft-engine.workspace = true
+# raft-proto 的 raft 内部消息 wire 格式由 rust-protobuf 生成代码定义
+# （workspace 中 raft 走默认的 protobuf-codec，未启用 prost-codec），
+# 节点间 Peer 传输必须用同一编解码器，理由见 src/peer.rs 模块注释。
+protobuf = "=2.28.0"
+# raft 只接受 slog Logger；这里把 slog 桥接进 tracing，保证平台单一结构化日志管线（§17.10）
+slog = "=2.8.2"
+
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+tonic.workspace = true
+prost.workspace = true
+http.workspace = true
+
+# Ops HTTP server（/healthz、/readyz、/metrics）与 Prometheus 文本导出
+axum.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+parking_lot.workspace = true
+dashmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+crc32fast.workspace = true
+
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# 端到端 durability 测试直接用平台的 WAL 客户端走真实 gRPC
+wal-client.workspace = true
+proptest.workspace = true

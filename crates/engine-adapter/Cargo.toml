@@ -1,0 +1,30 @@
+[package]
+name = "engine-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# 注意（架构 §17.3）：TursoDB 类型与 API 只允许出现在本 crate 与 db-runtime 内。
+# Server / Worker / WAL Service 禁止直接依赖 turso_core。
+[dependencies]
+domain.workspace = true
+wal-client.workspace = true
+turso_core.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+hex.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true

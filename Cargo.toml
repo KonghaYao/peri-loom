@@ -1,0 +1,153 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/*",
+    "services/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+license = "Apache-2.0"
+authors = ["DB Platform Team"]
+description = "Self-hosted TursoDB-based DB Platform: Server Plane + Worker Plane + Storage Plane"
+
+[workspace.dependencies]
+# ---------------------------------------------------------------- 平台 crate
+domain = { path = "crates/domain" }
+protocol = { path = "crates/protocol" }
+catalog = { path = "crates/catalog" }
+engine-adapter = { path = "crates/engine-adapter" }
+scheduler = { path = "crates/scheduler" }
+routing = { path = "crates/routing" }
+wal-client = { path = "crates/wal-client" }
+objectstore = { path = "crates/objectstore" }
+observability = { path = "crates/observability" }
+
+# ---------------------------------------------------------------- runtime
+tokio = { version = "=1.53.1", features = ["full"] }
+tokio-util = { version = "=0.7.19", features = ["codec", "io", "rt"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+futures = "=0.3.34"
+async-trait = "=0.1.92"
+bytes = "=1.12.1"
+
+# ---------------------------------------------------------------- http / rpc
+axum = { version = "=0.8.9", features = ["macros", "http2"] }
+# tonic 0.14 起 prost 集成拆分为独立 crate（tonic-prost / tonic-prost-build）
+tonic = "=0.14.6"
+tonic-prost = "=0.14.6"
+tonic-prost-build = "=0.14.6"
+tonic-health = "=0.14.6"
+tonic-reflection = "=0.14.6"
+prost = "=0.14.4"
+prost-build = "=0.14.4"
+prost-types = "=0.14.4"
+tower = "=0.5.3"
+tower-http = { version = "=0.6.11", features = [
+    "trace",
+    "cors",
+    "limit",
+    "timeout",
+    "request-id",
+    "catch-panic",
+    "compression-gzip",
+] }
+hyper = { version = "=1.11.1", features = ["full"] }
+http = "=1.5.0"
+http-body = "=1.1.0"
+http-body-util = "=0.1.5"
+
+# ---------------------------------------------------------------- serde / 数据
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+uuid = { version = "=1.26.1", features = ["v4", "v7", "serde"] }
+chrono = { version = "=0.4.45", features = ["serde"] }
+base64 = "=0.23.1"
+hex = "=0.4.3"
+sha2 = "=0.11.0"
+crc32fast = "=1.5.2"
+rand = "=0.10.3"
+indexmap = { version = "=2.14.2", features = ["serde"] }
+rust_decimal = { version = "=1.43.0", features = ["serde"] }
+
+# ---------------------------------------------------------------- 存储
+sqlx = { version = "=0.8.6", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+] }
+aws-config = "=1.12.0"
+aws-sdk-s3 = "=1.150.0"
+zstd = "=0.14.0"
+turso_core = "=0.8.1"
+
+# ---------------------------------------------------------------- 调度 / 系统
+sysinfo = "=0.39.6"
+nix = { version = "=0.31.3", features = ["process", "signal", "fs", "socket", "user"] }
+libc = "=0.2.189"
+parking_lot = "=0.12.5"
+dashmap = "=6.2.1"
+once_cell = "=1.21.4"
+strum = { version = "=0.28.0", features = ["derive"] }
+humantime = "=2.4.0"
+
+# ---------------------------------------------------------------- remote wal
+raft = "=0.7.0"
+raft-engine = "=0.4.2"
+
+# ---------------------------------------------------------------- 观测
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json", "fmt"] }
+metrics = "=0.24.6"
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false, features = ["http-listener"] }
+tracing-opentelemetry = "=0.34.0"
+opentelemetry = "=0.33.0"
+opentelemetry_sdk = { version = "=0.33.0", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "=0.33.0", features = ["grpc-tonic", "trace"] }
+
+# ---------------------------------------------------------------- 安全
+# jsonwebtoken 11 起需要显式选择加密后端（否则运行期 panic）：
+# 选 rust_crypto（纯 Rust）而不是 aws_lc_rs，避免在容器里引入 aws-lc 的原生依赖。
+jsonwebtoken = { version = "=11.1.0", features = ["rust_crypto"] }
+argon2 = "=0.6.0"
+rustls = "=0.23.45"
+rustls-pemfile = "=2.2.0"
+tokio-rustls = "=0.26.6"
+
+# ---------------------------------------------------------------- 其它
+anyhow = "=1.0.104"
+thiserror = "=2.0.21"
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+utoipa = { version = "=6.0.0", features = ["axum_extras", "chrono", "uuid"] }
+tempfile = "=3.27.0"
+async-stream = "=0.3.6"
+glob = "=0.3.4"
+csv = "=1.4.0"
+
+# ---------------------------------------------------------------- dev
+proptest = "=1.11.0"
+criterion = "=0.8.2"
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+# 降低磁盘占用（本机 / 分区空间有限），同时保留行号级回溯
+debug = "line-tables-only"
+incremental = true
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.bench]
+debug = "line-tables-only"

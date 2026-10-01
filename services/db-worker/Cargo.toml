@@ -1,0 +1,56 @@
+[package]
+name = "db-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "db-worker"
+path = "src/main.rs"
+
+# Worker 是 Linux Host Agent（架构 §17.6）。DB Process 由本进程直接 spawn 为普通子进程，
+# 不启动 Docker container。**禁止依赖 engine-adapter / turso_core。**
+[dependencies]
+domain.workspace = true
+protocol.workspace = true
+wal-client.workspace = true
+objectstore.workspace = true
+observability.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+# 数据面流式转发用 generator 实现逐帧背压（见 dispatch::stream_with_first）
+async-stream.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+tonic.workspace = true
+prost.workspace = true
+
+# Ops HTTP（/healthz /readyz /metrics）。Worker 只有这一个对外 HTTP 端口。
+axum.workspace = true
+metrics-exporter-prometheus.workspace = true
+
+# 注：进程 RSS / CPU 直接读 cgroup v2 文件与 /proc（比 sysinfo 更准且无额外扫描），
+# 因此不再需要 sysinfo。
+nix.workspace = true
+libc.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+glob.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,225 @@
+syntax = "proto3";
+
+// Worker Data Dispatcher -> DB Process 本地协议（架构 §17.7）。
+//
+// wire format（冻结）：
+//   UnixStream + length-delimited framing + protobuf message
+//   推荐实现：tokio::net::UnixStream + prost + tokio-util LengthDelimitedCodec
+//   **不在本机 UDS 上再次运行完整 gRPC/HTTP2**
+//
+// DB Process 不监听任何对外网络端口；Server 不感知 PID / socket 变化。
+package platform.runtime.v1;
+
+import "platform/common.proto";
+import "platform/data.proto";
+
+// 注意：本地协议**不是** gRPC —— 不定义 service，全部消息通过 `Frame` 信封承载，
+// 由 tokio::net::UnixStream + length-delimited framing 收发。
+
+// 所有本地消息共用的信封。每个 message 至少包含：
+// request_id / db_id / owner_epoch / session_id(optional) / deadline / operation / payload
+message Frame {
+  uint64 seq = 1;
+  // 0 = 单向通知（无需响应）；非 0 = 需要对应 response
+  uint64 reply_to_seq = 2;
+  string request_id = 3;
+  string database_id = 4;
+  uint64 owner_epoch = 5;
+  string session_id = 6;
+  string transaction_id = 7;
+  uint64 deadline_unix_ms = 8;
+  platform.common.v1.PlatformError error = 9;
+
+  oneof message {
+    Hello hello = 20;
+    HelloAck hello_ack = 21;
+    ExecuteRequest execute = 22;
+    ExecuteResponse execute_response = 23;
+    StreamHeader stream_header = 24;
+    RowBatch rows = 25;
+    StreamEnd stream_end = 26;
+    // 同一 UDS 连接上复用多个会话
+    OpenSessionRequest open_session = 27;
+    OpenSessionResponse open_session_response = 28;
+    CloseSessionRequest close_session = 29;
+    CloseSessionResponse close_session_response = 30;
+    BeginRequest begin = 31;
+    TransactionResponse transaction_response = 32;
+    CommitRequest commit = 33;
+    CommitResponse commit_response = 34;
+    RollbackRequest rollback = 35;
+    RollbackResponse rollback_response = 36;
+    CancelRequest cancel = 37;
+    // Dispatcher 主动下发取消（server-initiated），DB Process 必须尽快中断
+    CancelNotice cancel_notice = 38;
+    HealthRequest health = 39;
+    HealthResponse health_response = 40;
+    ShutdownRequest shutdown = 41;
+    ShutdownResponse shutdown_response = 42;
+    // DurableIO 层使用：同步 Remote WAL durable 结果
+    WalDurableNotice wal_durable = 43;
+    // 快照 / 恢复控制
+    SnapshotRequest snapshot_request = 44;
+    SnapshotResponse snapshot_response = 45;
+    SessionExpiredNotice session_expired = 46;
+  }
+}
+
+// ------------------------------------------------------------------ 握手
+message Hello {
+  // DB Process 启动时上报自身身份；Dispatcher 校验 epoch 与 database_id 一致
+  string database_id = 1;
+  uint64 owner_epoch = 2;
+  string process_id = 3;
+  int64 pid = 4;
+  string engine_version = 5;
+  string local_socket = 6;
+  // 恢复信息：从哪个 snapshot + LSN 恢复
+  string snapshot_id = 7;
+  uint64 recovered_lsn = 8;
+  bool read_only = 9;
+}
+
+message HelloAck {
+  bool accepted = 1;
+  string worker_id = 2;
+  uint64 dispatcher_epoch = 3;
+  // 若 dispatcher_epoch != owner_epoch，DB Process 必须立即退出（fencing）
+  string reject_reason = 4;
+}
+
+// --------------------------------------------------------------- 执行
+message ExecuteRequest {
+  string sql = 1;
+  repeated platform.data.v1.Value params = 2;
+  bool atomic = 3;
+  bool want_stream = 4;
+  uint32 inline_row_limit = 5;
+}
+
+message ExecuteResponse {
+  platform.data.v1.ResultSet result = 1;
+  uint64 affected_rows = 2;
+  uint64 elapsed_micros = 3;
+  uint64 wal_lsn = 4;
+}
+
+message StreamHeader {
+  repeated platform.data.v1.ColumnMeta columns = 1;
+}
+
+message RowBatch {
+  repeated platform.data.v1.Row rows = 1;
+  // 当前已发送行数，便于 Dispatcher 统计
+  uint64 rows_sent = 2;
+}
+
+message StreamEnd {
+  uint64 affected_rows = 1;
+  uint64 wal_lsn = 2;
+  uint64 elapsed_micros = 3;
+}
+
+// --------------------------------------------------------------- 会话
+message OpenSessionRequest {
+  uint32 idle_timeout_ms = 1;
+  uint64 max_transaction_lifetime_ms = 2;
+}
+
+message OpenSessionResponse {
+  string session_id = 1;
+  uint64 expires_at_unix_ms = 2;
+}
+
+message CloseSessionRequest {}
+
+message CloseSessionResponse {
+  bool closed = 1;
+}
+
+message BeginRequest {
+  bool read_only = 1;
+  uint64 max_lifetime_ms = 2;
+}
+
+message TransactionResponse {
+  string transaction_id = 1;
+  uint64 expires_at_unix_ms = 2;
+}
+
+message CommitRequest {}
+
+message CommitResponse {
+  uint64 wal_lsn = 1;
+  uint64 elapsed_micros = 2;
+}
+
+message RollbackRequest {}
+
+message RollbackResponse {
+  bool rolled_back = 1;
+}
+
+// --------------------------------------------------------------- 取消
+message CancelRequest {
+  // 空 = 取消本 Frame 的 request_id
+  string target_request_id = 1;
+  string reason = 2;
+}
+
+message CancelNotice {
+  string target_request_id = 1;
+  string target_session_id = 2;
+  string reason = 3;
+}
+
+message SessionExpiredNotice {
+  string session_id = 1;
+  string reason = 2;
+}
+
+// --------------------------------------------------------------- 健康
+message HealthRequest {}
+
+message HealthResponse {
+  string database_id = 1;
+  uint64 owner_epoch = 2;
+  string state = 3;
+  uint64 rss_kib = 4;
+  uint64 opened_connections = 5;
+  uint64 active_sessions = 6;
+  uint64 applied_lsn = 7;
+}
+
+message ShutdownRequest {
+  bool graceful = 1;
+  uint64 deadline_unix_ms = 2;
+}
+
+message ShutdownResponse {
+  bool closing = 1;
+}
+
+// ------------------------------------------------------ DurableIO / 快照
+// DB Process 通知 Dispatcher：本批次 WAL 已在 Remote WAL quorum durable。
+// 该通知仅用于观测；durability 决策在 DB Process 内部完成（send-before-complete）。
+message WalDurableNotice {
+  uint64 durable_lsn = 1;
+  uint64 elapsed_micros = 2;
+  bool append_failed = 3;
+  string failure_reason = 4;
+}
+
+message SnapshotRequest {
+  string snapshot_id = 1;
+  // 快照必须记录 base_lsn，恢复时从此 LSN 继续 replay
+  uint64 base_lsn = 2;
+  string object_key = 3;
+}
+
+message SnapshotResponse {
+  string snapshot_id = 1;
+  uint64 base_lsn = 2;
+  string checksum = 3;
+  uint64 size_bytes = 4;
+}

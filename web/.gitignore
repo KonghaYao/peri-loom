@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+# orval 生成物：仅作类型参考，不入库（契约由 db-server --dump-openapi 导出）
+openapi.json
+src/api/generated
+*.log

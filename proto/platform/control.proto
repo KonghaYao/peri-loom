@@ -1,0 +1,204 @@
+syntax = "proto3";
+
+// Server -> Worker Control Path 协议（架构 §5.1 / §6）。
+// Worker 是 client：上报 Heartbeat / Resource Report，接收 Start/Stop/Move/Drain。
+// Control Path 与 Data Path 逻辑隔离，Control 抖动不得影响 Data Path。
+package platform.control.v1;
+
+import "platform/common.proto";
+
+service WorkerControl {
+  // Server -> Worker：生命周期指令
+  rpc StartDatabase(StartDatabaseRequest) returns (DatabaseCommandResponse);
+  rpc StopDatabase(StopDatabaseRequest) returns (DatabaseCommandResponse);
+  rpc RestartDatabase(RestartDatabaseRequest) returns (DatabaseCommandResponse);
+  rpc KillDatabase(KillDatabaseRequest) returns (DatabaseCommandResponse);
+
+  // Worker 排空：停止接受新 Placement，迁移剩余 DB（架构 §12.3）
+  rpc DrainWorker(DrainWorkerRequest) returns (DrainWorkerResponse);
+
+  // DB Move：目标 Worker 预拉取 Snapshot / Working Set，再完成 Ownership Cutover
+  rpc PrepareMove(PrepareMoveRequest) returns (PrepareMoveResponse);
+  rpc FinalizeMove(FinalizeMoveRequest) returns (DatabaseCommandResponse);
+
+  // 查询 Worker 当前状态（用于 reconcile）
+  rpc GetWorkerStatus(GetWorkerStatusRequest) returns (GetWorkerStatusResponse);
+
+  // 触发一次本地快照上传（异步 Snapshot，不进 Commit Hot Path，架构 §11.4）
+  rpc TriggerSnapshot(TriggerSnapshotRequest) returns (TriggerSnapshotResponse);
+}
+
+// Server 侧入口（由 db-server 实现）。
+//
+// 为什么单独一个 service：心跳方向是 **Worker -> Server**，而 `WorkerControl` 由 Worker
+// 实现（承载 Server -> Worker 的指令）。把 Heartbeat 放在 WorkerControl 里会让方向与
+// 实现方矛盾（Worker 会去监听一个自己主动发起的 RPC），因此单列一个由 Server 实现的
+// 服务承载 Worker 上报入口。
+service ServerIngress {
+  // Worker -> Server：默认 1s 一次；连续 3 次 miss 判定 Suspect/Unavailable（架构 §16）
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message WorkerInfo {
+  string worker_id = 1;
+  string endpoint = 2;
+  platform.common.v1.WorkerState state = 3;
+  string region = 4;
+  string zone = 5;
+  string version = 6;
+  uint64 started_at_unix_ms = 7;
+  // 数据面端点（WorkerData gRPC 监听地址）。
+  //
+  // 为什么必须与控制端点分开上报：两者是**不同端口上的不同服务**，
+  // 只用 endpoint 表示会让 Server 把 SQL 请求发到控制端口，得到
+  // gRPC Unimplemented（execute 不在 WorkerControl 里）。
+  string data_endpoint = 8;
+}
+
+message HeartbeatRequest {
+  WorkerInfo worker = 1;
+  platform.common.v1.WorkerResourceUsage usage = 2;
+  // 本地 DB 注册表摘要（db_id -> epoch/state），用于 Catalog reconcile
+  repeated LocalDatabaseState databases = 3;
+  // Worker 单调递增的本地版本号（每次状态变化 +1），Server 据此快速判断是否需要全量拉取
+  uint64 inventory_version = 4;
+}
+
+message LocalDatabaseState {
+  string database_id = 1;
+  platform.common.v1.LifecycleState state = 2;
+  uint64 owner_epoch = 3;
+  int64 pid = 4;
+}
+
+message HeartbeatResponse {
+  // Server 要求 Worker 执行的指令（如立即上报全量 inventory）
+  bool request_full_inventory = 1;
+  // 期望的 ownership 快照版本，便于 Worker 察觉自己被重新 placement
+  uint64 catalog_version = 2;
+  // 该 Worker 是否应停止接受新的 DB Placement
+  bool draining = 3;
+  // Server 是否**允许本 Worker 重新接受新 Placement**（架构 §12.3）。
+  //
+  // 语义：DRAINING / EMPTY 都是「不再接新 Placement」的状态，但 EMPTY 表示排空
+  // 已经完成（本节点已无任何本地 DB），不再有「必须保持停用」的理由。Server 在
+  // Catalog 侧看到该 Worker 已排空、且它自己上报的状态也是 EMPTY 时置位本字段，
+  // 作为一次**明确授权**：Worker 据此可以自行从 EMPTY 回到 ACTIVE（受本地冷却期
+  // 与资源健康检查约束，见 services/db-worker/src/worker_state.rs）。
+  //
+  // 与 draining 的关系：两者可以同时为 true（EMPTY 且尚未被授权重新接纳）。
+  // Worker 侧的处理顺序是「先看授权、再看 draining」，因此 EMPTY 被授权时不会被
+  // 同一条回执里的 draining 重新打回排空。DRAINING（控制面下达的排空意图）期间
+  // Server 不会置位本字段 —— 排空未完成前不得接新 Placement 的语义不变。
+  bool accept_new_placement = 4;
+}
+
+message StartDatabaseRequest {
+  string database_id = 1;
+  string worker_id = 2;
+  uint64 owner_epoch = 3;
+  platform.common.v1.ResourceBudget budget = 4;
+  // 冷启动路径：是否需要从 Snapshot + Remote WAL 恢复（架构 §8）
+  bool restore_from_snapshot = 5;
+  // 启动必须在此 deadline 内 READY，否则返回 WAKEUP_TIMEOUT
+  uint64 deadline_unix_ms = 6;
+  // true = 仅为 Move 预拉取工作集，不接管 ownership
+  bool prepare_only = 7;
+  platform.common.v1.RequestContext context = 8;
+}
+
+message StopDatabaseRequest {
+  string database_id = 1;
+  uint64 owner_epoch = 2;
+  // graceful = 等待在途请求结束；false = 直接终止
+  bool graceful = 3;
+  uint64 deadline_unix_ms = 4;
+  platform.common.v1.RequestContext context = 5;
+}
+
+message RestartDatabaseRequest {
+  string database_id = 1;
+  uint64 owner_epoch = 2;
+  uint64 deadline_unix_ms = 3;
+  platform.common.v1.RequestContext context = 4;
+}
+
+message KillDatabaseRequest {
+  string database_id = 1;
+  uint64 owner_epoch = 2;
+  string reason = 3;
+  platform.common.v1.RequestContext context = 4;
+}
+
+message DrainWorkerRequest {
+  string worker_id = 1;
+  // 迁移在途 DB 的方式：planned move / stop
+  bool stop_cold_and_warm = 2;
+  uint64 deadline_unix_ms = 3;
+  platform.common.v1.RequestContext context = 4;
+}
+
+message DrainWorkerResponse {
+  platform.common.v1.PlatformError error = 1;
+  uint32 migrated = 2;
+  uint32 remaining = 3;
+}
+
+message PrepareMoveRequest {
+  string database_id = 1;
+  string source_worker_id = 2;
+  uint64 new_owner_epoch = 3;
+  // 目标 Worker 上预拉取的工作集来源
+  string snapshot_id = 4;
+  uint64 base_lsn = 5;
+  platform.common.v1.ResourceBudget budget = 6;
+  uint64 deadline_unix_ms = 7;
+  platform.common.v1.RequestContext context = 8;
+}
+
+message PrepareMoveResponse {
+  platform.common.v1.PlatformError error = 1;
+  // 已就绪的本地 LSN（>= base_lsn 表示预拉取完成）
+  uint64 ready_lsn = 2;
+}
+
+message FinalizeMoveRequest {
+  string database_id = 1;
+  string source_worker_id = 2;
+  uint64 new_owner_epoch = 3;
+  uint64 deadline_unix_ms = 4;
+  platform.common.v1.RequestContext context = 5;
+}
+
+message DatabaseCommandResponse {
+  platform.common.v1.PlatformError error = 1;
+  string database_id = 2;
+  platform.common.v1.LifecycleState state = 3;
+  uint64 owner_epoch = 4;
+  int64 pid = 5;
+  string local_socket = 6;
+  uint64 elapsed_micros = 7;
+}
+
+message GetWorkerStatusRequest {
+  string worker_id = 1;
+}
+
+message GetWorkerStatusResponse {
+  platform.common.v1.PlatformError error = 1;
+  WorkerInfo worker = 2;
+  platform.common.v1.WorkerResourceUsage usage = 3;
+  repeated LocalDatabaseState databases = 4;
+  uint64 inventory_version = 5;
+}
+
+message TriggerSnapshotRequest {
+  string database_id = 1;
+  uint64 owner_epoch = 2;
+  platform.common.v1.RequestContext context = 3;
+}
+
+message TriggerSnapshotResponse {
+  platform.common.v1.PlatformError error = 1;
+  platform.common.v1.SnapshotMeta snapshot = 2;
+}

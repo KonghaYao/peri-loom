@@ -1,0 +1,46 @@
+[package]
+name = "db-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "db-runtime"
+path = "src/main.rs"
+
+# 一个 DB = 一个进程（架构 §1.2 / §5.3）。进程边界即 Crash/Memory/CPU 隔离边界。
+# 只接受当前 Worker 的生命周期与数据请求，不感知全局 Scheduler。
+[dependencies]
+domain.workspace = true
+protocol.workspace = true
+engine-adapter.workspace = true
+wal-client.workspace = true
+observability.workspace = true
+
+# TursoDB 类型只允许出现在 engine-adapter 与 db-runtime（架构 §17.3）：
+# 本进程需要 UnixIO 作为 durable IO 的内层实现。
+turso_core.workspace = true
+async-trait.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+bytes.workspace = true
+prost.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
