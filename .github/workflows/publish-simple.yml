@@ -1,0 +1,156 @@
+# Simple 单独构建，PR 先验证；main/tag 或手动运行才发布到 GHCR。
+name: publish-simple
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - '.github/workflows/publish-simple.yml'
+      - 'Dockerfile.simple'
+      - 'docker-compose.simple.yml'
+      - '.dockerignore'
+      - '.cargo/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'services/**'
+      - 'proto/**'
+      - 'migrations/**'
+      - 'web/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-simple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simple:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo docker image prune -af
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Compute image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/simple" >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # 先加载本次构建产物进行启动检查，检查通过之后才发布同一构建。
+      - name: Build Simple
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.simple
+          platforms: linux/amd64
+          load: true
+          tags: peri-loom:simple-ci
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=simple
+          cache-to: type=gha,mode=max,scope=simple
+
+      - name: Smoke test
+        env:
+          PERI_LOOM_IMAGE: peri-loom:simple-ci
+          PERI_LOOM_PORT: '18080'
+        run: |
+          docker compose -p simple-ci -f docker-compose.simple.yml up --no-build -d
+          python3 - <<'PY'
+          import json, time, urllib.request, urllib.error
+          base = 'http://127.0.0.1:18080'
+          for attempt in range(60):
+              try:
+                  with urllib.request.urlopen(base + '/readyz', timeout=2) as response:
+                      assert json.load(response)['ready']
+                  break
+              except (OSError, AssertionError):
+                  time.sleep(1)
+          else:
+              raise SystemExit('Simple readiness timeout')
+          with urllib.request.urlopen(base + '/api/v1/deployment', timeout=5) as response:
+              info = json.load(response)
+              assert info['mode'] == 'simple'
+              assert info['durability'] == 'local_fsync'
+          with urllib.request.urlopen(base + '/', timeout=5) as response:
+              assert 'text/html' in response.headers['Content-Type']
+          try:
+              urllib.request.urlopen(base + '/api/v1/unknown', timeout=5)
+          except urllib.error.HTTPError as error:
+              assert error.code == 404
+              assert 'application/json' in error.headers['Content-Type']
+          else:
+              raise AssertionError('Unknown API must return 404')
+          print('Simple readiness, capabilities, Web and API fallback passed')
+          PY
+
+      - name: Clean up test instance
+        if: always()
+        run: docker compose -p simple-ci -f docker-compose.simple.yml down -v
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Simple
+        if: github.event_name != 'pull_request'
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.simple
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=simple
+          cache-to: type=gha,mode=max,scope=simple
+
+      - name: Summary
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          {
+            echo "### Simple 镜像"
+            echo "构建及启动检查通过；平台 linux/amd64。"
+            echo "镜像：${IMAGE_NAME}"
+            echo '```text'
+            echo "${IMAGE_TAGS}"
+            echo '```'
+            if [ -n "$IMAGE_DIGEST" ]; then
+              echo "已发布 digest：${IMAGE_DIGEST}"
+            else
+              echo "PR 仅验证，不发布镜像。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

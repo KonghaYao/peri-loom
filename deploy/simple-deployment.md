@@ -24,6 +24,27 @@ docker compose -f docker-compose.simple.yml up --build -d
 
 如需其他端口，可设 `PERI_LOOM_PORT`。也可用 `--listen`、`--max-open-databases`、`--max-sessions-per-database`、`--queue-capacity`、`--log-level` 调整单机设置。`--tls-cert` 和 `--tls-key` 必须同时提供；未配置 TLS 时默认只在回环地址使用。Simple 不读取分布式模式的数据库、对象存储或 WAL 服务地址。
 
+## GitHub Container Registry 构建与启动
+
+[publish-simple.yml](../.github/workflows/publish-simple.yml) 独立构建 `Dockerfile.simple`，先启动容器验证 readiness、部署能力、内嵌 Web 和 API 404，再发布镜像。PR 只构建验证；推送 `main`、`v*` 标签或手动触发时发布到 `ghcr.io/konghayao/peri-loom/simple`，目前目标平台为 `linux/amd64`。标签包含分支名、`sha-...` 和版本号；默认分支及正式版本提供 `latest`。原分布式镜像仍由 `publish-images.yml` 发布。
+
+工作流推送到 GitHub 并成功发布后，可直接拉取运行：
+
+```sh
+export PERI_LOOM_IMAGE=ghcr.io/konghayao/peri-loom/simple:latest
+export PERI_LOOM_PORT=18080
+docker compose -f docker-compose.simple.yml pull
+docker compose -f docker-compose.simple.yml up --no-build -d
+```
+
+访问 `http://127.0.0.1:18080`。GHCR 包为私有时需先执行 `docker login ghcr.io`；固定版本部署可将 `latest` 替换为发布版本或 digest。容器首次初始化凭据可在本机读取：
+
+```sh
+docker compose -f docker-compose.simple.yml exec peri-loom cat /data/secrets/initial-admin.json
+```
+
+首次成功登录后此文件会删除。停止服务使用 `docker compose -f docker-compose.simple.yml down`，保留命名卷数据。
+
 首次启动生成随机管理员密码，写入 `data/secrets/initial-admin.json`，以及持久化的 JWT 签名密钥。读取凭据后应按本机权限管理该文件；登录与授权继续使用现有 API。实例锁阻止两个进程同时打开同一数据目录。不要把该目录放在共享网络盘，也不要将同一目录直接切换为 distributed 模式。
 
 ## 备份与恢复

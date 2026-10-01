@@ -1,7 +1,7 @@
 name: peri-loom-simple
 services:
   peri-loom:
-    image: peri-loom:simple
+    image: ${PERI_LOOM_IMAGE:-peri-loom:simple}
     build:
       context: .
       dockerfile: Dockerfile.simple
