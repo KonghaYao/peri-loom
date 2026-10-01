@@ -1,0 +1,19 @@
+{
+  "name": "peri-loom-hrana-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "平台 Hrana over HTTP 端点的端到端测试：用真实 tursodb TypeScript 客户端（@tursodatabase/serverless）打 /db/{db_id}/v3/pipeline 与 /v3/cursor。运行方式：npm test（前置：入口 /readyz 可达 + 凭据 DB_PLATFORM_TOKEN 或 /tmp/.peri-token）",
+  "scripts": {
+    "test": "node --test --test-reporter=spec --test-timeout=60000 --test-concurrency=1 \"tests/*.test.ts\"",
+    "test:file": "node --test --test-reporter=spec --test-timeout=60000 --test-concurrency=1",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tursodatabase/serverless": "^1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

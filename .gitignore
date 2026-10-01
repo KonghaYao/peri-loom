@@ -36,3 +36,4 @@ deploy/secrets/*.txt
 deploy/secrets/*.key
 deploy/secrets/*.crt
 !deploy/secrets/*.example
+node_modules
