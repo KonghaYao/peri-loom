@@ -50,7 +50,7 @@ Linux 产物面向 glibc 2.35+（如 Ubuntu 22.04+），不用于 Alpine/musl；
 
 ## Docker 镜像
 
-`Dockerfile.simple` 构建内嵌 Web 的单进程镜像。推送 `main` 或 `v*` 标签时，[镜像工作流](../.github/workflows/publish-images.yml) 会构建 Linux x64 镜像并发布到 `ghcr.io/konghayao/peri-loom/simple`；标签规则与 distributed 镜像一致（`main`、版本号及 `latest`）。首次发布后若 GHCR 包仍为私有，需要先登录。
+`Dockerfile.simple` 构建内嵌 Web 的单进程镜像。推送 `main` 或 `v*` 标签时，[独立镜像工作流](../.github/workflows/publish-simple-image.yml) 会构建 Linux x64 镜像并发布到 `ghcr.io/konghayao/peri-loom/simple`；标签规则与 distributed 镜像一致（`main`、版本号及 `latest`）。首次发布后若 GHCR 包仍为私有，需要先登录。
 
 使用已发布镜像：
 

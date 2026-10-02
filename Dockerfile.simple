@@ -11,14 +11,18 @@ COPY web/ ./
 RUN npm run build
 
 FROM ${RUST_IMAGE} AS rust-build
-ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
-    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
+ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+ARG USE_OFFICIAL_CRATES=false
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT} \
     CARGO_TERM_COLOR=never
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates pkg-config libssl-dev protobuf-compiler git && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY .cargo .cargo
+RUN if [ "$USE_OFFICIAL_CRATES" = true ]; then rm .cargo/config.toml; fi
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY services ./services

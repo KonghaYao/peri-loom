@@ -5,9 +5,9 @@
 #   * push tag vX.Y.Z -> X.Y.Z / X.Y / latest
 #   * push main       -> main / latest
 #
-# 镜像：ghcr.io/<owner>/<repo>/{db-server,db-worker,wal-service,web,simple}
+# 镜像：ghcr.io/<owner>/<repo>/{db-server,db-worker,wal-service,web}
 #       db-server / db-worker / wal-service 来自根 Dockerfile 的三个 target，
-#       web 来自 web/Dockerfile，simple 来自 Dockerfile.simple。
+#       web 来自 web/Dockerfile。Simple 镜像由 publish-simple-image.yml 独立发布。
 #
 # 为什么三个 Rust 镜像串行构建：
 #   它们共享同一个 builder 阶段。第一个 target 把全部 Cargo 依赖编译进 BuildKit
@@ -121,17 +121,6 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Metadata (simple)
-        id: meta-simple
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.prefix.outputs.value }}/simple
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
       # ------------------------------------------------------------ Rust 镜像（串行，共享 builder 阶段）
       - name: Build & push db-server
         id: build-db-server
@@ -189,20 +178,6 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
-      # Simple 将 Web 静态资源嵌入单个 Rust 可执行文件，使用独立缓存域。
-      - name: Build & push simple
-        id: build-simple
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.simple
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta-simple.outputs.tags }}
-          labels: ${{ steps.meta-simple.outputs.labels }}
-          cache-from: type=gha,scope=simple
-          cache-to: type=gha,mode=max,scope=simple
-
       # ------------------------------------------------------------ 发布记录
       - name: Summary
         run: |
@@ -215,5 +190,4 @@ jobs:
             echo "| db-worker | \`${{ steps.build-db-worker.outputs.digest }}\` |"
             echo "| wal-service | \`${{ steps.build-wal-service.outputs.digest }}\` |"
             echo "| web | \`${{ steps.build-web.outputs.digest }}\` |"
-            echo "| simple | \`${{ steps.build-simple.outputs.digest }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
