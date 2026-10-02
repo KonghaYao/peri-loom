@@ -48,16 +48,26 @@ Linux 产物面向 glibc 2.35+（如 Ubuntu 22.04+），不用于 Alpine/musl；
 - 附件形如 `peri-loom-v1.2.3-aarch64-apple-darwin.tar.gz`，解压只有 `peri-loom`。每个包附带 `.sha256`，Release 同时提供 `SHA256SUMS`；可在安装前校验，mise 项目可用 `mise.lock` 固定版本与校验值。
 - 已发布版本不会原地替换二进制；重试只允许继续未完成的 Release 草稿。代码未推送、工作流未运行时，安装命令不能凭本地构建自动获得远端 Release。
 
-## 可选 Docker 包装
+## Docker 镜像
 
-保留 `Dockerfile.simple`，需要容器时可自行构建；Simple 发布流水线不再发布 GHCR 镜像：
+`Dockerfile.simple` 构建内嵌 Web 的单进程镜像。推送 `main` 或 `v*` 标签时，[镜像工作流](../.github/workflows/publish-images.yml) 会构建 Linux x64 镜像并发布到 `ghcr.io/konghayao/peri-loom/simple`；标签规则与 distributed 镜像一致（`main`、版本号及 `latest`）。首次发布后若 GHCR 包仍为私有，需要先登录。
+
+使用已发布镜像：
+
+```sh
+docker run -d --name peri-loom-simple --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 -v peri_data:/data \
+  ghcr.io/konghayao/peri-loom/simple:latest
+```
+
+也可以从源码构建：
 
 ```sh
 docker build -f Dockerfile.simple -t peri-loom:simple .
 docker run --rm --name peri-loom-simple -p 127.0.0.1:8080:8080 -v peri_data:/data peri-loom:simple
 ```
 
-运行二进制时按 Ctrl+C 正常停止；容器可用 `docker stop peri-loom-simple` 停止。现有 distributed 的 Compose 和镜像流水线继续保留。
+镜像使用 `/data` 持久卷，监听容器内的 `0.0.0.0:8080`，并通过 `/readyz` 报告健康状态。运行二进制时按 Ctrl+C 正常停止；容器可用 `docker stop peri-loom-simple` 停止。
 
 首次启动生成随机管理员密码，写入 `data/secrets/initial-admin.json`，以及持久化的 JWT 签名密钥。读取凭据后应按本机权限管理该文件；登录与授权继续使用现有 API。实例锁阻止两个进程同时打开同一数据目录。不要把该目录放在共享网络盘，也不要将同一目录直接切换为 distributed 模式。
 
