@@ -18,9 +18,12 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim
 # ============================================================================
 FROM ${RUST_IMAGE} AS builder
 
-# rust-toolchain.toml 固定了 1.98.1；若基础镜像版本略有差异，rustup 走国内镜像补齐
-ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
-    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+# rust-toolchain.toml 固定了 1.98.1；国内构建默认使用镜像，CI 可切换官方源。
+ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
+ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+ARG USE_OFFICIAL_CRATES=false
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
+    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT} \
     CARGO_TERM_COLOR=never
 
 # apt 换国内源（基础镜像默认 deb.debian.org 在国内不可用）
@@ -40,6 +43,7 @@ WORKDIR /app
 
 # 国内 crates 镜像配置随仓库进入构建上下文
 COPY .cargo/config.toml .cargo/config.toml
+RUN if [ "$USE_OFFICIAL_CRATES" = true ]; then rm .cargo/config.toml; fi
 COPY rust-toolchain.toml rust-toolchain.toml
 
 # 依赖层与源码层分离，源码变更时尽量复用 registry 缓存

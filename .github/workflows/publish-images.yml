@@ -133,6 +133,10 @@ jobs:
           push: true
           tags: ${{ steps.meta-db-server.outputs.tags }}
           labels: ${{ steps.meta-db-server.outputs.labels }}
+          build-args: |
+            RUSTUP_DIST_SERVER=https://static.rust-lang.org
+            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+            USE_OFFICIAL_CRATES=true
           cache-from: type=gha,scope=rust
           cache-to: type=gha,mode=max,scope=rust
 
@@ -147,6 +151,10 @@ jobs:
           push: true
           tags: ${{ steps.meta-db-worker.outputs.tags }}
           labels: ${{ steps.meta-db-worker.outputs.labels }}
+          build-args: |
+            RUSTUP_DIST_SERVER=https://static.rust-lang.org
+            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+            USE_OFFICIAL_CRATES=true
           cache-from: type=gha,scope=rust
           cache-to: type=gha,mode=max,scope=rust
 
@@ -161,6 +169,10 @@ jobs:
           push: true
           tags: ${{ steps.meta-wal-service.outputs.tags }}
           labels: ${{ steps.meta-wal-service.outputs.labels }}
+          build-args: |
+            RUSTUP_DIST_SERVER=https://static.rust-lang.org
+            RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+            USE_OFFICIAL_CRATES=true
           cache-from: type=gha,scope=rust
           cache-to: type=gha,mode=max,scope=rust
 
