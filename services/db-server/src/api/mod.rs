@@ -498,7 +498,20 @@ pub async fn authorize_database(
     database_id: DatabaseId,
 ) -> ApiResult<DatabaseRecord> {
     principal.require_database(database_id)?;
+    let _catalog_timer = matches!(&state.deployment, crate::deployment::Deployment::Simple(_))
+        .then(|| crate::simple::metrics::StageTimer::start("authorize_database"));
     let record = state.catalog.get_database(database_id).await.api()?;
+    drop(_catalog_timer);
+    authorize_database_record(principal, database_id, &record)?;
+    Ok(record)
+}
+
+/// 从已读取的库记录执行与通用授权路径相同的资源边界检查。
+pub(crate) fn authorize_database_record(
+    principal: &Principal,
+    database_id: DatabaseId,
+    record: &DatabaseRecord,
+) -> ApiResult<()> {
     if record.is_deleted() {
         return Err(ApiError::not_found(format!(
             "数据库 {database_id} 不存在或已删除"
@@ -511,7 +524,67 @@ pub async fn authorize_database(
     {
         return Err(ApiError::permission_denied("主体无权访问该租户的数据库"));
     }
-    Ok(record)
+    Ok(())
+}
+
+#[cfg(test)]
+mod simple_query_authorization_tests {
+    use super::*;
+    use crate::auth::{AuthMethod, Principal};
+    use catalog::{CreateDatabaseParams, SqliteCatalog};
+    use domain::ids::{TenantId, UserId};
+
+    #[tokio::test]
+    async fn query_snapshot_keeps_tenant_and_deleted_errors_ahead_of_pending_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("query-auth-order"))
+            .await
+            .unwrap();
+        catalog
+            .enqueue_job(
+                "DB_DELETE",
+                serde_json::json!({"database_id":db.id.to_string()}),
+                0,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let principal = Principal {
+            user_id: UserId::new_v7(),
+            username: "other-tenant".into(),
+            display_name: String::new(),
+            tenant_id: Some(TenantId::new_v7()),
+            database_id: None,
+            permissions: vec!["db:write".into()],
+            is_superuser: false,
+            token_id: None,
+            method: AuthMethod::Jwt,
+        };
+        let (pending, record) = catalog.database_query_snapshot(db.id).await.unwrap();
+        assert!(pending);
+        let record = record.unwrap();
+        assert_eq!(
+            authorize_database_record(&principal, db.id, &record)
+                .unwrap_err()
+                .code(),
+            ErrorCode::PermissionDenied
+        );
+
+        catalog.soft_delete_database(db.id).await.unwrap();
+        let (pending, record) = catalog.database_query_snapshot(db.id).await.unwrap();
+        assert!(pending);
+        assert_eq!(
+            authorize_database_record(&principal, db.id, &record.unwrap())
+                .unwrap_err()
+                .code(),
+            ErrorCode::DbNotFound
+        );
+    }
 }
 
 /// 解析数据库 ID 路径参数。
@@ -604,12 +677,10 @@ mod tests {
     fn openapi_json_is_serializable_and_versioned() {
         let json = serde_json::to_value(api_doc()).expect("OpenAPI 必须可序列化");
         assert_eq!(json["openapi"], "3.1.0");
-        assert!(
-            json["info"]["title"]
-                .as_str()
-                .unwrap_or("")
-                .contains("Server Plane")
-        );
+        assert!(json["info"]["title"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Server Plane"));
     }
 
     #[test]

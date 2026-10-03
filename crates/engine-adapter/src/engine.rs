@@ -193,20 +193,22 @@ impl EngineConnection {
         self.conn.set_query_timeout(timeout);
     }
 
-    /// 逐行交给调用方；回调可阻塞以实现有界背压。返回受影响行数。
+    /// 逐行交给调用方；回调可阻塞以实现有界背压。
+    /// 返回受影响行数和已编译语句的只读标记。
     pub fn stream_with_params(
         &self,
         sql: &str,
         params: &[SqlValue],
         mut on_columns: impl FnMut(Vec<ColumnMeta>) -> Result<()>,
         mut on_row: impl FnMut(Vec<SqlValue>) -> Result<()>,
-    ) -> Result<u64> {
+    ) -> Result<(u64, bool)> {
         let mut stmt = self.conn.query(sql).map_err(|err| map_engine_error(&err))?;
         let Some(stmt) = stmt.as_mut() else {
             empty_statement_outcome(params)?;
             on_columns(Vec::new())?;
-            return Ok(0);
+            return Ok((0, true));
         };
+        let is_readonly = stmt.get_program().is_readonly();
         bind_statement_params(stmt, params)?;
         on_columns(column_metadata(stmt))?;
         let mut callback_error = None;
@@ -222,7 +224,10 @@ impl EngineConnection {
             return Err(error);
         }
         run.map_err(|err| map_engine_error(&err))?;
-        Ok(u64::try_from(stmt.n_change().max(0)).unwrap_or(u64::MAX))
+        Ok((
+            u64::try_from(stmt.n_change().max(0)).unwrap_or(u64::MAX),
+            is_readonly,
+        ))
     }
     /// 描述 SQL 的参数与结果列，只编译语句，不执行任何一步。
     pub fn describe(&self, sql: &str) -> Result<DescribeOutcome> {
@@ -663,6 +668,19 @@ mod tests {
         assert!(!conn.is_autocommit(), "第二次 BEGIN 之后同样是在事务中");
         conn.rollback().expect("ROLLBACK");
         assert!(conn.is_autocommit(), "ROLLBACK 之后必须回到 autocommit");
+    }
+
+    #[test]
+    fn streamed_statement_reports_readonly_for_directory_sync() {
+        let (_dir, conn) = temp_connection();
+        let stream = |sql| conn.stream_with_params(sql, &[], |_| Ok(()), |_| Ok(()));
+        assert_eq!(stream("SELECT 42").unwrap(), (0, true));
+        assert!(!stream("CREATE TABLE sync_test(v INTEGER)").unwrap().1);
+        assert_eq!(
+            stream("INSERT INTO sync_test VALUES (1)").unwrap(),
+            (1, false)
+        );
+        assert_eq!(stream("SELECT v FROM sync_test").unwrap(), (0, true));
     }
 
     /// 五类值都要能绑定并原样读回：NULL 与 BLOB 最容易被「丢参」悄悄吃掉。

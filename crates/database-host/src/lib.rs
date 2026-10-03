@@ -15,6 +15,21 @@ use engine_adapter::{EngineAdapter, EngineConnection, EngineOpenConfig};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+fn stage_metrics_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("PERI_LOOM_SIMPLE_STAGE_METRICS").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+    })
+}
+
+fn record_stage(stage: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        metrics::histogram!("simple_stage_micros", "stage" => stage)
+            .record(started.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+}
+
 #[derive(Clone)]
 pub struct LocalHostConfig {
     pub max_open_databases: usize,
@@ -84,6 +99,7 @@ pub struct LocalHost {
 
 enum Command {
     Execute {
+        dispatched_at: Option<Instant>,
         session: Option<Uuid>,
         sql: String,
         params: Vec<SqlValue>,
@@ -154,9 +170,11 @@ impl LocalHost {
         // 因客户端任务暂未调度而进入 send_frame 的 5 ms 满队列轮询。
         let (output, frames) = mpsc::channel(3);
         let cancel = Arc::new(AtomicBool::new(false));
+        let dispatch_started = stage_metrics_enabled().then(Instant::now);
         tokio::time::timeout(
             timeout,
             worker.send(Command::Execute {
+                dispatched_at: dispatch_started,
                 session,
                 sql,
                 params,
@@ -168,6 +186,7 @@ impl LocalHost {
         .await
         .map_err(|_| timeout_error())?
         .map_err(|_| worker_lost())?;
+        record_stage("host_enqueue", dispatch_started);
         Ok(ExecutionStream { frames, cancel })
     }
 
@@ -475,6 +494,7 @@ fn run_worker(path: PathBuf, config: LocalHostConfig, mut commands: mpsc::Receiv
         };
         match command {
             Command::Execute {
+                dispatched_at,
                 session,
                 sql,
                 params,
@@ -487,6 +507,7 @@ fn run_worker(path: PathBuf, config: LocalHostConfig, mut commands: mpsc::Receiv
                         let _ = output.try_send(Err(timeout_error()));
                     } else if deferred.len() < config.queue_capacity {
                         deferred.push_back(Command::Execute {
+                            dispatched_at,
                             session,
                             sql,
                             params,
@@ -502,6 +523,7 @@ fn run_worker(path: PathBuf, config: LocalHostConfig, mut commands: mpsc::Receiv
                     }
                     continue;
                 }
+                record_stage("host_dispatch_to_worker", dispatched_at);
                 let request = ExecuteRequest {
                     session,
                     sql,
@@ -664,8 +686,10 @@ fn execute_command(
         };
         return result;
     }
+    let connect_started = stage_metrics_enabled().then(Instant::now);
     let ephemeral = adapter.connect()?;
     ephemeral.enforce_full_sync();
+    record_stage("host_stateless_connect", connect_started);
     let result = execute_on_connection(
         adapter, &ephemeral, &sql, &params, deadline, &cancel, &output, config, true,
     );
@@ -692,7 +716,8 @@ fn execute_on_connection(
     connection.set_query_timeout(deadline.saturating_duration_since(Instant::now()));
     let mut batch = Vec::with_capacity(config.row_batch_size);
     let mut batch_bytes = 0usize;
-    let affected = connection.stream_with_params(
+    let engine_started = stage_metrics_enabled().then(Instant::now);
+    let result = connection.stream_with_params(
         sql,
         params,
         |columns| {
@@ -746,7 +771,9 @@ fn execute_on_connection(
             }
             Ok(())
         },
-    )?;
+    );
+    record_stage("host_sql_stream", engine_started);
+    let (affected, is_readonly) = result?;
     if !batch.is_empty() {
         send_frame(output, ExecutionFrame::Rows(batch), cancel, deadline)?;
     }
@@ -755,8 +782,14 @@ fn execute_on_connection(
         return Err(PlatformError::invalid_argument("显式事务需要会话"));
     }
     let last_insert_rowid = connection.last_insert_rowid();
-    // 新建 WAL 的目录项也要落盘，否则文件 fsync 成功后掉电仍可能丢失其名称。
-    sync_dir(adapter.db_path().parent().expect("数据库文件有父目录"))?;
+    // 只读、无状态且自动提交的语句不会创建新的 WAL 目录项。
+    // 会话事务与写语句仍同步目录，保留提交时的文件名持久性保证。
+    if !is_readonly || !require_autocommit || !autocommit {
+        let sync_started = stage_metrics_enabled().then(Instant::now);
+        let result = sync_dir(adapter.db_path().parent().expect("数据库文件有父目录"));
+        record_stage("host_directory_sync", sync_started);
+        result?;
+    }
     send_frame(
         output,
         ExecutionFrame::End {
@@ -922,19 +955,29 @@ fn send_frame(
     deadline: Instant,
 ) -> Result<()> {
     let mut frame = frame;
+    let mut backpressure_started = None;
     loop {
         if cancel.load(Ordering::Relaxed) || output.is_closed() {
+            record_stage("host_result_backpressure", backpressure_started);
             return Err(PlatformError::session_lost("响应已关闭"));
         }
         if Instant::now() >= deadline {
+            record_stage("host_result_backpressure", backpressure_started);
             return Err(timeout_error());
         }
         match output.try_send(Ok(frame)) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                record_stage("host_result_backpressure", backpressure_started);
+                return Ok(());
+            }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                return Err(PlatformError::session_lost("响应已关闭"))
+                record_stage("host_result_backpressure", backpressure_started);
+                return Err(PlatformError::session_lost("响应已关闭"));
             }
             Err(mpsc::error::TrySendError::Full(Ok(unsent))) => {
+                if backpressure_started.is_none() && stage_metrics_enabled() {
+                    backpressure_started = Some(Instant::now());
+                }
                 frame = unsent;
                 std::thread::sleep(Duration::from_millis(5));
             }

@@ -18,6 +18,24 @@ use uuid::Uuid;
 pub trait IdentityStore: Send + Sync {
     async fn find_user_by_username(&self, username: &str) -> Result<Option<UserRecord>>;
     async fn find_user(&self, id: UserId) -> Result<Option<UserRecord>>;
+    /// JWT subject 与当前权限。Simple 可在同一 SQLite 快照中读取；其他后端
+    /// 保留现有逐项查询语义。
+    async fn find_user_with_permissions(
+        &self,
+        subject: &str,
+    ) -> Result<Option<(UserRecord, Vec<String>)>> {
+        let user = match subject.parse::<Uuid>() {
+            Ok(id) => self.find_user(UserId::from_uuid(id)).await?,
+            Err(_) => self.find_user_by_username(subject).await?,
+        };
+        let Some(user) = user else { return Ok(None) };
+        let permissions = if user.is_active() {
+            self.resolve_permissions(user.id).await?
+        } else {
+            Vec::new()
+        };
+        Ok(Some((user, permissions)))
+    }
     async fn create_user(&self, user: NewUser) -> Result<UserRecord>;
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<UserRecord>>;
     async fn create_api_token(&self, token: NewApiToken) -> Result<ApiTokenRecord>;

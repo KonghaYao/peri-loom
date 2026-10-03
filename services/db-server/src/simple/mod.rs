@@ -1,9 +1,10 @@
 //! Simple 装配：本地元数据、宿主和对象存储共用一个实例生命周期。
 pub mod config;
-mod execution;
+pub(crate) mod execution;
 pub mod export;
 mod instance;
 mod jobs;
+pub(crate) mod metrics;
 mod web;
 use crate::{
     error::{ApiError, ApiResult},
@@ -13,6 +14,7 @@ use anyhow::{Context, Result};
 use catalog::SqliteCatalog;
 use config::SimpleConfig;
 use database_host::{LocalHost, LocalHostConfig};
+use domain::records::DatabaseRecord;
 use domain::{error::ErrorCode, DatabaseId, LifecycleState};
 use std::{
     path::PathBuf,
@@ -35,15 +37,34 @@ pub struct SimpleServices {
 }
 impl SimpleServices {
     async fn ensure_available(&self, id: DatabaseId) -> ApiResult<()> {
+        let _timer = metrics::StageTimer::start("ensure_available");
         if self.stopping.load(Ordering::Acquire) {
             return Err(ApiError::new(ErrorCode::AdmissionDenied, "实例正在停止"));
         }
-        if self.catalog.has_pending_mutation(id).await? {
+        let snapshot = self.catalog.database_admission_snapshot(id).await?;
+        self.ensure_with_snapshot(id, snapshot).await
+    }
+
+    pub(crate) async fn ensure_with_snapshot(
+        &self,
+        id: DatabaseId,
+        (pending, record): (bool, Option<DatabaseRecord>),
+    ) -> ApiResult<()> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new(ErrorCode::AdmissionDenied, "实例正在停止"));
+        }
+        if pending {
             return Err(ApiError::new(
                 ErrorCode::AdmissionDenied,
                 "数据库有未完成的删除或恢复作业",
             ));
         }
+        let record =
+            record.ok_or_else(|| ApiError::new(ErrorCode::DbNotFound, "database not found"))?;
+        if record.state.is_serving() {
+            return Ok(());
+        }
+        // 只有冷库启动需要串行化。获得锁后重读状态，避免并发首查重复启动。
         let _start = self.starting.lock().await;
         let record = self.catalog.get_database(id).await?;
         if matches!(

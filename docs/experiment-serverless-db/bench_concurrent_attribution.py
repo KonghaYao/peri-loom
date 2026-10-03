@@ -6,6 +6,7 @@ import csv
 import gzip
 import hashlib
 import json
+import os
 import pathlib
 import socket
 import subprocess
@@ -32,7 +33,10 @@ async def main(args):
     with tempfile.TemporaryDirectory(prefix="peri-concurrent-attribution-") as tmp:
         data_dir = pathlib.Path(tmp) / "data"
         with (output / "server.log").open("w") as log:
-            child = subprocess.Popen([str(binary), "serve", "--mode", "simple", "--data-dir", str(data_dir), "--listen", f"127.0.0.1:{port}", "--log-level", "error"], stdout=log, stderr=log)
+            env = os.environ.copy()
+            if args.stage_metrics:
+                env["PERI_LOOM_SIMPLE_STAGE_METRICS"] = "1"
+            child = subprocess.Popen([str(binary), "serve", "--mode", "simple", "--data-dir", str(data_dir), "--listen", f"127.0.0.1:{port}", "--log-level", "error"], stdout=log, stderr=log, env=env)
             try:
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), connector=aiohttp.TCPConnector(limit=0)) as session:
                     async def request(method, path, payload=None, token=None):
@@ -112,6 +116,10 @@ async def main(args):
                                     summary[f"{key}_{label}_ms"] = percentile(values, fraction) if values else None
                             summaries.append(summary)
                             print(json.dumps(summary), flush=True)
+                    if args.stage_metrics:
+                        async with session.get(base + "/metrics", headers={"Authorization": f"Bearer {token}"}) as response:
+                            assert response.status == 200
+                            (output / "metrics.prom").write_text(await response.text())
             finally:
                 child.terminate()
                 try:
@@ -128,4 +136,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="docs/experiment-serverless-db/raw/perf_concurrent_attribution")
     parser.add_argument("--duration", type=float, default=8)
     parser.add_argument("--rest", type=float, default=2)
+    parser.add_argument("--stage-metrics", action="store_true")
     asyncio.run(main(parser.parse_args()))

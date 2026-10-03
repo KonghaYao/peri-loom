@@ -290,6 +290,15 @@ pub(crate) fn install_prometheus() -> PrometheusHandle {
             metrics_exporter_prometheus::Matcher::Suffix("_micros".to_owned()),
             observability::metrics::LATENCY_BUCKETS_MICROS,
         )
+        .and_then(|builder| {
+            builder.set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Full("simple_stage_micros".to_owned()),
+                &[
+                    1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1_000.0, 2_000.0,
+                    5_000.0, 10_000.0, 20_000.0, 50_000.0, 100_000.0,
+                ],
+            )
+        })
         .and_then(|builder| builder.install_recorder());
     match installed {
         Ok(handle) => {

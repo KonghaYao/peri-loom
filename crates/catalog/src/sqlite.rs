@@ -21,12 +21,30 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     Row, SqlitePool,
 };
-use std::{path::Path, time::Duration};
+use std::path::Path;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+fn stage_metrics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("PERI_LOOM_SIMPLE_STAGE_METRICS").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+    })
+}
+
+fn record_simple_stage(stage: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        metrics::histogram!("simple_stage_micros", "stage" => stage)
+            .record(started.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SqliteCatalog {
     pool: SqlitePool,
+    read_pool: SqlitePool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +103,7 @@ fn missing(what: &str) -> PlatformError {
 
 impl SqliteCatalog {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -111,9 +130,25 @@ impl SqliteCatalog {
                 "metadata integrity check failed: {integrity}"
             )));
         }
-        Ok(Self { pool })
+        // 写路径保持单连接串行；只读连接不运行可能需要独占锁的 WAL 配置 PRAGMA。
+        let read_pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            // 本地只读连接归还时 SQLx 仍会 ping；避免每次复用前再向 SQLite worker 往返。
+            .test_before_acquire(false)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .read_only(true)
+                    .foreign_keys(true)
+                    .busy_timeout(Duration::from_secs(5)),
+            )
+            .await
+            .map_err(storage)?;
+        Ok(Self { pool, read_pool })
     }
     pub async fn close(self) -> Result<()> {
+        self.read_pool.close().await;
         sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await
@@ -146,6 +181,120 @@ impl SqliteCatalog {
         .await
         .map_err(storage)?;
         Ok(pending != 0)
+    }
+    /// Simple 查询入口在同一个 SQLite 快照中读取库状态和删除/恢复作业。
+    /// 即使库记录不存在也返回 pending，以维持准入检查的错误优先级。
+    pub async fn database_admission_snapshot(
+        &self,
+        id: DatabaseId,
+    ) -> Result<(bool, Option<DatabaseRecord>)> {
+        let row = sqlx::query(
+            "SELECT (SELECT record FROM databases WHERE id=?) AS record, \
+             EXISTS(SELECT 1 FROM jobs WHERE database_id=? AND kind IN ('DB_DELETE','DB_RESTORE') AND state IN ('READY','LEASED')) AS pending",
+        )
+        .bind(id.to_string())
+        .bind(id.to_string())
+        .fetch_one(&self.read_pool)
+        .await
+        .map_err(storage)?;
+        let pending: i64 = row.try_get("pending").map_err(storage)?;
+        if pending != 0 {
+            return Ok((true, None));
+        }
+        let record: Option<String> = row.try_get("record").map_err(storage)?;
+        Ok((false, record.map(decode).transpose()?))
+    }
+    /// Simple `/query` 同时需要资源授权和准入状态；这里始终解码库记录，
+    /// 使不存在/租户错误先于 pending 作业。其他准入路径仍使用上面的方法。
+    pub async fn database_query_snapshot(
+        &self,
+        id: DatabaseId,
+    ) -> Result<(bool, Option<DatabaseRecord>)> {
+        let acquire_started = stage_metrics_enabled().then(Instant::now);
+        let acquired = self.read_pool.acquire().await;
+        record_simple_stage("query_snapshot_read_pool_acquire", acquire_started);
+        let mut connection = acquired.map_err(storage)?;
+        let fetch_started = stage_metrics_enabled().then(Instant::now);
+        let fetched = sqlx::query(
+            "SELECT (SELECT record FROM databases WHERE id=?) AS record, \
+             EXISTS(SELECT 1 FROM jobs WHERE database_id=? AND kind IN ('DB_DELETE','DB_RESTORE') AND state IN ('READY','LEASED')) AS pending",
+        )
+        .bind(id.to_string())
+        .bind(id.to_string())
+        .fetch_one(&mut *connection)
+        .await;
+        record_simple_stage("query_snapshot_sql_fetch", fetch_started);
+        drop(connection);
+        let row = fetched.map_err(storage)?;
+        let pending: i64 = row.try_get("pending").map_err(storage)?;
+        let record: Option<String> = row.try_get("record").map_err(storage)?;
+        Ok((pending != 0, record.map(decode).transpose()?))
+    }
+    /// Simple JWT `/query` 的单语句快照。库记录保持原始 JSON，交给 handler 在权限、
+    /// 路径 ID 和库绑定检查之后解码，以维持原有错误优先级。
+    pub async fn jwt_query_snapshot(
+        &self,
+        subject: &str,
+        database_id: &str,
+    ) -> Result<(Option<(UserRecord, Vec<String>)>, (bool, Option<String>))> {
+        let (by_id, lookup) = match subject.parse::<Uuid>() {
+            Ok(id) => (true, id.to_string()),
+            Err(_) => (false, subject.to_owned()),
+        };
+        let sql = if by_id {
+            "WITH principal AS (SELECT id,record FROM users WHERE id=?) \
+             SELECT (SELECT record FROM principal) AS user_record, \
+             (SELECT json_group_array(permission) FROM \
+               (SELECT DISTINCT p.permission FROM role_bindings b JOIN role_permissions p ON p.role_id=b.role_id \
+                WHERE b.user_id=(SELECT id FROM principal))) AS permissions, \
+             (SELECT record FROM databases WHERE id=?) AS db_record, \
+             EXISTS(SELECT 1 FROM jobs WHERE database_id=? AND kind IN ('DB_DELETE','DB_RESTORE') \
+               AND state IN ('READY','LEASED')) AS pending"
+        } else {
+            "WITH principal AS (SELECT id,record FROM users WHERE username=?) \
+             SELECT (SELECT record FROM principal) AS user_record, \
+             (SELECT json_group_array(permission) FROM \
+               (SELECT DISTINCT p.permission FROM role_bindings b JOIN role_permissions p ON p.role_id=b.role_id \
+                WHERE b.user_id=(SELECT id FROM principal))) AS permissions, \
+             (SELECT record FROM databases WHERE id=?) AS db_record, \
+             EXISTS(SELECT 1 FROM jobs WHERE database_id=? AND kind IN ('DB_DELETE','DB_RESTORE') \
+               AND state IN ('READY','LEASED')) AS pending"
+        };
+        let acquire_started = stage_metrics_enabled().then(Instant::now);
+        let acquired = self.read_pool.acquire().await;
+        record_simple_stage("jwt_query_read_pool_acquire", acquire_started);
+        let mut connection = acquired.map_err(storage)?;
+        let fetch_started = stage_metrics_enabled().then(Instant::now);
+        let fetched = sqlx::query(sql)
+            .bind(lookup)
+            .bind(database_id)
+            .bind(database_id)
+            .fetch_one(&mut *connection)
+            .await;
+        record_simple_stage("jwt_query_sql_fetch", fetch_started);
+        drop(connection);
+        let row = fetched.map_err(storage)?;
+        let pending: i64 = row.try_get("pending").map_err(storage)?;
+        let db_record: Option<String> = row.try_get("db_record").map_err(storage)?;
+        let user_record: Option<String> = row.try_get("user_record").map_err(storage)?;
+        let user = if let Some(encoded) = user_record {
+            let user: UserRecord = decode(encoded)?;
+            let mut permissions = if user.is_active() {
+                let encoded: String = row.try_get("permissions").map_err(storage)?;
+                serde_json::from_str::<Vec<String>>(&encoded).map_err(storage)?
+            } else {
+                Vec::new()
+            };
+            if user.is_superuser {
+                permissions.push("*".into());
+            }
+            permissions.sort();
+            permissions.dedup();
+            Some((user, permissions))
+        } else {
+            None
+        };
+        Ok((user, (pending != 0, db_record)))
     }
     pub async fn has_unfinished_jobs(&self) -> Result<bool> {
         let pending: i64 = sqlx::query_scalar(
@@ -220,7 +369,7 @@ impl SqliteCatalog {
     pub async fn get_database(&self, id: DatabaseId) -> Result<DatabaseRecord> {
         let value: Option<String> = sqlx::query_scalar("SELECT record FROM databases WHERE id=?")
             .bind(id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.read_pool)
             .await
             .map_err(storage)?;
         decode(value.ok_or_else(|| err(ErrorCode::DbNotFound, "database not found"))?)
@@ -884,6 +1033,46 @@ impl SqliteCatalog {
             .map_err(storage)?;
         v.map(decode).transpose()
     }
+    pub async fn find_user_with_permissions(
+        &self,
+        subject: &str,
+    ) -> Result<Option<(crate::UserRecord, Vec<String>)>> {
+        // 一条语句取得当前用户状态和角色权限，避免认证与授权跨两个快照。
+        let (by_id, lookup) = match subject.parse::<Uuid>() {
+            Ok(id) => (true, id.to_string()),
+            Err(_) => (false, subject.to_owned()),
+        };
+        let sql = if by_id {
+            "SELECT u.record, (SELECT json_group_array(permission) FROM (SELECT DISTINCT p.permission FROM role_bindings b JOIN role_permissions p ON p.role_id=b.role_id WHERE b.user_id=u.id)) AS permissions FROM users u WHERE u.id=?"
+        } else {
+            "SELECT u.record, (SELECT json_group_array(permission) FROM (SELECT DISTINCT p.permission FROM role_bindings b JOIN role_permissions p ON p.role_id=b.role_id WHERE b.user_id=u.id)) AS permissions FROM users u WHERE u.username=?"
+        };
+        let acquire_started = stage_metrics_enabled().then(Instant::now);
+        let acquired = self.read_pool.acquire().await;
+        record_simple_stage("jwt_read_pool_acquire", acquire_started);
+        let mut connection = acquired.map_err(storage)?;
+        let fetch_started = stage_metrics_enabled().then(Instant::now);
+        let fetched = sqlx::query(sql)
+            .bind(lookup)
+            .fetch_optional(&mut *connection)
+            .await;
+        record_simple_stage("jwt_sql_fetch", fetch_started);
+        drop(connection);
+        let row = fetched.map_err(storage)?;
+        let Some(row) = row else { return Ok(None) };
+        let user: crate::UserRecord = decode(row.try_get("record").map_err(storage)?)?;
+        if !user.is_active() {
+            return Ok(Some((user, Vec::new())));
+        }
+        let encoded: String = row.try_get("permissions").map_err(storage)?;
+        let mut permissions: Vec<String> = serde_json::from_str(&encoded).map_err(storage)?;
+        if user.is_superuser {
+            permissions.push("*".into());
+        }
+        permissions.sort();
+        permissions.dedup();
+        Ok(Some((user, permissions)))
+    }
     pub async fn create_user(&self, user: crate::NewUser) -> Result<crate::UserRecord> {
         if user.username.trim().is_empty() {
             return Err(err(ErrorCode::InvalidArgument, "username is empty"));
@@ -931,7 +1120,10 @@ impl SqliteCatalog {
             return Err(err(ErrorCode::InvalidArgument, "token hash is empty"));
         }
         let database_id = token.database_id.ok_or_else(|| {
-            err(ErrorCode::InvalidArgument, "API token must be bound to a database")
+            err(
+                ErrorCode::InvalidArgument,
+                "API token must be bound to a database",
+            )
         })?;
         if self.find_user(token.user_id).await?.is_none() {
             return Err(missing("user"));
@@ -961,7 +1153,10 @@ impl SqliteCatalog {
             return Err(err(ErrorCode::InvalidArgument, "token hash is empty"));
         }
         let database_id = token.database_id.ok_or_else(|| {
-            err(ErrorCode::InvalidArgument, "API token must be bound to a database")
+            err(
+                ErrorCode::InvalidArgument,
+                "API token must be bound to a database",
+            )
         })?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let existing = sqlx::query(
@@ -976,13 +1171,15 @@ impl SqliteCatalog {
             let id: String = row.try_get("id").map_err(storage)?;
             let mut old: crate::ApiTokenRecord = decode(row.try_get("record").map_err(storage)?)?;
             old.revoked_at = Some(revoked_at);
-            sqlx::query("UPDATE api_tokens SET revoked_at=?,record=? WHERE id=? AND revoked_at IS NULL")
-                .bind(revoked_at.to_rfc3339())
-                .bind(encode(&old)?)
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(storage)?;
+            sqlx::query(
+                "UPDATE api_tokens SET revoked_at=?,record=? WHERE id=? AND revoked_at IS NULL",
+            )
+            .bind(revoked_at.to_rfc3339())
+            .bind(encode(&old)?)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         }
 
         let rec = crate::ApiTokenRecord {
@@ -1517,6 +1714,12 @@ impl IdentityStore for SqliteCatalog {
     async fn find_user(&self, id: UserId) -> Result<Option<UserRecord>> {
         self.find_user(id).await
     }
+    async fn find_user_with_permissions(
+        &self,
+        subject: &str,
+    ) -> Result<Option<(UserRecord, Vec<String>)>> {
+        self.find_user_with_permissions(subject).await
+    }
     async fn create_user(&self, user: NewUser) -> Result<UserRecord> {
         self.create_user(user).await
     }
@@ -1717,6 +1920,135 @@ impl BackupStore for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn readonly_pool_observes_commits_during_parallel_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.db");
+        let catalog = SqliteCatalog::connect(&path).await.unwrap();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("parallel-read"))
+            .await
+            .unwrap();
+        assert!(
+            sqlx::query("UPDATE databases SET name='should-fail' WHERE id=?")
+                .bind(db.id.to_string())
+                .execute(&catalog.read_pool)
+                .await
+                .is_err()
+        );
+
+        let mut readers = Vec::new();
+        for _ in 0..8 {
+            let catalog = catalog.clone();
+            readers.push(tokio::spawn(async move {
+                for _ in 0..100 {
+                    assert_eq!(catalog.get_database(db.id).await.unwrap().id, db.id);
+                    let (pending, record) =
+                        catalog.database_admission_snapshot(db.id).await.unwrap();
+                    assert!(!pending && record.unwrap().id == db.id);
+                }
+            }));
+        }
+        for _ in 0..100 {
+            catalog
+                .append_audit(crate::AuditEntry::success("parallel-read"))
+                .await
+                .unwrap();
+        }
+        for reader in readers {
+            reader.await.unwrap();
+        }
+        catalog.close().await.unwrap();
+        let reopened = SqliteCatalog::connect(&path).await.unwrap();
+        assert_eq!(reopened.get_database(db.id).await.unwrap().id, db.id);
+        assert_eq!(
+            reopened
+                .list_audit(200, 0, crate::AuditFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            100
+        );
+    }
+    #[tokio::test]
+    async fn admission_snapshot_keeps_database_and_pending_job_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let id = DatabaseId::new_v7();
+        let (pending, record) = catalog.database_admission_snapshot(id).await.unwrap();
+        assert!(!pending && record.is_none());
+        let (pending, record) = catalog.database_query_snapshot(id).await.unwrap();
+        assert!(!pending && record.is_none());
+
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("admission-test"))
+            .await
+            .unwrap();
+        let (pending, record) = catalog.database_admission_snapshot(db.id).await.unwrap();
+        assert!(!pending);
+        assert_eq!(record.unwrap().id, db.id);
+        catalog
+            .set_lifecycle_state(db.id, LifecycleState::Starting, None)
+            .await
+            .unwrap();
+        catalog
+            .set_lifecycle_state(db.id, LifecycleState::Warm, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .database_admission_snapshot(db.id)
+                .await
+                .unwrap()
+                .1
+                .unwrap()
+                .state,
+            LifecycleState::Warm
+        );
+        let warm_db = catalog.get_database(db.id).await.unwrap();
+
+        let job = catalog
+            .enqueue_job(
+                "DB_DELETE",
+                serde_json::json!({"database_id": db.id.to_string()}),
+                0,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(catalog.database_admission_snapshot(db.id).await.unwrap().0);
+        let (pending, record) = catalog.database_query_snapshot(db.id).await.unwrap();
+        assert!(pending);
+        assert_eq!(record.unwrap().id, db.id);
+        sqlx::query("UPDATE databases SET record='{invalid' WHERE id=?")
+            .bind(db.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(catalog.database_admission_snapshot(db.id).await.unwrap().0);
+        assert!(catalog.database_query_snapshot(db.id).await.is_err());
+        sqlx::query("UPDATE databases SET record=? WHERE id=?")
+            .bind(encode(&warm_db).unwrap())
+            .bind(db.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE jobs SET state='LEASED' WHERE id=?")
+            .bind(job.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(catalog.database_admission_snapshot(db.id).await.unwrap().0);
+        sqlx::query("UPDATE jobs SET state='DONE' WHERE id=?")
+            .bind(job.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(!catalog.database_admission_snapshot(db.id).await.unwrap().0);
+    }
     #[tokio::test]
     async fn durable_submission_replays_without_duplicate_work() {
         let dir = tempfile::tempdir().unwrap();
@@ -1925,6 +2257,173 @@ mod lifecycle_tests {
 mod permission_tests {
     use super::*;
     #[tokio::test]
+    async fn jwt_query_snapshot_keeps_user_and_raw_database_in_one_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let mut user = catalog
+            .create_user(NewUser::new("query-user"))
+            .await
+            .unwrap();
+        let db = catalog
+            .create_database(CreateDatabaseParams::new("query-db"))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO role_bindings(id,user_id,role_id) VALUES(?,?,?)")
+            .bind(Uuid::now_v7().to_string())
+            .bind(user.id.to_string())
+            .bind("00000000-0000-0000-0000-000000000012")
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let job = catalog
+            .enqueue_job(
+                "DB_DELETE",
+                serde_json::json!({"database_id":db.id.to_string()}),
+                0,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let (found, (pending, raw)) = catalog
+            .jwt_query_snapshot(&user.id.to_string().to_uppercase(), &db.id.to_string())
+            .await
+            .unwrap();
+        assert!(pending);
+        assert_eq!(found.unwrap().1, vec!["db:read", "db:write"]);
+        assert_eq!(decode::<DatabaseRecord>(raw.unwrap()).unwrap().id, db.id);
+
+        sqlx::query("UPDATE databases SET record='{invalid' WHERE id=?")
+            .bind(db.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let (_, (_, raw)) = catalog
+            .jwt_query_snapshot(&user.username, &db.id.to_string())
+            .await
+            .unwrap();
+        assert_eq!(raw.as_deref(), Some("{invalid"));
+
+        sqlx::query("DELETE FROM role_bindings WHERE user_id=?")
+            .bind(user.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        user.status = "DISABLED".into();
+        sqlx::query("UPDATE users SET status=?, record=? WHERE id=?")
+            .bind(&user.status)
+            .bind(encode(&user).unwrap())
+            .bind(user.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let (found, (pending, _)) = catalog
+            .jwt_query_snapshot(&user.username, &db.id.to_string())
+            .await
+            .unwrap();
+        assert!(pending);
+        assert!(!found.unwrap().0.is_active());
+        assert!(catalog
+            .jwt_query_snapshot("missing", &db.id.to_string())
+            .await
+            .unwrap()
+            .0
+            .is_none());
+        sqlx::query("UPDATE jobs SET state='DONE' WHERE id=?")
+            .bind(job.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn jwt_subject_reads_current_user_and_permissions_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
+            .await
+            .unwrap();
+        let mut user = catalog
+            .create_user(NewUser::new("jwt-viewer"))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO role_bindings(id,user_id,role_id) VALUES(?,?,?)")
+            .bind(Uuid::now_v7().to_string())
+            .bind(user.id.to_string())
+            .bind("00000000-0000-0000-0000-000000000013")
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO role_bindings(id,user_id,role_id) VALUES(?,?,?)")
+            .bind(Uuid::now_v7().to_string())
+            .bind(user.id.to_string())
+            .bind("00000000-0000-0000-0000-000000000013")
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        for subject in [
+            user.id.to_string(),
+            user.id.to_string().to_uppercase(),
+            user.username.clone(),
+        ] {
+            let (found, permissions) = catalog
+                .find_user_with_permissions(&subject)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.id, user.id);
+            assert_eq!(permissions, vec!["db:read"]);
+        }
+        sqlx::query("DELETE FROM role_bindings WHERE user_id=?")
+            .bind(user.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(catalog
+            .find_user_with_permissions(&user.username)
+            .await
+            .unwrap()
+            .unwrap()
+            .1
+            .is_empty());
+        user.status = "DISABLED".into();
+        sqlx::query("UPDATE users SET status=?,record=? WHERE id=?")
+            .bind(&user.status)
+            .bind(encode(&user).unwrap())
+            .bind(user.id.to_string())
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        let (found, permissions) = catalog
+            .find_user_with_permissions(&user.username)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!found.is_active());
+        assert!(permissions.is_empty());
+        assert!(catalog
+            .find_user_with_permissions("missing-user")
+            .await
+            .unwrap()
+            .is_none());
+        let admin = catalog
+            .create_user(NewUser {
+                is_superuser: true,
+                ..NewUser::new("jwt-admin")
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .find_user_with_permissions(&admin.id.to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .1,
+            vec!["*"]
+        );
+    }
+    #[tokio::test]
     async fn builtin_roles_match_local_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = SqliteCatalog::connect(dir.path().join("metadata.db"))
@@ -1978,18 +2477,19 @@ mod contract_tests {
         // Apply only the released schema. The production 0001 migration stays untouched.
         let all_migrations = sqlx::migrate!("./sqlite_migrations");
         let old_migrations = sqlx::migrate::Migrator {
-            migrations: std::borrow::Cow::Owned(vec![
-                all_migrations
-                    .iter()
-                    .find(|migration| migration.version == 1)
-                    .unwrap()
-                    .clone(),
-            ]),
+            migrations: std::borrow::Cow::Owned(vec![all_migrations
+                .iter()
+                .find(|migration| migration.version == 1)
+                .unwrap()
+                .clone()]),
             ..sqlx::migrate::Migrator::DEFAULT
         };
         old_migrations.run(&pool).await.unwrap();
 
-        let old_catalog = SqliteCatalog { pool: pool.clone() };
+        let old_catalog = SqliteCatalog {
+            pool: pool.clone(),
+            read_pool: pool.clone(),
+        };
         let user = old_catalog
             .create_user(NewUser::new("migration-token-user"))
             .await
@@ -2075,43 +2575,52 @@ mod contract_tests {
         // Opening through the normal path applies 0002 to this real old-format database.
         let catalog = SqliteCatalog::connect(&path).await.unwrap();
         let tokens = catalog.list_tokens_for_user(user.id).await.unwrap();
-        let oldest = tokens.iter().find(|token| token.id == records[0].id).unwrap();
-        let latest = tokens.iter().find(|token| token.id == records[1].id).unwrap();
-        let other = tokens.iter().find(|token| token.id == records[2].id).unwrap();
-        let legacy = tokens.iter().find(|token| token.id == records[3].id).unwrap();
+        let oldest = tokens
+            .iter()
+            .find(|token| token.id == records[0].id)
+            .unwrap();
+        let latest = tokens
+            .iter()
+            .find(|token| token.id == records[1].id)
+            .unwrap();
+        let other = tokens
+            .iter()
+            .find(|token| token.id == records[2].id)
+            .unwrap();
+        let legacy = tokens
+            .iter()
+            .find(|token| token.id == records[3].id)
+            .unwrap();
         assert!(oldest.is_revoked());
         assert!(latest.revoked_at.is_none());
         assert!(other.revoked_at.is_none());
         assert!(legacy.revoked_at.is_none());
         assert_eq!(legacy.database_id, None);
 
-        let (revoked_at, record, database_id): (String, String, String) = sqlx::query_as(
-            "SELECT revoked_at,record,database_id FROM api_tokens WHERE id=?",
-        )
-        .bind(records[0].id.to_string())
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
+        let (revoked_at, record, database_id): (String, String, String) =
+            sqlx::query_as("SELECT revoked_at,record,database_id FROM api_tokens WHERE id=?")
+                .bind(records[0].id.to_string())
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&record).unwrap()["revoked_at"],
             revoked_at
         );
         assert_eq!(database_id, database.id.to_string());
-        let other_database_id: String = sqlx::query_scalar(
-            "SELECT database_id FROM api_tokens WHERE id=?",
-        )
-        .bind(records[2].id.to_string())
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
+        let other_database_id: String =
+            sqlx::query_scalar("SELECT database_id FROM api_tokens WHERE id=?")
+                .bind(records[2].id.to_string())
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
         assert_eq!(other_database_id, other_database.id.to_string());
-        let null_database_id: Option<String> = sqlx::query_scalar(
-            "SELECT database_id FROM api_tokens WHERE id=?",
-        )
-        .bind(records[3].id.to_string())
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
+        let null_database_id: Option<String> =
+            sqlx::query_scalar("SELECT database_id FROM api_tokens WHERE id=?")
+                .bind(records[3].id.to_string())
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
         assert!(null_database_id.is_none());
 
         let duplicate_create = || NewApiToken {
@@ -2124,7 +2633,11 @@ mod contract_tests {
             expires_at: None,
         };
         assert_eq!(
-            catalog.create_api_token(duplicate_create()).await.unwrap_err().code,
+            catalog
+                .create_api_token(duplicate_create())
+                .await
+                .unwrap_err()
+                .code,
             ErrorCode::InvalidArgument
         );
 
@@ -2166,7 +2679,11 @@ mod contract_tests {
         drop(catalog);
         let reopened = SqliteCatalog::connect(&path).await.unwrap();
         assert_eq!(
-            reopened.create_api_token(duplicate_create()).await.unwrap_err().code,
+            reopened
+                .create_api_token(duplicate_create())
+                .await
+                .unwrap_err()
+                .code,
             ErrorCode::InvalidArgument
         );
         let reopened_tokens = reopened.list_tokens_for_user(user.id).await.unwrap();

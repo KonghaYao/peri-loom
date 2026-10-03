@@ -22,15 +22,25 @@ pub use session::*;
 
 use axum::routing::{delete, post};
 use axum::Router;
+use axum::{extract::Request, middleware::Next, response::Response};
 
 use crate::state::AppState;
 
 /// Data 面路由表。
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/data/v1/databases/{db_id}/query", post(query_database))
+        .route(
+            "/data/v1/databases/{db_id}/query",
+            post(query_database).route_layer(axum::middleware::from_fn(query_response_timing)),
+        )
         .route("/data/v1/databases/{db_id}/batch", post(batch_database))
         .route("/data/v1/databases/{db_id}/sessions", post(open_session))
         .route("/data/v1/sessions/{session_id}/query", post(session_query))
         .route("/data/v1/sessions/{session_id}", delete(close_session))
+}
+
+async fn query_response_timing(request: Request, next: Next) -> Response {
+    // 内联 JSON 的响应在 next.run 返回前已组装；流式 NDJSON 只计到响应创建。
+    let _timer = crate::simple::metrics::StageTimer::start("http_query_response_ready");
+    next.run(request).await
 }

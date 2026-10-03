@@ -77,3 +77,4 @@ async-trait.workspace = true
 reqwest.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
+sqlx.workspace = true

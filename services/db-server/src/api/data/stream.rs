@@ -26,7 +26,7 @@ use futures::StreamExt;
 
 use crate::api::dto;
 use crate::error::{ApiError, ApiResult};
-use crate::execution::{DatabaseExecutor, ExecutionGuard, FrameStream};
+use crate::execution::{DataStream, DatabaseExecutor, ExecutionGuard, FrameStream};
 use crate::router::StreamTarget;
 
 /// NDJSON 的 MIME 类型。
@@ -49,6 +49,16 @@ pub async fn execute(
     let execution = router
         .open_stream(database_id, target, request_id, deadline)
         .await?;
+    render(execution, inline_limit_bytes, request_id, want_ndjson).await
+}
+
+/// 已完成准入的执行流使用相同的内联/NDJSON 出口和取消传播。
+pub(crate) async fn render(
+    execution: DataStream,
+    inline_limit_bytes: usize,
+    request_id: &str,
+    want_ndjson: bool,
+) -> ApiResult<Response> {
     let mut frames = execution.frames;
     let guard = execution.guard;
     let remote_lsn = execution.remote_lsn;
@@ -227,4 +237,35 @@ pub(crate) fn approximate_bytes(values: &[SqlValue]) -> usize {
             SqlValue::Blob(bytes) => bytes.len(),
         })
         .sum()
+}
+
+#[cfg(test)]
+mod permit_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    #[tokio::test]
+    async fn ndjson_body_keeps_simple_gate_until_dropped() {
+        let gate = Arc::new(RwLock::new(()));
+        let permit = gate.clone().read_owned().await;
+        let frames = async_stream::stream! {
+            let _permit = permit;
+            yield Ok(protocol::data::StreamFrame {
+                error: None,
+                frame: Some(protocol::data::stream_frame::Frame::Trailer(
+                    protocol::data::StreamTrailer::default(),
+                )),
+            });
+        };
+        let execution = DataStream {
+            frames: Box::pin(frames),
+            guard: ExecutionGuard::new(|| {}),
+            remote_lsn: false,
+        };
+        let response = render(execution, 1024, "permit-test", true).await.unwrap();
+        assert!(gate.try_write().is_err());
+        drop(response);
+        assert!(gate.try_write().is_ok());
+    }
 }

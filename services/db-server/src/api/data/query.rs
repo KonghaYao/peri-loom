@@ -4,7 +4,8 @@
 //! `SELECT` 与 `WITH ... DELETE`，若对疑似只读语句放行 `db:read`，只读主体就能借
 //! `/query` 完成写入（越权）。宁可让只读用户走 Panel 的元数据接口，也不留这条旁路。
 
-use axum::extract::{Path, State};
+use axum::extract::{FromRequestParts, Path, State};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap};
 use axum::response::Response;
 use axum::Json;
@@ -12,10 +13,46 @@ use axum::Json;
 use super::stream;
 use crate::api::{db_id, dto};
 use crate::auth::{permission, Principal};
+use crate::deployment::Deployment;
 use crate::error::{ApiError, ApiResult};
 use crate::middleware::current_request_id;
 use crate::router::StreamTarget;
 use crate::state::AppState;
+use tokio::sync::OwnedRwLockReadGuard;
+
+pub struct QueryAuth {
+    principal: Principal,
+    snapshot: Option<(OwnedRwLockReadGuard<()>, (bool, Option<String>))>,
+}
+
+impl FromRequestParts<AppState> for QueryAuth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // Path 从共享的路由参数扩展读取，不会消耗后续 handler 的 Path extractor。
+        let raw_db_id = match Path::<String>::from_request_parts(parts, state).await {
+            Ok(Path(raw_db_id)) => raw_db_id,
+            Err(_) => {
+                // 原路由先执行 Principal extractor。Path 本身无法解码时也先完成认证，
+                // 再让后续 Path extractor 返回它原有的路径错误。
+                let principal = Principal::from_request_parts(parts, state).await?;
+                return Ok(Self {
+                    principal,
+                    snapshot: None,
+                });
+            }
+        };
+        let (principal, snapshot) =
+            crate::auth::authenticate_query(state, &parts.headers, &raw_db_id).await?;
+        Ok(Self {
+            principal,
+            snapshot,
+        })
+    }
+}
 
 /// 客户端是否显式要求 NDJSON（`Accept: application/x-ndjson`）。
 pub(super) fn wants_ndjson(headers: &HeaderMap) -> bool {
@@ -52,29 +89,79 @@ pub(super) fn proto_params(params: &[serde_json::Value]) -> ApiResult<Vec<protoc
 )]
 pub async fn query_database(
     State(state): State<AppState>,
-    principal: Principal,
+    auth: QueryAuth,
     Path(raw_db_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<dto::QueryRequest>,
 ) -> ApiResult<Response> {
+    let QueryAuth {
+        principal,
+        snapshot,
+    } = auth;
     principal.require(permission::DB_WRITE)?;
     let database_id = db_id(&raw_db_id)?;
-    crate::api::authorize_database(&state, &principal, database_id).await?;
+    // Simple 查询持有 gate 后一次读出授权记录和准入状态，避免两个串行 Catalog 查询。
+    // 许可随执行帧存活，直至内联结果消费完或 NDJSON 响应被消费/取消。
+    let simple_admission = if let Deployment::Simple(services) = &state.deployment {
+        principal.require_database(database_id)?;
+        let (permit, snapshot) = if let Some((permit, (pending, raw_record))) = snapshot {
+            let record = raw_record
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|err| {
+                    ApiError::new(
+                        domain::error::ErrorCode::StorageUnavailable,
+                        format!("SQLite metadata: {err}"),
+                    )
+                })?;
+            (permit, (pending, record))
+        } else {
+            let permit = services.gate.clone().read_owned().await;
+            let _catalog_timer = crate::simple::metrics::StageTimer::start("authorize_database");
+            let snapshot = services
+                .catalog
+                .database_query_snapshot(database_id)
+                .await?;
+            drop(_catalog_timer);
+            (permit, snapshot)
+        };
+        let record = snapshot.1.as_ref().ok_or_else(|| {
+            ApiError::new(domain::error::ErrorCode::DbNotFound, "database not found")
+        })?;
+        crate::api::authorize_database_record(&principal, database_id, record)?;
+        Some((services, permit, snapshot))
+    } else {
+        crate::api::authorize_database(&state, &principal, database_id).await?;
+        None
+    };
     if request.sql.trim().is_empty() {
         return Err(ApiError::invalid_argument("sql 不能为空"));
     }
     let params = proto_params(&request.params)?;
 
-    stream::execute(
-        state.execution.as_ref(),
+    let target = StreamTarget::Stateless {
+        sql: request.sql,
+        params,
+    };
+    let request_id = current_request_id();
+    let execution = if let Some((services, permit, snapshot)) = simple_admission {
+        let _timer = crate::simple::metrics::StageTimer::start("ensure_available");
+        services.ensure_with_snapshot(database_id, snapshot).await?;
+        drop(_timer);
+        crate::simple::execution::LocalExecutor(services.clone())
+            .open_stream_with_permit(database_id, target, None, permit)
+            .await?
+    } else {
+        state
+            .execution
+            .open_stream(database_id, target, &request_id, None)
+            .await?
+    };
+    stream::render(
+        execution,
         state.config.inline_result_limit_bytes,
-        database_id,
-        StreamTarget::Stateless {
-            sql: request.sql,
-            params,
-        },
-        &current_request_id(),
-        None,
+        &request_id,
         wants_ndjson(&headers),
     )
     .await

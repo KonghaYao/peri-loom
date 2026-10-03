@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import gzip
 import json
+import os
 import pathlib
 import platform
 import socket
@@ -41,7 +42,12 @@ async def main(args):
     with tempfile.TemporaryDirectory(prefix="peri-loom-load-") as tmp:
         data_dir = pathlib.Path(tmp) / "data"
         with (out / "server.log").open("w") as log:
-            child = subprocess.Popen([str(binary), "serve", "--mode", "simple", "--data-dir", str(data_dir), "--listen", f"127.0.0.1:{port}", "--log-level", "error"], stdout=log, stderr=log)
+            env = os.environ.copy()
+            if args.stage_metrics:
+                env["PERI_LOOM_SIMPLE_STAGE_METRICS"] = "1"
+            else:
+                env.pop("PERI_LOOM_SIMPLE_STAGE_METRICS", None)
+            child = subprocess.Popen([str(binary), "serve", "--mode", "simple", "--data-dir", str(data_dir), "--listen", f"127.0.0.1:{port}", "--log-level", "error"], stdout=log, stderr=log, env=env)
             try:
                 timeout = aiohttp.ClientTimeout(total=10)
                 connector = aiohttp.TCPConnector(limit=0)
@@ -79,6 +85,7 @@ async def main(args):
                     else:
                         raise RuntimeError("create database timeout")
                     query_url = base + f"/data/v1/databases/{db_id}/query"
+                    wal_path = data_dir / "databases" / db_id / "main.db-wal"
                     async def query(sql):
                         return await post_json(session, query_url, {"sql": sql}, token)
                     for sql in ("CREATE TABLE bench (id INTEGER PRIMARY KEY, v INTEGER)", "INSERT INTO bench (id,v) VALUES (1,42)"):
@@ -98,9 +105,14 @@ async def main(args):
                       for round_no, levels in ((1, phase_levels), (2, list(reversed(phase_levels)))):
                         for concurrency in levels:
                             await asyncio.sleep(args.rest)
+                            if args.stage_metrics:
+                                async with session.get(base + "/metrics", headers={"Authorization": f"Bearer {token}"}) as response:
+                                    assert response.status == 200
+                                    before_metrics = await response.text()
                             samples = []
                             failures = []
                             cpu0 = process.cpu_times()
+                            wal_before = wal_path.stat().st_size if wal_path.exists() else 0
                             rss_peak = process.memory_info().rss
                             wall0 = time.perf_counter()
                             deadline = wall0 + phase_duration
@@ -122,6 +134,7 @@ async def main(args):
                             await asyncio.gather(*(worker() for _ in range(concurrency)))
                             wall = time.perf_counter() - wall0
                             cpu1 = process.cpu_times()
+                            wal_after = wal_path.stat().st_size if wal_path.exists() else 0
                             rss_peak = max(rss_peak, process.memory_info().rss)
                             ordered = sorted(samples)
                             def percentile(p):
@@ -129,6 +142,16 @@ async def main(args):
                                     return None
                                 return ordered[min(len(ordered)-1, max(0, int((len(ordered)-1)*p + 0.999999)))]
                             row = {"workload": workload, "round": round_no, "concurrency": concurrency, "duration_s": wall, "requests": len(samples), "success": len(samples)-len(failures), "errors": len(failures), "rps": len(samples)/wall, "success_rps": (len(samples)-len(failures))/wall, "p50_ms": percentile(.5), "p95_ms": percentile(.95), "p99_ms": percentile(.99), "max_ms": ordered[-1] if ordered else None, "mean_ms": statistics.mean(samples) if samples else None, "server_cpu_cores": ((cpu1.user+cpu1.system)-(cpu0.user+cpu0.system))/wall, "server_rss_two_point_max_mib": rss_peak/1024/1024, "error_examples": failures[:5]}
+                            if args.stage_metrics:
+                                row["wal_bytes_before"] = wal_before
+                                row["wal_bytes_after"] = wal_after
+                            if args.stage_metrics:
+                                async with session.get(base + "/metrics", headers={"Authorization": f"Bearer {token}"}) as response:
+                                    assert response.status == 200
+                                    after_metrics = await response.text()
+                                name = f"metrics_{workload}_round{round_no}_c{concurrency}"
+                                (out / f"{name}_before.prom").write_text(before_metrics)
+                                (out / f"{name}_after.prom").write_text(after_metrics)
                             results.append(row)
                             with gzip.open(out / f"latency_{workload}_round{round_no}_c{concurrency}.csv.gz", "wt") as f:
                                 f.write("latency_ms\n")
@@ -139,7 +162,7 @@ async def main(args):
                         status, count = await query("SELECT count(*) FROM bench")
                         expected = 1 + sum(row["success"] for row in results if row["workload"] == "write")
                         assert status == 200 and count.get("rows") == [[expected]], (expected, count)
-                    metadata = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "platform": platform.platform(), "machine": platform.machine(), "logical_cpus": psutil.cpu_count(), "physical_cpus": psutil.cpu_count(logical=False), "memory_bytes": psutil.virtual_memory().total, "binary": str(binary), "binary_sha256": __import__("hashlib").sha256(binary.read_bytes()).hexdigest(), "deployment": deployment, "workload": {"read_sql": read_sql, "write_sql": "INSERT INTO bench (v) VALUES (42)" if args.write_levels else None, "expected_rows": [[42]], "protocol": "HTTP POST /data/v1/databases/{db_id}/query", "client": "aiohttp 3.13.5, persistent connections, fixed concurrency, zero think time", "warmup_requests": 100, "read_duration_s": args.duration, "write_duration_s": args.write_duration if args.write_levels else None, "rest_s": args.rest}, "rows": results}
+                    metadata = {"timestamp_utc": datetime.now(timezone.utc).isoformat(), "platform": platform.platform(), "machine": platform.machine(), "logical_cpus": psutil.cpu_count(), "physical_cpus": psutil.cpu_count(logical=False), "memory_bytes": psutil.virtual_memory().total, "binary": str(binary), "binary_sha256": __import__("hashlib").sha256(binary.read_bytes()).hexdigest(), "deployment": deployment, "workload": {"read_sql": read_sql, "write_sql": "INSERT INTO bench (v) VALUES (42)" if args.write_levels else None, "expected_rows": [[42]], "protocol": "HTTP POST /data/v1/databases/{db_id}/query", "client": "aiohttp 3.13.5, persistent connections, fixed concurrency, zero think time", "warmup_requests": 100, "read_duration_s": args.duration, "write_duration_s": args.write_duration if args.write_levels else None, "rest_s": args.rest, "stage_metrics": args.stage_metrics}, "rows": results}
                     (out / "results.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
             finally:
                 child.terminate()
@@ -159,4 +182,5 @@ if __name__ == "__main__":
     parser.add_argument("--write-levels", nargs="*", type=int, default=[])
     parser.add_argument("--write-duration", type=float, default=5.0)
     parser.add_argument("--rest", type=float, default=2.0)
+    parser.add_argument("--stage-metrics", action="store_true")
     asyncio.run(main(parser.parse_args()))

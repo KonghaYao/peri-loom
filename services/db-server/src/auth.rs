@@ -12,11 +12,12 @@
 //! 超级管理员得到通配符 `*`（[`catalog::PERMISSION_WILDCARD`]）。
 
 use axum::extract::FromRequestParts;
-use axum::http::HeaderMap;
 use axum::http::request::Parts;
+use axum::http::HeaderMap;
 use domain::error::ErrorCode;
 use domain::ids::{DatabaseId, TokenId, UserId};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::error::{ApiError, ApiResult, PlatformResultExt};
 use crate::idempotency::hash_secret;
@@ -326,25 +327,27 @@ async fn authenticate_jwt(state: &AppState, token: &str) -> ApiResult<Principal>
     let claims = verifier.verify(token)?;
 
     // `sub` 既可能是 user uuid（OIDC 规范做法），也可能是 username（自签 token 常见）。
-    let looked_up = match claims.sub.parse::<uuid::Uuid>() {
-        Ok(raw) => state
-            .catalog
-            .find_user(UserId::from_uuid(raw))
-            .await
-            .api()?,
-        Err(_) => state
-            .catalog
-            .find_user_by_username(&claims.sub)
-            .await
-            .api()?,
-    };
-    let user = looked_up.ok_or_else(|| ApiError::unauthenticated("JWT 主体在平台中不存在"))?;
+    let _catalog_timer = matches!(&state.deployment, crate::deployment::Deployment::Simple(_))
+        .then(|| crate::simple::metrics::StageTimer::start("jwt_user_permissions"));
+    let (user, permissions) = state
+        .catalog
+        .find_user_with_permissions(&claims.sub)
+        .await
+        .api()?
+        .ok_or_else(|| ApiError::unauthenticated("JWT 主体在平台中不存在"))?;
+    drop(_catalog_timer);
 
+    principal_from_jwt(claims, user, permissions)
+}
+
+fn principal_from_jwt(
+    claims: JwtClaims,
+    user: catalog::UserRecord,
+    permissions: Vec<String>,
+) -> ApiResult<Principal> {
     if !user.is_active() {
         return Err(ApiError::unauthenticated("用户已被禁用"));
     }
-    let permissions = state.catalog.resolve_permissions(user.id).await.api()?;
-
     Ok(Principal {
         user_id: user.id,
         username: user.username.clone(),
@@ -364,6 +367,48 @@ async fn authenticate_jwt(state: &AppState, token: &str) -> ApiResult<Principal>
         token_id: None,
         method: AuthMethod::Jwt,
     })
+}
+
+/// 仅 Simple `/query` 的 JWT 凭据合并读取用户、角色和库准入快照。
+/// API Token 与 Distributed 保持原认证路径。
+pub(crate) async fn authenticate_query(
+    state: &AppState,
+    headers: &HeaderMap,
+    raw_db_id: &str,
+) -> ApiResult<(
+    Principal,
+    Option<(OwnedRwLockReadGuard<()>, (bool, Option<String>))>,
+)> {
+    match extract_credential(headers)? {
+        Credential::ApiToken(token) => Ok((authenticate_api_token(state, &token).await?, None)),
+        Credential::Bearer(token) => {
+            let crate::deployment::Deployment::Simple(services) = &state.deployment else {
+                return Ok((authenticate_jwt(state, &token).await?, None));
+            };
+            let verifier = state.jwt.as_ref().ok_or_else(|| {
+                ApiError::unauthenticated(
+                    "本实例未配置 JWT_SECRET，Bearer 认证不可用（请使用 x-api-token）",
+                )
+            })?;
+            let claims = verifier.verify(&token)?;
+            let permit = services.gate.clone().read_owned().await;
+            // 非法路径 ID 的报错仍由 handler 在 DB_WRITE 判定后给出；合法 UUID
+            // 需要规范化，和既有 db_id() 路径一致。
+            let lookup_db_id = crate::api::db_id(raw_db_id)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| raw_db_id.to_owned());
+            let _timer = crate::simple::metrics::StageTimer::start("jwt_query_snapshot");
+            let (user, snapshot) = services
+                .catalog
+                .jwt_query_snapshot(&claims.sub, &lookup_db_id)
+                .await
+                .api()?;
+            let (user, permissions) =
+                user.ok_or_else(|| ApiError::unauthenticated("JWT 主体在平台中不存在"))?;
+            let principal = principal_from_jwt(claims, user, permissions)?;
+            Ok((principal, Some((permit, snapshot))))
+        }
+    }
 }
 
 async fn authenticate_api_token(state: &AppState, token: &str) -> ApiResult<Principal> {
@@ -606,11 +651,9 @@ mod tests {
             api_token_permissions(&legacy, &owner),
             perms(&[permission::DB_READ, permission::DB_WRITE]),
         );
-        assert!(
-            api_token_permissions(&perms(&[]), &owner)
-                .iter()
-                .all(|item| item == permission::DB_READ || item == permission::DB_WRITE)
-        );
+        assert!(api_token_permissions(&perms(&[]), &owner)
+            .iter()
+            .all(|item| item == permission::DB_READ || item == permission::DB_WRITE));
     }
 
     #[test]

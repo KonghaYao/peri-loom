@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 domain.workspace = true
 engine-adapter.workspace = true
+metrics.workspace = true
 turso_core.workspace = true
 tokio.workspace = true
 uuid.workspace = true

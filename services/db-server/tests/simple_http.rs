@@ -5,7 +5,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Method, StatusCode};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 struct Server {
     child: Child,
@@ -170,6 +170,172 @@ async fn offline_success(mut command: Command, label: &str) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simple_query_uses_current_jwt_permissions_and_user_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("instance");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let mut server = spawn(&data);
+    ready(&mut server, &client).await;
+    let initial: Value =
+        serde_json::from_slice(&std::fs::read(data.join("secrets/initial-admin.json")).unwrap())
+            .unwrap();
+    let (_, login) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        "/api/v1/auth/login",
+        None,
+        Some(json!({"username":initial["username"],"password":initial["password"]})),
+    )
+    .await;
+    let admin = login["access_token"].as_str().unwrap();
+    let malformed_path = "/data/v1/databases/%FF/query";
+    let (status, _) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        malformed_path,
+        None,
+        Some(json!({"sql":"SELECT 1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        malformed_path,
+        Some(admin),
+        Some(json!({"sql":"SELECT 1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let created = accepted(
+        &client,
+        &server.url,
+        admin,
+        Method::POST,
+        "/api/v1/databases",
+        Some(json!({"name":"jwt-current-permissions"})),
+    )
+    .await;
+    let db = created["database_id"].as_str().unwrap();
+
+    let catalog = catalog::SqliteCatalog::connect(data.join("catalog/metadata.db"))
+        .await
+        .unwrap();
+    let mut user = catalog
+        .create_user(catalog::NewUser::new("jwt-current-user"))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO role_bindings(id,user_id,role_id) VALUES(?,?,?)")
+        .bind(uuid::Uuid::now_v7().to_string())
+        .bind(user.id.to_string())
+        .bind("00000000-0000-0000-0000-000000000012")
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let secret = std::fs::read(data.join("secrets/jwt.key")).unwrap();
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &json!({
+            "sub":user.id.to_string(),
+            "exp":chrono::Utc::now().timestamp() + 3600,
+            "iss":"peri-loom",
+        }),
+        &jsonwebtoken::EncodingKey::from_secret(&secret),
+    )
+    .unwrap();
+    let path = format!("/data/v1/databases/{db}/query");
+    let query = || {
+        request(
+            &client,
+            &server.url,
+            Method::POST,
+            &path,
+            Some(&token),
+            Some(json!({"sql":"SELECT 1"})),
+        )
+    };
+    assert_eq!(query().await.0, StatusCode::OK);
+
+    sqlx::query("DELETE FROM role_bindings WHERE user_id=?")
+        .bind(user.id.to_string())
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let (status, body) = query().await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "PERMISSION_DENIED");
+    let malformed_body = client
+        .post(format!("{}{path}", server.url))
+        .bearer_auth(&token)
+        .header("content-type", "application/json")
+        .body("{")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed_body.status(), StatusCode::BAD_REQUEST);
+    let (status, body) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        "/data/v1/databases/invalid-id/query",
+        Some(&token),
+        Some(json!({"sql":"SELECT 1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "PERMISSION_DENIED");
+
+    let saved_record: String = sqlx::query_scalar("SELECT record FROM databases WHERE id=?")
+        .bind(db)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE databases SET record='{invalid' WHERE id=?")
+        .bind(db)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let (status, body) = query().await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "PERMISSION_DENIED");
+    sqlx::query("UPDATE databases SET record=? WHERE id=?")
+        .bind(saved_record)
+        .bind(db)
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+
+    user.status = "DISABLED".into();
+    user.updated_at = chrono::Utc::now();
+    sqlx::query("UPDATE users SET status=?, record=? WHERE id=?")
+        .bind(&user.status)
+        .bind(serde_json::to_string(&user).unwrap())
+        .bind(user.id.to_string())
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    let (status, body) = query().await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"]["code"], "UNAUTHENTICATED");
+    let malformed_body = client
+        .post(format!("{}{path}", server.url))
+        .bearer_auth(&token)
+        .header("content-type", "application/json")
+        .body("{")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed_body.status(), StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_binary_crash_recovery_and_offline_transfer() {
     let temp = tempfile::tempdir().unwrap();
@@ -197,14 +363,12 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .await
         .unwrap();
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
-    assert!(
-        !unknown
-            .headers()
-            .get("content-type")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("")
-            .contains("text/html")
-    );
+    assert!(!unknown
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .contains("text/html"));
     let unauth_metrics = client
         .get(format!("{}/metrics", server.url))
         .send()
@@ -226,6 +390,18 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
     assert_eq!(status, StatusCode::OK, "admin login failed");
     let token = login["access_token"].as_str().unwrap().to_owned();
     drop(initial);
+    // 资源不存在的错误先于 SQL 参数校验；查询路径的合并快照不能颠倒授权顺序。
+    let (missing_status, missing_body) = request(
+        &client,
+        &server.url,
+        Method::POST,
+        "/data/v1/databases/00000000-0000-0000-0000-000000000001/query",
+        Some(&token),
+        Some(json!({"sql":"","params":[]})),
+    )
+    .await;
+    assert_eq!(missing_status, StatusCode::NOT_FOUND);
+    assert_eq!(missing_body["error"]["code"], "DB_NOT_FOUND");
     let created = accepted(
         &client,
         &server.url,
@@ -279,14 +455,12 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .await
         .unwrap();
     assert_eq!(ndjson_response.status(), StatusCode::OK);
-    assert!(
-        ndjson_response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .starts_with("application/x-ndjson")
-    );
+    assert!(ndjson_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .starts_with("application/x-ndjson"));
     let lines: Vec<Value> = ndjson_response
         .text()
         .await
@@ -295,11 +469,9 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(lines.first().unwrap()["type"], "header");
-    assert!(
-        lines
-            .iter()
-            .any(|line| line["type"] == "row" && line["values"] == json!([41]))
-    );
+    assert!(lines
+        .iter()
+        .any(|line| line["type"] == "row" && line["values"] == json!([41])));
     assert_eq!(lines.last().unwrap()["type"], "trailer");
     let created_token_response = request_response(
         &client,
@@ -633,11 +805,9 @@ async fn real_binary_crash_recovery_and_offline_transfer() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        audit["items"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(audit["items"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
     let (status, operation) = request(
         &client,
         &restarted.url,
