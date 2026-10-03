@@ -150,7 +150,9 @@ impl LocalHost {
         timeout: Duration,
     ) -> Result<ExecutionStream> {
         let worker = self.worker(db)?;
-        let (output, frames) = mpsc::channel(2);
+        // 点查通常产生 Columns、Rows、End 三帧。容纳这三帧可避免宿主线程
+        // 因客户端任务暂未调度而进入 send_frame 的 5 ms 满队列轮询。
+        let (output, frames) = mpsc::channel(3);
         let cancel = Arc::new(AtomicBool::new(false));
         tokio::time::timeout(
             timeout,
@@ -453,6 +455,10 @@ fn run_worker(path: PathBuf, config: LocalHostConfig, mut commands: mpsc::Receiv
         };
         let command = match command {
             Some(command) => Some(command),
+            // 没有会话和待处理命令时直接等待通知。固定 10 ms 轮询会让
+            // stateless 热库请求平白等待半个轮询周期，低并发点查尤其明显。
+            None if sessions.is_empty() && transaction_owner.is_none() => commands.blocking_recv(),
+            // 有会话时仍定期醒来，让闲置会话/事务过期并清理 deferred 请求。
             None => match commands.try_recv() {
                 Ok(command) => Some(command),
                 Err(mpsc::error::TryRecvError::Empty) => {
