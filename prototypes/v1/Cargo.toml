@@ -7,7 +7,8 @@ rust-version = "1.98"
 [workspace]
 
 [dependencies]
-turso_core = { path = "../p0/turso/core", default-features = false, features = ["fs", "uuid", "json"] }
+turso_core = { path = "../p0/turso/core", default-features = false, features = ["fs", "uuid", "json", "encryption"] }
+zeroize = { version = "1", features = ["serde"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

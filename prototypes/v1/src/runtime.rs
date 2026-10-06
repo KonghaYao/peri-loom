@@ -17,6 +17,7 @@ use std::{
 };
 
 pub struct WorkerRuntime {
+    key_provider: Option<Arc<dyn crate::encryption::DatabaseKeyProvider>>,
     provider: Arc<dyn DatabaseProvider>,
     cache_root: PathBuf,
     limits: WorkerLimits,
@@ -29,6 +30,24 @@ impl WorkerRuntime {
         cache_root: impl AsRef<Path>,
         limits: WorkerLimits,
     ) -> Result<Arc<Self>> {
+        Self::configured(provider, cache_root, limits, None)
+    }
+
+    pub fn new_with_key_provider(
+        provider: Arc<dyn DatabaseProvider>,
+        cache_root: impl AsRef<Path>,
+        limits: WorkerLimits,
+        key_provider: Arc<dyn crate::encryption::DatabaseKeyProvider>,
+    ) -> Result<Arc<Self>> {
+        Self::configured(provider, cache_root, limits, Some(key_provider))
+    }
+
+    fn configured(
+        provider: Arc<dyn DatabaseProvider>,
+        cache_root: impl AsRef<Path>,
+        limits: WorkerLimits,
+        key_provider: Option<Arc<dyn crate::encryption::DatabaseKeyProvider>>,
+    ) -> Result<Arc<Self>> {
         ensure!(
             limits.max_open_databases > 0
                 && limits.max_total_sessions > 0
@@ -36,6 +55,7 @@ impl WorkerRuntime {
             "worker admission limits must be positive"
         );
         Ok(Arc::new(Self {
+            key_provider,
             provider,
             cache_root: cache_root.as_ref().to_path_buf(),
             limits,
@@ -142,7 +162,31 @@ impl WorkerRuntime {
     }
 
     fn load(&self, identifier: &DatabaseId, epoch: u64) -> Result<Arc<RemoteDatabase>> {
+        crate::metrics::Metrics::global().observe(
+            crate::metrics::Operation::ColdOpen,
+            || self.load_native(identifier, epoch),
+            |_| 0,
+        )
+    }
+
+    fn load_native(&self, identifier: &DatabaseId, epoch: u64) -> Result<Arc<RemoteDatabase>> {
         let store = self.provider.open_store(identifier, epoch)?;
+        store.validate_transaction(false)?;
+        if let Some(provider) = &self.key_provider {
+            let key = provider.resolve(identifier, epoch)?;
+            store.validate_transaction(false)?;
+            let database = RemoteDatabase::open_with_encryption_and_limits(
+                store.clone(),
+                identifier.namespace.clone(),
+                self.cache_root.join(identifier.cache_key()?),
+                epoch,
+                self.limits.segment_ram_bytes,
+                self.limits.segment_disk_bytes,
+                key,
+            )?;
+            store.validate_transaction(false)?;
+            return Ok(Arc::new(database));
+        }
         Ok(Arc::new(RemoteDatabase::open_with_limits(
             store,
             identifier.namespace.clone(),

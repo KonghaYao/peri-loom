@@ -26,6 +26,25 @@ pub(crate) fn same_identity(first: &LeaseBinding, second: &LeaseBinding) -> bool
 }
 
 impl RemoteAuthorityProvider {
+    pub fn installed_key_lease(
+        &self,
+        database: &DatabaseId,
+        epoch: u64,
+    ) -> Result<crate::encryption::InstalledKeyLease> {
+        database.validate()?;
+        let (binding, access_role) = self
+            .leases
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lease registry unavailable"))?
+            .get(database)
+            .cloned()
+            .context("database lease not installed")?;
+        ensure!(binding.epoch == epoch, "lease epoch mismatch");
+        Ok(crate::encryption::InstalledKeyLease {
+            binding,
+            access_role,
+        })
+    }
     pub fn new(client: Arc<AuthorityClient>, worker_id: String) -> Result<Arc<Self>> {
         validate_label(&worker_id)?;
         Ok(Arc::new(Self {
@@ -190,24 +209,56 @@ impl ObjectStore for RemoteStore {
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
-        self.key(key)?;
-        Ok(serde_json::from_value(self.call(
-            SessionOperation::Get {
-                key: key.to_owned(),
-            },
-        )?)?)
+        let get = || {
+            self.key(key)?;
+            Ok(serde_json::from_value(self.call(
+                SessionOperation::Get {
+                    key: key.to_owned(),
+                },
+            )?)?)
+        };
+        let segment = key
+            .strip_prefix(&self.binding.database.namespace.prefix())
+            .is_some_and(|relative| relative.starts_with("segments/"));
+        if segment {
+            crate::metrics::Metrics::global().observe(
+                crate::metrics::Operation::SegmentGet,
+                get,
+                |object: &Option<StoredObject>| {
+                    object
+                        .as_ref()
+                        .map_or(0, |object| object.bytes.len() as u64)
+                },
+            )
+        } else {
+            get()
+        }
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
-        self.key(key)?;
-        ensure!(self.role == AccessRole::Writer, "ReadOnly");
-        Ok(serde_json::from_value(self.call(
-            SessionOperation::Put {
-                key: key.to_owned(),
-                bytes: bytes.to_vec(),
-                condition,
-            },
-        )?)?)
+        let put = || {
+            self.key(key)?;
+            ensure!(self.role == AccessRole::Writer, "ReadOnly");
+            Ok(serde_json::from_value(self.call(
+                SessionOperation::Put {
+                    key: key.to_owned(),
+                    bytes: bytes.to_vec(),
+                    condition,
+                },
+            )?)?)
+        };
+        let segment = key
+            .strip_prefix(&self.binding.database.namespace.prefix())
+            .is_some_and(|relative| relative.starts_with("segments/"));
+        if segment {
+            crate::metrics::Metrics::global().observe(
+                crate::metrics::Operation::SegmentPut,
+                put,
+                |_| bytes.len() as u64,
+            )
+        } else {
+            put()
+        }
     }
 
     fn delete(&self, _: &str, _: Option<&str>) -> Result<()> {

@@ -1,10 +1,15 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{anyhow, Context, Result};
-use turso_core::{Connection, SyncMode, Value};
+use turso_core::{Connection, Statement, SyncMode, Value};
 
 use crate::database::RemoteDatabase;
+use crate::metrics::{Metrics, Operation};
 use crate::object_store::ObjectStore;
+
+mod budget;
+pub use budget::Budget;
+use budget::ExecutionBudget;
 
 pub struct RemoteSession {
     connection: Mutex<Arc<Connection>>,
@@ -22,13 +27,25 @@ impl RemoteSession {
     pub fn execute(&self, sql: &str) -> Result<()> {
         let _operation = self.database.operation()?;
         let connection = self.connection()?;
-        execute_sql(&connection, self.database.storage().store().as_ref(), sql)
+        execute_sql(&connection, &self.database.storage().store(), sql)
     }
 
     pub fn query(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
         let _operation = self.database.operation()?;
         let connection = self.connection()?;
-        query_sql(&connection, self.database.storage().store().as_ref(), sql)
+        query_sql(&connection, &self.database.storage().store(), sql)
+    }
+
+    pub fn execute_with_budget(&self, sql: &str, budget: &Budget) -> Result<()> {
+        let _operation = self.database.operation()?;
+        let connection = self.connection()?;
+        execute_bounded(&connection, &self.database.storage().store(), sql, budget)
+    }
+
+    pub fn query_with_budget(&self, sql: &str, budget: &Budget) -> Result<Vec<Vec<Value>>> {
+        let _operation = self.database.operation()?;
+        let connection = self.connection()?;
+        query_bounded(&connection, &self.database.storage().store(), sql, budget)
     }
 
     pub fn in_transaction(&self) -> Result<bool> {
@@ -71,36 +88,111 @@ pub(crate) fn configure(connection: &Connection) {
 
 pub(crate) fn execute_sql(
     connection: &Arc<Connection>,
-    store: &dyn ObjectStore,
+    store: &Arc<dyn ObjectStore>,
     sql: &str,
 ) -> Result<()> {
-    let mut runner = connection.query_runner(sql.as_bytes());
-    loop {
-        configure(connection);
-        let Some(statement) = runner.next() else {
-            break;
-        };
-        if let Some(mut statement) = statement.context("prepare remote SQL statement")? {
-            store.validate_transaction(!connection.get_auto_commit())?;
-            statement
-                .run_ignore_rows()
-                .context("execute remote SQL statement")?;
-        }
-    }
-    Ok(())
+    execute_bounded(connection, store, sql, &Budget::trusted_default())
 }
 
 pub(crate) fn query_sql(
     connection: &Arc<Connection>,
-    store: &dyn ObjectStore,
+    store: &Arc<dyn ObjectStore>,
     sql: &str,
 ) -> Result<Vec<Vec<Value>>> {
-    store.validate_transaction(!connection.get_auto_commit())?;
-    configure(connection);
-    let Some(mut statement) = connection.query(sql).context("prepare remote query")? else {
-        return Ok(Vec::new());
-    };
-    statement
-        .run_collect_rows()
-        .context("collect remote query rows")
+    query_bounded(connection, store, sql, &Budget::trusted_default())
+}
+
+fn execute_bounded(
+    connection: &Arc<Connection>,
+    store: &Arc<dyn ObjectStore>,
+    sql: &str,
+    budget: &Budget,
+) -> Result<()> {
+    Metrics::global().observe(
+        Operation::Execute,
+        || {
+            let mut guard = ExecutionBudget::install(connection, sql, budget, store.clone())?;
+            let mut runner = connection.query_runner(sql.as_bytes());
+            let mut steps = 0;
+            loop {
+                guard.check()?;
+                store.validate_local()?;
+                configure(connection);
+                let Some(statement) = runner.next() else {
+                    break;
+                };
+                if let Some(mut statement) = statement.context("prepare remote SQL statement")? {
+                    store.validate_transaction(!connection.get_auto_commit())?;
+                    step_rows(&mut statement, store.as_ref(), &mut guard, false, steps)?;
+                    steps += statement.metrics().vm_steps;
+                }
+            }
+            Ok(())
+        },
+        |_| 0,
+    )
+}
+
+fn query_bounded(
+    connection: &Arc<Connection>,
+    store: &Arc<dyn ObjectStore>,
+    sql: &str,
+    budget: &Budget,
+) -> Result<Vec<Vec<Value>>> {
+    Metrics::global().observe(
+        Operation::Query,
+        || {
+            let mut guard = ExecutionBudget::install(connection, sql, budget, store.clone())?;
+            store.validate_transaction(!connection.get_auto_commit())?;
+            configure(connection);
+            let Some(mut statement) = connection.query(sql).context("prepare remote query")? else {
+                return Ok(Vec::new());
+            };
+            step_rows(&mut statement, store.as_ref(), &mut guard, true, 0)
+        },
+        |_| 0,
+    )
+}
+
+fn step_rows(
+    statement: &mut Statement,
+    store: &dyn ObjectStore,
+    guard: &mut ExecutionBudget<'_>,
+    collect: bool,
+    prior_steps: u64,
+) -> Result<Vec<Vec<Value>>> {
+    let mut rows = Vec::new();
+    loop {
+        guard.check()?;
+        store.validate_local()?;
+        let row = statement
+            .run_one_step_blocking(
+                || {
+                    guard.check().map_err(|error| {
+                        turso_core::LimboError::InternalError(error.to_string())
+                    })?;
+                    store
+                        .validate_local()
+                        .map_err(|error| turso_core::LimboError::InternalError(error.to_string()))
+                },
+                || {
+                    guard
+                        .check()
+                        .map_err(|error| turso_core::LimboError::InternalError(error.to_string()))
+                },
+            )
+            .context("step bounded remote SQL")?;
+        if let Some(row) = row {
+            guard.account_row(row.get_values())?;
+            if collect {
+                rows.push(row.get_values().cloned().collect());
+            }
+        } else {
+            guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
+            store.validate_local()?;
+            break;
+        }
+        guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
+    }
+    Ok(rows)
 }

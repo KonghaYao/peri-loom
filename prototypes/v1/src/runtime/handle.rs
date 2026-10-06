@@ -55,6 +55,23 @@ impl DatabaseHandle {
     pub fn resources(&self) -> Result<ResourceUsage> {
         self.database.as_ref().unwrap().database().resources()
     }
+    pub fn diagnostics(&self) -> Result<serde_json::Value> {
+        let database = self.database.as_ref().unwrap().database();
+        let storage = database.storage();
+        storage.store().validate_session()?;
+        let manifest = storage.manifest();
+        Ok(serde_json::json!({
+            "generation": manifest.generation,
+            "manifest_hash": storage.manifest_id(),
+            "logical_db_size": manifest.logical_db_size,
+            "page_size": manifest.page_size,
+            "segment_count": manifest.segments.len(),
+            "applied_lsn": manifest.applied_lsn,
+            "applied_wal_position": manifest.applied_wal_position,
+            "resources": database.resources()?,
+            "snapshot_consistency": "diagnostic_only_not_authority"
+        }))
+    }
 }
 
 impl Drop for DatabaseHandle {

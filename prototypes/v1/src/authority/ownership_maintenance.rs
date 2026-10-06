@@ -22,6 +22,7 @@ pub(super) fn run(
     let _barrier = if matches!(
         operation,
         MaintenanceOperation::Restore { .. }
+            | MaintenanceOperation::RestorePitr { .. }
             | MaintenanceOperation::DropBranch
             | MaintenanceOperation::GcCollect { .. }
     ) {
@@ -35,7 +36,9 @@ pub(super) fn run(
     let payload = digest(&("maintenance", identifier, &operation))?;
     let revokes_branch = matches!(
         operation,
-        MaintenanceOperation::Restore { .. } | MaintenanceOperation::DropBranch
+        MaintenanceOperation::Restore { .. }
+            | MaintenanceOperation::RestorePitr { .. }
+            | MaintenanceOperation::DropBranch
     );
     if !matches!(operation, MaintenanceOperation::GcCollect { .. }) {
         if let Some(result) = commands::receipt(&service, request_id, &payload)? {
@@ -172,6 +175,19 @@ fn apply(root: &mut CatalogRoot, branch: &str, operation: &MaintenanceOperation)
                 .get(snapshot)
                 .context("snapshot missing")?
                 .clone();
+            crate::capabilities::restore(root, branch, &point)?;
+        }
+        MaintenanceOperation::RestorePitr { sequence } => {
+            let point = root
+                .branches
+                .get(branch)
+                .context("branch missing")?
+                .history
+                .iter()
+                .filter(|point| point.sequence == *sequence)
+                .max_by_key(|point| (point.timestamp_ms, point.timeline))
+                .cloned()
+                .context("exact committed sequence is not retained")?;
             crate::capabilities::restore(root, branch, &point)?;
         }
         MaintenanceOperation::DropBranch => {

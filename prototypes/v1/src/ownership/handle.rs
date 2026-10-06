@@ -42,6 +42,10 @@ impl OwnedHandle {
     pub fn resources(&self) -> Result<ResourceUsage> {
         self.handle.as_ref().unwrap().resources()
     }
+    pub fn diagnostics(&self) -> Result<serde_json::Value> {
+        self.context.check(None)?;
+        self.handle.as_ref().unwrap().diagnostics()
+    }
 
     pub fn is_readonly(&self) -> Result<bool> {
         self.context.check(None)?;

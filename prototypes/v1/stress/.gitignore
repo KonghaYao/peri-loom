@@ -1,0 +1,4 @@
+.gocache/
+.test-tmp/
+peri-stress
+*.log

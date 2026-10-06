@@ -56,6 +56,7 @@ pub enum AuthorityCommand {
         operation: SessionOperation,
     },
     Shutdown,
+    GetMetrics,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +67,7 @@ pub enum MaintenanceOperation {
     Branch { source: String, name: String },
     Clone { snapshot: String, name: String },
     Restore { snapshot: String },
+    RestorePitr { sequence: u64 },
     Pitr { sequence: u64 },
     PitrTime { timestamp_ms: u64 },
     DropBranch,

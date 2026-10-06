@@ -1,0 +1,34 @@
+services:
+  app:
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    command: ["--run-dir", "/data/peri", "--backend", "s3", "--listen", "0.0.0.0:9443", "--tls", "--no-build"]
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${PERI_TEST_BUCKET:?set a NEW isolated test bucket name}
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set private test credentials}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set private test credentials}
+  minio:
+    image: ${MINIO_IMAGE:?set a reviewed pinned MinIO image digest}
+    profiles: [minio]
+    command: [server, /data]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set private test credentials}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set private test credentials}
+    volumes:
+      - minio-state:/data
+  minio-init:
+    image: ${MINIO_MC_IMAGE:?set a reviewed pinned MinIO client image digest}
+    profiles: [minio]
+    depends_on: [minio]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set private test credentials}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set private test credentials}
+      PERI_TEST_BUCKET: ${PERI_TEST_BUCKET:?set a NEW isolated test bucket name}
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - 'export MC_HOST_isolated="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@minio:9000"; attempt=0; until mc ready isolated >/dev/null 2>&1; do attempt=$$((attempt+1)); test "$$attempt" -lt 60 || exit 1; sleep 2; done; mc mb --ignore-existing "isolated/$$PERI_TEST_BUCKET" >/dev/null'
+volumes:
+  minio-state:

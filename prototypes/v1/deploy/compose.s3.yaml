@@ -1,0 +1,10 @@
+services:
+  app:
+    command: ["--run-dir", "/data/peri", "--backend", "s3", "--listen", "0.0.0.0:9443", "--tls", "--no-build"]
+    environment:
+      S3_ENDPOINT: ${S3_ENDPOINT:?set existing S3 endpoint}
+      S3_BUCKET: ${S3_BUCKET:?set an existing isolated bucket}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3 access key in environment}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3 secret in environment}
+      S3_SESSION_TOKEN: ${S3_SESSION_TOKEN:-}

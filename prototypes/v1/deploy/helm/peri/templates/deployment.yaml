@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: app
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--run-dir", "/data/peri", "--backend", {{ .Values.backend | quote }}, "--listen", "0.0.0.0:9443", "--tls", "--no-build"]
+          ports:
+            - name: https
+              containerPort: 9443
+          env:
+            - name: PERI_TLS_CERT
+              value: /run/tls/tls.crt
+            - name: PERI_TLS_KEY
+              value: /run/tls/tls.key
+            - name: PERI_TLS_CA
+              value: /run/tls/ca.crt
+{{- if eq .Values.backend "s3" }}
+            - name: S3_ENDPOINT
+              value: {{ required "s3.endpoint is required" .Values.s3.endpoint | quote }}
+            - name: S3_BUCKET
+              value: {{ required "s3.bucket must already exist" .Values.s3.bucket | quote }}
+            - name: S3_REGION
+              value: {{ .Values.s3.region | quote }}
+{{- range $key := list "S3_ACCESS_KEY_ID" "S3_SECRET_ACCESS_KEY" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "s3.credentialSecret is required" $.Values.s3.credentialSecret | quote }}
+                  key: {{ $key }}
+{{- end }}
+            - name: S3_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3.credentialSecret | quote }}
+                  key: S3_SESSION_TOKEN
+                  optional: true
+{{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+          volumeMounts:
+            - name: state
+              mountPath: /data
+            - name: tls
+              mountPath: /run/tls
+              readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-state
+        - name: tls
+          secret:
+            secretName: {{ required "tlsSecret must contain tls.crt, tls.key and ca.crt" .Values.tlsSecret | quote }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt

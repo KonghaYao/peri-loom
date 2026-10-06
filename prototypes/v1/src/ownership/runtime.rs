@@ -34,16 +34,45 @@ impl OwnershipRuntime {
         limits: WorkerLimits,
         clock: Arc<dyn LeaseClock>,
     ) -> Result<Arc<Self>> {
-        validate_label(&worker_id)?;
-        let contexts = Arc::new(Mutex::new(BTreeMap::new()));
-        let worker = WorkerRuntime::new(
-            Arc::new(ContextProvider {
-                remote: provider.clone(),
-                contexts: contexts.clone(),
-            }),
+        Self::configured(worker_id, provider, cache_root, limits, clock, None)
+    }
+
+    pub fn new_with_key_provider(
+        worker_id: String,
+        provider: Arc<RemoteAuthorityProvider>,
+        cache_root: impl AsRef<Path>,
+        limits: WorkerLimits,
+        clock: Arc<dyn LeaseClock>,
+        key_provider: Arc<dyn crate::encryption::DatabaseKeyProvider>,
+    ) -> Result<Arc<Self>> {
+        Self::configured(
+            worker_id,
+            provider,
             cache_root,
             limits,
-        )?;
+            clock,
+            Some(key_provider),
+        )
+    }
+
+    fn configured(
+        worker_id: String,
+        provider: Arc<RemoteAuthorityProvider>,
+        cache_root: impl AsRef<Path>,
+        limits: WorkerLimits,
+        clock: Arc<dyn LeaseClock>,
+        key_provider: Option<Arc<dyn crate::encryption::DatabaseKeyProvider>>,
+    ) -> Result<Arc<Self>> {
+        validate_label(&worker_id)?;
+        let contexts = Arc::new(Mutex::new(BTreeMap::new()));
+        let guarded = Arc::new(ContextProvider {
+            remote: provider.clone(),
+            contexts: contexts.clone(),
+        });
+        let worker = match key_provider {
+            Some(keys) => WorkerRuntime::new_with_key_provider(guarded, cache_root, limits, keys)?,
+            None => WorkerRuntime::new(guarded, cache_root, limits)?,
+        };
         Ok(Arc::new(Self {
             worker_id,
             provider,

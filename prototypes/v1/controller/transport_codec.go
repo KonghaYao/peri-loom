@@ -96,6 +96,7 @@ func decodeRPCResponseContext(ctx context.Context, body []byte, requestID string
 			value := reflect.ValueOf(output)
 			decoded := reflect.New(value.Elem().Type())
 			decoder := json.NewDecoder(bytes.NewReader(result))
+			decoder.UseNumber()
 			decoder.DisallowUnknownFields()
 			if decoder.Decode(decoded.Interface()) != nil {
 				return invalid()

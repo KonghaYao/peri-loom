@@ -11,6 +11,7 @@ use turso_core::{CompletionError, LimboError};
 
 use crate::cache::SegmentCache;
 use crate::manifest::WalPosition;
+use crate::metrics::{Metrics, Operation};
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
 use crate::ownership::types::AccessRole;
@@ -255,10 +256,38 @@ impl Shared {
             .filter(|position| {
                 batch_covers_position(&state.batch, &state.bytes, *position).unwrap_or(false)
             });
-        match self
-            .wal
-            .append_commit(&self.namespace, self.epoch, state.batch.clone(), position)
-        {
+        let bytes = state
+            .batch
+            .operations
+            .iter()
+            .fold(0u64, |total, operation| match operation {
+                crate::wal::WalOperation::Write { bytes, .. } => {
+                    total.saturating_add(bytes.len() as u64)
+                }
+                crate::wal::WalOperation::Truncate { .. } => total,
+            });
+        let started = std::time::Instant::now();
+        let appended =
+            self.wal
+                .append_commit(&self.namespace, self.epoch, state.batch.clone(), position);
+        let elapsed = started.elapsed();
+        let metrics = Metrics::global();
+        let transferred = if appended.is_ok() { bytes } else { 0 };
+        metrics.record(
+            Operation::WalDurability,
+            elapsed,
+            appended.is_ok(),
+            transferred,
+        );
+        if position.is_some() {
+            metrics.record(
+                Operation::NativeCommitDurability,
+                elapsed,
+                appended.is_ok(),
+                transferred,
+            );
+        }
+        match appended {
             Ok(lsn) => {
                 state.lsn = lsn;
                 if position.is_some() {

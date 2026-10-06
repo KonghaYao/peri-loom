@@ -2,6 +2,22 @@
 
 基于自建 TursoDB Engine 的独立 DB Platform。平台自行负责 Server、Worker、调度、路由、DBA、生命周期、可靠性与存储管理，**不依赖 Turso Cloud 控制面**。
 
+## v1 新数据面
+
+`docs/v1` 对应独立的 segmented / diskless 原生数据面，位于 `prototypes/v1`。
+它使用 Rust Authority / Workers 和 Go Controller / Gateway / KMS，不依赖下文旧平台的 PostgreSQL 或远程 Raft WAL 服务。
+实现与验收进度见 [v1 实施记录](docs/v1/IMPLEMENTATION.md)，运行与安全边界见 [P6 平台指南](prototypes/v1/platform/README.md)。
+
+从仓库根目录启动完整本地开发项目：
+
+```sh
+python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
+```
+
+初始化已固定的 Turso fork submodule 后，启动器构建并启动 Authority、两台 Worker、Controller、Gateway 和 Key Broker。
+`connection.json` 包含私有测试 API Key 与开发 CA 路径，不可公开；访问其中的 Gateway 地址即可打开内嵌管理控制台。
+真实 S3 仅由 Authority 接收凭据，部署、SDK 与本地对象存储步骤见平台指南。以下文档与命令保留为旧平台说明。
+
 架构契约见 [`tursodb-db-platform-architecture.md`](./tursodb-db-platform-architecture.md)（状态：FINAL / Development Contract）。
 本仓库的任何实现不得改变该文档第 15 章与第 18.4 节冻结的系统语义。
 

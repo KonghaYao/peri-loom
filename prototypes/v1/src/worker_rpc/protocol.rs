@@ -20,7 +20,9 @@ pub enum WorkerCommand {
     Query { session: String, sql: String },
     Checkpoint { session: String },
     Compact { session: String },
+    Diagnostics { session: String },
     CloseSession { session: String },
+    GetMetrics,
     Shutdown,
 }
 
@@ -32,4 +34,6 @@ pub struct WorkerResponse {
     pub ok: bool,
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_completed: Option<bool>,
 }

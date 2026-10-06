@@ -41,6 +41,8 @@ impl RemoteStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("storage mutex poisoned"))?;
         let cache = self.cache.stats();
+        let segment_cache_hits = cache.hits_ram.saturating_add(cache.hits_disk);
+        let segment_cache_lookups = segment_cache_hits.saturating_add(cache.misses);
         let dirty_segment_bytes = state.dirty.values().try_fold(0u64, |total, bytes| {
             total
                 .checked_add(bytes.len() as u64)
@@ -51,6 +53,13 @@ impl RemoteStorage {
             segment_disk_bytes: cache.disk_bytes,
             dirty_segment_bytes,
             segment_loads: state.segment_loads,
+            segment_cache_hits_ram: cache.hits_ram,
+            segment_cache_hits_disk: cache.hits_disk,
+            segment_cache_misses: cache.misses,
+            segment_cache_evictions: cache.evictions,
+            segment_cache_lookups,
+            segment_cache_hit_ratio: (segment_cache_lookups > 0)
+                .then(|| segment_cache_hits as f64 / segment_cache_lookups as f64),
             ..crate::resources::ResourceUsage::default()
         })
     }

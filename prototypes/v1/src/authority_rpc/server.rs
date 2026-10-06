@@ -230,6 +230,12 @@ impl State {
         identifier: &str,
     ) -> Result<Value> {
         match command {
+            AuthorityCommand::GetMetrics => {
+                Self::control(principal)?;
+                Ok(serde_json::to_value(
+                    crate::metrics::Metrics::global().snapshot(),
+                )?)
+            }
             AuthorityCommand::Challenge { intent } => {
                 Self::control(principal)?;
                 Ok(serde_json::to_value(self.authority.challenge(intent)?)?)

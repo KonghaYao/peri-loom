@@ -1,5 +1,6 @@
 mod local;
 mod memory;
+pub mod metrics;
 mod s3;
 mod signing;
 mod transport;

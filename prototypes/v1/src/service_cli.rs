@@ -45,6 +45,10 @@ fn authority(arguments: &[String]) -> Result<()> {
     let auth = AuthConfig::new(control, workers)?;
     let startup = AuthorityStartup::acquire(Path::new(&arguments[3]), arguments.len() == 5)?;
     let store = crate::config::authority_backend(&arguments[1])?;
+    let store = Arc::new(crate::object_store::metrics::MetricsObjectStore::new(
+        store,
+        crate::metrics::Metrics::global(),
+    ));
     let authority = OwnershipAuthority::new(store, Arc::new(SystemLeaseClock));
     let server = Server::bind(address, authority, auth, startup)?;
     ready("authority", server.local_addr())?;
@@ -58,21 +62,79 @@ fn worker(arguments: &[String]) -> Result<()> {
     );
     let client = AuthorityClient::new(&arguments[1], credential("PERI_WORKER_AUTHORITY_TOKEN")?)?;
     let provider = RemoteAuthorityProvider::new(client, arguments[3].clone())?;
-    let runtime = OwnershipRuntime::new(
-        arguments[3].clone(),
-        provider,
-        Path::new(&arguments[2]),
-        WorkerLimits::default(),
-        Arc::new(SystemLeaseClock),
-    )?;
-    let server = WorkerServer::bind(
+    let clock = Arc::new(SystemLeaseClock);
+    let limits = WorkerLimits {
+        max_open_databases: setting("PERI_WORKER_MAX_DATABASES", 32)?,
+        max_total_sessions: setting("PERI_WORKER_MAX_SESSIONS", 128)?,
+        max_sessions_per_database: setting("PERI_WORKER_MAX_DB_SESSIONS", 16)?,
+        segment_ram_bytes: setting("PERI_WORKER_SEGMENT_RAM_BYTES", 8 * 1024 * 1024)?,
+        segment_disk_bytes: setting("PERI_WORKER_SEGMENT_DISK_BYTES", 64 * 1024 * 1024)?,
+    };
+    let runtime = match std::env::var("PERI_KMS_ENDPOINT") {
+        Ok(endpoint) => {
+            let keys = crate::encryption::BrokerDatabaseKeyProvider::new(
+                provider.clone(),
+                &endpoint,
+                credential("PERI_WORKER_KEY_TOKEN")?,
+                clock.clone(),
+            )?;
+            OwnershipRuntime::new_with_key_provider(
+                arguments[3].clone(),
+                provider,
+                Path::new(&arguments[2]),
+                limits,
+                clock,
+                keys,
+            )?
+        }
+        Err(std::env::VarError::NotPresent) => {
+            ensure!(
+                std::env::var_os("PERI_WORKER_KEY_TOKEN").is_none(),
+                "key token without broker endpoint"
+            );
+            OwnershipRuntime::new(
+                arguments[3].clone(),
+                provider,
+                Path::new(&arguments[2]),
+                limits,
+                clock,
+            )?
+        }
+        Err(_) => anyhow::bail!("invalid PERI_KMS_ENDPOINT"),
+    };
+    let budget = crate::session::Budget {
+        max_sql_bytes: setting("PERI_SQL_MAX_BYTES", 64 * 1024)?,
+        max_rows: setting("PERI_SQL_MAX_ROWS", 10_000)?,
+        max_result_bytes: setting("PERI_SQL_MAX_RESULT_BYTES", 4 * 1024 * 1024)?,
+        max_vm_steps: setting("PERI_SQL_MAX_VM_STEPS", 10_000_000)?,
+        max_query_duration: std::time::Duration::from_millis(setting(
+            "PERI_SQL_MAX_DURATION_MS",
+            5_000,
+        )?),
+    };
+    let server = WorkerServer::bind_with_limits(
         arguments[4].parse()?,
         runtime,
         credential("PERI_WORKER_CONTROL_TOKEN")?,
         credential("PERI_WORKER_SQL_TOKEN")?,
+        crate::worker_rpc::server::WorkerLimits {
+            max_inflight: setting("PERI_WORKER_MAX_INFLIGHT", 128)?,
+            control_reserve: setting("PERI_WORKER_CONTROL_RESERVE", 16)?,
+            max_sessions: setting("PERI_WORKER_MAX_SESSIONS", 128)?,
+            max_request_bytes: setting("PERI_WORKER_MAX_REQUEST_BYTES", 512 * 1024)?,
+        },
     )?;
+    crate::session::Budget::set_default(budget)?;
     ready("owned-worker", server.local_addr()?)?;
     server.run()
+}
+
+fn setting<Value: std::str::FromStr>(name: &str, default: Value) -> Result<Value> {
+    match std::env::var(name) {
+        Ok(value) => value.parse().map_err(|_| anyhow::anyhow!("invalid {name}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(_) => anyhow::bail!("invalid {name}"),
+    }
 }
 
 fn credential(name: &str) -> Result<String> {
