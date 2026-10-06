@@ -71,8 +71,12 @@ namespace, immutable root incarnation, encryption domain, and key revision;
 the broker checks fresh Rust ownership before and after unwrapping. There is
 no plaintext fallback and no retroactive encryption claim for old plaintext databases.
 
-The local KMS is a private, encrypted-at-rest development keyring, **not an HSM
-or external cloud KMS**. Rotate a KEK and rewrap descriptors without changing
+The local KMS wraps DEKs with AES-GCM and stores its KEKs in a private,
+file-backed development keyring, **not an HSM or external cloud KMS**. The KEK
+file itself is not encrypted; host disk/root access can recover the KEKs and
+unwrap DEKs. Database encryption protects stored page/WAL images without
+promising protection from compromise of the key-management host.
+Rotate a KEK and rewrap descriptors without changing
 DEKs or the database domain. Keep old KEK versions required by retained envelopes.
 DEKs remain available for reachable historical snapshots; deleting a branch is
 not cryptographic erasure. Keys can exist in process memory; swap and hostile

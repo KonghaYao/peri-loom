@@ -56,7 +56,10 @@ the resolved key. Missing/wrong keys and broker uncertainty fail closed.
 KEK rotation/rewrap preserves the DEK and retained native history.
 
 The private local keyring provides development KMS behavior, not managed HSM
-assurances. Metadata keeps namespace identities and historical DEKs rather
+assurances. DEKs are wrapped with AES-GCM, but the KEK file itself contains
+unencrypted key material under filesystem access controls. Compromise of the
+key-management host is outside the stored-page/WAL confidentiality guarantee.
+Metadata keeps namespace identities and historical DEKs rather
 than claiming deletion is secure erasure. Anti-rollback local floors protect
 individual-file rollback/corruption, not coordinated restoration of all files.
 
