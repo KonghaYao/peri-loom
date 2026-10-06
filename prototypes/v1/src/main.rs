@@ -19,6 +19,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|command| command == "worker") {
+        ensure!(args.len() == 3, "usage: peri-loom-v1 worker STORE CACHE");
+        return peri_loom_v1::runtime_cli::run(backend(&args[1])?, &args[2]);
+    }
     ensure!(
         args.len() >= 5,
         "usage: peri-loom-v1 STORE CACHE TENANT DB COMMAND [ARG]"

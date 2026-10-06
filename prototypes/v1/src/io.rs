@@ -14,6 +14,7 @@ use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
 use crate::recovery::{batch_covers_position, committed_position};
+use crate::resources::ResourceUsage;
 use crate::storage::RemoteStorage;
 use crate::wal::{apply_batch, DurableWal, RemoteWal, WalBatch};
 use files::RemoteFile;
@@ -110,6 +111,54 @@ impl RemoteIO {
             .lock()
             .expect("remote IO mutex poisoned")
             .lsn
+    }
+
+    pub fn resources(&self) -> Result<ResourceUsage> {
+        let state = self.shared.lock()?;
+        let mut usage = self.shared.storage.resource_usage()?;
+        usage.wal_bytes = state.bytes.len();
+        usage.pending_wal_bytes =
+            state
+                .batch
+                .operations
+                .iter()
+                .try_fold(0usize, |total, operation| {
+                    let bytes = match operation {
+                        crate::wal::WalOperation::Write { bytes, .. } => bytes.len(),
+                        crate::wal::WalOperation::Truncate { .. } => 0,
+                    };
+                    total
+                        .checked_add(bytes)
+                        .context("pending WAL payload overflow")
+                })?;
+        Ok(usage)
+    }
+
+    pub(crate) fn check_compaction(&self) -> Result<()> {
+        let state = self.shared.lock()?;
+        ensure!(
+            !state.wal_failed && !state.publication_failed && state.batch.operations.is_empty(),
+            "WAL compaction requires confirmed durability and no pending operations"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn compact_wal(&self) -> Result<()> {
+        let mut state = self.shared.lock()?;
+        self.shared.allow_reset(&state)?;
+        ensure!(
+            state.bytes.is_empty(),
+            "WAL compaction requires a successful native truncate-checkpoint"
+        );
+        let before = state
+            .lsn
+            .checked_add(1)
+            .context("WAL compaction LSN overflow")?;
+        if let Err(error) = self.shared.wal.truncate(&self.shared.namespace, before) {
+            state.wal_failed = true;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn kind(&self, path: &str) -> Option<bool> {

@@ -98,3 +98,50 @@ declared safe merely because a timeout elapsed. These trade availability/storage
 usage for safety; distributed pin expiry and large-scale metadata compaction are
 not production claims. The whole root is a prototype CAS document, not a scalable
 catalog implementation.
+
+## P3 multi-database worker
+
+Start the trusted local-development worker with a storage directory (or `s3`)
+and a disposable cache directory:
+
+```sh
+cargo run --manifest-path prototypes/v1/Cargo.toml -- worker /tmp/peri-root-store /tmp/peri-worker-cache
+```
+
+The process accepts one JSON request per stdin line and flushes one JSON response
+per stdout line. Request IDs are strings or unsigned integers. For example:
+
+```json
+{"id":"open","op":"open","database":{"namespace":{"tenant":"tenant","database":"database"},"branch":"main"},"epoch":0}
+{"id":"create","op":"exec","session":"s1","sql":"CREATE TABLE items(id INTEGER PRIMARY KEY)"}
+{"id":"insert","op":"exec","session":"s1","sql":"INSERT INTO items VALUES(1)"}
+{"id":"read","op":"query","session":"s1","sql":"SELECT * FROM items"}
+{"id":"compact","op":"compact","session":"s1"}
+{"id":"close","op":"close","session":"s1"}
+{"id":"evict","op":"evict","idle_ms":0}
+{"id":"status","op":"status"}
+```
+
+Each open creates an independent native SQL connection; explicit transactions
+can span requests. Closing a session or reaching EOF aborts its unfinished
+transaction. `close` releases a session; `unload` removes an idle database, while
+`drain` rejects new sessions and unloads after its final existing session closes.
+`checkpoint` persists dirty segments; `compact` additionally replaces the current
+WAL replay image with a small checkpoint baseline. Historical snapshots/PITR
+retain their original immutable WAL objects. Cold-open fetches segments lazily.
+
+Default admission bounds are 32 database instances, 128 total sessions and 16
+sessions per database. Loading and retiring instances count against capacity;
+slow backend work and native teardown do not hold the global registry mutex.
+The library's `WorkerLimits` also configures each database's clean RAM/SSD segment
+cache (8 MiB/64 MiB by default). `status` reports cache payload, dirty segment,
+WAL/pending WAL bytes and segment loads; these are not process RSS or native
+Pager-allocation measurements. Unload removes instance accounting, not the
+disposable SSD cache files. The entire worker cache directory may be deleted
+after stopping its process.
+
+This P3 command is a trusted development adapter: its epoch identifies a local
+loaded instance, not a distributed ownership grant. It retains access to the
+configured storage backend. P4 must put credentials behind the authenticated
+storage authority and enforce grants at every durable boundary; do not expose
+this stdin protocol as a production network service.

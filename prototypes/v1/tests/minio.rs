@@ -6,6 +6,9 @@ mod signing;
 #[allow(dead_code)]
 mod http_mock;
 
+#[path = "minio/p3.rs"]
+mod p3;
+
 use anyhow::{anyhow, ensure, Result};
 use peri_loom_v1::{
     database::RemoteDatabase,

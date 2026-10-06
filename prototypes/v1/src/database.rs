@@ -1,18 +1,21 @@
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
-use anyhow::{anyhow, Context, Result};
-use turso_core::{
-    CheckpointMode, Connection, Database, OpenOptions, SqliteDialect, SyncMode, Value,
-};
+use anyhow::{anyhow, ensure, Context, Result};
+use turso_core::{CheckpointMode, Connection, Database, OpenOptions, SqliteDialect, Value};
 
 use crate::io::RemoteIO;
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
+use crate::resources::ResourceUsage;
+pub use crate::session::RemoteSession;
+use crate::session::{configure, execute_sql, query_sql};
 use crate::storage::RemoteStorage;
 
 pub struct RemoteDatabase {
     connection: Mutex<Arc<Connection>>,
+    engine: Arc<Database>,
+    operations: RwLock<()>,
     io: Arc<RemoteIO>,
 }
 
@@ -49,55 +52,92 @@ impl RemoteDatabase {
         )
         .context("open remote SQL database")?;
         let connection = database.connect().context("connect remote SQL database")?;
-        connection.wal_auto_actions_disable();
-        connection.set_sync_mode(SyncMode::Full);
+        configure(&connection);
         Ok(Self {
             connection: Mutex::new(connection),
+            engine: database,
+            operations: RwLock::new(()),
             io,
         })
     }
 
     pub fn execute(&self, sql: &str) -> Result<()> {
-        self.io.storage().store().validate_session()?;
+        let _operation = self.operation()?;
         let connection = self.connection()?;
-        let mut runner = connection.query_runner(sql.as_bytes());
-        loop {
-            connection.set_sync_mode(SyncMode::Full);
-            connection.wal_auto_actions_disable();
-            let Some(statement) = runner.next() else {
-                break;
-            };
-            if let Some(mut statement) = statement.context("prepare remote SQL statement")? {
-                statement
-                    .run_ignore_rows()
-                    .context("execute remote SQL statement")?;
-            }
-        }
-        Ok(())
+        execute_sql(&connection, self.storage().store().as_ref(), sql)
     }
 
     pub fn query(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
-        self.io.storage().store().validate_session()?;
+        let _operation = self.operation()?;
         let connection = self.connection()?;
-        connection.set_sync_mode(SyncMode::Full);
-        connection.wal_auto_actions_disable();
-        let Some(mut statement) = connection.query(sql).context("prepare remote query")? else {
-            return Ok(Vec::new());
-        };
-        statement
-            .run_collect_rows()
-            .context("collect remote query rows")
+        query_sql(&connection, self.storage().store().as_ref(), sql)
     }
 
     pub fn checkpoint(&self) -> Result<()> {
+        let _operation = self
+            .operations
+            .write()
+            .map_err(|_| anyhow!("database operation gate poisoned"))?;
         self.io.storage().store().validate_session()?;
         let connection = self.connection()?;
-        connection.set_sync_mode(SyncMode::Full);
-        connection.wal_auto_actions_disable();
+        configure(&connection);
         connection
             .checkpoint(CheckpointMode::Full)
             .context("checkpoint remote database")?;
         Ok(())
+    }
+
+    pub fn session(self: &Arc<Self>) -> Result<RemoteSession> {
+        let _operation = self.operation()?;
+        self.storage().store().validate_session()?;
+        let connection = self
+            .engine
+            .connect()
+            .context("connect independent remote session")?;
+        configure(&connection);
+        Ok(RemoteSession::new(self.clone(), connection))
+    }
+
+    pub fn resources(&self) -> Result<ResourceUsage> {
+        self.io.resources()
+    }
+
+    pub fn compact_wal(&self) -> Result<()> {
+        let _operation = self
+            .operations
+            .write()
+            .map_err(|_| anyhow!("database operation gate poisoned"))?;
+        self.storage().store().validate_session()?;
+        let connection = self.connection()?;
+        ensure!(
+            connection.get_auto_commit(),
+            "cannot compact inside a transaction"
+        );
+        configure(&connection);
+        self.io.check_compaction()?;
+        let checkpoint = connection
+            .checkpoint(CheckpointMode::Truncate {
+                upper_bound_inclusive: None,
+            })
+            .context("truncate-checkpoint remote WAL")?;
+        ensure!(
+            checkpoint.wal_max_frame == checkpoint.wal_total_backfilled,
+            "checkpoint did not backfill the complete WAL"
+        );
+        self.io.compact_wal()?;
+        Ok(())
+    }
+
+    pub(crate) fn operation(&self) -> Result<RwLockReadGuard<'_, ()>> {
+        self.operations
+            .read()
+            .map_err(|_| anyhow!("database operation gate poisoned"))
+    }
+
+    pub(crate) fn cleanup_operation(&self) -> RwLockReadGuard<'_, ()> {
+        self.operations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn storage(&self) -> Arc<RemoteStorage> {

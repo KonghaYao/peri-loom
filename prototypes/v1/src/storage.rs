@@ -35,6 +35,26 @@ pub struct RemoteStorage {
 }
 
 impl RemoteStorage {
+    pub(crate) fn resource_usage(&self) -> Result<crate::resources::ResourceUsage> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage mutex poisoned"))?;
+        let cache = self.cache.stats();
+        let dirty_segment_bytes = state.dirty.values().try_fold(0u64, |total, bytes| {
+            total
+                .checked_add(bytes.len() as u64)
+                .context("dirty segment payload overflow")
+        })?;
+        Ok(crate::resources::ResourceUsage {
+            segment_ram_bytes: cache.ram_bytes,
+            segment_disk_bytes: cache.disk_bytes,
+            dirty_segment_bytes,
+            segment_loads: state.segment_loads,
+            ..crate::resources::ResourceUsage::default()
+        })
+    }
+
     pub fn open(
         store: Arc<dyn ObjectStore>,
         namespace: Namespace,

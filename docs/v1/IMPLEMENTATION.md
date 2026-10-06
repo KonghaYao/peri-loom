@@ -16,8 +16,8 @@ subagent 按该阶段文档验收。修复后复验，通过才提交。P0–P6 
 | --- | --- | --- | --- |
 | P0 | 完成 | manifest/storage、fork IO、SQL/CLI | 36 测试；Turso 1a548d14a；父仓库 eef60fb |
 | P1 | 完成 | ObjectStore/S3、remote segments/cache、DurableWal/SQL | b8912a5；独立 PASS；63 顶层测试 + 2 RustFS live；缓存锁 100 轮复验 |
-| P2 | 完成 | durable root authority、native commit history、refs/PITR、reachability GC | 独立 PASS；121 常规 + 3 RustFS live；设计见 P2-DESIGN.md |
-| P3 | 待实施 | multi-DB lifecycle、资源/idle eviction、migration/cold-open | 待验收 |
+| P2 | 完成 | durable root authority、native commit history、refs/PITR、reachability GC | 2bf3c1e；独立 PASS；121 常规 + 3 RustFS live；设计见 P2-DESIGN.md |
+| P3 | 完成 | multi-DB lifecycle、资源/idle eviction、migration/cold-open | 独立 PASS；165 常规 + 4 RustFS live；真实 SIGKILL/cache 删除与 lazy migration |
 | P4 | 待实施 | ownership state machine、durable epoch authority、coarse RPC | 待验收 |
 | P5 | 待实施 | Go registry/placement、持久 epoch/lease、reconciliation/failover | 待验收 |
 | P6 | 待实施 | Go gateway/management/security、SDK/admin、metrics/deployment | 待验收 |
