@@ -1,0 +1,211 @@
+package controller
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"sync"
+	"syscall"
+)
+
+var ErrStoreLocked = errors.New("metadata store already locked")
+var ErrStoreClosed = errors.New("metadata store closed")
+var ErrStoreUncertain = errors.New("metadata persistence outcome uncertain; reopen requires durable verification")
+
+type diskStore struct {
+	mutex     sync.Mutex
+	directory string
+	lock      *os.File
+	metadata  Metadata
+	closed    bool
+	uncertain bool
+}
+
+type epochFloor struct {
+	Version          uint32 `json:"version"`
+	Revision         uint64 `json:"revision"`
+	Epoch            uint64 `json:"epoch"`
+	MetadataChecksum string `json:"metadata_checksum"`
+}
+
+func OpenStore(directory string) (MetadataStore, error) {
+	if directory == "" {
+		return nil, errors.New("private metadata directory required")
+	}
+	absolute, err := filepath.Abs(directory)
+	if err != nil {
+		return nil, err
+	}
+	if err := createPrivateDirectory(absolute); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		return nil, err
+	}
+	stat, owned := info.Sys().(*syscall.Stat_t)
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !owned || stat.Uid != uint32(os.Geteuid()) {
+		return nil, errors.New("metadata directory must be owned and not a symlink")
+	}
+	entries, err := os.ReadDir(absolute)
+	if err != nil {
+		return nil, err
+	}
+	fresh := len(entries) == 0
+	if fresh {
+		if err := os.Chmod(absolute, 0700); err != nil {
+			return nil, err
+		}
+	}
+	if err := privateFile(absolute, true); err != nil {
+		return nil, err
+	}
+	if !fresh {
+		if err := privateFile(filepath.Join(absolute, "metadata.lock"), false); err != nil {
+			return nil, fmt.Errorf("missing or unsafe initialization marker: %w", err)
+		}
+	}
+	lock, err := openLock(absolute)
+	if err != nil {
+		return nil, err
+	}
+	store := &diskStore{directory: absolute, lock: lock}
+	success := false
+	defer func() {
+		if !success {
+			store.Close()
+		}
+	}()
+	if err := lock.Sync(); err != nil {
+		return nil, err
+	}
+	if err := syncDirectory(absolute); err != nil {
+		return nil, err
+	}
+	entries, err = os.ReadDir(absolute)
+	if err != nil {
+		return nil, err
+	}
+	onlyLock := len(entries) == 1 && entries[0].Name() == "metadata.lock"
+	if fresh && onlyLock {
+		store.metadata = Metadata{Version: 1, Workers: make(map[string]Worker), Placements: make(map[string]Placement)}
+		if err := store.persist(store.metadata); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := validateDirectory(entries); err != nil {
+			return nil, err
+		}
+		metadata, floor, err := loadState(absolute)
+		if err != nil {
+			return nil, err
+		}
+		if floor.Version != 1 || floor.Revision != metadata.Revision || floor.Epoch != metadata.Epoch {
+			return nil, errors.New("durable epoch/revision floor mismatch")
+		}
+		if err := validateMetadata(metadata, nil); err != nil {
+			return nil, err
+		}
+		store.metadata = metadata
+	}
+	success = true
+	return store, nil
+}
+
+func (store *diskStore) Snapshot() (Metadata, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if err := store.available(); err != nil {
+		return Metadata{}, err
+	}
+	return cloneMetadata(store.metadata)
+}
+
+func (store *diskStore) Update(mutation func(*Metadata) error) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if err := store.available(); err != nil {
+		return err
+	}
+	if mutation == nil {
+		return errors.New("metadata mutation required")
+	}
+	candidate, err := cloneMetadata(store.metadata)
+	if err != nil {
+		return err
+	}
+	if err := mutation(&candidate); err != nil {
+		return err
+	}
+	if candidate.Version != store.metadata.Version || candidate.Revision != store.metadata.Revision {
+		return errors.New("metadata version/revision is store owned")
+	}
+	if candidate.Revision == math.MaxUint64 {
+		return errors.New("metadata revision exhausted")
+	}
+	candidate.Revision++
+	committed, err := cloneMetadata(candidate)
+	if err != nil {
+		return err
+	}
+	if err := validateMetadata(committed, &store.metadata); err != nil {
+		return err
+	}
+	if err := store.persist(committed); err != nil {
+		store.uncertain = true
+		return fmt.Errorf("%w: %v", ErrStoreUncertain, err)
+	}
+	store.metadata = committed
+	return nil
+}
+
+func (store *diskStore) available() error {
+	if store.closed {
+		return ErrStoreClosed
+	}
+	if store.uncertain {
+		return ErrStoreUncertain
+	}
+	return nil
+}
+
+func (store *diskStore) persist(metadata Metadata) error {
+	encoded, checksum, err := encodeEnvelope(metadata.Revision, metadata)
+	if err != nil {
+		return err
+	}
+	floor := epochFloor{Version: 1, Revision: metadata.Revision, Epoch: metadata.Epoch, MetadataChecksum: checksum}
+	encodedFloor, _, err := encodeEnvelope(metadata.Revision, floor)
+	if err != nil {
+		return err
+	}
+	if err := atomicFile(store.directory, "epoch-floor.json", encodedFloor); err != nil {
+		return err
+	}
+	return atomicFile(store.directory, "metadata.json", encoded)
+}
+
+func (store *diskStore) Close() error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if store.closed {
+		return nil
+	}
+	store.closed = true
+	unlock := syscall.Flock(int(store.lock.Fd()), syscall.LOCK_UN)
+	closed := store.lock.Close()
+	return errors.Join(unlock, closed)
+}
+
+func cloneMetadata(metadata Metadata) (Metadata, error) {
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return Metadata{}, err
+	}
+	var cloned Metadata
+	err = json.Unmarshal(encoded, &cloned)
+	return cloned, err
+}

@@ -18,9 +18,9 @@ subagent 按该阶段文档验收。修复后复验，通过才提交。P0–P6 
 | P1 | 完成 | ObjectStore/S3、remote segments/cache、DurableWal/SQL | b8912a5；独立 PASS；63 顶层测试 + 2 RustFS live；缓存锁 100 轮复验 |
 | P2 | 完成 | durable root authority、native commit history、refs/PITR、reachability GC | 2bf3c1e；独立 PASS；121 常规 + 3 RustFS live；设计见 P2-DESIGN.md |
 | P3 | 完成 | multi-DB lifecycle、资源/idle eviction、migration/cold-open | bd2bfed；独立 PASS；165 常规 + 4 RustFS live；真实 SIGKILL/cache 删除与 lazy migration |
-| P4 | 完成 | ownership state machine、durable epoch authority、coarse RPC | 独立 PASS；254 常规 + 5 RustFS live；原始冷恢复回归已修复并重新冻结验收；见 P4-VERIFICATION.md |
-| P5 | 待实施 | Go registry/placement、持久 epoch/lease、reconciliation/failover | 待验收 |
-| P6 | 待实施 | Go gateway/management/security、SDK/admin、metrics/deployment | 待验收 |
+| P4 | 完成 | ownership state machine、durable epoch authority、coarse RPC | 5119187；独立 PASS；254 常规 + 5 RustFS live；原始冷恢复回归已修复并重新冻结验收；见 P4-VERIFICATION.md |
+| P5 | 完成 | Go registry/placement、持久 epoch/lease、reconciliation/failover | 独立 PASS；62 顶层测试 + 1 helper skip；全包 race / vet / fmt / build 通过；8 个真实进程故障场景；见 P5-VERIFICATION.md |
+| P6 | 实施中 | Go gateway/management/security、SDK/admin、metrics/deployment | 多组隔离开发；真实原生加密 / KMS / Gateway 整栈联测中；最终验收待执行 |
 | 联合 | 待实施 | 跨阶段场景、fault/stale writer、API/部署端到端 | 待验收 |
 | 压测 / 调优 | 待联合验收后执行 | 架构/fault harness、SQL workloads、measurement、性能修复 | 规划见 ../experiment-v1-stress/00_plan.md |
 
