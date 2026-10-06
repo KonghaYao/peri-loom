@@ -1,4 +1,4 @@
 .gocache/
 .test-tmp/
-peri-faultprobe
+/peri-faultprobe
 *.log
