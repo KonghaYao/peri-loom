@@ -10,15 +10,23 @@ pub use memory::MemoryObjectStore;
 pub use s3::{S3Config, S3ObjectStore};
 
 use anyhow::{ensure, Result};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoredObject {
     pub bytes: Vec<u8>,
     pub etag: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "etag",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum PutCondition {
     Any,
     Absent,
@@ -37,8 +45,24 @@ impl std::fmt::Display for PreconditionFailed {
 impl std::error::Error for PreconditionFailed {}
 
 pub trait ObjectStore: Send + Sync {
+    fn supports_strict_fencing(&self) -> bool {
+        false
+    }
+
     fn validate_session(&self) -> Result<()> {
         Ok(())
+    }
+
+    fn validate_local(&self) -> Result<()> {
+        self.validate_session()
+    }
+
+    fn access_role(&self) -> crate::ownership::types::AccessRole {
+        crate::ownership::types::AccessRole::Writer
+    }
+
+    fn validate_transaction(&self, _in_transaction: bool) -> Result<()> {
+        self.validate_session()
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>>;

@@ -11,6 +11,10 @@ pub struct MemoryObjectStore {
 }
 
 impl ObjectStore for MemoryObjectStore {
+    fn supports_strict_fencing(&self) -> bool {
+        true
+    }
+
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         validate_key(key)?;
         Ok(self

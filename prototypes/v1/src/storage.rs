@@ -60,10 +60,16 @@ impl RemoteStorage {
         namespace: Namespace,
         cache: Arc<SegmentCache>,
     ) -> Result<Arc<Self>> {
+        store.validate_session()?;
         let namespace = Namespace::new(namespace.tenant, namespace.database)?;
         let head_key = namespace.key("HEAD")?;
         let mut head = store.get(&head_key)?;
         if head.is_none() {
+            ensure!(
+                store.access_role() == crate::ownership::types::AccessRole::Writer,
+                "read-only HEAD missing"
+            );
+            store.validate_session()?;
             let bytes = serde_json::to_vec(&Manifest::default())?;
             let identifier = digest(&bytes);
             put_immutable(
@@ -133,6 +139,7 @@ impl RemoteStorage {
     }
 
     pub fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<usize> {
+        self.store.validate_local()?;
         let mut state = self.state.lock().expect("storage mutex poisoned");
         let count = state.size.saturating_sub(offset).min(out.len() as u64) as usize;
         let mut completed = 0;
@@ -149,6 +156,7 @@ impl RemoteStorage {
     }
 
     pub fn write_at(&self, offset: u64, data: &[u8]) -> Result<usize> {
+        self.check_local_writer()?;
         let end = offset
             .checked_add(data.len() as u64)
             .context("write offset overflow")?;
@@ -182,6 +190,7 @@ impl RemoteStorage {
     }
 
     pub fn truncate(&self, len: u64) -> Result<()> {
+        self.check_local_writer()?;
         let mut state = self.state.lock().expect("storage mutex poisoned");
         if len < state.size {
             let boundary = len / SEGMENT_SIZE as u64;
@@ -202,6 +211,7 @@ impl RemoteStorage {
     }
 
     pub fn publish(&self, position: WalPosition, applied_lsn: u64) -> Result<()> {
+        self.check_writer()?;
         let mut state = self.state.lock().expect("storage mutex poisoned");
         ensure!(
             applied_lsn >= state.manifest.applied_lsn,
@@ -279,6 +289,19 @@ impl RemoteStorage {
 
     pub fn store(&self) -> Arc<dyn ObjectStore> {
         self.store.clone()
+    }
+
+    fn check_local_writer(&self) -> Result<()> {
+        ensure!(
+            self.store.access_role() == crate::ownership::types::AccessRole::Writer,
+            "read-only storage mutation"
+        );
+        self.store.validate_local()
+    }
+
+    fn check_writer(&self) -> Result<()> {
+        self.check_local_writer()?;
+        self.store.validate_session()
     }
 
     pub fn namespace(&self) -> Namespace {

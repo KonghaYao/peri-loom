@@ -35,6 +35,9 @@ impl DatabaseHandle {
     pub fn in_transaction(&self) -> Result<bool> {
         self.session.as_ref().unwrap().in_transaction()
     }
+    pub fn is_readonly(&self) -> Result<bool> {
+        self.session.as_ref().unwrap().is_readonly()
+    }
     pub fn checkpoint(&self) -> Result<()> {
         ensure!(
             !self.in_transaction()?,

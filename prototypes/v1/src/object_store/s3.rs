@@ -95,6 +95,8 @@ impl S3ObjectStore {
         );
         let client = Client::builder()
             .no_proxy()
+            .http1_only()
+            .retry(reqwest::retry::never())
             .timeout(config.timeout)
             .connect_timeout(config.timeout)
             .redirect(reqwest::redirect::Policy::none())
@@ -150,6 +152,10 @@ impl S3ObjectStore {
 }
 
 impl ObjectStore for S3ObjectStore {
+    fn supports_strict_fencing(&self) -> bool {
+        self.config.retries == 0
+    }
+
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         validate_key(key)?;
         let response = self.request(Method::GET, Some(key), vec![], b"", BTreeMap::new())?;

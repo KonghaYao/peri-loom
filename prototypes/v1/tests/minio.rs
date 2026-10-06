@@ -9,6 +9,9 @@ mod http_mock;
 #[path = "minio/p3.rs"]
 mod p3;
 
+#[path = "minio/p4.rs"]
+mod p4;
+
 use anyhow::{anyhow, ensure, Result};
 use peri_loom_v1::{
     database::RemoteDatabase,

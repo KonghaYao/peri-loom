@@ -96,13 +96,14 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
 impl Authority {
     pub(super) fn validate_root(&self, root: &CatalogRoot) -> Result<()> {
         ensure!(
-            root.version == 1
+            matches!(root.version, 1 | 2)
                 && root.revision >= 1
                 && root.namespace == self.namespace
                 && root.incarnation == self.incarnation
                 && valid_hash(&root.incarnation),
             "authority root identity mismatch"
         );
+        super::migration::validate(root)?;
         ensure!(
             root.receipts.iter().all(|(id, revision)| valid_hash(id)
                 && *revision > 0

@@ -16,6 +16,7 @@ pub(super) struct RemoteFile {
 
 impl RemoteFile {
     fn write(&self, pos: u64, buffers: Vec<Arc<Buffer>>) -> Result<usize> {
+        self.shared.check_local_writer()?;
         ensure!(!self.readonly, "file opened read-only");
         let total = buffers
             .iter()
@@ -65,6 +66,9 @@ impl RemoteFile {
 
 impl File for RemoteFile {
     fn checkpoint_wal_position(&self, salts: [u32; 2], frame_count: u64) -> turso_core::Result<()> {
+        self.shared
+            .check_local_writer()
+            .map_err(super::adapter_error)?;
         self.shared.lock()?.position = Some(WalPosition { salts, frame_count });
         Ok(())
     }
@@ -78,6 +82,7 @@ impl File for RemoteFile {
 
     fn pread(&self, pos: u64, completion: Completion) -> turso_core::Result<Completion> {
         let result = (|| {
+            self.shared.storage.store().validate_local()?;
             let state = self.shared.lock()?;
             let buffer = completion.as_read().buf();
             buffer.as_mut_slice().fill(0);
@@ -120,6 +125,7 @@ impl File for RemoteFile {
         _sync_type: FileSyncType,
     ) -> turso_core::Result<Completion> {
         let result = (|| {
+            self.shared.check_writer()?;
             let mut state = self.shared.lock()?;
             if self.wal {
                 self.shared.sync_wal(&mut state)?;
@@ -132,6 +138,11 @@ impl File for RemoteFile {
     }
 
     fn size(&self) -> turso_core::Result<u64> {
+        self.shared
+            .storage
+            .store()
+            .validate_local()
+            .map_err(super::adapter_error)?;
         let state = self.shared.lock()?;
         Ok(if self.wal {
             state.bytes.len() as u64
@@ -142,6 +153,7 @@ impl File for RemoteFile {
 
     fn truncate(&self, len: u64, completion: Completion) -> turso_core::Result<Completion> {
         let result = (|| {
+            self.shared.check_local_writer()?;
             ensure!(!self.readonly, "file opened read-only");
             let mut state = self.shared.lock()?;
             if self.wal {

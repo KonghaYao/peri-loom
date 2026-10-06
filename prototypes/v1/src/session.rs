@@ -36,6 +36,11 @@ impl RemoteSession {
         Ok(!self.connection()?.get_auto_commit())
     }
 
+    pub fn is_readonly(&self) -> Result<bool> {
+        self.database.storage().store().validate_session()?;
+        Ok(self.connection()?.is_readonly(0))
+    }
+
     fn connection(&self) -> Result<MutexGuard<'_, Arc<Connection>>> {
         self.connection
             .lock()
@@ -61,6 +66,7 @@ impl Drop for RemoteSession {
 pub(crate) fn configure(connection: &Connection) {
     connection.set_sync_mode(SyncMode::Full);
     connection.wal_auto_actions_disable();
+    connection.set_load_extension_enabled(false);
 }
 
 pub(crate) fn execute_sql(
@@ -70,12 +76,12 @@ pub(crate) fn execute_sql(
 ) -> Result<()> {
     let mut runner = connection.query_runner(sql.as_bytes());
     loop {
-        store.validate_session()?;
         configure(connection);
         let Some(statement) = runner.next() else {
             break;
         };
         if let Some(mut statement) = statement.context("prepare remote SQL statement")? {
+            store.validate_transaction(!connection.get_auto_commit())?;
             statement
                 .run_ignore_rows()
                 .context("execute remote SQL statement")?;
@@ -89,7 +95,7 @@ pub(crate) fn query_sql(
     store: &dyn ObjectStore,
     sql: &str,
 ) -> Result<Vec<Vec<Value>>> {
-    store.validate_session()?;
+    store.validate_transaction(!connection.get_auto_commit())?;
     configure(connection);
     let Some(mut statement) = connection.query(sql).context("prepare remote query")? else {
         return Ok(Vec::new());

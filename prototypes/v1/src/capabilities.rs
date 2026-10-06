@@ -244,7 +244,7 @@ fn reachable(root: &CatalogRoot, point: &RecoveryPoint) -> bool {
             .any(|branch| branch.history.iter().any(|retained| retained == point))
 }
 
-fn restore(root: &mut CatalogRoot, branch: &str, point: &RecoveryPoint) -> Result<()> {
+pub(crate) fn restore(root: &mut CatalogRoot, branch: &str, point: &RecoveryPoint) -> Result<()> {
     let fresh = next_incarnation(root)?;
     let reference = root.branches.get_mut(branch).context("branch missing")?;
     ensure!(

@@ -71,7 +71,16 @@ impl RemoteWal {
         Self { store }
     }
 
+    fn check_writer(&self) -> Result<()> {
+        ensure!(
+            self.store.access_role() == crate::ownership::types::AccessRole::Writer,
+            "read-only WAL mutation"
+        );
+        self.store.validate_session()
+    }
+
     fn index(&self, namespace: &Namespace) -> Result<(WalMetadata, Option<String>)> {
+        self.store.validate_session()?;
         match self.store.get(&namespace.key("wal/index")?)? {
             Some(object) => {
                 let index: WalMetadata = serde_json::from_slice(&object.bytes)?;
@@ -118,6 +127,7 @@ impl RemoteWal {
     }
 
     fn chunk(&self, record: &WalRecord) -> Result<String> {
+        self.check_writer()?;
         let bytes = serde_json::to_vec(record)?;
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let key = record.namespace.key(&format!("wal/chunks/{hash}"))?;
@@ -137,6 +147,7 @@ impl RemoteWal {
         metadata: &WalMetadata,
         etag: Option<String>,
     ) -> Result<()> {
+        self.check_writer()?;
         self.store.put(
             &namespace.key("wal/index")?,
             &serde_json::to_vec(metadata)?,
@@ -146,6 +157,7 @@ impl RemoteWal {
     }
 
     pub fn fence(&self, namespace: &Namespace, epoch: u64) -> Result<()> {
+        self.check_writer()?;
         for _ in 0..64 {
             let (mut index, etag) = self.index(namespace)?;
             ensure!(epoch >= index.epoch, "stale WAL epoch");
@@ -165,6 +177,7 @@ impl RemoteWal {
         batch: WalBatch,
         position: Option<WalPosition>,
     ) -> Result<u64> {
+        self.check_writer()?;
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let append_id = format!(
             "{}-{}-{}",
@@ -250,6 +263,7 @@ impl DurableWal for RemoteWal {
     }
 
     fn truncate(&self, namespace: &Namespace, before_lsn: u64) -> Result<()> {
+        self.check_writer()?;
         for _ in 0..64 {
             let (mut index, etag) = self.index(namespace)?;
             let removed: Vec<_> = index

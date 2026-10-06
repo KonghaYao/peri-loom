@@ -145,3 +145,47 @@ loaded instance, not a distributed ownership grant. It retains access to the
 configured storage backend. P4 must put credentials behind the authenticated
 storage authority and enforce grants at every durable boundary; do not expose
 this stdin protocol as a production network service.
+
+## P4 ownership services
+
+The distributed-ownership path is `authority` plus `owned-worker`, not the trusted
+P1/P2/P3 backend commands. Build once, then start services with separate process
+environments:
+
+```sh
+cargo build --manifest-path prototypes/v1/Cargo.toml --locked
+prototypes/v1/target/debug/peri-loom-v1 authority /tmp/peri-root-store 127.0.0.1:9150 /tmp/peri-authority-state
+prototypes/v1/target/debug/peri-loom-v1 owned-worker http://127.0.0.1:9150/ /tmp/peri-worker-a worker-a 127.0.0.1:9151
+```
+
+Authority requires `PERI_AUTHORITY_CONTROL_TOKEN` and
+`PERI_AUTHORITY_WORKERS_FILE` (a private 0600 JSON file mapping worker IDs to
+distinct authority credentials). Its newly created state directory is private;
+existing directories must be 0700. Replace its STORE argument with `s3` and set
+the S3 environment described earlier **only for the authority process**. This
+path disables backend mutation retries so unknown outcomes cannot be hidden.
+
+Each owned worker requires `PERI_WORKER_AUTHORITY_TOKEN`,
+`PERI_WORKER_CONTROL_TOKEN` and `PERI_WORKER_SQL_TOKEN`. Credentials are distinct,
+32..256 non-whitespace ASCII bytes. Never supply raw S3 credentials/backend paths
+to these workers; use clean environments or separate service configurations.
+Each prints its actual bound address as a ready JSON line. Listeners currently
+accept loopback addresses only, with explicit internal authentication.
+
+Authority HTTP `/` uses versioned `RpcRequest` from
+`src/authority_rpc/protocol.rs`. Worker `/control` and `/sql` use `WorkerRequest`
+from `src/worker_rpc/protocol.rs`, with separate bearer credentials. The control
+path has only the six coarse ownership commands; SQL sessions are random opaque
+IDs. P5 supplies placement/epoch allocation and lease orchestration. Required
+grant roles prevent Reader-to-Writer amplification; native ReadOnly connections
+also reject writes submitted through query APIs.
+
+Do not concurrently run legacy raw-backend CLI commands against an active
+authority namespace. A completed worker takeover fences the old epoch at storage
+publication, not merely SQL ingress. Unknown backend outcomes block that namespace.
+An unclean authority stop keeps a durable dirty marker and refuses automatic
+restart; only confirmed old-backend quiescence permits explicit `--reconciled`
+startup. A Shutdown reply announces stopping; successful process exit proves the
+clean-stop marker. This stage does not claim overlapping authority HA or deadline
+cancellation of already dispatched physical requests. See
+`../../docs/v1/P4-DESIGN.md` for the exact guarantee and compatibility ledger.

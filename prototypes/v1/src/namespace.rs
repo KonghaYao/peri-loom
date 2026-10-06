@@ -2,6 +2,7 @@ use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Namespace {
     pub tenant: String,
     pub database: String,

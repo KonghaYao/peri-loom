@@ -1,3 +1,6 @@
+#[path = "branch_publication.rs"]
+mod publication;
+
 use super::{
     now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint,
 };
@@ -8,7 +11,10 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 #[derive(Clone)]
@@ -23,6 +29,7 @@ pub struct BranchStore {
     incarnation: u64,
     pin: String,
     view: Mutex<View>,
+    drop_cleanup: AtomicBool,
 }
 
 impl Authority {
@@ -46,6 +53,7 @@ impl Authority {
             incarnation: view.reference.incarnation,
             pin,
             view: Mutex::new(view),
+            drop_cleanup: AtomicBool::new(true),
         }))
     }
 }
@@ -75,6 +83,17 @@ fn entries(root: &CatalogRoot) -> Vec<ObjectEntry> {
 }
 
 impl BranchStore {
+    pub(crate) fn suppress_drop_cleanup(&self) {
+        self.drop_cleanup.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn release_pin(&self, authority: &Authority) -> Result<()> {
+        authority.transact(None, |root| {
+            root.pins.remove(&self.pin);
+            Ok(())
+        })?;
+        Ok(())
+    }
     fn relative<'a>(&self, key: &'a str) -> Result<&'a str> {
         let prefix = self.authority.namespace.prefix();
         let relative = key
@@ -209,6 +228,10 @@ impl BranchStore {
 }
 
 impl ObjectStore for BranchStore {
+    fn validate_local(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn validate_session(&self) -> Result<()> {
         self.bound(&self.authority.snapshot()?.root)?;
         Ok(())
@@ -271,6 +294,7 @@ impl ObjectStore for BranchStore {
             _ => snapshot.root.objects.get(relative),
         };
         Self::condition(current, &condition)?;
+        self.validate_publication(&snapshot.root, relative, bytes)?;
         let entry = self.authority.upload(bytes)?;
         let mut selected = None;
         self.authority.transact(None, |root| {
@@ -281,6 +305,7 @@ impl ObjectStore for BranchStore {
                 _ => root.objects.get(relative),
             };
             Self::condition(current, &condition)?;
+            self.validate_publication(root, relative, bytes)?;
             match relative {
                 "HEAD" => {
                     root.branches
@@ -379,6 +404,9 @@ impl ObjectStore for BranchStore {
 
 impl Drop for BranchStore {
     fn drop(&mut self) {
+        if !self.drop_cleanup.load(Ordering::Acquire) {
+            return;
+        }
         let _ = self.authority.transact(None, |root| {
             root.pins.remove(&self.pin);
             Ok(())

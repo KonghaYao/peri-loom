@@ -13,6 +13,7 @@ use crate::cache::SegmentCache;
 use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
+use crate::ownership::types::AccessRole;
 use crate::recovery::{batch_covers_position, committed_position};
 use crate::resources::ResourceUsage;
 use crate::storage::RemoteStorage;
@@ -56,6 +57,7 @@ impl RemoteIO {
         ram_limit: usize,
         disk_limit: u64,
     ) -> Result<Arc<Self>> {
+        store.validate_session()?;
         std::fs::create_dir_all(cache_root.as_ref())?;
         let root = cache_root.as_ref().canonicalize()?;
         let directory_lock = DirectoryLock::acquire(&root)?;
@@ -134,6 +136,10 @@ impl RemoteIO {
         Ok(usage)
     }
 
+    pub(crate) fn check_writer(&self) -> Result<()> {
+        self.shared.check_writer()
+    }
+
     pub(crate) fn check_compaction(&self) -> Result<()> {
         let state = self.shared.lock()?;
         ensure!(
@@ -154,7 +160,15 @@ impl RemoteIO {
             .lsn
             .checked_add(1)
             .context("WAL compaction LSN overflow")?;
-        if let Err(error) = self.shared.wal.truncate(&self.shared.namespace, before) {
+        let compacted = (|| {
+            if self.shared.wal.metadata(&self.shared.namespace)?.epoch < self.shared.epoch {
+                self.shared
+                    .wal
+                    .fence(&self.shared.namespace, self.shared.epoch)?;
+            }
+            self.shared.wal.truncate(&self.shared.namespace, before)
+        })();
+        if let Err(error) = compacted {
             state.wal_failed = true;
             return Err(error);
         }
@@ -184,6 +198,22 @@ fn matches_path(path: &str, expected: &Path) -> bool {
 }
 
 impl Shared {
+    fn check_local_writer(&self) -> Result<()> {
+        ensure!(
+            self.storage.store().access_role() == AccessRole::Writer,
+            "read-only remote store"
+        );
+        self.storage.store().validate_local()
+    }
+
+    fn check_writer(&self) -> Result<()> {
+        ensure!(
+            self.storage.store().access_role() == AccessRole::Writer,
+            "read-only remote store"
+        );
+        self.storage.store().validate_session()
+    }
+
     fn lock(&self) -> turso_core::Result<MutexGuard<'_, State>> {
         self.gate
             .lock()
@@ -210,6 +240,7 @@ impl Shared {
     }
 
     fn sync_wal(&self, state: &mut State) -> Result<()> {
+        self.check_writer()?;
         ensure!(
             !state.wal_failed,
             "WAL durability failure requires cold recovery"
@@ -244,6 +275,7 @@ impl Shared {
     }
 
     fn publish(&self, state: &mut State) -> Result<()> {
+        self.check_writer()?;
         state.publication_failed = true;
         ensure!(
             !state.wal_failed && state.batch.operations.is_empty(),
@@ -281,10 +313,16 @@ impl IO for RemoteIO {
         direct: bool,
     ) -> turso_core::Result<Arc<dyn File>> {
         if let Some(wal) = self.kind(path) {
+            self.shared
+                .storage
+                .store()
+                .validate_session()
+                .map_err(adapter_error)?;
             return Ok(Arc::new(RemoteFile {
                 shared: self.shared.clone(),
                 wal,
-                readonly: flags.contains(OpenFlags::ReadOnly),
+                readonly: flags.contains(OpenFlags::ReadOnly)
+                    || self.shared.storage.store().access_role() == AccessRole::ReadOnly,
             }));
         }
         if !is_temporary(path) {
@@ -297,6 +335,7 @@ impl IO for RemoteIO {
         match self.kind(path) {
             Some(false) => Err(adapter_error("cannot remove virtual database")),
             Some(true) => {
+                self.shared.check_local_writer().map_err(adapter_error)?;
                 let mut state = self.shared.lock()?;
                 self.shared.allow_reset(&state).map_err(adapter_error)?;
                 state.bytes.clear();

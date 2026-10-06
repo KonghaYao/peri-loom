@@ -1,0 +1,383 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use anyhow::{ensure, Context, Result};
+use serde_json::{json, Value};
+
+use crate::authority::ownership::OwnershipAuthority;
+use crate::object_store::{ObjectStore, PreconditionFailed};
+use crate::ownership::types::{validate_label, LeaseBinding};
+use crate::runtime::DatabaseId;
+
+use super::auth::{AuthConfig, Principal};
+use super::http;
+use super::protocol::{
+    AuthorityCommand, RpcRequest, RpcResponse, SessionOperation, PROTOCOL_VERSION,
+};
+use super::startup::AuthorityStartup;
+
+pub struct Server {
+    listener: TcpListener,
+    state: Arc<State>,
+    startup: AuthorityStartup,
+}
+
+struct State {
+    authority: Arc<OwnershipAuthority>,
+    auth: AuthConfig,
+    sessions: Mutex<BTreeMap<String, Arc<Session>>>,
+    authorized: Mutex<BTreeSet<(DatabaseId, String)>>,
+    stopping: AtomicBool,
+    inflight: AtomicUsize,
+}
+
+struct Session {
+    worker_id: String,
+    binding: LeaseBinding,
+    store: Arc<dyn ObjectStore>,
+}
+
+struct Ticket(Arc<State>);
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        self.0.inflight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Server {
+    pub fn bind(
+        address: SocketAddr,
+        authority: Arc<OwnershipAuthority>,
+        auth: AuthConfig,
+        startup: AuthorityStartup,
+    ) -> Result<Self> {
+        ensure!(
+            address.ip().is_loopback(),
+            "P4 authority listener must be loopback-only"
+        );
+        let listener = TcpListener::bind(address)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            startup,
+            state: Arc::new(State {
+                authority,
+                auth,
+                sessions: Mutex::new(BTreeMap::new()),
+                authorized: Mutex::new(BTreeSet::new()),
+                stopping: AtomicBool::new(false),
+                inflight: AtomicUsize::new(0),
+            }),
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.listener
+            .local_addr()
+            .expect("bound authority listener")
+    }
+
+    pub fn run(mut self) -> Result<()> {
+        let mut workers = Vec::new();
+        let result = (|| {
+            while !self.state.stopping.load(Ordering::SeqCst) {
+                workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
+                let (mut connection, _) = match self.listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                if self.state.inflight.load(Ordering::SeqCst) >= 128 {
+                    let _ =
+                        http::reply(&mut connection, 503, b"{\"error\":\"authority saturated\"}");
+                    continue;
+                }
+                self.state.inflight.fetch_add(1, Ordering::SeqCst);
+                let state = self.state.clone();
+                let ticket = Ticket(state.clone());
+                workers.push(thread::Builder::new().spawn(move || {
+                    let _ticket = ticket;
+                    let _ = state.serve(&mut connection);
+                })?);
+            }
+            Ok(())
+        })();
+        self.state.stopping.store(true, Ordering::SeqCst);
+        drop(self.listener);
+        for worker in workers {
+            let _ = worker.join();
+        }
+        let sessions = std::mem::take(
+            &mut *self
+                .state
+                .sessions
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session registry poisoned"))?,
+        );
+        drop(sessions);
+        if result.is_ok() && self.state.authority.quiescent() {
+            self.startup.mark_clean()?;
+        } else {
+            return Err(result.err().unwrap_or_else(|| {
+                anyhow::anyhow!("authority has unsettled backend operations; startup remains dirty")
+            }));
+        }
+        Ok(())
+    }
+}
+
+impl State {
+    fn serve(&self, stream: &mut TcpStream) -> Result<()> {
+        let request = match http::read_request(stream) {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("authority HTTP parse failure: {error}");
+                return http::reply(stream, 400, b"{\"error\":\"invalid HTTP request\"}");
+            }
+        };
+        if request.path != "/" {
+            return http::reply(stream, 400, b"{\"error\":\"invalid authority path\"}");
+        }
+        let principal = match self.auth.authenticate(&request.authorization) {
+            Ok(principal) => principal,
+            Err(_) => return http::reply(stream, 403, b"{\"error\":\"Unauthorized\"}"),
+        };
+        let parsed = match serde_json::from_slice::<RpcRequest>(&request.body) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!(
+                    "authority JSON parse failure category={:?} line={} column={}",
+                    error.classify(),
+                    error.line(),
+                    error.column()
+                );
+                return http::reply(stream, 400, b"{\"error\":\"invalid authority request\"}");
+            }
+        };
+        let identifier = parsed.request_id.clone();
+        let result = (|| {
+            ensure!(
+                parsed.version == PROTOCOL_VERSION,
+                "unsupported authority protocol version"
+            );
+            validate_label(&parsed.request_id)?;
+            ensure!(!self.stopping.load(Ordering::SeqCst), "authority stopping");
+            self.dispatch(parsed.command, &principal, &identifier)
+        })();
+        let response = match result {
+            Ok(result) => RpcResponse {
+                version: PROTOCOL_VERSION,
+                request_id: identifier,
+                ok: true,
+                result: Some(result),
+                error: None,
+                precondition_failed: false,
+            },
+            Err(error) => RpcResponse {
+                version: PROTOCOL_VERSION,
+                request_id: identifier,
+                ok: false,
+                result: None,
+                error: Some(format!("{error:#}")),
+                precondition_failed: error.is::<PreconditionFailed>(),
+            },
+        };
+        http::reply(stream, 200, &serde_json::to_vec(&response)?)
+    }
+
+    fn control(principal: &Principal) -> Result<()> {
+        ensure!(
+            *principal == Principal::Control,
+            "Unauthorized control operation"
+        );
+        Ok(())
+    }
+
+    fn worker<'principal>(
+        principal: &'principal Principal,
+        binding: &LeaseBinding,
+    ) -> Result<&'principal str> {
+        let Principal::Worker(worker) = principal else {
+            anyhow::bail!("Unauthorized worker operation");
+        };
+        ensure!(worker == &binding.worker_id, "Unauthorized worker binding");
+        Ok(worker)
+    }
+
+    fn allowed(&self, database: &DatabaseId, worker: &str) -> Result<()> {
+        ensure!(
+            self.authorized
+                .lock()
+                .map_err(|_| anyhow::anyhow!("authorization registry poisoned"))?
+                .contains(&(database.clone(), worker.to_owned())),
+            "Unauthorized database; no grant issued to worker in this authority term"
+        );
+        Ok(())
+    }
+
+    fn dispatch(
+        &self,
+        command: AuthorityCommand,
+        principal: &Principal,
+        identifier: &str,
+    ) -> Result<Value> {
+        match command {
+            AuthorityCommand::Challenge { intent } => {
+                Self::control(principal)?;
+                Ok(serde_json::to_value(self.authority.challenge(intent)?)?)
+            }
+            AuthorityCommand::Grant { request } => {
+                Self::control(principal)?;
+                ensure!(
+                    request.request_id == identifier,
+                    "command identity mismatch"
+                );
+                let grant = self.authority.grant(request)?;
+                self.authorized
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("authorization registry poisoned"))?
+                    .insert((
+                        grant.binding.database.clone(),
+                        grant.binding.worker_id.clone(),
+                    ));
+                Ok(serde_json::to_value(grant)?)
+            }
+            AuthorityCommand::Renew { request } => {
+                Self::control(principal)?;
+                ensure!(
+                    request.request_id == identifier,
+                    "command identity mismatch"
+                );
+                Ok(serde_json::to_value(self.authority.renew(request)?)?)
+            }
+            AuthorityCommand::Revoke { request } => {
+                Self::control(principal)?;
+                ensure!(
+                    request.request_id == identifier,
+                    "command identity mismatch"
+                );
+                Ok(serde_json::to_value(self.authority.revoke(request)?)?)
+            }
+            AuthorityCommand::Maintenance {
+                request_id,
+                database,
+                operation,
+            } => {
+                Self::control(principal)?;
+                ensure!(request_id == identifier, "command identity mismatch");
+                self.authority
+                    .maintenance(&database, &request_id, operation)
+            }
+            AuthorityCommand::GetDatabaseState { database } => {
+                if let Principal::Worker(worker) = principal {
+                    self.allowed(&database, worker)?;
+                }
+                Ok(serde_json::to_value(self.authority.state(&database)?)?)
+            }
+            AuthorityCommand::ValidateLease { binding, role } => {
+                let worker = Self::worker(principal, &binding)?;
+                self.allowed(&binding.database, worker)?;
+                Ok(serde_json::to_value(
+                    self.authority.validate_lease(&binding, role)?,
+                )?)
+            }
+            AuthorityCommand::OpenSession { binding, role } => {
+                let worker = Self::worker(principal, &binding)?;
+                self.allowed(&binding.database, worker)?;
+                let store = self.authority.open_session(&binding, role)?;
+                let mut random = [0u8; 32];
+                std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+                let identifier = random
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                let session = Arc::new(Session {
+                    worker_id: worker.to_owned(),
+                    binding,
+                    store,
+                });
+                let mut sessions = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("session registry poisoned"))?;
+                ensure!(sessions.len() < 4096, "authority session capacity exceeded");
+                let std::collections::btree_map::Entry::Vacant(entry) =
+                    sessions.entry(identifier.clone())
+                else {
+                    anyhow::bail!("session identity collision");
+                };
+                entry.insert(session);
+                Ok(json!({"session": identifier}))
+            }
+            AuthorityCommand::CloseSession { session } => {
+                let Principal::Worker(worker) = principal else {
+                    anyhow::bail!("Unauthorized worker operation");
+                };
+                let removed = {
+                    let mut sessions = self
+                        .sessions
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("session registry poisoned"))?;
+                    ensure!(
+                        sessions
+                            .get(&session)
+                            .is_some_and(|session| &session.worker_id == worker),
+                        "Unauthorized session"
+                    );
+                    sessions.remove(&session)
+                };
+                drop(removed);
+                Ok(json!({"closed": true}))
+            }
+            AuthorityCommand::Session { session, operation } => {
+                let Principal::Worker(worker) = principal else {
+                    anyhow::bail!("Unauthorized worker operation");
+                };
+                let selected = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("session registry poisoned"))?
+                    .get(&session)
+                    .cloned()
+                    .context("unknown authority session")?;
+                ensure!(&selected.worker_id == worker, "Unauthorized session");
+                match operation {
+                    SessionOperation::Validate => Ok(serde_json::to_value(
+                        self.authority
+                            .validate_lease(&selected.binding, selected.store.access_role())?,
+                    )?),
+                    SessionOperation::Get { key } => {
+                        Ok(serde_json::to_value(selected.store.get(&key)?)?)
+                    }
+                    SessionOperation::Put {
+                        key,
+                        bytes,
+                        condition,
+                    } => Ok(json!(selected.store.put(&key, &bytes, condition)?)),
+                    SessionOperation::Delete { key, expected } => {
+                        selected.store.delete(&key, expected.as_deref())?;
+                        Ok(Value::Null)
+                    }
+                    SessionOperation::List { prefix } => Ok(json!(selected.store.list(&prefix)?)),
+                }
+            }
+            AuthorityCommand::Shutdown => {
+                Self::control(principal)?;
+                self.stopping.store(true, Ordering::SeqCst);
+                ensure!(
+                    self.authority.quiescent(),
+                    "authority has unsettled operations; shutdown cannot acknowledge a clean fence"
+                );
+                Ok(json!({"stopping": true}))
+            }
+        }
+    }
+}

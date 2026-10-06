@@ -129,6 +129,157 @@ impl GarbageCollector {
             deleted: self.sweep()?,
         })
     }
+
+    pub(crate) fn collect_receipted(
+        &self,
+        request_id: &str,
+        digest: &str,
+        mut eligible: impl FnMut(&str, &Tombstone) -> Result<bool>,
+    ) -> Result<serde_json::Value> {
+        use crate::ownership::types::CommandReceipt;
+        use serde_json::json;
+        let mut started = None;
+        for _ in 0..64 {
+            let snapshot = self.authority.snapshot()?;
+            let catalog = snapshot
+                .root
+                .ownership
+                .as_ref()
+                .context("ownership missing")?;
+            if let Some(receipt) = catalog.commands.get(request_id) {
+                anyhow::ensure!(
+                    receipt.digest == digest,
+                    "Conflict request ID payload mismatch"
+                );
+                if receipt
+                    .result
+                    .get("status")
+                    .and_then(|status| status.as_str())
+                    == Some("completed_gc")
+                {
+                    return Ok(receipt.result.clone());
+                }
+                anyhow::ensure!(
+                    receipt
+                        .result
+                        .get("status")
+                        .and_then(|status| status.as_str())
+                        == Some("pending_gc"),
+                    "Conflict GC command status"
+                );
+                started = Some(receipt.result.clone());
+                break;
+            }
+            let reachable = self.authority.reachable(&snapshot.root)?;
+            let candidates: BTreeMap<_, _> = snapshot
+                .root
+                .blobs
+                .iter()
+                .filter(|(blob, _)| {
+                    !reachable.contains(*blob) && !snapshot.root.tombstones.contains_key(*blob)
+                })
+                .map(|(blob, entry)| (blob.clone(), entry.clone()))
+                .collect();
+            let targets: Vec<_> = snapshot
+                .root
+                .tombstones
+                .keys()
+                .chain(candidates.keys())
+                .cloned()
+                .collect();
+            let initial_pending: Vec<_> = snapshot
+                .root
+                .tombstones
+                .iter()
+                .filter(|(_, tombstone)| !tombstone.deleted)
+                .map(|(blob, _)| blob.clone())
+                .chain(candidates.keys().cloned())
+                .collect();
+            let result = json!({"status": "pending_gc", "targets": targets, "initial_pending": initial_pending, "marked": candidates.len(), "deleted": 0});
+            let marked_ms = now_ms()?;
+            match self
+                .authority
+                .transact(Some(snapshot.root.revision), |root| {
+                    root.objects
+                        .retain(|_, entry| !candidates.contains_key(&entry.blob));
+                    for (blob, entry) in &candidates {
+                        root.tombstones.insert(
+                            blob.clone(),
+                            Tombstone {
+                                entry: entry.clone(),
+                                marked_ms,
+                                deleted: false,
+                            },
+                        );
+                    }
+                    root.ownership
+                        .as_mut()
+                        .context("ownership missing")?
+                        .commands
+                        .insert(
+                            request_id.into(),
+                            CommandReceipt {
+                                digest: digest.into(),
+                                result: result.clone(),
+                            },
+                        );
+                    Ok(())
+                }) {
+                Ok(_) => {
+                    started = Some(result);
+                    break;
+                }
+                Err(error) if error.is::<PreconditionFailed>() => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let mut result = started.context("GC root changed too frequently")?;
+        let snapshot = self.authority.snapshot()?;
+        let now = now_ms()?;
+        let window = u64::try_from(self.safety_window.as_millis())?;
+        for target in result["targets"].as_array().context("GC targets missing")? {
+            let blob = target.as_str().context("GC target invalid")?;
+            let tombstone = snapshot
+                .root
+                .tombstones
+                .get(blob)
+                .context("GC tombstone missing")?;
+            let monotonic_ready = eligible(blob, tombstone)?;
+            if monotonic_ready && now.saturating_sub(tombstone.marked_ms) >= window {
+                self.authority.delete_tombstone(blob)?;
+            }
+        }
+        let acknowledged = self.authority.snapshot()?;
+        let deleted = result["initial_pending"]
+            .as_array()
+            .context("GC initial pending targets missing")?
+            .iter()
+            .filter(|target| {
+                target.as_str().is_some_and(|blob| {
+                    acknowledged
+                        .root
+                        .tombstones
+                        .get(blob)
+                        .is_some_and(|tombstone| tombstone.deleted)
+                })
+            })
+            .count();
+        result["status"] = json!("completed_gc");
+        result["deleted"] = json!(deleted);
+        self.authority.transact(None, |root| {
+            let receipt = root
+                .ownership
+                .as_mut()
+                .context("ownership missing")?
+                .commands
+                .get_mut(request_id)
+                .context("GC receipt missing")?;
+            anyhow::ensure!(receipt.digest == digest, "Conflict GC receipt changed");
+            receipt.result = result.clone();
+            Ok(())
+        })?;
+        Ok(result)
+    }
 }
 
 fn now_ms() -> Result<u64> {

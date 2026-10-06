@@ -1,17 +1,21 @@
 mod branch;
 mod catalog;
+mod codec;
+mod migration;
+pub mod ownership;
 mod semantic;
 pub mod types;
 
 pub use branch::BranchStore;
 pub use types::{BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint, RootSnapshot, Tombstone};
 
+use crate::ownership::types::{MutationGuard, MutationStage};
 use crate::{
     namespace::Namespace,
     object_store::{ObjectStore, PreconditionFailed, PutCondition},
 };
 use anyhow::{ensure, Context, Result};
-use serde::{Deserialize, Serialize};
+use codec::{decode, encode};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
@@ -25,13 +29,7 @@ pub struct Authority {
     store: Arc<dyn ObjectStore>,
     namespace: Namespace,
     incarnation: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Envelope {
-    root: CatalogRoot,
-    checksum: String,
+    guard: Option<Arc<dyn MutationGuard>>,
 }
 
 pub(super) fn now_ms() -> Result<u64> {
@@ -50,29 +48,6 @@ pub(super) fn unique_id() -> Result<String> {
     Ok(hash.finalize().to_hex().to_string())
 }
 
-fn encode(root: &CatalogRoot) -> Result<Vec<u8>> {
-    let checksum = blake3::hash(&serde_json::to_vec(root)?)
-        .to_hex()
-        .to_string();
-    Ok(serde_json::to_vec(&Envelope {
-        root: root.clone(),
-        checksum,
-    })?)
-}
-
-fn decode(bytes: &[u8]) -> Result<CatalogRoot> {
-    let envelope: Envelope =
-        serde_json::from_slice(bytes).context("invalid authority root envelope")?;
-    ensure!(
-        envelope.checksum
-            == blake3::hash(&serde_json::to_vec(&envelope.root)?)
-                .to_hex()
-                .as_str(),
-        "authority root checksum mismatch"
-    );
-    Ok(envelope.root)
-}
-
 impl Authority {
     pub fn open(store: Arc<dyn ObjectStore>, namespace: Namespace) -> Result<Arc<Self>> {
         let namespace = Namespace::new(namespace.tenant, namespace.database)?;
@@ -85,6 +60,7 @@ impl Authority {
                     revision: 1,
                     incarnation: unique_id()?,
                     namespace: namespace.clone(),
+                    ownership: None,
                     blobs: BTreeMap::new(),
                     receipts: BTreeMap::new(),
                     objects: BTreeMap::new(),
@@ -114,6 +90,7 @@ impl Authority {
             store,
             namespace,
             incarnation: root.incarnation.clone(),
+            guard: None,
         });
         authority.validate_root(&root)?;
         Ok(authority)
@@ -123,7 +100,32 @@ impl Authority {
         &self.namespace
     }
 
+    pub(crate) fn scoped(&self, guard: Arc<dyn MutationGuard>) -> Arc<Self> {
+        Arc::new(Self {
+            store: self.store.clone(),
+            namespace: self.namespace.clone(),
+            incarnation: self.incarnation.clone(),
+            guard: Some(guard),
+        })
+    }
+
+    fn check(&self, stage: MutationStage) -> Result<()> {
+        if let Some(guard) = &self.guard {
+            guard.validate(stage)?;
+        }
+        Ok(())
+    }
+
+    fn uncertain(&self, stage: MutationStage, error: &anyhow::Error) {
+        if !error.is::<PreconditionFailed>() {
+            if let Some(guard) = &self.guard {
+                guard.uncertain(stage);
+            }
+        }
+    }
+
     pub fn snapshot(&self) -> Result<RootSnapshot> {
+        self.check(MutationStage::Read)?;
         let object = self
             .store
             .get(&self.namespace.key("authority/root")?)?
@@ -170,9 +172,14 @@ impl Authority {
                 .receipts
                 .insert(operation.clone(), candidate.revision);
             self.validate_root(&candidate)?;
+            let encoded = encode(&candidate)?;
+            if let Some(guard) = &self.guard {
+                guard.validate_root(&current.root, &candidate)?;
+            }
+            self.check(MutationStage::RootPublish)?;
             match self.store.put(
                 &self.namespace.key("authority/root")?,
-                &encode(&candidate)?,
+                &encoded,
                 PutCondition::Match(current.etag),
             ) {
                 Ok(etag) => {
@@ -182,6 +189,7 @@ impl Authority {
                     })
                 }
                 Err(error) => {
+                    self.uncertain(MutationStage::RootPublish, &error);
                     let observed = self.snapshot()?;
                     if observed.root.receipts.get(&operation) == Some(&candidate.revision) {
                         return Ok(observed);
@@ -197,6 +205,7 @@ impl Authority {
     }
 
     pub fn upload(&self, bytes: &[u8]) -> Result<ObjectEntry> {
+        self.check(MutationStage::Upload)?;
         let entry = ObjectEntry {
             blob: unique_id()?,
             hash: blake3::hash(bytes).to_hex().to_string(),
@@ -213,7 +222,9 @@ impl Authority {
             Ok(())
         })?;
         let key = self.physical_key(&entry.blob)?;
+        self.check(MutationStage::Upload)?;
         if let Err(error) = self.store.put(&key, bytes, PutCondition::Absent) {
+            self.uncertain(MutationStage::Upload, &error);
             let object = self
                 .store
                 .get(&key)?
@@ -227,6 +238,7 @@ impl Authority {
     }
 
     pub fn read_blob(&self, entry: &ObjectEntry) -> Result<Vec<u8>> {
+        self.check(MutationStage::Read)?;
         semantic::validate_entry(entry)?;
         let object = self
             .store
@@ -253,6 +265,7 @@ impl Authority {
     }
 
     pub fn delete_tombstone(&self, blob: &str) -> Result<()> {
+        self.check(MutationStage::Delete)?;
         let snapshot = self.snapshot()?;
         let tombstone = snapshot
             .root
@@ -272,7 +285,9 @@ impl Authority {
         if tombstone.deleted && self.store.get(&key)?.is_none() {
             return Ok(());
         }
+        self.check(MutationStage::Delete)?;
         if let Err(error) = self.store.delete(&key, None) {
+            self.uncertain(MutationStage::Delete, &error);
             if self.store.get(&key)?.is_some() {
                 return Err(error);
             }

@@ -23,7 +23,7 @@ pub struct RecoveryPoint {
     pub wal: Option<ObjectEntry>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BranchRef {
     pub incarnation: u64,
@@ -55,7 +55,7 @@ impl Default for BranchRef {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Tombstone {
     pub entry: ObjectEntry,
@@ -63,13 +63,15 @@ pub struct Tombstone {
     pub deleted: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogRoot {
     pub version: u32,
     pub revision: u64,
     pub incarnation: String,
     pub namespace: Namespace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<crate::ownership::types::OwnershipCatalog>,
     #[serde(default)]
     pub blobs: BTreeMap<String, ObjectEntry>,
     #[serde(default)]

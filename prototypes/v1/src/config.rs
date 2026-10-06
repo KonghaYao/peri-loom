@@ -7,6 +7,14 @@ use anyhow::{Context, Result};
 use crate::object_store::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
 
 pub fn backend(location: &str) -> Result<Arc<dyn ObjectStore>> {
+    backend_with_retries(location, 3)
+}
+
+pub fn authority_backend(location: &str) -> Result<Arc<dyn ObjectStore>> {
+    backend_with_retries(location, 0)
+}
+
+fn backend_with_retries(location: &str, retries: usize) -> Result<Arc<dyn ObjectStore>> {
     if location != "s3" {
         return Ok(Arc::new(LocalObjectStore::open(Path::new(location))?));
     }
@@ -19,7 +27,7 @@ pub fn backend(location: &str) -> Result<Arc<dyn ObjectStore>> {
             .context("S3_SECRET_ACCESS_KEY is required")?,
         session_token: std::env::var("S3_SESSION_TOKEN").ok(),
         timeout: Duration::from_secs(15),
-        retries: 3,
+        retries,
     };
     Ok(Arc::new(S3ObjectStore::new(config)?))
 }
