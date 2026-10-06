@@ -1,0 +1,4 @@
+[submodule "turso"]
+	path = prototypes/p0/turso
+	url = https://github.com/KonghaYao/turso.git
+	branch = codex/p0-core-prototype

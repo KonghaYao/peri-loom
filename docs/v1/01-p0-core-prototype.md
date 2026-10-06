@@ -135,3 +135,19 @@ data correct
 ## 阶段产物
 
 一个纯 Rust、单进程、可运行的 segmented Turso prototype。
+
+## 实现入口
+
+P0 原型位于 `prototypes/p0`，作为独立 Cargo workspace 运行，不接入旧平台的 Gateway、Control Plane 或远程存储。
+
+```sh
+cd prototypes/p0
+cargo test --locked
+cargo run --locked -- /tmp/peri-loom-p0 demo 400
+cargo run --locked -- /tmp/peri-loom-p0 inspect
+cargo run --locked -- /tmp/peri-loom-p0 query 'SELECT count(*) FROM p0_records'
+```
+
+Turso 作为 Git submodule 注册在 `prototypes/p0/turso`，使用用户提供的 fork `https://github.com/KonghaYao/turso`。开发分支为 `codex/p0-core-prototype`，P0 修改已提交为 `1a548d14a5be41e32b05bc43cb559cfb8b44dae4`，父仓库 gitlink 跟踪此提交；不使用 vendor 或 patch 重放脚本。尚未执行 push，需先发布 Turso 提交，再由其他机器用 `git submodule update --init --recursive` 获取该 revision。
+
+运行说明见 `prototypes/p0/README.md`，upstream 补丁边界见 `prototypes/p0/UPSTREAM.md`，独立最终验收见 `prototypes/p0/VERIFICATION.md`。`inspect` 只加载 manifest；SQL open 仍需按需读取 header/schema 和恢复本地 WAL，不能将其解释为 SQL 初始化零读页。
