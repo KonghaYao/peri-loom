@@ -1,0 +1,97 @@
+mod local;
+mod memory;
+mod s3;
+mod signing;
+mod transport;
+mod xml;
+
+pub use local::LocalObjectStore;
+pub use memory::MemoryObjectStore;
+pub use s3::{S3Config, S3ObjectStore};
+
+use anyhow::{ensure, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Clone, Debug)]
+pub struct StoredObject {
+    pub bytes: Vec<u8>,
+    pub etag: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum PutCondition {
+    Any,
+    Absent,
+    Match(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreconditionFailed;
+
+impl std::fmt::Display for PreconditionFailed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("object store precondition failed")
+    }
+}
+
+impl std::error::Error for PreconditionFailed {}
+
+pub trait ObjectStore: Send + Sync {
+    fn get(&self, key: &str) -> Result<Option<StoredObject>>;
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String>;
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()>;
+    fn list(&self, prefix: &str) -> Result<Vec<String>>;
+}
+
+fn validate_key(key: &str) -> Result<()> {
+    ensure!(
+        !key.is_empty() && key.len() <= 1024,
+        "invalid object key length"
+    );
+    for component in key.split('/') {
+        ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "invalid object key component"
+        );
+        ensure!(
+            component
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte)),
+            "object keys must be ASCII URL-safe paths"
+        );
+    }
+    Ok(())
+}
+
+fn validate_prefix(prefix: &str) -> Result<()> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
+    validate_key(prefix.strip_suffix('/').unwrap_or(prefix))
+}
+
+fn check_condition(current: Option<&StoredObject>, condition: &PutCondition) -> Result<()> {
+    let matches = match condition {
+        PutCondition::Any => true,
+        PutCondition::Absent => current.is_none(),
+        PutCondition::Match(expected) => current.is_some_and(|object| object.etag == *expected),
+    };
+    ensure!(matches, PreconditionFailed);
+    Ok(())
+}
+
+fn fresh_etag(bytes: &[u8]) -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let mut hash = blake3::Hasher::new();
+    hash.update(bytes);
+    hash.update(&std::process::id().to_le_bytes());
+    hash.update(&SEQUENCE.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    hash.update(
+        &std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    hash.finalize().to_hex().to_string()
+}

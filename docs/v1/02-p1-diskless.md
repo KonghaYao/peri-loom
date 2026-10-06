@@ -103,3 +103,10 @@ query succeeds
 ```
 
 到这里 peri-loom 才真正可以称为 **Diskless Turso**。
+
+## 实施入口
+
+实现位于 `prototypes/v1`，复用 P0 的 Turso fork submodule。运行、S3 环境
+配置和质量门见 `prototypes/v1/README.md`；独立验收及真实 RustFS S3-compatible
+服务证据见 `docs/v1/P1-VERIFICATION.md`。AWS S3、R2 和 MinIO 品牌服务未实测，
+不以协议 mock 代替真实服务验收。分布式所有权与 HEAD/epoch 联合 fencing 留在 P4。
