@@ -13,6 +13,7 @@ use crate::cache::SegmentCache;
 use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
+use crate::recovery::{batch_covers_position, committed_position};
 use crate::storage::RemoteStorage;
 use crate::wal::{apply_batch, DurableWal, RemoteWal, WalBatch};
 use files::RemoteFile;
@@ -42,6 +43,7 @@ struct State {
     publication_failed: bool,
     wal_failed: bool,
     position: Option<WalPosition>,
+    last_commit: Option<WalPosition>,
 }
 
 impl RemoteIO {
@@ -72,6 +74,7 @@ impl RemoteIO {
         for record in wal.read(&namespace, 0)? {
             apply_batch(&mut state.bytes, &record.batch)?;
         }
+        state.last_commit = committed_position(&state.bytes).ok().flatten();
         let path = root
             .join("database")
             .to_str()
@@ -165,12 +168,22 @@ impl Shared {
         if state.batch.operations.is_empty() {
             return Ok(());
         }
+        let position = committed_position(&state.bytes)
+            .ok()
+            .flatten()
+            .filter(|position| Some(*position) != state.last_commit)
+            .filter(|position| {
+                batch_covers_position(&state.batch, &state.bytes, *position).unwrap_or(false)
+            });
         match self
             .wal
-            .append(&self.namespace, self.epoch, state.batch.clone())
+            .append_commit(&self.namespace, self.epoch, state.batch.clone(), position)
         {
             Ok(lsn) => {
                 state.lsn = lsn;
+                if position.is_some() {
+                    state.last_commit = position;
+                }
                 state.batch.operations.clear();
                 Ok(())
             }

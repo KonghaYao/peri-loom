@@ -89,3 +89,14 @@ segment_id = BLAKE3(segment content)
 - snapshot creation 仅修改 metadata。
 - clone 共享已有 segment。
 - 删除 branch/snapshot 后 GC 能安全释放不可达对象。
+
+## 实施入口
+
+实现位于 `prototypes/v1` 的 Rust authority、capabilities、recovery 与 GC 模块。
+分支路径使用单一 durable root CAS，而不是分别更新 mutable HEAD 与 WAL index。
+命令和边界见 `prototypes/v1/README.md`；设计契约见 `docs/v1/P2-DESIGN.md`；
+独立签发结果见 `docs/v1/P2-VERIFICATION.md`。
+
+clone 在同一 namespace sharing domain 内零复制；跨 namespace clone 未实现。
+未知 in-flight upload intents 和 crash reader pins 保守保留，不用超时冒充安全删除。
+这些是明确的原型限制；P2 branch incarnation 不等于 P4 epoch/lease fencing。

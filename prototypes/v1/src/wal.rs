@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::object_store::{ObjectStore, PutCondition};
 
@@ -34,6 +35,14 @@ pub struct WalRecord {
     pub lsn: u64,
     pub timestamp_millis: u64,
     pub batch: WalBatch,
+    #[serde(default)]
+    pub commit: Option<WalCommit>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalCommit {
+    pub lsn: u64,
+    pub position: WalPosition,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -41,14 +50,16 @@ pub struct WalMetadata {
     pub epoch: u64,
     pub last_lsn: u64,
     pub replay_baseline_lsn: u64,
-    entries: Vec<Entry>,
-    receipts: BTreeMap<String, u64>,
+    pub(crate) entries: Vec<Entry>,
+    pub(crate) receipts: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub commit: Option<WalCommit>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Entry {
-    lsn: u64,
-    hash: String,
+pub(crate) struct Entry {
+    pub(crate) lsn: u64,
+    pub(crate) hash: String,
 }
 
 pub struct RemoteWal {
@@ -89,6 +100,12 @@ impl RemoteWal {
                         .values()
                         .all(|lsn| *lsn > 0 && *lsn <= index.last_lsn),
                     "invalid WAL append receipts"
+                );
+                ensure!(
+                    index
+                        .commit
+                        .is_none_or(|commit| commit.lsn > 0 && commit.lsn == index.last_lsn),
+                    "invalid WAL index commit LSN"
                 );
                 Ok((index, Some(object.etag)))
             }
@@ -141,10 +158,13 @@ impl RemoteWal {
         }
         bail!("WAL fencing CAS contention")
     }
-}
-
-impl DurableWal for RemoteWal {
-    fn append(&self, namespace: &Namespace, epoch: u64, batch: WalBatch) -> Result<u64> {
+    pub fn append_commit(
+        &self,
+        namespace: &Namespace,
+        epoch: u64,
+        batch: WalBatch,
+        position: Option<WalPosition>,
+    ) -> Result<u64> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let append_id = format!(
             "{}-{}-{}",
@@ -170,6 +190,7 @@ impl DurableWal for RemoteWal {
                 lsn,
                 timestamp_millis,
                 batch: batch.clone(),
+                commit: position.map(|position| WalCommit { lsn, position }),
             };
             let entry = Entry {
                 lsn,
@@ -179,6 +200,7 @@ impl DurableWal for RemoteWal {
             index.receipts.insert(append_id.clone(), lsn);
             index.last_lsn = lsn;
             index.epoch = epoch;
+            index.commit = record.commit;
             match self.commit(namespace, &index, etag.clone()) {
                 Ok(()) => return Ok(lsn),
                 Err(error) => {
@@ -193,6 +215,12 @@ impl DurableWal for RemoteWal {
             }
         }
         bail!("WAL append CAS contention")
+    }
+}
+
+impl DurableWal for RemoteWal {
+    fn append(&self, namespace: &Namespace, epoch: u64, batch: WalBatch) -> Result<u64> {
+        self.append_commit(namespace, epoch, batch, None)
     }
 
     fn read(&self, namespace: &Namespace, from_lsn: u64) -> Result<Vec<WalRecord>> {
@@ -257,6 +285,10 @@ impl DurableWal for RemoteWal {
                         WalOperation::Write { offset: 0, bytes },
                     ],
                 },
+                commit: records
+                    .iter()
+                    .find(|record| record.lsn == baseline_lsn)
+                    .and_then(|record| record.commit),
             };
             let hash = self.chunk(&baseline)?;
             index.entries.retain(|entry| entry.lsn >= before_lsn);

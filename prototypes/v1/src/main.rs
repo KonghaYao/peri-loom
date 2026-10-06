@@ -26,6 +26,14 @@ fn run() -> Result<()> {
     let store = backend(&args[0])?;
     let namespace = Namespace::new(&args[2], &args[3])?;
     let command = args[4].as_str();
+    if peri_loom_v1::capability_cli::handles(command) {
+        return output(&peri_loom_v1::capability_cli::run(
+            store,
+            namespace,
+            std::path::Path::new(&args[1]),
+            &args[4..],
+        )?);
+    }
     if command == "inspect" {
         ensure!(args.len() == 5, "inspect takes no arguments");
         let cache = Arc::new(SegmentCache::new(

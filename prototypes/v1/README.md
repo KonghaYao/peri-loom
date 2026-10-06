@@ -56,3 +56,45 @@ P1 alone is **not** distributed writer ownership: its WAL epoch check does not
 fence database HEAD publication, and direct object-store credentials are trusted.
 P4 must provide one authoritative fencing boundary. Remote calls are synchronous;
 this workspace prioritizes correctness evidence over production performance.
+
+## P2 storage capabilities
+
+The branch-aware path uses a durable namespace root, unique immutable physical
+blob instances, and one root CAS for refs, WAL publication, commit history,
+reader pins, upload intents and GC tombstones. See `../../docs/v1/P2-DESIGN.md`.
+The P1 commands remain a compatibility harness for the original physical layout;
+the branch-aware commands below use the new root domain. They do not implicitly
+import a P1 namespace. Subsequent runtime services must use the authority path.
+
+```sh
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-main tenant database branch-exec main 'CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)'
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-main tenant database snapshot main before
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-main tenant database branch main feature
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-feature tenant database branch-exec feature 'INSERT INTO items VALUES(2)'
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-copy tenant database clone before copy
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-copy tenant database branch-query copy 'SELECT * FROM items'
+cargo run --manifest-path prototypes/v1/Cargo.toml -- /tmp/peri-root-store /tmp/peri-main tenant database refs
+```
+
+`restore BRANCH SNAPSHOT`, `pitr BRANCH COMMIT_SEQUENCE`, and
+`pitr-time BRANCH TIMESTAMP_MS` atomically change recovery references and require
+reopening the engine. `refs` lists retained native commit sequences and times.
+Restoring an older state does not rewind commit-sequence or timestamp high-water
+marks. Recovery points carry immutable HEAD/WAL references, including checkpoints
+and WAL resets. Snapshots and clones share segments within one namespace; this
+does not promise cross-namespace cloning.
+
+`drop-branch NAME`, `drop-snapshot NAME`, `retain-after BRANCH MIN_SEQUENCE`,
+`gc-inspect`, and `gc SAFETY_WINDOW_SECONDS` manage retention and collection.
+GC first CAS-tombstones unreachable physical instances; a later invocation after
+the safety window deletes them. A zero window is intended only for controlled
+tests. Tombstone identities remain recorded, and sweeps also remove late physical
+reappearances without touching a newer instance of identical content.
+
+Reader pins are durable and released when the final branch-store/native handle
+drops. Worker crashes can conservatively leak pins. Unresolved upload intents are
+not automatically expired or deleted: unknown in-flight operations must never be
+declared safe merely because a timeout elapsed. These trade availability/storage
+usage for safety; distributed pin expiry and large-scale metadata compaction are
+not production claims. The whole root is a prototype CAS document, not a scalable
+catalog implementation.

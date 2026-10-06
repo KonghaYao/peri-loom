@@ -37,6 +37,10 @@ impl std::fmt::Display for PreconditionFailed {
 impl std::error::Error for PreconditionFailed {}
 
 pub trait ObjectStore: Send + Sync {
+    fn validate_session(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn get(&self, key: &str) -> Result<Option<StoredObject>>;
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String>;
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()>;

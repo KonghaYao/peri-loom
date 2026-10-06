@@ -164,6 +164,66 @@ struct TestBucket {
     store: Arc<S3ObjectStore>,
 }
 
+#[test]
+#[ignore = "requires explicit PERI_S3_TEST=1 and S3 test credentials"]
+fn p2_s3_authority_refs_pitr_and_gc_with_empty_worker_cache() -> Result<()> {
+    use peri_loom_v1::{authority::Authority, capabilities::Capabilities, gc::GarbageCollector};
+    ensure!(enabled(), "real S3 tests require an explicit opt-in");
+    let fixture = TestBucket::new()?;
+    let namespace = Namespace::new("tenant", "capabilities")?;
+    let authority = Authority::open(fixture.store.clone(), namespace.clone())?;
+    let capabilities = Capabilities::new(authority.clone());
+    let cache = tempfile::tempdir()?;
+    let database = RemoteDatabase::open(
+        authority.branch_store("main")?,
+        namespace.clone(),
+        cache.path(),
+        0,
+    )?;
+    database.execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")?;
+    let point = capabilities.snapshot("main", "before")?;
+    assert!(point.sequence > 0);
+    database.execute("INSERT INTO items VALUES(2)")?;
+    database.checkpoint()?;
+    drop(database);
+    std::fs::remove_dir_all(cache.path())?;
+    capabilities.clone("before", "copy")?;
+    let copied_cache = tempfile::tempdir()?;
+    let copied = RemoteDatabase::open(
+        authority.branch_store("copy")?,
+        namespace.clone(),
+        copied_cache.path(),
+        0,
+    )?;
+    assert_eq!(copied.query("SELECT id FROM items")?.len(), 1);
+    copied.execute("INSERT INTO items VALUES(3)")?;
+    drop(copied);
+    std::fs::remove_dir_all(copied_cache.path())?;
+    let retained = capabilities.pitr("main", point.sequence)?;
+    capabilities.restore_point("main", &retained)?;
+    capabilities.delete_branch("copy")?;
+    capabilities.delete_snapshot("before")?;
+    capabilities.retain_after("main", point.sequence)?;
+    GarbageCollector::new(authority.clone(), Duration::ZERO).collect()?;
+    drop(capabilities);
+    drop(authority);
+    let restarted = Authority::open(fixture.store.clone(), namespace.clone())?;
+    let final_cache = tempfile::tempdir()?;
+    let restored = RemoteDatabase::open(
+        restarted.branch_store("main")?,
+        namespace,
+        final_cache.path(),
+        0,
+    )?;
+    assert_eq!(restored.query("SELECT id FROM items")?.len(), 1);
+    assert_eq!(
+        restored.query("PRAGMA integrity_check")?[0][0].to_string(),
+        "ok"
+    );
+    eprintln!("PASS real S3 P2: root CAS, snapshot clone COW, native commit PITR, ref deletion and GC, authority restart and fresh-cache recovery");
+    Ok(())
+}
+
 impl TestBucket {
     fn new() -> Result<Self> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();

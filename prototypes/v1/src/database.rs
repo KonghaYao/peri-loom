@@ -58,6 +58,7 @@ impl RemoteDatabase {
     }
 
     pub fn execute(&self, sql: &str) -> Result<()> {
+        self.io.storage().store().validate_session()?;
         let connection = self.connection()?;
         let mut runner = connection.query_runner(sql.as_bytes());
         loop {
@@ -76,6 +77,7 @@ impl RemoteDatabase {
     }
 
     pub fn query(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
+        self.io.storage().store().validate_session()?;
         let connection = self.connection()?;
         connection.set_sync_mode(SyncMode::Full);
         connection.wal_auto_actions_disable();
@@ -88,6 +90,7 @@ impl RemoteDatabase {
     }
 
     pub fn checkpoint(&self) -> Result<()> {
+        self.io.storage().store().validate_session()?;
         let connection = self.connection()?;
         connection.set_sync_mode(SyncMode::Full);
         connection.wal_auto_actions_disable();

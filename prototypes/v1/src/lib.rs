@@ -1,9 +1,14 @@
+pub mod authority;
 pub mod cache;
+pub mod capabilities;
+pub mod capability_cli;
 pub mod config;
 pub mod database;
+pub mod gc;
 pub mod io;
 pub mod manifest;
 pub mod namespace;
 pub mod object_store;
+pub mod recovery;
 pub mod storage;
 pub mod wal;

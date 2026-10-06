@@ -5,6 +5,7 @@ use turso_core::io::{Buffer, Completion, File, FileSyncType};
 
 use super::{finish, Shared};
 use crate::manifest::WalPosition;
+use crate::recovery::committed_position;
 use crate::wal::{apply_batch, WalBatch, WalOperation};
 
 pub(super) struct RemoteFile {
@@ -40,10 +41,18 @@ impl RemoteFile {
             if pos < 32 {
                 self.shared.allow_reset(&state)?;
             }
-            let batch = WalBatch {
-                operations: vec![WalOperation::Write { offset: pos, bytes }],
-            };
+            let resetting =
+                pos == 0 && bytes.len() >= 32 && committed_position(&bytes[..32]).is_ok();
+            let mut operations = Vec::new();
+            if resetting {
+                operations.push(WalOperation::Truncate { size: 0 });
+            }
+            operations.push(WalOperation::Write { offset: pos, bytes });
+            let batch = WalBatch { operations };
             apply_batch(&mut state.bytes, &batch)?;
+            if resetting {
+                state.last_commit = None;
+            }
             state.batch.operations.extend(batch.operations);
         } else {
             state.dirty = true;
