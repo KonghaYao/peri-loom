@@ -352,7 +352,7 @@ impl Service {
 
     fn check_binding(&self, binding: &LeaseBinding) -> Result<()> {
         self.live(binding)?;
-        live_binding(&self.authority.snapshot()?.root, binding)?;
+        self.authority.ownership_view()?.matches(binding)?;
         self.live(binding)?;
         Ok(())
     }

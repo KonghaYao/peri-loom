@@ -115,37 +115,99 @@ fn physical_put_ticket_blocks_takeover_until_terminal_response() -> Result<()> {
 
 #[test]
 fn final_root_guard_rechecks_expiry_after_slow_candidate_semantic_read() -> Result<()> {
-    let (raw, clock, authority) = fixture()?;
-    let binding = authority
-        .grant(grant_request(&authority, "main", 10, 0, "grant", 1000)?)?
-        .binding;
-    let store = authority.open_session(&binding, AccessRole::Writer)?;
-    let hash = initialize(store.clone())?;
-    let snapshot = root(&raw)?.snapshot()?;
-    let blob = snapshot.root.objects[&format!("manifests/{hash}")]
-        .blob
-        .clone();
-    let expired = Arc::new(AtomicBool::new(false));
-    let observed = expired.clone();
-    *raw.before_get.lock().unwrap() = Some(Hook {
-        needle: blob,
-        skip: 3,
-        action: Box::new(move || {
-            clock.set(1100);
-            observed.store(true, Ordering::SeqCst);
-        }),
-    });
-    let count = raw.mutations.lock().unwrap().len();
-    let error = store
-        .put(&segment(b"expiry"), b"expiry", PutCondition::Absent)
-        .unwrap_err();
-    assert!(expired.load(Ordering::SeqCst));
-    assert!(format!("{error:#}").contains("LeaseExpired"));
-    assert_eq!(raw.mutations.lock().unwrap().len(), count);
-    assert_eq!(
-        root(&raw)?.snapshot()?.root.revision,
-        snapshot.root.revision
-    );
+    for after_upload in [false, true] {
+        let (raw, clock, authority) = fixture()?;
+        let binding = authority
+            .grant(grant_request(&authority, "main", 10, 0, "grant", 1000)?)?
+            .binding;
+        let store = authority.open_session(&binding, AccessRole::Writer)?;
+        let hash = initialize(store.clone())?;
+        let snapshot = root(&raw)?.snapshot()?;
+        let blob = snapshot.root.objects[&format!("manifests/{hash}")]
+            .blob
+            .clone();
+        let root_key = identifier("main").namespace.key("authority/root")?;
+        let expected = Arc::new(std::sync::Mutex::new(snapshot.clone()));
+        let expected_bytes = Arc::new(std::sync::Mutex::new(
+            raw.memory.get(&root_key)?.unwrap().bytes,
+        ));
+        let expired = Arc::new(AtomicBool::new(false));
+        let observed = expired.clone();
+        let expiry = Hook {
+            needle: blob,
+            skip: usize::from(after_upload),
+            action: Box::new(move || {
+                clock.set(1100);
+                observed.store(true, Ordering::SeqCst);
+            }),
+        };
+        if after_upload {
+            let source = raw.clone();
+            let captured = expected.clone();
+            let captured_bytes = expected_bytes.clone();
+            *raw.before_put.lock().unwrap() = Some(Hook {
+                needle: "authority/blobs/".into(),
+                skip: 0,
+                action: Box::new(move || {
+                    let reserved = root(&source).unwrap().snapshot().unwrap();
+                    let key = reserved.root.namespace.key("authority/root").unwrap();
+                    *captured.lock().unwrap() = reserved;
+                    *captured_bytes.lock().unwrap() =
+                        source.memory.get(&key).unwrap().unwrap().bytes;
+                    let reader = source.clone();
+                    *source.before_get.lock().unwrap() = Some(Hook {
+                        needle: "authority/root".into(),
+                        skip: 0,
+                        action: Box::new(move || {
+                            *reader.before_get.lock().unwrap() = Some(expiry);
+                        }),
+                    });
+                }),
+            });
+        } else {
+            *raw.before_get.lock().unwrap() = Some(expiry);
+        }
+        let count = raw.mutations.lock().unwrap().len();
+        let error = store
+            .put(&segment(b"expiry"), b"expiry", PutCondition::Absent)
+            .unwrap_err();
+        assert!(expired.load(Ordering::SeqCst));
+        assert!(format!("{error:#}").contains("LeaseExpired"));
+        let mutations = raw.mutations.lock().unwrap().clone();
+        let observed = root(&raw)?.snapshot()?;
+        let expected = expected.lock().unwrap().clone();
+        let expected_bytes = expected_bytes.lock().unwrap().clone();
+        assert_eq!(observed.root, expected.root);
+        assert_eq!(observed.etag, expected.etag);
+        assert_eq!(raw.memory.get(&root_key)?.unwrap().bytes, expected_bytes);
+        assert_eq!(mutations.len(), count + if after_upload { 2 } else { 0 });
+        let staged = &mutations[count..];
+        assert_eq!(
+            staged
+                .iter()
+                .filter(|operation| operation.ends_with("/authority/root"))
+                .count(),
+            usize::from(after_upload)
+        );
+        assert_eq!(observed.root.objects, snapshot.root.objects);
+        assert_eq!(observed.root.branches, snapshot.root.branches);
+        if after_upload {
+            assert_eq!(observed.root.revision, snapshot.root.revision + 1);
+            assert_eq!(observed.root.uploads.len(), snapshot.root.uploads.len() + 1);
+            let entry = observed
+                .root
+                .uploads
+                .values()
+                .find(|entry| entry.hash == blake3::hash(b"expiry").to_hex().as_str())
+                .unwrap();
+            let authority = root(&raw)?;
+            assert_eq!(authority.read_blob(entry)?, b"expiry");
+            assert!(authority.reachable(&observed.root)?.contains(&entry.blob));
+        } else {
+            assert_eq!(observed.root.revision, snapshot.root.revision);
+        }
+        eprintln!("expiry_stage after_upload={after_upload} staged_mutations={} final_root_publications=0 root_bytes_unchanged=true", staged.len());
+    }
     Ok(())
 }
 

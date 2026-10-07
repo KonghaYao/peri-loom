@@ -3,6 +3,7 @@ mod catalog;
 mod codec;
 mod migration;
 pub mod ownership;
+mod ownership_view;
 mod semantic;
 pub mod types;
 
