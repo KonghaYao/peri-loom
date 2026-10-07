@@ -15,6 +15,8 @@ const MAX_DIAGNOSTICS: usize = 64;
 pub(super) enum Action {
     Execute,
     Query,
+    Checkpoint,
+    Compact,
 }
 
 #[derive(Default)]
@@ -29,6 +31,8 @@ struct Record<'request> {
     request_id: &'request str,
     cause_class: &'static str,
     execution_completed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_cause_class: Option<&'static str>,
 }
 
 fn policy(message: &str) -> Option<&'static str> {
@@ -56,6 +60,10 @@ fn classify(error: &Error) -> &'static str {
     if !super::outcome::execution_completed(error) {
         return "outcome_unsettled";
     }
+    classify_source(error)
+}
+
+fn classify_source(error: &Error) -> &'static str {
     for cause in error.chain() {
         if let Some(admission) = cause.downcast_ref::<AdmissionError>() {
             return match admission {
@@ -122,6 +130,18 @@ impl Diagnostics {
             request_id,
             cause_class: classify(error),
             execution_completed: super::outcome::execution_completed(error),
+            native_cause_class: match action {
+                Action::Execute | Action::Query => None,
+                Action::Checkpoint | Action::Compact => Some(
+                    if error.root_cause().to_string()
+                        == "checkpoint did not backfill the complete WAL"
+                    {
+                        "checkpoint_partial_backfill"
+                    } else {
+                        classify_source(error)
+                    },
+                ),
+            },
         })
         .ok()?;
         bytes.push(b'\n');
@@ -159,6 +179,68 @@ mod tests {
             .context("step bounded remote SQL")
             .context("privateSecret SQL SELECT credential FROM secrets")
             .unwrap_err()
+    }
+
+    #[test]
+    fn maintenance_unsettled_records_preserve_busy_and_io_without_payload() -> Result<()> {
+        for (action, expected_action) in [
+            (Action::Checkpoint, "checkpoint"),
+            (Action::Compact, "compact"),
+        ] {
+            for (native, expected) in [
+                (LimboError::Busy, "busy"),
+                (
+                    LimboError::IoBackendUnavailable("privateSecret token namespace SQL".into()),
+                    "io",
+                ),
+                (
+                    LimboError::CompletionError(CompletionError::ShortWrite),
+                    "io",
+                ),
+            ] {
+                let error = with_context(native).context(crate::session::UnsettledSqlOutcome);
+                let bytes = Diagnostics::default()
+                    .record(action, "safe-request", &error)
+                    .unwrap();
+                let value: Value = serde_json::from_slice(&bytes)?;
+                assert_eq!(value.as_object().unwrap().len(), 6);
+                assert_eq!(value["action"], expected_action);
+                assert_eq!(value["event"], "native_sql_unsettled_outcome");
+                assert_eq!(value["cause_class"], "outcome_unsettled");
+                assert_eq!(value["native_cause_class"], expected);
+                assert_eq!(value["execution_completed"], false);
+                assert!(bytes.len() < 512);
+                for forbidden in ["privateSecret", "token", "namespace", "SQL"] {
+                    assert!(!std::str::from_utf8(&bytes)?.contains(forbidden));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn maintenance_partial_backfill_requires_exact_fixed_root_cause() -> Result<()> {
+        for (message, expected) in [
+            (
+                "checkpoint did not backfill the complete WAL",
+                "checkpoint_partial_backfill",
+            ),
+            (
+                "checkpoint did not backfill the complete WAL privateSecret",
+                "not_determined",
+            ),
+        ] {
+            let error = anyhow!(message).context(crate::session::UnsettledSqlOutcome);
+            let bytes = Diagnostics::default()
+                .record(Action::Checkpoint, "safe-request", &error)
+                .unwrap();
+            let value: Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(value["native_cause_class"], expected);
+            assert_eq!(value["cause_class"], "outcome_unsettled");
+            assert_eq!(value["execution_completed"], false);
+            assert!(!std::str::from_utf8(&bytes)?.contains("privateSecret"));
+        }
+        Ok(())
     }
 
     #[test]

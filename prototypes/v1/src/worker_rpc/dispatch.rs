@@ -109,7 +109,7 @@ impl State {
                 result
             }
             WorkerCommand::Checkpoint { .. } => {
-                Metrics::global().observe(
+                let result = Metrics::global().observe(
                     Operation::Checkpoint,
                     || {
                         call.context("worker session RPC guard absent")?
@@ -117,14 +117,20 @@ impl State {
                             .checkpoint()
                     },
                     |_| 0,
-                )?;
-                Ok(json!({"checkpointed": true}))
+                );
+                if let Err(error) = &result {
+                    self.diagnostics.emit(Action::Checkpoint, request_id, error);
+                }
+                result.map(|_| json!({"checkpointed": true}))
             }
             WorkerCommand::Compact { .. } => {
-                call.context("worker session RPC guard absent")?
-                    .handle()
-                    .compact_wal()?;
-                Ok(json!({"compacted": true}))
+                let result = call
+                    .context("worker session RPC guard absent")
+                    .and_then(|call| call.handle().compact_wal());
+                if let Err(error) = &result {
+                    self.diagnostics.emit(Action::Compact, request_id, error);
+                }
+                result.map(|_| json!({"compacted": true}))
             }
             WorkerCommand::Diagnostics { .. } => call
                 .context("worker session RPC guard absent")?
