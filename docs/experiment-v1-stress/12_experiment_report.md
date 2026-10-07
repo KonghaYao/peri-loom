@@ -1,0 +1,29 @@
+# R10 focused checkpoint: runner evidence, independent verification pending
+
+- Observed execution: 2026-10-07 UTC / 2026-10-08 Asia/Shanghai.
+- Authorized HEAD: `304a2ab432a03d77bb9595452dfb993f9d54f9c0`; no source/spec/cap/HEAD changes.
+- Initial beforeSQL HOLD: main stated 183 unique inputs; actual 181 sources + 3 nonoverlapping artifacts = 184.
+- Main explicitly corrected and authorized exact184; repeated lightweight preflight passed all frozen hashes, permissions, profile and owned identities.
+- Native artifact SHA256: `64ec5bd6e7b143b95151c9a52934c03f42a2a5396297f4cbe91c06de33c5f85e`.
+- One provision execution only: new fixture `/private/tmp/peri-stress-r10-checkpoint-x1h0hzzq`, label `r10checkpoint`; provision exit 0.
+- Guard spec: `/private/tmp/peri-stress-r10-checkpoint-results-kbi0ddfa/operator-spec.json`.
+- Gate: `joint-pass-round10.json`; profile `checkpoint_reopen`, C1/2, W1s/S2s/M5s, offered25, rows1000, seed20261007, request10s.
+- Caps unchanged: process RSS512MiB, generated charged256MiB, artifact64MiB; functional_only/record-confound.
+- Owned CLI PID64287, runner PPID64195; actual CLI exit1, runner command exit1, child_alive=false, retained_pid=null.
+- Run `253aa1366133bb5d`: status UNRESOLVED, reason `operation_incomplete`; elapsed23.402202125s.
+- Guard final status HOLD, first_stop=null, clean_join=false, may_have_unknown=true.
+- Six workload phases completed: offered400, attempted52, acked52, completed52, admission_dropped339, queue_expired9.
+- Workload unknown0, cleanup_unknown0, timeouts0, correctness_failures0; two recorded correctness checks PASS.
+- Subsequent checkpoint lifecycle failed: HTTP409 `operation_incomplete`, execution_completed=false, may_have_committed=false, logical unknown1.
+- Failed checkpoint RPC elapsed33.928708ms; lifecycle elapsed33.974917ms. Two records describe one logical failure.
+- No retry or additional API/SQL/Close/reopen after this unresolved checkpoint; no common-matrix continuation.
+- Native diagnostics: new `logs/worker-a.log` and `logs/worker-b.log` are both empty.
+- `cause_class=unavailable`, `native_cause_class=unavailable`; no root-cause classification is supported by those logs.
+- Guard evidence: 15 samples, maximum consecutive sample gap2.087819666s; no guard STOP recorded.
+- CLI soft_stop_sent=false, hard_stop_sent=false; CLI exited without guard signal. Owned caffeinate terminated by guard, exit-15.
+- External builder confound: unowned esbuild PID55991/PPID55988; confounded=true, performance_pass=false; no external process killed.
+- Guard recorded final readonly_artifacts_after; no source/build/security/environment changes by runner.
+- Evidence: output `guarded-events.jsonl`, `run_253aa1366133bb5d/run.json`, `run_253aa1366133bb5d/operations.jsonl`.
+- Old R9 Unknown DB/fixture untouched; no private connection/launch/key contents disclosed.
+- Conclusion: focused S3/protocol-path checkpoint failure reproduced; underlying Native cause remains unavailable, not proven.
+- Runner report only: independent verification and any commit remain subject to separate F/main authorization.
