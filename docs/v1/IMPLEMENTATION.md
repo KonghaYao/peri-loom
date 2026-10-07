@@ -22,7 +22,14 @@ subagent 按该阶段文档验收。修复后复验，通过才提交。P0–P6 
 | P5 | 完成 | Go registry/placement、持久 epoch/lease、reconciliation/failover | b96d700；独立 PASS；62 顶层测试 + 1 helper skip；全包 race / vet / fmt / build 通过；8 个真实进程故障场景；见 P5-VERIFICATION.md |
 | P6 | 完成 | Go gateway/management/security、原生页加密/KMS、SDK/admin、metrics/deployment | 独立 ACCEPTED；Rust 289 常规 + 5 真实 S3；平台 Go 80 PASS / 2 helper skip、Controller 63 PASS / 1 helper skip，各全包 normal/race；真实加密 S3/TLS、三 SDK、浏览器与 Linux 容器启动 / joined clean；见 P6-VERIFICATION.md |
 | 联合 | 完成 | 跨阶段回归、真实 S3 冷恢复、API/SDK/UI/部署源证据复核 | 独立功能 PASS；本轮 native 325 PASS / 5 ignored；真实 SIGKILL、删除 owner cache、epoch 2→3、恢复已提交数据并拒绝旧 session；保留首次观察竞态失败及故障会话非 clean 退出；见 JOINT-VERIFICATION.md |
-| 压测 / 调优 | 执行中 | 架构/fault harness、SQL workloads、measurement、性能修复 | 联合验收已通过；独立 RELEASE / S3 / TLS 全项目已启动，尚无性能结论；规划见 ../experiment-v1-stress/00_plan.md |
+| 压测 / 调优 | 执行中 | 架构/fault harness、SQL workloads、measurement、性能修复 | 续期修复 ae6f0db；架构子阶段 6466 ACK / 29 oracle PASS，30s 饱和矩阵因 C8 unknown 停止；关联与 UI 终态修复 845a7fb、OwnershipView 安全候选 25cd817 已独立验收并提交，尚无候选性能结论；见 ../experiment-v1-stress/ |
+
+## 人工用户验收
+
+用户行为按 [USER-PATH.md](USER-PATH.md) 进入，分运维、平台、数据库和三个 SDK
+路径，每组采用有序步骤，列出前提、操作、预期与限制。文档经过作者交叉静态核验，
+见 USER-PATH-VERIFICATION.md 与 USER-PATH-OPERATIONS-VERIFY.md；静态通过不表示
+用户已执行这些操作，也不代替真实压测、性能对照或最终对抗验收。
 
 ## 验收原则
 
