@@ -236,8 +236,8 @@ func TestProcessIdentityParserRefusesZombieAndMismatch(t *testing.T) {
 	if err != nil || len(identity.Args) != 6 {
 		t.Fatal("command parse")
 	}
-	if _, err := parseIdentity("42003 501 Z Tue Oct 6 01:02:03 2026 dead", 42003); !errors.Is(err, ErrProcessGone) {
-		t.Fatal("zombie not recognized")
+	if identity, err := parseIdentity("42003 501 Z Tue Oct 6 01:02:03 2026 dead", 42003); !errors.Is(err, ErrProcessZombie) || errors.Is(err, ErrProcessGone) || identity.PID != 42003 || identity.UID != 501 || identity.Start == "" {
+		t.Fatal("zombie must retain metadata without proving process disappearance")
 	}
 	if _, err := parseIdentity("42004 501 S Tue Oct 6 01:02:03 2026 alive", 42003); err == nil {
 		t.Fatal("wrong pid accepted")

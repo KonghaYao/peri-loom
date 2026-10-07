@@ -79,12 +79,49 @@ argv must match exactly:
 
 Both identities are inspected; only the current owner is eligible for SIGKILL.
 Identity is rechecked immediately before signalling. Removal follows proven
-process disappearance/zombie exit, an unchanged cache-directory identity and
+actual PID absence proven by an ESRCH probe, an unchanged cache-directory identity and
 a bounded scan rejecting symlinks/special files (>10,000 entries or >256MiB
 is rejected). Cache deletion never touches Authority/backend/platform paths.
 Portable PID/start checks have a residual signal-boundary TOCTOU and `ps` start
 time granularity limitation; this is a trusted private fixture tool, not a
 hard defense against a malicious same-UID process or filesystem mutator.
+
+### Post-signal disappearance observation
+
+The two pre-signal checks still require complete PID, caller UID, process start
+and exact owned-worker argv. An incomplete identity at either boundary prevents
+the signal. After the one authorized signal, observation has a five-second
+deadline inherited from the parent context; it never sends another signal.
+Transient `ps` failures, missing argv and zombies are observations to wait on,
+not permission to signal or delete. Available PID/UID/start metadata and argv
+prefixes are checked on every observation; a visible mismatch stops immediately.
+A complete live identity must match all four identity components exactly.
+
+`ErrProcessGone` is reserved by the Host contract for an actual PID probe returning
+ESRCH. A failed `ps`, an empty result, EPERM and zombie status do not prove absence.
+Zombie metadata remains available for reuse checks, but its defunct command text
+is not treated as live argv. Observed metadata is retained even if a subsequent
+probe returns ESRCH, so a visible reuse cannot be hidden by that later absence.
+
+Only proven absence can advance to the existing canonical path, cache size,
+no-symlink and directory-identity checks. The same wait deadline and parent
+cancellation are checked immediately before removal. Timeout, cancellation,
+identity mismatch or evidence failure leaves the cache untouched; it does not
+prove that the worker survived or that the earlier signal was canceled. Do not
+retry the signal or rerun a used fixture to turn an uncertain result into success.
+
+Evidence distinguishes `fault_signal_sent`, `fault_process_wait` (same identity,
+incomplete identity, unavailable inspection or zombie), `fault_process_gone`
+(Host ESRCH proof), and `fault_exit_uncertain`. No new evidence contains raw argv,
+environment values or inspection error details. `fault_completed` remains the
+separate record after actual cache removal; signal success alone is not completion.
+The safety decision retains the existing trusted-fixture check/use TOCTOU limits;
+these observations are not a portable pidfd or an atomic process/filesystem fence.
+
+The wait-regression gates use synthetic Host observations and temporary fixture
+caches only. They never execute `LocalHost`, send an OS signal or invoke a deployed
+Gateway/Authority API. Run the complete standalone module mock gates with
+`go test ./... -count=1`, `go test -race ./... -count=1`, and `go vet ./...`.
 
 ## Evidence and stop semantics
 

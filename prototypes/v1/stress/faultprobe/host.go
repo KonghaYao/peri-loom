@@ -16,6 +16,10 @@ import (
 )
 
 var ErrProcessGone = errors.New("process gone")
+var ErrProcessZombie = errors.New("process remains a zombie")
+var ErrIdentityIncomplete = errors.New("incomplete process identity")
+var ErrIdentityMismatch = errors.New("process identity mismatch")
+var ErrInspectionUnavailable = errors.New("process inspection unavailable")
 
 type ProcessIdentity struct {
 	PID   int
@@ -32,33 +36,78 @@ type Host interface {
 type LocalHost struct{}
 
 func (LocalHost) Inspect(ctx context.Context, pid int) (ProcessIdentity, error) {
-	encoded, err := exec.CommandContext(ctx, "ps", "-ww", "-p", strconv.Itoa(pid), "-o", "pid=,uid=,stat=,lstart=,command=").Output()
-	if err != nil {
-		if syscall.Kill(pid, 0) == syscall.ESRCH {
-			return ProcessIdentity{}, ErrProcessGone
-		}
-		return ProcessIdentity{}, errors.New("process inspection failed")
+	return inspectProcess(ctx, pid, func(ctx context.Context, pid int) ([]byte, error) {
+		command := exec.CommandContext(ctx, "ps", "-ww", "-p", strconv.Itoa(pid), "-o", "pid=,uid=,stat=,lstart=,command=")
+		command.WaitDelay = 100 * time.Millisecond
+		return command.Output()
+	}, func(pid int) error { return syscall.Kill(pid, 0) })
+}
+
+func inspectProcess(ctx context.Context, pid int, observe func(context.Context, int) ([]byte, error), probe func(int) error) (ProcessIdentity, error) {
+	if pid <= 1 {
+		return ProcessIdentity{}, ErrIdentityMismatch
 	}
-	return parseIdentity(string(encoded), pid)
+	if ctx.Err() != nil {
+		return ProcessIdentity{}, ctx.Err()
+	}
+	encoded, observationErr := observe(ctx, pid)
+	if ctx.Err() != nil {
+		return ProcessIdentity{}, ctx.Err()
+	}
+	identity, parseErr := parseIdentity(string(encoded), pid)
+	if errors.Is(parseErr, ErrIdentityMismatch) {
+		return identity, parseErr
+	}
+	if observationErr != nil || parseErr != nil {
+		absent := errors.Is(probe(pid), syscall.ESRCH)
+		if ctx.Err() != nil {
+			return identity, ctx.Err()
+		}
+		if absent {
+			return identity, ErrProcessGone
+		}
+		if observationErr != nil {
+			return identity, ErrInspectionUnavailable
+		}
+		return identity, parseErr
+	}
+	return identity, nil
 }
 
 func parseIdentity(encoded string, expected int) (ProcessIdentity, error) {
 	fields := strings.Fields(encoded)
-	if len(fields) < 9 {
-		return ProcessIdentity{}, errors.New("incomplete process identity")
+	identity := ProcessIdentity{UID: -1}
+	if len(fields) == 0 {
+		return identity, ErrIdentityIncomplete
 	}
 	pid, err := strconv.Atoi(fields[0])
-	if err != nil || pid != expected {
-		return ProcessIdentity{}, errors.New("PID mismatch")
+	if err != nil {
+		return identity, ErrIdentityIncomplete
+	}
+	identity.PID = pid
+	if pid != expected {
+		return identity, ErrIdentityMismatch
+	}
+	if len(fields) < 2 {
+		return identity, ErrIdentityIncomplete
 	}
 	uid, err := strconv.Atoi(fields[1])
 	if err != nil || uid < 0 {
-		return ProcessIdentity{}, errors.New("process UID unavailable")
+		return identity, ErrIdentityIncomplete
 	}
+	identity.UID = uid
+	if len(fields) < 8 {
+		return identity, ErrIdentityIncomplete
+	}
+	identity.Start = strings.Join(fields[3:8], " ")
 	if strings.Contains(fields[2], "Z") {
-		return ProcessIdentity{}, ErrProcessGone
+		return identity, ErrProcessZombie
 	}
-	return ProcessIdentity{PID: pid, UID: uid, Start: strings.Join(fields[3:8], " "), Args: fields[8:]}, nil
+	identity.Args = fields[8:]
+	if len(identity.Args) == 0 {
+		return identity, ErrIdentityIncomplete
+	}
+	return identity, nil
 }
 
 func (LocalHost) SignalKill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
@@ -160,21 +209,13 @@ func killOwned(ctx context.Context, config Config, topology Topology, worker str
 	if err := host.SignalKill(actual.PID); err != nil {
 		return errors.New("owned worker signal failed")
 	}
+	if err := log.Record(map[string]any{"type": "fault_signal_sent", "worker": worker, "pid": actual.PID, "signal": "SIGKILL"}); err != nil {
+		return err
+	}
 	wait, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	for {
-		current, inspectErr := host.Inspect(wait, actual.PID)
-		if errors.Is(inspectErr, ErrProcessGone) {
-			break
-		}
-		if inspectErr != nil || current.Start != actual.Start {
-			return errors.New("process disappearance not proven or PID reused")
-		}
-		select {
-		case <-wait.Done():
-			return errors.New("worker exit unproven")
-		case <-time.After(50 * time.Millisecond):
-		}
+	if err := waitOwnedExit(wait, worker, actual, host, log); err != nil {
+		return err
 	}
 	if err := safeDirectory(config.RunDir); err != nil {
 		return err
@@ -183,8 +224,80 @@ func killOwned(ctx context.Context, config Config, topology Topology, worker str
 	if err != nil || !os.SameFile(current, cacheIdentity) {
 		return errors.New("cache identity changed before deletion")
 	}
+	if wait.Err() != nil {
+		return uncertainExit(log, worker, actual.PID, "deadline_or_cancel_before_deletion")
+	}
 	if err := os.RemoveAll(cache); err != nil {
 		return errors.New("owned fixture cache deletion failed")
 	}
 	return log.Record(map[string]any{"type": "fault_completed", "worker": worker, "pid": actual.PID, "deleted_cache": cache, "authority_signaled": false, "launcher_signaled": false})
+}
+
+func observationStatus(expected, current ProcessIdentity, failure error) (string, error) {
+	if errors.Is(failure, ErrIdentityMismatch) || current.PID != 0 && current.PID != expected.PID ||
+		current.PID != 0 && current.UID >= 0 && current.UID != expected.UID ||
+		current.Start != "" && current.Start != expected.Start {
+		return "identity_mismatch", ErrIdentityMismatch
+	}
+	if errors.Is(failure, ErrProcessZombie) {
+		return "zombie", nil
+	}
+	if len(current.Args) > len(expected.Args) {
+		return "argv_mismatch", ErrIdentityMismatch
+	}
+	for index, argument := range current.Args {
+		if argument != expected.Args[index] {
+			return "argv_mismatch", ErrIdentityMismatch
+		}
+	}
+	if errors.Is(failure, ErrProcessGone) {
+		return "gone", nil
+	}
+	if errors.Is(failure, ErrIdentityIncomplete) {
+		return "identity_incomplete", nil
+	}
+	if failure != nil {
+		return "inspection_unavailable", nil
+	}
+	if current.PID != expected.PID || current.UID != expected.UID || current.Start == "" || len(current.Args) != len(expected.Args) {
+		return "identity_incomplete", nil
+	}
+	return "same_identity", nil
+}
+
+func uncertainExit(log *Log, worker string, pid int, reason string) error {
+	if err := log.Record(map[string]any{"type": "fault_exit_uncertain", "worker": worker, "pid": pid, "reason": reason}); err != nil {
+		return err
+	}
+	return errors.New("worker exit unproven: " + reason)
+}
+
+func waitOwnedExit(ctx context.Context, worker string, expected ProcessIdentity, host Host, log *Log) error {
+	started := time.Now()
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return uncertainExit(log, worker, expected.PID, "deadline_or_cancel")
+		}
+		current, inspectErr := host.Inspect(ctx, expected.PID)
+		if ctx.Err() != nil {
+			return uncertainExit(log, worker, expected.PID, "deadline_or_cancel")
+		}
+		status, mismatch := observationStatus(expected, current, inspectErr)
+		if mismatch != nil {
+			return uncertainExit(log, worker, expected.PID, status)
+		}
+		if status == "gone" {
+			return log.Record(map[string]any{"type": "fault_process_gone", "worker": worker, "pid": expected.PID, "proof": "host_esrch", "wait_ms": time.Since(started).Milliseconds()})
+		}
+		if err := log.Record(map[string]any{"type": "fault_process_wait", "worker": worker, "pid": expected.PID, "observation": status, "attempt": attempt, "wait_ms": time.Since(started).Milliseconds()}); err != nil {
+			return err
+		}
+		delay := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			delay.Stop()
+			return uncertainExit(log, worker, expected.PID, "deadline_or_cancel")
+		case <-delay.C:
+		}
+	}
 }
