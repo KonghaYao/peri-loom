@@ -66,6 +66,15 @@
 5. unsupportedprofile须在业务effects前拒绝；合法BEGIN内部emptyTEMP与用户真实TEMP/attached/MVCC的拒绝边界按最终native合同及Parent oracle区分。不从关闭worker profile推导取消native安全限制，不承诺未审SQL模式支持。
 6. **预期/证据/STOP**：用户保存公共失败/flags，不发额外探测SQL取伪成功；多peer/failure、retained/锁终态、实际join/panic由独立oracle提供。没有确切完成证据记UNKNOWN/BLOCKED，不写clean/PASS。
 
+## 七、维护失败/Unknown验收边界
+
+1. 本组目前未按本页人工执行；R9/R10当前真实checkpoint FAIL未修复。私有Memory probe成功不代表S3 checkpoint通过，也不解释旧Unknown根因；Parent批次ACCEPT不能覆盖这些后续失败。
+2. 仅在获授权的新健康隔离实例中，完成已知业务COMMIT并保存ledger预期后，通过既有管理checkpoint入口分配唯一非秘密 `request_id`，只调用一次；不新增cleanup API、调整期限或开启HTTP/SQL自动retry。
+3. 健康预期是完整、匹配请求的成功响应且 `result.checkpointed` 明确为 `true`，不是仅HTTP到达或CLI退出；随后才按已知健康路径用reader核已ACK ledger/余额及integrity。oracle不符即STOP，不能把checkpoint ACK单独当业务一致性证明。
+4. 管理checkpoint的HTTP409 `operation_incomplete` 只说明操作未完整返回，不公开确切native原因或证明未派发、已rollback/取消；它本身没有SQL completed保证。结果未知时立即STOP，不盲Close、reopen旧会话、继续探测SQL或重发checkpoint/HTTP；其他UNKNOWN、丢响应或坏ACK同样处理。
+5. 保留原响应、 `request_id` 、匹配binary SHA及已有闭集诊断：event/action/cause_class/execution_completed，若已有则记录native_cause_class；不新增参数强造日志，不输出SQL、key/token或原始私有错误。诊断缺失不等于成功；闭集分类也不能解除Unknown或替代完成/清理证明。
+6. 保留受影响实例/session/namespace状态与第一次失败证据，由主控安排授权后的隔离调查及安全处置；不删除cache或对旧UnknownDB做恢复试探。另起新隔离实例也须授权，且新实例成功不能把旧请求改记PASS。**预期/证据/STOP**：健康ACK后核oracle；失败/未知保存关联证据并停止，未确认终态保持UNKNOWN/BLOCKED。
+
 ## 验收记录与后续
 
 1. 每组记录执行者、匹配binary SHA、实际操作顺序、request ID、预期与实际公共终态、fresh ledger/integrity；执行失败保留，不以retry或临时提高配额/预算覆盖。秘密与任意用户SQL内容不进入公开记录。
