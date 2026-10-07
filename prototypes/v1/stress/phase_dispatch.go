@@ -7,20 +7,30 @@ import (
 )
 
 type phaseDispatch struct {
-	mutex   sync.Mutex
-	context context.Context
-	cancel  context.CancelFunc
+	mutex     sync.Mutex
+	context   context.Context
+	cancel    context.CancelFunc
+	offerStop <-chan struct{}
 }
 
-func newPhaseDispatch(parent context.Context) *phaseDispatch {
+func newPhaseDispatch(parent context.Context, offerStop <-chan struct{}) *phaseDispatch {
 	ctx, cancel := context.WithCancel(parent)
-	return &phaseDispatch{context: ctx, cancel: cancel}
+	return &phaseDispatch{context: ctx, cancel: cancel, offerStop: offerStop}
 }
 
 func (dispatch *phaseDispatch) admit() bool {
 	dispatch.mutex.Lock()
 	defer dispatch.mutex.Unlock()
-	return dispatch.context.Err() == nil
+	return dispatch.context.Err() == nil && !offerStopRequested(dispatch.offerStop)
+}
+
+func offerStopRequested(offerStop <-chan struct{}) bool {
+	select {
+	case <-offerStop:
+		return true
+	default:
+		return false
+	}
 }
 
 func (dispatch *phaseDispatch) stopOffers() {

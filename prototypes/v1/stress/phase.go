@@ -18,7 +18,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 		Errors: map[string]int{}, PerProjectAcked: map[string]int{}, PerProjectOffered: map[string]int{}, ShortGate: settings.Smoke < 10*time.Second || settings.Measure < 30*time.Second}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	dispatch := newPhaseDispatch(ctx)
+	dispatch := newPhaseDispatch(ctx, settings.OfferStop)
 	defer dispatch.stopOffers()
 	period := time.Second / time.Duration(settings.OfferedRate)
 	result.RequestedDurationNS = duration.Nanoseconds()
@@ -27,6 +27,11 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 	activeDatabases := map[DatabaseID]bool{}
 	sessions := make([]*Session, count)
 	for slot := range sessions {
+		if offerStopRequested(settings.OfferStop) {
+			result.Status, result.Reason = "FAIL", "operator_stop_offers"
+			closePhaseSessions(sessions, artifacts, &result)
+			return result
+		}
 		fixture := fixtures[slot%len(fixtures)]
 		activeDatabases[fixture.Target.Database] = true
 		session, failure := fixture.Client.Open(ctx, fixture.Target.Database)
@@ -56,6 +61,8 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			fixture, session := fixtures[slot%len(fixtures)], sessions[slot]
 			for {
 				select {
+				case <-settings.OfferStop:
+					return
 				case <-dispatch.context.Done():
 					return
 				case job, open := <-jobs[slot]:
@@ -126,6 +133,9 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			if delay := time.Until(intended); delay > 0 {
 				timer := time.NewTimer(delay)
 				select {
+				case <-settings.OfferStop:
+					timer.Stop()
+					return
 				case <-dispatch.context.Done():
 					timer.Stop()
 					return
@@ -155,6 +165,8 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 		if remaining > 0 {
 			timer := time.NewTimer(remaining)
 			select {
+			case <-settings.OfferStop:
+				timer.Stop()
 			case <-dispatch.context.Done():
 				timer.Stop()
 			case <-timer.C:
@@ -196,6 +208,9 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 		}
 	}
 	<-scheduled
+	if offerStopRequested(settings.OfferStop) && result.Status == "COMPLETE" {
+		result.Status, result.Reason = "FAIL", "operator_stop_offers"
+	}
 	select {
 	case <-schedulerFailure:
 		result.Status, result.Reason = "FAIL", "scheduler_artifact_budget_or_write_failure"

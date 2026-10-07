@@ -140,11 +140,19 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 		report.Reason = reason
 	}
 	for _, fixture := range fixtures {
+		if offerStopRequested(runner.Settings.OfferStop) {
+			fail("operator_stop_offers")
+			break
+		}
 		if failure := fixture.Setup(ctx); failure != nil {
 			fail(failure.Code)
 			if failure.Unknown {
 				report.Status = "UNRESOLVED"
 			}
+			break
+		}
+		if offerStopRequested(runner.Settings.OfferStop) {
+			fail("operator_stop_offers")
 			break
 		}
 		if failure := smokeCorrectness(ctx, fixture, ids); failure != nil {
@@ -163,6 +171,10 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 	}
 	if report.Status == "COMPLETE" {
 		for _, scenario := range scenarios {
+			if offerStopRequested(runner.Settings.OfferStop) {
+				fail("operator_stop_offers")
+				break
+			}
 			result := runner.scenario(ctx, scenario, fixtures, management, artifacts, ids)
 			report.Results = append(report.Results, result)
 			if result.Status == "FAIL" || result.Status == "UNRESOLVED" {
@@ -184,6 +196,9 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 	}
 	if parent.Err() != nil && report.Status == "COMPLETE" {
 		fail("run_interrupted")
+	}
+	if offerStopRequested(runner.Settings.OfferStop) && report.Status == "COMPLETE" {
+		fail("operator_stop_offers")
 	}
 	if artifacts.failed.Load() {
 		fail("artifact_recording_not_complete")
@@ -257,6 +272,10 @@ func smokeCorrectness(ctx context.Context, fixture *Fixture, ids *IDs) (failure 
 
 func (runner SerialRunner) scenario(ctx context.Context, scenario Scenario, fixtures []*Fixture, management *Client, artifacts *Artifacts, ids *IDs) ScenarioResult {
 	result := ScenarioResult{Scenario: scenario.Name, Status: "COMPLETE"}
+	if offerStopRequested(runner.Settings.OfferStop) {
+		result.Status, result.Reason = "FAIL", "operator_stop_offers"
+		return result
+	}
 	if scenario.Capability == "SKIP" {
 		result.Status, result.Reason = "SKIP", scenario.Reason
 		return result

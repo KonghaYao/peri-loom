@@ -60,6 +60,18 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	offerStop := make(chan struct{})
+	softSignals := make(chan os.Signal, 1)
+	signal.Notify(softSignals, syscall.SIGUSR1)
+	defer signal.Stop(softSignals)
+	settings.OfferStop = offerStop
+	go func() {
+		select {
+		case <-softSignals:
+			close(offerStop)
+		case <-ctx.Done():
+		}
+	}()
 	directory, err := (stress.SerialRunner{Config: config, Settings: settings, OutputDir: *output, GatePath: *gate}).Run(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "harness stopped:", err.Error())

@@ -50,20 +50,21 @@ type ConnectionConfig struct {
 }
 
 type Settings struct {
-	Rows              int           `json:"rows"`
-	Concurrency       []int         `json:"concurrency"`
-	Seed              int64         `json:"seed"`
-	Warmup            time.Duration `json:"warmup_ns"`
-	Smoke             time.Duration `json:"smoke_ns"`
-	Measure           time.Duration `json:"measure_ns"`
-	OfferedRate       int           `json:"offered_per_second"`
-	RequestTimeout    time.Duration `json:"request_timeout_ns"`
-	MaxGeneratedBytes int64         `json:"max_generated_bytes"`
-	MaxOperations     int           `json:"max_operations_per_phase"`
-	MaxResponseBytes  int64         `json:"max_response_bytes"`
-	MaxArtifactBytes  int64         `json:"max_artifact_bytes"`
-	MaxRSSBytes       int64         `json:"max_observed_process_rss_bytes,omitempty"`
-	Cases             []string      `json:"cases"`
+	OfferStop         <-chan struct{} `json:"-"`
+	Rows              int             `json:"rows"`
+	Concurrency       []int           `json:"concurrency"`
+	Seed              int64           `json:"seed"`
+	Warmup            time.Duration   `json:"warmup_ns"`
+	Smoke             time.Duration   `json:"smoke_ns"`
+	Measure           time.Duration   `json:"measure_ns"`
+	OfferedRate       int             `json:"offered_per_second"`
+	RequestTimeout    time.Duration   `json:"request_timeout_ns"`
+	MaxGeneratedBytes int64           `json:"max_generated_bytes"`
+	MaxOperations     int             `json:"max_operations_per_phase"`
+	MaxResponseBytes  int64           `json:"max_response_bytes"`
+	MaxArtifactBytes  int64           `json:"max_artifact_bytes"`
+	MaxRSSBytes       int64           `json:"max_observed_process_rss_bytes,omitempty"`
+	Cases             []string        `json:"cases"`
 }
 
 func DefaultSettings() Settings {
