@@ -31,6 +31,8 @@ class ProtocolTests(unittest.TestCase):
                 builder.assert_called_once()
                 handlers = builder.call_args.args
                 self.assertTrue(any(isinstance(handler, dev.NoRedirect) for handler in handlers))
+                request = opener.open.call_args.args[0]
+                self.assertEqual(request.get_header("X-request-id"), json.loads(request.data)["request_id"])
             request = opener.open.call_args.args[0]
             self.assertEqual(request.get_method(), "POST")
             self.assertEqual(request.full_url, "http://127.0.0.1:19000/control")
@@ -40,6 +42,41 @@ class ProtocolTests(unittest.TestCase):
 
     def test_exact_success_ack_preserves_large_count(self):
         self.assertEqual(self.call(self.envelope()), {"count": 18446744073709551615})
+
+    def test_generated_and_existing_identifiers_are_reused_in_header(self):
+        for provided in (None, "explicit-request"):
+            opener = Mock()
+            def reply(request, timeout):
+                body = json.loads(request.data)
+                self.assertEqual(request.get_header("X-request-id"), body["request_id"])
+                return io.BytesIO(self.envelope(request_id=body["request_id"]))
+            opener.open.side_effect = reply
+            with patch.object(dev.urllib.request, "build_opener", return_value=opener), \
+                    patch.object(dev.secrets, "token_hex", return_value="generated-request") as generated:
+                dev.request("http://127.0.0.1:19000", "synthetic-protocol-only", "/control", {} if provided is None else {"request_id": provided})
+            self.assertEqual(generated.call_count, 1 if provided is None else 0)
+            opener.open.assert_called_once()
+
+    def test_correlated_http_rejections_are_known_without_retry(self):
+        for status, code in ((401, "unauthenticated"), (429, "quota_exceeded")):
+            for mismatch in (False, True):
+                encoded = self.envelope(ok=False, result=None, error={"code": code}, request_id="wrong" if mismatch else "review-request")
+                opener = Mock()
+                opener.open.side_effect = urllib.error.HTTPError("http://127.0.0.1:19000/control", status, "rejected", {}, io.BytesIO(encoded))
+                with patch.object(dev.urllib.request, "build_opener", return_value=opener):
+                    with self.assertRaisesRegex(RuntimeError, "identity.*unknown" if mismatch else "request rejected: " + code):
+                        dev.request("http://127.0.0.1:19000", "synthetic-protocol-only", "/control", {"request_id": "review-request"})
+                opener.open.assert_called_once()
+                request = opener.open.call_args.args[0]
+                self.assertEqual(request.get_header("X-request-id"), json.loads(request.data)["request_id"])
+
+    def test_http_error_success_envelope_is_not_acknowledged(self):
+        opener = Mock()
+        opener.open.side_effect = urllib.error.HTTPError("http://127.0.0.1:19000/control", 401, "rejected", {}, io.BytesIO(self.envelope()))
+        with patch.object(dev.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, "HTTP failure success.*unknown"):
+                dev.request("http://127.0.0.1:19000", "synthetic-protocol-only", "/control", {"request_id": "review-request"})
+        opener.open.assert_called_once()
 
     def test_wrong_version_is_not_acknowledged_or_retried(self):
         for version in (0, 2, "1", None):

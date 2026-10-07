@@ -38,10 +38,15 @@ fn request(stream: &mut TcpStream) -> (String, Value) {
         .unwrap();
     let mut body = vec![0; length];
     stream.read_exact(&mut body).unwrap();
-    (
-        header.split_whitespace().nth(1).unwrap().into(),
-        serde_json::from_slice(&body).unwrap(),
-    )
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    let correlation = header.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("x-request-id")
+            .then(|| value.trim())
+    });
+    assert_eq!(correlation, body["request_id"].as_str());
+    assert!(correlation.is_some());
+    (header.split_whitespace().nth(1).unwrap().into(), body)
 }
 
 fn server(
@@ -70,7 +75,12 @@ fn server(
             let (path, body) = request(&mut stream);
             if let Some(reply) = handler(&path, &body) {
                 let bytes = serde_json::to_vec(&reply).unwrap();
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n", bytes.len()).unwrap();
+                let status = match reply["error"]["code"].as_str() {
+                    Some("quota_exceeded") => "429 Too Many Requests",
+                    Some("unauthenticated") => "401 Unauthorized",
+                    _ => "200 OK",
+                };
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n", bytes.len()).unwrap();
                 stream.write_all(&bytes).unwrap();
             }
         }
@@ -85,6 +95,81 @@ fn server(
 
 fn success(body: &Value, result: Value) -> Value {
     json!({"version":1,"request_id":body["request_id"],"ok":true,"result":result,"error":null})
+}
+
+#[test]
+fn sdk_header_correlated_early_rejections_never_replay() {
+    for code in ["quota_exceeded", "unauthenticated"] {
+        for action in ["open", "execute", "query"] {
+            let (endpoint, task) = server(
+                if action == "open" { 1 } else { 2 },
+                move |path, body| {
+                    if action != "open" && path.ends_with("/open") {
+                        Some(success(body, json!({"session":SESSION,"readonly":false})))
+                    } else {
+                        Some(
+                            json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":{"code":code}}),
+                        )
+                    }
+                },
+            );
+            let client = Client::new(&endpoint, CREDENTIAL.into()).unwrap();
+            let error = if action == "open" {
+                client
+                    .open(&database())
+                    .expect_err("expected typed rejection")
+            } else {
+                let session = client.open(&database()).unwrap();
+                let error = if action == "execute" {
+                    session.execute("COMMIT", Some("early-reject")).unwrap_err()
+                } else {
+                    session
+                        .query(
+                            "INSERT INTO items VALUES(1) RETURNING id",
+                            Some("early-reject"),
+                        )
+                        .unwrap_err()
+                };
+                assert_eq!(error.request_id, "early-reject");
+                error
+            };
+            assert_eq!(error.code, code);
+            assert!(!error.outcome_unknown);
+            assert!(!error.execution_completed && !error.may_have_committed);
+            task.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn sdk_mismatched_early_rejection_id_remains_unknown_and_poisoned() {
+    for code in ["quota_exceeded", "unauthenticated"] {
+        let (endpoint, task) = server(2, move |path, body| {
+            if path.ends_with("/open") {
+                Some(success(body, json!({"session":SESSION,"readonly":false})))
+            } else {
+                Some(
+                    json!({"version":1,"request_id":"wrong-response-id","ok":false,"result":null,"error":{"code":code}}),
+                )
+            }
+        });
+        let session = Client::new(&endpoint, CREDENTIAL.into())
+            .unwrap()
+            .open(&database())
+            .unwrap();
+        let error = session.query("COMMIT", Some("early-reject")).unwrap_err();
+        assert_eq!(error.code, "outcome_unknown");
+        assert!(error.outcome_unknown);
+        assert_eq!(error.request_id, "early-reject");
+        assert_eq!(
+            session
+                .execute("COMMIT", Some("no-replay"))
+                .unwrap_err()
+                .code,
+            "session_unusable"
+        );
+        task.join().unwrap();
+    }
 }
 
 #[test]

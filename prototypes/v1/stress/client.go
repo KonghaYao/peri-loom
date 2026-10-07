@@ -174,6 +174,9 @@ func (client *Client) call(ctx context.Context, method, path, requestID string, 
 	request.GetBody = nil
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+client.key)
+	if requestID != "" {
+		request.Header.Set("X-Request-ID", requestID)
+	}
 	response, err := client.http.Do(request)
 	if err != nil {
 		timedOut := timeoutError(err)

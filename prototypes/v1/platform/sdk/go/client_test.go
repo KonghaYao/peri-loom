@@ -36,6 +36,9 @@ func TestClientNativeWireShapesAndLosslessIntegerRows(test *testing.T) {
 		json.NewDecoder(request.Body).Decode(&body)
 		var identifier string
 		json.Unmarshal(body["request_id"], &identifier)
+		if request.Header.Get("X-Request-ID") != identifier {
+			test.Error("header and body request identifiers differ")
+		}
 		switch request.URL.Path {
 		case "/v1/sql/open":
 			writeReply(writer, identifier, map[string]any{"session": testSession, "readonly": false})

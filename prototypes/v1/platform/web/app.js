@@ -1,5 +1,6 @@
-import {parseLosslessJSON, encodeLosslessJSON, displayJSON} from "/json.js";
+import {displayJSON} from "/json.js";
 import {renderReferenceGraph} from "/refs.js";
+import {createConsoleRPC} from "/rpc.js";
 const element = identity => document.getElementById(identity);
 let session = null;
 let catalogue = null;
@@ -11,35 +12,22 @@ function selectedDatabase() {
   return catalogue.databases[selected].id;
 }
 function display(value) { element("output").textContent = displayJSON(value); }
+const request = createConsoleRPC({fetch: (...argumentsList) => fetch(...argumentsList),
+  getCredential: () => element("credential").value, requestID});
 async function call(path, body, streaming = false) {
-  const headers = {Authorization: `Bearer ${element("credential").value}`, "Content-Type": "application/json"};
-  if (streaming) headers.Accept = "application/x-ndjson";
-  const response = await fetch(path, {method: body ? "POST" : "GET", headers, body: body ? encodeLosslessJSON({...body, request_id: requestID()}) : undefined, cache: "no-store"});
-  if (streaming && response.headers.get("content-type")?.includes("ndjson")) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let pending = "";
-    const rows = [];
-    while (true) {
-      const {value, done} = await reader.read();
-      if (done) break;
-      pending += decoder.decode(value, {stream: true});
-      let boundary;
-      while ((boundary = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, boundary); pending = pending.slice(boundary + 1);
-        if (!line) continue;
-        const event = parseLosslessJSON(line);
-        if (event.type === "row") rows.push(event.row);
-        else display(event);
-      }
+  if (path === "/v1/sql/query") element("rows").replaceChildren();
+  try {
+    const result = await request(path, body, streaming);
+    display(result);
+    return result;
+  } catch (error) {
+    if (path.startsWith("/v1/sql/") && (error.outcomeUnknown || error.code === "session_moved")) {
+      element("session-state").textContent = "会话不可继续：结果未知或已迁移；先核实状态，未自动重试或关闭";
     }
-    renderRows(rows);
-    return rows;
+    display({code: error.code || "local_error", request_id: error.requestID || "", outcome_unknown: error.outcomeUnknown === true,
+      execution_completed: error.executionCompleted === true, may_have_committed: error.mayHaveCommitted === true});
+    throw error;
   }
-  const envelope = parseLosslessJSON(await response.text());
-  display(envelope);
-  if (!response.ok || !envelope.ok) throw new Error(envelope.error?.code || `HTTP ${response.status}`);
-  return envelope.result;
 }
 function renderRows(rows) {
   element("rows").replaceChildren();

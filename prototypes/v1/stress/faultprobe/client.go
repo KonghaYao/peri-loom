@@ -107,6 +107,7 @@ func (client *Client) call(ctx context.Context, path string, input map[string]an
 	request.GetBody = nil
 	request.Header.Set("Authorization", "Bearer "+client.key)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-ID", identifier)
 	response, err := client.http.Do(request)
 	if err != nil {
 		return nil, &Failure{Code: "reply_unavailable", Unknown: true}

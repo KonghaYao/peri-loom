@@ -91,7 +91,7 @@ export class Client {
     try {
       const response = await fetch(this.#endpoint + path, {
         method: "POST", body: encoded, signal: controller.signal, redirect: "error", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer",
-        headers: { "Content-Type": "application/json", "Accept": "application/json", "Authorization": `Bearer ${this.#credential}` },
+        headers: { "Content-Type": "application/json", "Accept": "application/json", "Authorization": `Bearer ${this.#credential}`, "X-Request-ID": requestID },
       });
       if (!response.body) throw new PeriError("outcome_unknown", requestID, true);
       const reader = response.body.getReader();

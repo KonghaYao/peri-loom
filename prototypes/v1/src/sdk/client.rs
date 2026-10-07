@@ -199,6 +199,7 @@ impl Client {
             .bearer_auth(self.credential.as_str())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
+            .header("X-Request-ID", request_id)
             .body(bytes)
             .send()
             .map_err(|_| unknown())?;

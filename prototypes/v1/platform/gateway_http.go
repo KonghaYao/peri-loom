@@ -50,6 +50,11 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	var principal Principal
 	var permit *admissionPermit
 	result := gatewayFailure(400, "invalid_request")
+	correlationValues := request.Header.Values("X-Request-ID")
+	correlationValid := len(correlationValues) == 0 || len(correlationValues) == 1 && sqlLabel(correlationValues[0])
+	if correlationValid && len(correlationValues) == 1 {
+		identifier = correlationValues[0]
+	}
 	defer func() {
 		if result.finish != nil {
 			defer result.finish()
@@ -88,7 +93,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		gateway.counters.observe(action, result.code, time.Since(started))
 		gateway.writeResponse(writer, identifier, result)
 	}()
-	if request.Method != "POST" || action == "invalid" || request.URL.RawQuery != "" {
+	if !correlationValid || request.Method != "POST" || action == "invalid" || request.URL.RawQuery != "" {
 		return
 	}
 	values := request.Header.Values("Authorization")
@@ -139,7 +144,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	if parsed.RequestID != "" {
-		if !sqlLabel(parsed.RequestID) {
+		if !sqlLabel(parsed.RequestID) || len(correlationValues) == 1 && parsed.RequestID != identifier {
 			return
 		}
 		identifier = parsed.RequestID

@@ -61,16 +61,25 @@ def safe_environment():
 
 def request(endpoint, credential, path, body, certificate=None):
     payload = dict(body)
-    payload.setdefault("request_id", secrets.token_hex(16))
-    headers = {"Authorization": "Bearer " + credential, "Content-Type": "application/json"}
+    if "request_id" not in payload:
+        payload["request_id"] = secrets.token_hex(16)
+    headers = {"Authorization": "Bearer " + credential, "Content-Type": "application/json", "X-Request-ID": payload["request_id"]}
     outgoing = urllib.request.Request(endpoint + path, data=json.dumps(payload).encode(), headers=headers, method="POST")
     context = ssl.create_default_context(cafile=certificate) if endpoint.startswith("https:") else None
     handlers = [urllib.request.ProxyHandler({}), NoRedirect()]
     if context:
         handlers.append(urllib.request.HTTPSHandler(context=context))
     client = urllib.request.build_opener(*handlers)
+    http_failure = False
     try:
-        with client.open(outgoing, timeout=30) as incoming:
+        try:
+            incoming = client.open(outgoing, timeout=30)
+        except urllib.error.HTTPError as failure:
+            if not 400 <= failure.code <= 599:
+                raise
+            incoming = failure
+            http_failure = True
+        with incoming:
             encoded = incoming.read(32 * 1024 * 1024 + 1)
             if len(encoded) > 32 * 1024 * 1024:
                 raise RuntimeError("oversized service reply; outcome unknown")
@@ -82,6 +91,8 @@ def request(endpoint, credential, path, body, certificate=None):
     if result.get("ok") is not True or result.get("error") is not None:
         code = result.get("error", {})
         raise RuntimeError("request rejected: " + str(code.get("code", "incomplete") if isinstance(code, dict) else "incomplete"))
+    if http_failure:
+        raise RuntimeError("invalid HTTP failure success reply; outcome unknown")
     return result.get("result")
 
 

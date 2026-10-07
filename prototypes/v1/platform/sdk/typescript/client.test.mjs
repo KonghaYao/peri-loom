@@ -87,6 +87,7 @@ test("wire contract, management request ID, opaque sessions and integer cells", 
     assert.equal(options.redirect, "error");
     assert.equal(options.headers.Authorization, `Bearer ${credential}`);
     const body = JSON.parse(new TextDecoder().decode(options.body));
+    assert.equal(options.headers["X-Request-ID"], body.request_id);
     paths.push(new URL(url).pathname);
     if (url.endsWith("/open")) return reply(body.request_id, { session: identifier, readonly: false });
     if (url.endsWith("/execute")) return reply(body.request_id, { executed: true });

@@ -47,6 +47,17 @@ source, argv, run configuration, or diagnostic logs.
 - `/v1/keys/revoke` invalidates issuing keys and their database tokens.
 - `/v1/metrics` requires a global management key and combines gateway and actual native process observations.
 
+SQL clients should send optional `X-Request-ID` alongside the same JSON
+`request_id`. The header must occur once and contain 1–128 ASCII letters,
+digits, `-`, `_`, or `.`. It is transport correlation only, not authentication
+or an idempotency guarantee. Valid headers correlate even early authentication
+or quota denials without reading the body; malformed or duplicate headers fail
+closed with a safe generated ID. A nonempty body ID must match the header or
+the request fails before SQL dispatch. Headerless body-ID success remains
+compatible, but early denials before body reading use a generated fallback ID
+and cannot guarantee echoing a body-only ID. Admission still precedes body
+parsing; clients must not weaken response-ID checks or retry SQL automatically.
+
 SQL requests are never automatically retried. A lost reply may have committed;
 use business idempotency keys and inspect durable state before reconnecting.
 Native terminal `sql_error` replies explicitly indicate `execution_completed`

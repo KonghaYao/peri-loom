@@ -82,6 +82,7 @@ func (client *Client) call(ctx context.Context, path, identifier string, input a
 	request.GetBody = nil
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("X-Request-ID", identifier)
 	request.Header.Set("Authorization", "Bearer "+client.credential)
 	response, err := client.http.Do(request)
 	if err != nil {
