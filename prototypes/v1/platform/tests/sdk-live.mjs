@@ -33,14 +33,11 @@ async function smoke() {
   if (typeof status !== "object" || status === null || Array.isArray(status)) throw new Error("status shape");
   stage = "session open";
   const session = await client.open(connection.database);
-  try {
-    stage = "SELECT exact integers";
-    const rows = await session.query("SELECT 9223372036854775807 AS max_i64, -9007199254740993 AS negative_i64", "ts-live-exact-integers");
-    assert.deepEqual(rows, [[9223372036854775807n, -9007199254740993n]]);
-  } finally {
-    stage = "explicit session close";
-    await session.close();
-  }
+  stage = "SELECT exact integers";
+  const rows = await session.query("SELECT 9223372036854775807 AS max_i64, -9007199254740993 AS negative_i64", "ts-live-exact-integers");
+  assert.deepEqual(rows, [[9223372036854775807n, -9007199254740993n]]);
+  stage = "explicit session close";
+  await session.close();
   console.log("TypeScript SDK live verified-TLS SELECT exact-bigint/status/explicit-close PASS");
 }
 
