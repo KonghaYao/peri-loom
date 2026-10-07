@@ -27,7 +27,10 @@ type ManagementConfig struct {
 	Telemetry  *Telemetry
 }
 
-type Management struct{ config ManagementConfig }
+type Management struct {
+	config            ManagementConfig
+	nativeDiagnostics nativeDiagnosticBudget
+}
 
 type managementRequest struct {
 	RequestID      string                `json:"request_id"`

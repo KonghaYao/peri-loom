@@ -96,7 +96,13 @@ func (management *Management) inspect(ctx context.Context, principal Principal, 
 	return map[string]any{"placement": placement, "worker": metadata.Workers[placement.DesiredWorker], "refs": refs, "diagnostics": diagnostics}, nil
 }
 
-func (management *Management) nativeTool(ctx context.Context, principal Principal, input managementRequest, path string) (any, error) {
+func (management *Management) nativeTool(ctx context.Context, principal Principal, input managementRequest, path string) (output any, failure error) {
+	stage, phase := "authorize", "unknown"
+	defer func() {
+		if failure != nil {
+			failure = management.nativeToolFailure(path, stage, phase, input.RequestID, failure)
+		}
+	}()
 	action := "checkpoint"
 	if path == "/v1/databases/schema" || path == "/v1/databases/diagnostics" {
 		action = "view"
@@ -104,14 +110,18 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 	if err := management.config.Identity.Authorize(principal, input.Database, action); err != nil {
 		return nil, err
 	}
+	stage = "placement"
 	placement, err := management.config.Controller.Status(input.Database)
+	phase = placement.Phase
 	if err != nil || placement.Phase != "active" {
 		return nil, errors.New("database is not active")
 	}
+	stage = "metadata"
 	metadata, err := management.config.Placements.Snapshot()
 	if err != nil {
 		return nil, err
 	}
+	stage = "worker_lookup"
 	worker, exists := metadata.Workers[placement.DesiredWorker]
 	if !exists {
 		return nil, errors.New("worker missing")
@@ -120,6 +130,7 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 		Session  string `json:"session"`
 		Readonly bool   `json:"readonly"`
 	}
+	stage = "open_session"
 	if err := management.config.Upstream.Call(ctx, worker, input.RequestID+"-open", map[string]any{"command": "open_session", "database": input.Database}, &opened); err != nil {
 		return nil, err
 	}
@@ -142,6 +153,7 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 		command["command"] = "diagnostics"
 	}
 	var result any
+	stage = "tool_rpc"
 	err = management.config.Upstream.Call(ctx, worker, input.RequestID, command, &result)
 	return result, err
 }
