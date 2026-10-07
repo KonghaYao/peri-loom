@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use turso_core::{Connection, Statement, SyncMode, Value};
@@ -8,6 +9,7 @@ use crate::metrics::{Metrics, Operation};
 use crate::object_store::ObjectStore;
 
 mod budget;
+mod drive;
 pub use budget::Budget;
 use budget::ExecutionBudget;
 
@@ -18,6 +20,7 @@ pub struct RemoteSession {
 
 impl RemoteSession {
     pub(crate) fn new(database: Arc<RemoteDatabase>, connection: Arc<Connection>) -> Self {
+        connection.set_busy_timeout(Duration::from_secs(1));
         Self {
             connection: Mutex::new(connection),
             database,
@@ -165,23 +168,7 @@ fn step_rows(
     loop {
         guard.check()?;
         store.validate_local()?;
-        let row = statement
-            .run_one_step_blocking(
-                || {
-                    guard.check().map_err(|error| {
-                        turso_core::LimboError::InternalError(error.to_string())
-                    })?;
-                    store
-                        .validate_local()
-                        .map_err(|error| turso_core::LimboError::InternalError(error.to_string()))
-                },
-                || {
-                    guard
-                        .check()
-                        .map_err(|error| turso_core::LimboError::InternalError(error.to_string()))
-                },
-            )
-            .context("step bounded remote SQL")?;
+        let row = drive::next_row(statement, store, guard).context("step bounded remote SQL")?;
         if let Some(row) = row {
             guard.account_row(row.get_values())?;
             if collect {
