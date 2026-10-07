@@ -5,9 +5,13 @@ import itertools
 import os
 from pathlib import Path
 import signal
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from guard_profiles import parameters
 
 SPEC = importlib.util.spec_from_file_location('run_guarded', Path(__file__).with_name('run_guarded.py'))
 guarded = importlib.util.module_from_spec(SPEC)
@@ -253,6 +257,49 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def profile_spec(self, name):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name).resolve()
+        root.chmod(0o700)
+        binary, connection, gate = [root / name for name in ['fake-cli', 'connection.json', 'gate.json']]
+        for path in [binary, connection, gate]:
+            path.write_bytes(b'not executed or decoded')
+            path.chmod(0o600)
+        binary.chmod(0o500)
+        argv = [str(binary)]
+        selected = parameters(name) if name in ('mixed', 'architecture', 'common') else parameters()
+        for key, value in {**selected, 'connection': str(connection), 'output': str(root), 'joint-pass': str(gate)}.items():
+            argv.extend(['-' + key, value])
+        return {'phase_profile': name, 'command': argv, 'output': str(root), 'artifacts': {str(binary): hashlib.sha256(binary.read_bytes()).hexdigest()}, 'launcher': owner(123455), 'services': [], 'soft_stop_capable': True, 'hard_max_seconds': 100}
+
+    def test_unknown_phase_profile_rejected(self):
+        for name in ('unknown', 'all', 'arch', ''):
+            with self.subTest(name=name), patch.object(guarded.os.path, 'lexists', return_value=False):
+                with self.assertRaises(ValueError):
+                    guarded.validate(self.profile_spec(name))
+
+    def test_architecture_exact_profile_accepted(self):
+        with patch.object(guarded.os.path, 'lexists', return_value=False):
+            self.assertTrue(guarded.validate(self.profile_spec('architecture')))
+
+    def test_common_exact_profile_accepted(self):
+        with patch.object(guarded.os.path, 'lexists', return_value=False):
+            self.assertTrue(guarded.validate(self.profile_spec('common')))
+
+    def test_profile_budget_tampering_rejected(self):
+        changes = {'rows': '2000', 'seed': '0', 'request-timeout': '11s', 'max-process-rss-bytes': '536870913', 'max-generated-bytes': '268435457', 'max-artifact-bytes': '67108865'}
+        for name in ('mixed', 'architecture', 'common'):
+            spec = self.profile_spec(name)
+            with patch.object(guarded.os.path, 'lexists', return_value=False):
+                guarded.validate(spec)
+                for key, value in changes.items():
+                    with self.subTest(name=name, budget=key):
+                        command = list(spec['command'])
+                        command[command.index('-' + key) + 1] = value
+                        with self.assertRaisesRegex(ValueError, 'unexpected_phase_parameters'):
+                            guarded.validate({**spec, 'command': command})
+
     def test_journal_write_failure_is_sticky_and_does_not_raise(self):
         journal = guarded.Journal.__new__(guarded.Journal)
         journal.failed = False

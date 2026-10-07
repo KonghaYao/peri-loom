@@ -1,5 +1,5 @@
 """Python >=3.12/macOS: python3 run_guarded.py --spec /private/operator.json; no API/keys/env dumps.
-0600 spec: exact mixed command, artifacts/sources={absolute:sha256}, output0700, launcher/services/owner_roots={pid,ppid,uid,start,argv}, soft_stop_capable=true.
+0600 spec: phase_profile=mixed(default)/architecture/common; exact profile command; artifacts/sources={absolute:sha256}, output0700, launcher/services/owner_roots={pid,ppid,uid,start,argv}, soft_stop_capable=true.
 hard_max_seconds<=3600; hard_grace_seconds=5 (0.1..30); interval_seconds=2/probe_timeout_seconds=2; RSS<=512MiB/output<=64MiB. strict-stop default; record-confound requires functional_only=true.
 Journal: wall/mono, owner proof, sticky STOP, host/awake, retainedPID/mayunknown/no-clean; no implicit retained-child kill, never performance_pass.
 """
@@ -15,9 +15,10 @@ import stat
 import subprocess
 import sys
 import time
+from guard_profiles import parameters
 FIELDS = ('pid', 'ppid', 'uid', 'start', 'argv')
 BUILDERS = {'cargo', 'rustc', 'clippy-driver', 'go', 'compile', 'link', 'clang', 'clang++', 'cc', 'gcc', 'make', 'ninja', 'esbuild'}
-MIXED = {'cases': 'mixed_oltp', 'concurrency': '1,4', 'warmup': '2s', 'smoke': '10s', 'measure': '30s', 'offered-rate': '50', 'rows': '1000', 'seed': '20261007', 'request-timeout': '10s', 'max-process-rss-bytes': '536870912', 'max-generated-bytes': '268435456', 'max-artifact-bytes': '67108864'}
+MIXED = parameters()
 def require(condition, reason):
     if not condition:
         raise ValueError(reason)
@@ -32,7 +33,8 @@ def metadata(path):
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode]
 def validate(spec):
     require(sys.version_info >= (3, 12), 'Python_3.12_or_newer_required')
-    require(not set(spec) - {'output', 'command', 'artifacts', 'launcher', 'services', 'soft_stop_capable', 'hard_max_seconds', 'hard_grace_seconds', 'sources', 'owner_roots', 'interval_seconds', 'probe_timeout_seconds', 'max_process_rss_bytes', 'max_output_bytes', 'external_builder_policy', 'functional_only'}, 'unknown_spec_fields')
+    selected = parameters(spec.get('phase_profile', 'mixed'))
+    require(not set(spec) - {'phase_profile', 'output', 'command', 'artifacts', 'launcher', 'services', 'soft_stop_capable', 'hard_max_seconds', 'hard_grace_seconds', 'sources', 'owner_roots', 'interval_seconds', 'probe_timeout_seconds', 'max_process_rss_bytes', 'max_output_bytes', 'external_builder_policy', 'functional_only'}, 'unknown_spec_fields')
     output = Path(spec['output'])
     private(output, 0o700, True)
     require(spec.get('soft_stop_capable') is True, 'matching_SIGUSR1_CLI_attestation_required')
@@ -44,14 +46,14 @@ def validate(spec):
         require(isinstance(value, (int, float)) and not isinstance(value, bool) and minimum <= value <= maximum, 'invalid_' + key)
         spec[key] = value
     argv = spec['command']
-    require(isinstance(argv, list) and len(argv) == 1 + 2 * (len(MIXED) + 3), 'unexpected_phase_command')
+    require(isinstance(argv, list) and len(argv) == 1 + 2 * (len(selected) + 3), 'unexpected_phase_command')
     require(all(isinstance(item, str) and re.fullmatch(r'[!-~]+', item) for item in argv), 'unsafe_argv')
     options = {}
     for offset in range(1, len(argv), 2):
         flag, value = argv[offset:offset + 2]
         require(flag.startswith('-') and not flag.startswith('--') and flag[1:] not in options, 'duplicate_or_invalid_flag')
         options[flag[1:]] = value
-    require(set(options) == set(MIXED) | {'connection', 'output', 'joint-pass'} and all(options[key] == value for key, value in MIXED.items()), 'unexpected_phase_parameters')
+    require(set(options) == set(selected) | {'connection', 'output', 'joint-pass'} and all(options[key] == value for key, value in selected.items()), 'unexpected_phase_parameters')
     require(options['output'] == str(output), 'output_command_mismatch')
     for key in ['connection', 'joint-pass']:
         private(Path(options[key]), 0o600)
@@ -108,7 +110,6 @@ def is_owned(pid, table, roots):
     return False
 def safe_environment():
     return {name: os.environ[name] for name in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'TZ') if name in os.environ}
-
 class Journal:
     def __init__(self, output):
         self.failed = False
@@ -124,7 +125,6 @@ class Journal:
                 print('guard audit unavailable; HOLD/hard safety', file=sys.stderr)
             self.failed = True
         return record
-
 class OwnedProcess:
     def __init__(self, argv, stdout, stderr):
         self.process = subprocess.Popen(argv, stdout=stdout, stderr=stderr, env=safe_environment(), start_new_session=True)
@@ -332,7 +332,7 @@ def main():
         output = Path(spec['output'])
         lock = os.open(output / '.guarded.lock', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         journal = Journal(output)
-        journal.emit('readonly_artifacts_before', metadata=frozen, spec_sha256=hashlib.sha256(args.spec.read_bytes()).hexdigest(), external_builder_policy=spec.get('external_builder_policy', 'strict-stop'))
+        journal.emit('readonly_artifacts_before', metadata=frozen, spec_sha256=hashlib.sha256(args.spec.read_bytes()).hexdigest(), external_builder_policy=spec.get('external_builder_policy', 'strict-stop'), phase_profile=spec.get('phase_profile', 'mixed'))
         exit_code, result = asyncio.run(execute(Controller(journal, spec, frozen)))
         print(json.dumps(result))
         return exit_code
