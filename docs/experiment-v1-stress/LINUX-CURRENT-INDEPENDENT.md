@@ -1,0 +1,24 @@
+# Linux current independent gate — bounded functional subset ACCEPT
+
+- Non-author read-only verdict: accept captured arm64/Local deployment functional subset; whole-project/production-ready/P4 causal gates remain HOLD.
+- Author SHA256 `4555a69cc73fa980bc36d50d0504ab25335727902a177c89be6aff210adf1bc3` and verification-evidence SHA256 `4aa8a58e755ea0edfce8fa92e6d4766345537a9944317c66a606043920e4736d` match authorization before/after review.
+- Scope `/private/tmp/peri-linux-mode-safe-runtime.yKxka3sb`; all23 safe evidence entries hash-match; no connection/keys/config/complete Env read.
+- Frozen base9e24fbd, Turso ad892d4; subsequent observer/client DEV is not in this image. No latest-Root or new observer/Native artifact claim.
+- Independently checked4109 regular contents/modes:3988×0644,121×0755, context0700;10 excluded symlink paths absent, target payloads not followed; not completeRepoClosed.
+- Frozen135 literal Cargo path/member targets and8 entrypoints exist without dependency on omitted links; restricted static boundary, not all repository consumers.
+- Private copier safeguards inspected; recorded umask077 tiny4PASS retained, not independently rerun. Source/context manifest and after-mode hashes match author values.
+- Original startup failure preserved: root/manifest dev.py0755 became copied0700, exit2, api_requests0, runtime_accepted=false; private context fix does not overwrite old raw/image.
+- New single build recorded exit0/58s; own tag peri-loom:linux-current-9e24fbd-mode-safe-ykxka3sb, image `sha256:6403477628dc68f64052715a970247b21d699a4f4a6e8bf97bb9e7f321290bc9`.
+- Independent image inspect: linux/arm64, user10001:10001; recorded actual runtime id confirms UID/GID10001, no new container exec performed.
+- Independent own-container inspect: image matches, exited/running=false/PID0/exit0/OOMfalse; cap-dropALL/no-new-privileges, owner label matches.
+- Command whitelist confirms explicit Local/TLS/no-build/writer-admission, stop timeout45; not default writer profile or Linux S3 acceptance.
+- Captured proper-CA curl: exit0,HTTP200,ssl_verify_result0; no bypass/trust-store mutation or independent network probe.
+- Actual whole11 single run: exit0/11PASS/3s, local_fixture/certificate_verified; helper differs only frozen dev import and honest Local label,11 assertions unchanged.
+- Metrics active_permits0/unknown_held_permits0 are reported observations, not universal instrumentation/zero-pressure/performance proof.
+- Shutdown records stop exit0/wait0/1s; independent stopped-state inspect corroborates joined container exit0/OOMfalse. No stop/kill/start issued by verifier.
+- Captured authority/authority.lock exactly clean\n, SHA256 `2e22da2ab13713309ac75219e525b8e06ed02f3f1963b8feef203fa25827f93d`; not NativeRollback proof.
+- Four service logs are empty and joined-container log is readiness metadata; per-service exit codes are not separately proven by these logs, despite launcher wait contract.
+- Recorded Linux Native/platform/CLI binary hashes retained in frozen image-binaries.sha256; architecture-specific builds are not host64ec/c252/26f byte-identity claims.
+- Historical baseline/startup/UI/P4 failures preserved;399+5 diagnostic NOT_REPRODUCED does not wash392/1FAIL/5ignored, and remote Turso publication/full cold-fault coverage remain unverified.
+- No actual CLI/SDK/browser gate added here; no S3 credentials,API/SQL,container start/exec,build,source edits,old Unknown actions or commit; own stopped resources retained.
+- Decision limited to immutable captured functional evidence; performance NOT PASS, new observer/final production delivery and parent joint gate not accepted.

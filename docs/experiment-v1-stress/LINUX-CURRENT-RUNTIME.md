@@ -1,0 +1,32 @@
+# Linux Current Runtime — Author Functional-Subset Evidence
+
+- 结论：本轮 Linux arm64 / Local backend 部署功能子集通过；待 Gauss 独立核验，不是最终生产 Ready、Linux S3 或联合全门禁 PASS。
+- 冻结 base HEAD：`9e24fbd99b1f01d5dc0adb5497be1df4b690bdf8`；Turso gitlink：`ad892d4f113b2e62544bef48be6cebfd6e20da52`。
+- 当前 Root 的后续 P4 client observation DEV 不在 image 内；本轮保持 base 的 default-none semantics，最终交付须另取最新批准源码。
+- 原 4119-record 白名单 manifest SHA：`1ad2a6a67227f40bb842db4238dc3db9d1f937a25f830d8338c1ddd5da7720bb`。
+- 派生 context 只含 4109 regular files，不称 completeRepoClosed；3988×0644、121×0755，顶层0700；内容与模式逐项复核一致。
+- 10 symlink 明确不复制；逐项 path/target-SHA 清单：artifact 的 `omitted-symlinks-path-target-hashes.json`，SHA `58949af4d42edfdfd8cdfe224c785eb900491096abc9c175b76de89ac0484bf8`；未读取/follow target payload。
+- 静态核验135项 Cargo literal path/member 声明及8个 Rust/Go/dev入口，均不依赖排除的 link paths；不外推所有仓库消费者。
+- Cargo path audit SHA：`70ee7a12394a8fb47cc74dbc889e726c7172192e25024f07e4fd1506409d2cea`；实际指定 Docker Rust/Go targets build 也 exit0。
+- 私有 copy tool 使用 NOFOLLOW、先查 source parent 非 symlink、拒绝 secret/未知模式；仅对新 context regular files fchmod，未 chmod Root。
+- tiny umask077 tests：4 PASS/exit0，覆盖0644/0755 hash与mode恢复、symlink/parent-symlink、secret/未知mode拒绝；旧3-case结果保留。
+- FIRSTFAIL 保留：旧 own runtime自然 exit2/OOMfalse，0 API/SQL；`dev.py` manifest/Root0755 被旧复制 umask077变成0700，UID10001不能读取；不是0644→0600。
+- FIRSTFAIL evidence：`/private/tmp/peri-linux-current-runtime.slGSeSN7/{startup-failed.log,mode-proof.json}`；未覆写旧 image/context/log。
+- 修复仅 private artifact copier；新 tag：`peri-loom:linux-current-9e24fbd-mode-safe-ykxka3sb`。
+- Image ID：`sha256:6403477628dc68f64052715a970247b21d699a4f4a6e8bf97bb9e7f321290bc9`；单次新 build exit0，58s。
+- 派生 source manifest SHA：`3e060fc3353858da81b6dce8950ee39e4f5519313b326922f68e354c4202bb97`；after content/modes SHA：`ae6098030ca55300a56b018533f77f610dc846e87a1278701b5c710669271527`。
+- 离线 Cargo seed273 packages，manifest SHA：`b4c9fedcf4fe5ce27a1f8cc9b50d74709a57fa5a8e44c067b85a9fe6231d4124`；无 seed/source 秘密入 context。
+- own container/volume：`peri-linux-mode-safe-ykxka3sb` / `peri-linux-mode-safe-ykxka3sb-data`；端点 `https://127.0.0.1:49697`。
+- 实际 UID/GID10001；显式 `--backend local --tls --no-build --writer-admission`，cap-drop ALL/no-new-privileges；非默认启用 profile。
+- proper-CA curl 单次 exit0、HTTP200、ssl_verify_result0；未绕过证书校验，未改用户 trust store，未执行 browser。
+- whole11 单次 exit0/11 PASS，3s：encrypted SQL ACK、exact int64、rollback、integrity、checkpoint、snapshot/restore、stale-token401、readonly clone、migration、suspend/resume、actual metrics。
+- helper 仅私有副本修改 frozen dev import 与 backend标签 `local_fixture`，11断言未改；不是 external_s3_fixture，不重试 SQL。
+- actual metrics：`active_permits=0`、`unknown_held_permits=0`；保留仪表自身 scope/缺失说明，不编造未暴露数据。
+- 已知 sessions 经 helper Close；own container SIGTERM45 后实际 wait0、exit0、OOMfalse，1s；launcher cleanup逐一 wait服务，私有 joined/service logs保留。
+- `authority/authority.lock` 实际 bytes 精确 `clean\n`；marker SHA：`2e22da2ab13713309ac75219e525b8e06ed02f3f1963b8feef203fa25827f93d`。
+- Linux Native binary SHA：`a07e606cad90dd20984b581def4614093c8232719fe06939fc8037e975702ecc`。
+- Linux platform SHA：`f0aeecc00ef65a557ce0497acce927b41cd73197a0542bf45f560c5b52987ba2`；CLI SHA：`7b9929301e4fca999f67fe54231c630e385397ecd71c6ee919a165f6dd104cb7`。
+- CLI取 frozen base已接纳的 unknown-cleanup护栏源码；跨架构不要求与 host CLI字节SHA相同；本轮未另执行 CLI/SDK/browser验收。
+- artifact：`/private/tmp/peri-linux-mode-safe-runtime.yKxka3sb`；verification-evidence SHA：`4aa8a58e755ea0edfce8fa92e6d4766345537a9944317c66a606043920e4736d`。
+- image/停止的 container/volume与私有证据保留供独立复核；未 push/prune、未触用户 S3/RustFS、无 Root production edits。
+- 历史 P4/UI失败及 parent HOLD 未被本轮11项功能检查消除；旧 baseline/首次 startup FAIL报告与 raw全部保留。
