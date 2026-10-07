@@ -21,8 +21,8 @@ subagent 按该阶段文档验收。修复后复验，通过才提交。P0–P6 
 | P4 | 完成 | ownership state machine、durable epoch authority、coarse RPC | 5119187；独立 PASS；254 常规 + 5 RustFS live；原始冷恢复回归已修复并重新冻结验收；见 P4-VERIFICATION.md |
 | P5 | 完成 | Go registry/placement、持久 epoch/lease、reconciliation/failover | b96d700；独立 PASS；62 顶层测试 + 1 helper skip；全包 race / vet / fmt / build 通过；8 个真实进程故障场景；见 P5-VERIFICATION.md |
 | P6 | 完成 | Go gateway/management/security、原生页加密/KMS、SDK/admin、metrics/deployment | 独立 ACCEPTED；Rust 289 常规 + 5 真实 S3；平台 Go 80 PASS / 2 helper skip、Controller 63 PASS / 1 helper skip，各全包 normal/race；真实加密 S3/TLS、三 SDK、浏览器与 Linux 容器启动 / joined clean；见 P6-VERIFICATION.md |
-| 联合 | 待实施 | 跨阶段场景、fault/stale writer、API/部署端到端 | 待验收 |
-| 压测 / 调优 | 待联合验收后执行 | 架构/fault harness、SQL workloads、measurement、性能修复 | 规划见 ../experiment-v1-stress/00_plan.md |
+| 联合 | 完成 | 跨阶段回归、真实 S3 冷恢复、API/SDK/UI/部署源证据复核 | 独立功能 PASS；本轮 native 325 PASS / 5 ignored；真实 SIGKILL、删除 owner cache、epoch 2→3、恢复已提交数据并拒绝旧 session；保留首次观察竞态失败及故障会话非 clean 退出；见 JOINT-VERIFICATION.md |
+| 压测 / 调优 | 执行中 | 架构/fault harness、SQL workloads、measurement、性能修复 | 联合验收已通过；独立 RELEASE / S3 / TLS 全项目已启动，尚无性能结论；规划见 ../experiment-v1-stress/00_plan.md |
 
 ## 验收原则
 
