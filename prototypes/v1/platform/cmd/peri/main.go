@@ -89,18 +89,23 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 		if err != nil {
 			return err
 		}
-		defer closeSession(session)
 		if *execute != "" {
 			if err := session.Execute(ctx, *execute, *identifier); err != nil {
 				return err
 			}
-			return json.NewEncoder(output).Encode(map[string]bool{"executed": true})
+			if err := json.NewEncoder(output).Encode(map[string]bool{"executed": true}); err != nil {
+				return err
+			}
+			return closeSession(session)
 		}
 		rows, err := session.Query(ctx, *query, *identifier)
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(output).Encode(rows)
+		if err := json.NewEncoder(output).Encode(rows); err != nil {
+			return err
+		}
+		return closeSession(session)
 	}
 	if *execute != "" || *query != "" {
 		return errors.New("SQL flags require sql command")
@@ -125,8 +130,8 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 	return json.NewEncoder(output).Encode(result)
 }
 
-func closeSession(session *sdk.Session) {
+func closeSession(session *sdk.Session) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_ = session.Close(ctx)
+	return session.Close(ctx)
 }

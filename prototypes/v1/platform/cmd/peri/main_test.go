@@ -94,7 +94,7 @@ func TestSQLFlagsAreExplicitAndGCDefaultsToInspection(test *testing.T) {
 
 func TestShellMigrationDoesNotReplayOrReconnectUntilExplicitCommand(test *testing.T) {
 	test.Setenv("PERI_API_KEY", commandCredential)
-	opens, queries, executes := 0, 0, 0
+	opens, queries, executes, closes := 0, 0, 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		json.NewDecoder(request.Body).Decode(&body)
@@ -115,6 +115,7 @@ func TestShellMigrationDoesNotReplayOrReconnectUntilExplicitCommand(test *testin
 				commandReply(writer, requestID, [][]any{{7}})
 			}
 		case "/v1/sql/close":
+			closes++
 			commandReply(writer, requestID, map[string]bool{"closed": true})
 		}
 	}))
@@ -126,5 +127,8 @@ func TestShellMigrationDoesNotReplayOrReconnectUntilExplicitCommand(test *testin
 	}
 	if opens != 2 || queries != 2 || executes != 1 || !strings.Contains(output.String(), "session_moved") || !strings.Contains(output.String(), "no SQL or transaction replay") {
 		test.Fatalf("shell replayed/reconnected: opens=%d queries=%d executes=%d output=%s", opens, queries, executes, output.String())
+	}
+	if closes != 1 {
+		test.Fatalf("moved session closed or healthy close repeated: closes=%d", closes)
 	}
 }
