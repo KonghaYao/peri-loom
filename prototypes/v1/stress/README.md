@@ -50,6 +50,78 @@ inspection. Provision a fresh isolated namespace for comparable repetitions;
 accumulated schemas, WAL and cache state in reused databases are confounders.
 Cleanup of retained fixtures belongs to main's approved management workflow.
 
+## Parent fixture provisioning
+
+`provision.py` prepares this module's private `ConnectionConfig` from a **new,
+independent release-mode S3 launcher fixture**, never the user's existing databases.
+Main must first confirm the joint gate and explicitly authorize `--execute`.
+The provisioner does not certify the release binary or joint gate itself. No real
+provisioning has been performed as part of its static/unit validation.
+
+From the repository root, validate without network access:
+
+```sh
+python3 prototypes/v1/stress/provision.py --self-test
+python3 prototypes/v1/stress/provision.py
+python3 prototypes/v1/stress/provision.py --plan \
+  --run-dir /private/tmp/peri-stress-release-NEW_PRIVATE_FIXTURE \
+  --output /private/tmp/peri-stress-release-NEW_PRIVATE_FIXTURE/parent-baseline.json \
+  --label baseline
+```
+
+No arguments display help; the default mode is also plan. Plan reads only the
+fixture's local private files and validates its CA; it neither contacts services
+nor reserves labels or writes output. Paths must be absolute/canonical, the run
+directory must be an owned 0700 `peri-stress-...` directory (name length at least
+24), and the output parent must be owned 0700. Output must not already exist.
+Inputs are bounded, owned, non-symlink private JSON files; the regular CA file
+must reside inside this fixture and not be writable by other users. Labels are
+lowercase safe IDs of at most 24 characters, such as `baseline` or `fixed`.
+Reads validate type, ownership, link count, size and permissions before opening,
+use `O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC`, and repeat those checks with `fstat` plus
+device/inode identity before any bounded read. FIFOs cannot block this preflight.
+Offline self-tests live separately in `provision_tests.py`.
+
+Only after main's explicit authorization, the execution command is:
+
+```sh
+python3 prototypes/v1/stress/provision.py --execute \
+  --run-dir /private/tmp/peri-stress-release-NEW_PRIVATE_FIXTURE \
+  --output /private/tmp/peri-stress-release-NEW_PRIVATE_FIXTURE/parent-baseline.json \
+  --label baseline
+```
+
+Execution first checks the declared service PIDs with signal 0, exclusively
+reserves `.stress-provision-<label>.json` and a 0600 output, then reads the global
+admin `/v1/catalog` to reject existing `stress_<label>` or `noisy_<label>` projects.
+The reservation records safe mutation request IDs before any mutation and is
+never removed or reused. Incomplete output is deliberately not a valid parent
+connection. On any failure or uncertain outcome, stop: retain these artifacts,
+inspect them privately, and use a newly authorized label/fixture, never retry or
+delete/recreate the reservation. Successful output contains credentials and must
+remain private; stdout contains only plan identities or the output path.
+
+Nine one-shot mutations create two projects under existing organization `local`,
+two independent `service_account:true` admin keys, four primary-project databases
+(`stress_<label>_main`, `stress_<label>_many_1` through `_many_3`) in tenant
+`local_stress_<label>`, and `stress_noisy_<label>` in the separate `noisy_<label>`
+project/tenant `local_noisy_<label>`. Exact existing management fields are used:
+projects `id/organization/region`; keys `subject/project/role/service_account`;
+databases `project/database/role`; every POST also has a unique `request_id`.
+Quotas are omitted so the real defaults stay 8 databases, 16 sessions,
+**4 concurrent requests**, 100 requests/second, 65536 SQL bytes and 4MiB results.
+Concurrent admission limits are measured, not increased by provisioning.
+
+The output preserves the verified CA, source root, global bootstrap management
+key, actual worker/authority/platform PIDs and worker IDs. The migration target
+is the other declared worker relative to the confirmed primary DB placement.
+Additional DB identities and the independently authorized noisy target are included.
+Networking uses new direct HTTPS connections to a literal loopback IP, this CA,
+no proxy, no redirect, no automatic reconnect/retry, 30-second socket timeouts and
+an absolute read deadline,
+and at most 1MiB response bodies. Version/request ID/boolean success/error and
+project/key/native-placement confirmations are validated before publishing output.
+
 ## Private connection file
 
 The connection JSON must be a regular, non-symlink file with private permissions
