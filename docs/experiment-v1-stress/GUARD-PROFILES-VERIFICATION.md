@@ -15,3 +15,8 @@
 - Exact CLI parameters are validated per selected profile; no quota/deadline expansion or arbitrary profile passthrough.
 - Wrapper diff changes profile selection/validation/journal metadata and formatting only; hardjoin, owned-identity signaling, sticky STOP, retained-PID/HOLD and Unknown handling remain unchanged. Existing bounded hardjoin tests passed again.
 - Limits: offline unit/static acceptance only. Process/clock/signals are mocked; no real SIGUSR1 delivery, API, service, load, Rust/Go build, S3 or performance test was executed. Historical failures remain in prior evidence.
+
+## Focused checkpoint profile follow-up
+- ACCEPT/RELEASE: independent Python3.12 discovery actual33 unique PASS (26 guard+7 helper), exit0; four-input before/after match `/tmp/peri-checkpoint-profile-independent/{before,after,result}.json`. Earlier31-test acceptance remains historical, not overwritten or added to this count.
+- Accepted helper SHA: `guard_profiles.py` = `c78d38d94eaf6ef312b439e11bc5fb8f0394e0ef94616fccb456a7b382748481`; `test_guard_profiles.py` = `2cd67bba71d636bc8343a1d6b02cc1cbbc7c3b6056bc89f45d972ff4983ac4af`. Wrapper575a34f4…/test5b89927b… unchanged; raw test-log SHA `44b4450a019260b03b7ba4bf77052e0c0fbd1cb9b5279dacba1dc407c11dc260`.
+- Static: new fixed checkpoint equals common except cases=`checkpoint_reopen`; old three/default mixed and strict unknown-name/fresh-copy/limit contracts retained, no arbitrary parameter passthrough. No Cargo/API/load or Native outcome/algorithm change; original S3 Unknown and private NOT_REPRODUCED remain unchanged. Main must separately authorize focused actual execution.

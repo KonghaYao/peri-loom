@@ -32,6 +32,14 @@ _PROFILES = {
         "measure": "5s",
         "offered-rate": "25",
     },
+    "checkpoint": {
+        "cases": "checkpoint_reopen",
+        "concurrency": "1,2",
+        "warmup": "1s",
+        "smoke": "2s",
+        "measure": "5s",
+        "offered-rate": "25",
+    },
 }
 
 
