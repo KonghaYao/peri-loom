@@ -1,0 +1,24 @@
+# R16 UI independent gate — offline PASS, actual FAIL/HOLD
+
+- Non-author verdict: private v4 bounded offline/static/preparation gate PASS; subsequent actual UI FAIL, parent joint acceptance HOLD. Offline success did not establish actual compatibility.
+- Independent scope:23 fake tests(9 identity+5 capture+9 whitelist),six Node syntax checks,private-cache pycompile and static privacy/identity review; all exit0.
+- Root14 reporter gate was not rerun; existing accepted helper/test hashes were included only in the ten-input binding.
+- Before/after ten-input manifest SHA256 `4c87faf7fa3eb9e6f0584c4c28dd7363597f0c38cdd0baccbe85cea5a818eb46`; all ten actual file hashes matched before/after.
+- Frozen capture SHA256 `29a2c9061c5979a0f842027dc1071e8e7f21aed680eadf068bec898e2efa24b6`; collector `45e4165f09cba057db9656b46205e501822a6eab838ef716136348280787d1d7`; supervisor `52e974c85aeb40d74dd809c390219e477ac4bfba56bea29966f05cd014bfe18d`.
+- Private proof `/private/tmp/peri-ui-v4-independent-qqp9ogwk/proof.json`, SHA256 `6667ea5fdbf3fe45f0925c145027e091a963c41d3d98d345400aff47c9bba1bd`; commands/exits/log hashes retained there.
+- Signal contract: own PID/UID/start/full argv must match initial proof immediately before SIGTERM; changed/unproved identity retains HOLD, confirmed gone sends0, matching branch sends1; no SIGKILL fallback.
+- Collector persists only exact closed JSON diagnostic fields; raw child output is not saved. Unknown fields/enums,false completion flags,oversize/incomplete frames are discarded with closed state.
+- Bounds512-byte frame/4096-byte per stream/four accepted frames; frame rejection is not automatic whole-case failure/success, so actual discarded-state/exit/wire/oracles still require review.
+- Supervisor has bounded capture wait, double identity checks for owned cleanup and lexists lock check; browser leaf-SPKI exception is not CA-chain acceptance.
+- Read-only preparation binding: new fixture `/private/tmp/peri-stress-r16-ui-stage-i0ar8hek`,HTTPS19454,launcher51260; recorded proper-CA whole11/exit0,whole SHA `dc5f3e8d186c3c640a7bf11f0ff54f7ae9da1652573c7eed56a1b84a17a47704`.
+- Bound server artifacts: Native97e1/GoC252 hashes match main metadata and immutable files; fresh private profile had no SingletonLock at preflight, not post-run cleanup proof.
+- Main authorized James one actual R16 attempt; independent read-only raw review confirms capture exit1,first_safe_cause=captureSchema; helper PID32488/UID501 captured identity,guard SIGTERM1,exit code=null/signal=SIGTERM.
+- Child output not observed,closed diagnostic0(discarded0),records0,assets4,wire absent; no integer/refs/CloseACK/storage acceptance and no inference that SQL was never dispatched.
+- Owner raw records Chrome PID32223/UID501,double identity verified,SIGTERM,joined exit0; SingletonLock independently remains a dangling symlink(lexists=true/exists=false),not clean-profile proof.
+- Actual eleven selected input hashes match recorded before/after and current reviewed files; this runtime scope differs from the ten-input offline manifest and is not a whole-Root freeze.
+- Actual capture SHA256 `3d644e3159263450261f4981c7465a8c10c1b18bb23ea276aafaaf438caba946`; owner SHA256 `aca12e7a8a477d792c14ab6ea16f5d75fedcc0baa26446ed135a610323e478f5`; original private v4/raw and source manifests unchanged.
+- Static compatibility defect confirmed: management GET/catalog legally returns request_id="",web GET requires string only,while v4 capture requires nonempty regex. Raw contains no retained causal frame; this is NOT proven actual first cause.
+- Frozen author report `UI-R16-AUTHOR-EVIDENCE.md`,16 lines,SHA256 `5dec125c10723fe7d81618e9f8a582677fd7ac15bc17fe81c4ca88c5a859deee`,matches reviewed raw facts and limitations; independent actual gate is complete FAIL/HOLD. Separate v5 offline delta gate is recorded in `UI-V5-INDEPENDENT.md`,not a reinterpretation or rerun of R16.
+- Historical R14/R15 UI/P4/Unknown evidence remains; old static catalog defect is not assigned as actual cause,offline PASS is not actual UI PASS,performance NOT PASS.
+- No project HTTP/SQL/browser,secret/header/config reads,old Unknown actions,production build,Cargo gate,source edits or commit; this report is the repository entry for the private offline gate.
+- Parent joint gate remains HOLD; final matrix will be reviewed read-only when explicitly forwarded, never inferred All-PASS from this scope.

@@ -1,0 +1,21 @@
+# Private UI v5 independent gate — offline PASS, actual NOT GO
+
+- Non-author scope: affected capture tests only; no project HTTP/SQL,Chrome,SDK replay,production build or old Unknown operation.
+- Frozen directory `/private/tmp/peri-ui-v5-dev-93y7j2s4`; ten-input manifest SHA256 `b4968bb6677b2fe3f7e51d5dbeed7285c80d3176674f17f9a8100a1ad64a3907` matched before/after and all actual files.
+- Capture SHA256 `1767465c77303fad5135f6b341d24e65a054b80e1aa1e9564380ed06c5d97428`; test SHA256 `e8992915832bb2f6f1f73f13144ecc087e49d8948a0c75f608e4362f52f441eb`.
+- Supervisor SHA256 `6b862bb29d47faa29850aa6d29956e34c154eaf52e679eabf969bae40da36ca1`; fixture/port and output names changed to isolated R17/v5,not old R16.
+- Independent single Node capture run:10 PASS/0 FAIL/0 skipped; capture/test syntax checks exit0 and private-output Python3.12 compile succeeded without executing supervisor.
+- Initial proof collector expected TAP but Node emitted spec format; only verifier count parsing was corrected using the existing successful log,no test rerun.
+- Proof `/private/tmp/peri-ui-v5-independent-xp3yvemf/proof.json`,SHA256 `3981327a8756b408439b1b81f4ba4ae0fa6fc1f1d4c881bcdca5d8ac9ca2f03b`; commands,log hashes and ten-input equality retained.
+- Regression accepts legitimate GET catalog empty string response ID without inventing a request ID; GET numeric ID rejects at closed get_id phase.
+- POST response empty ID and mismatched ID both reject at post_id; request ID regex and exact correlation remain enforced. Invalid envelope rejects at json_envelope.
+- Static management GET/catalog and web GET contract agree with this compatibility change; this does not prove the historical R16 first failing response.
+- New first_safe_phase is limited to capture_event/json_envelope/get_id/post_id/setup; no raw response,error,SQL,headers or credential values added to persisted diagnostics.
+- Exact inherited identity SHA256 `d8cc9ae4256c0fdc0b4d344d4f232e805b1aa83049f5b7820edaea05df1f61bf`; collector `45e4165f09cba057db9656b46205e501822a6eab838ef716136348280787d1d7`.
+- Their unchanged test hashes also match the accepted v4 freeze; identity9/whitelist9 and Root14 were NOT rerun. Existing PID/UID/start/full-argv SIGTERM guard and bounded closed collector scope are inherited only.
+- Supervisor static delta preserves double identity checks,bounded waits,HOLD retention and lexists cleanup requirement; no SIGKILL fallback or business Close/retry added.
+- Read-only R17 main metadata agrees with HTTPS19455,whole exit0/11 checks,external_s3_fixture/certificate_verified; whole SHA256 `22bd0deb7721b07a21686cfed75540862d36a36cf05b0854b41953e4e939f941`.
+- Native97e1 and GoC252 actual artifact hashes match safe main metadata; new profile owner/mode0700 and absent SingletonLock verified at preflight only.
+- Browser configuration remains single leaf-SPKI exception,not browser CA-chain proof; no connection/key/config/header file read by this verifier.
+- Verdict: bounded v5 offline/static/preparation PASS; actual UI NOT GO awaiting Main. Whole11 and fake success cannot establish UI integer/refs/CloseACK/storage or post-run cleanup.
+- R16 actual FAIL,prior UI/P4/watchdog failures,product lifecycle gap,historical cause not proven and performance NOT PASS remain; parent acceptance HOLD.
