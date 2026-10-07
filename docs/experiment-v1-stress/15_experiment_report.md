@@ -1,0 +1,35 @@
+# R13 common: runner evidence, independent verification pending
+
+- Execution observed 2026-10-07 UTC / 2026-10-08 Asia/Shanghai; main GO followed F new188/whole11/bins PASS.
+- Authorized HEAD `bfd2d9e0b3a6bfb87e63e543aaf444c1a192bf91`; exact185 sources + 3 nonoverlapping artifacts = 188 unique inputs.
+- New spec SHA256 `cb88875c9f4c417f5764ba89325768028cf74daa5022df84b911ed01489446e6`; preflight passed hashes, private permissions, closed profile and owned identities.
+- Old unused cc23 spec retained metadata-only; main re-preparation performed no API/provision; runner used only the newly authorized spec.
+- New fixture `/private/tmp/peri-stress-r13-common-xhkmqel2`, launcher92778, HTTPS19451; old Unknown fixtures untouched.
+- Single provision label r13common, exit0; output stress-r13common.json; no repeated provision/new label/rerun.
+- Spec `/private/tmp/peri-stress-r13-common-results-in3wy3sz/operator-spec.json`; gate joint-pass-round13.json; unchanged.
+- Closed common profile: C1/2, W1s/S2s/M5s, offered25, rows1000, seed20261007, request10s; caps RSS512MiB/generated256MiB/artifact64MiB unchanged.
+- Owned CLI PID5778, runner PPID5643; CLI/runner exit0, child_alive=false, retained_pid=null.
+- Run `6e9bdb5d5f222419`: COMPLETE; observed elapsed242.774299833s, approximately4m03s, not a performance conclusion.
+- All13 configured common cases COMPLETE; 72 workload phases plus the constraint_error_reuse functional case.
+- Completed cases: point_read, index_range, pagination, mixed_oltp, hot_keys, bulk_tx, sort_aggregate_join.
+- Completed cases continued: index_plan, rollback, constraint_error_reuse, large_values, sustained_wal, checkpoint_reopen.
+- Recorded correctness checks37/37 PASS: three per workload case and one for constraint_error_reuse; independent oracle verification pending.
+- Totals: offered4800, attempted2795, acked2795, completed2795, admission_dropped1956, queue_expired49.
+- Workload unknown0, cleanup_unknown0, timeouts0, correctness_failures0.
+- Actual checkpoint HTTP200 ACK1; lifecycle records1, lifecycle unknown0; checkpoint_reopen COMPLETE with three recorded correctness PASS.
+- All failure records retained: metrics HTTP403 forbidden/authorization238; SQL execute HTTP400 sql_error1.
+- SQL400 record: execution_completed=true, unknown=false, may_have_committed=true; not omitted from evidence or converted into a clean transport result.
+- constraint_error_reuse completed with its recorded oracle PASS; underlying raw SQL/error text not printed.
+- Observability limitation authorized before load: project management credential cannot access global metrics; no credential workaround attempted.
+- Resource samples238: management_metrics_status=unavailable, native_metrics_status=unavailable, processes_status=available.
+- No complete management/Native metrics or performance qualification; unavailable metrics remain unavailable, not inferred.
+- New platform.log examined only through exact closed nine-field diagnostic whitelist, fixed enums, safe request IDs and typed booleans.
+- Accepted management_native_tool_error records0; first failure stage/cause not recorded; no Native/root-cause attribution.
+- Guard FUNCTIONAL_ONLY_CONFOUNDED, clean_join=true, may_have_unknown=false, first_stop=null.
+- Guard121 samples; maximum consecutive sample gap2.084050375s; CLI soft_stop_sent=false, hard_stop_sent=false.
+- External unowned esbuild PID55991/PPID55988 confound retained; confounded=true, performance_pass=false.
+- Owned caffeinate exit-15; no whole launcher/user-process kill, HTTP/SQL retry, guard bypass or credential change.
+- Source/HEAD/spec/caps/seed/deadline unchanged; no old Unknown access, algorithm fix or further matrix execution.
+- Evidence: output guarded-events.jsonl, run_6e9bdb5d5f222419/run.json and operations.jsonl; new fixture logs/platform.log.
+- Conclusion: all13 common cases completed with checkpoint ACK and unknown0, with explicit observability/builder limits; functional-only evidence.
+- Runner report only; independent verification and any commit/further execution require separate F/main authorization.
