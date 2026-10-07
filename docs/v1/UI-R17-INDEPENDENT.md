@@ -1,0 +1,24 @@
+# R17 actual UI — functional subset ACCEPT, cleanup residual HOLD
+
+- Non-author read-only review of the single authorized R17 attempt; no API/SQL/browser,retry,Close,cleanup signal or build executed by verifier.
+- Frozen private scope `/private/tmp/peri-ui-v5-dev-93y7j2s4`; functional helper/capture success does not convert supervisor exit1 into overall PASS.
+- Helper PID74451 natural exit0/signal=null; capture PID74445/UID501 recorded exit0; first_safe_cause/phase=null,helper signal decision=null.
+- Closed helper diagnostic complete/ok:query_count4,close_ack=true,storage_empty=true; stdout accepted1/stderr0,discarded0/pending0 on both streams.
+- Capture and wire agree exactly on eight records/assets:GET catalog empty response ID,open1,query4,close1,refs1; all recorded statuses200.
+- Four query records each have one row; positive JSON i64 exact token and negative NDJSON exact token retained; both NDJSON complete/row-count/clean-EOF checks passed.
+- Accepted frozen helper asserts rendered42,9223372036854775807,-9007199254740993,43,refs SVG and local/session storage length0 before emitting completion; scoped functional oracles ACCEPT.
+- POST correlation is enforced by the frozen capture; single close record has closed_ack=true and matches one existing audit close/ok event by request ID.
+- Existing audit also matches open/ok once and each query/ok once;refs admitted/complete pair matches its request ID. No duplicate matching close or observed Unknown in these UI-correlated events.
+- The fixture audit contains earlier whole/preparation traffic and one unauthenticated event; it is not an all-events-success claim or a new SDK-run audit.
+- Audit SHA256 at read `609d8930bfa7f5ce7f5783f9a616b32e083b6ca689e25e823a8957a5170276b0`; only request-ID/action/outcome projection used,no subject/project/credential output.
+- Runtime eleven selected inputs before/after match and current hashes agree; inherited offline gate remains separate from actual evidence.
+- Three captured JS asset hashes match current frozen refs/rpc/json source; fourth is favicon response without a matching source file. app/index served lineage is not captured,so not full served-asset proof.
+- Chrome PID74178/UID501:recorded double identity verification,SIGTERM,joined exit0; no verifier signal or browser execution.
+- SingletonLock independently remains dangling:lexists=true,is_symlink=true,exists=false. Owner records the same residual; no lock absence/clean-profile acceptance.
+- All other final supervisor conjunction terms pass; retained traceback is the final cleanup assertion. Supervisor actual exit1 preserved,not falsely reported0.
+- Capture SHA256 `44b967aef13e2c3f8bf1696d93b4472bd247fa9edd8d4b995e94b7ccdbb2f2a2`; wire `029f0948f7f4c0dd53f5bbb9c3aba37334d670ff72faeb4717aa9abd7fa67240`.
+- Owner SHA256 `61ed2fe6ff9fe0546df0e9d99990d3e43199ec8b74363e4c347107cd53503523`; helper log `6f0ce4edaac877173f0993235a5ffc06eaebdf8ab9876eb931aa5c7832bb054b`.
+- Supervisor log SHA256 `572dc04adfd153e736568fe2a7d28c97dc4e947bee963db885cf5dc3c9947a80`; capture success log says requests8/queries4/close_ack1,not supervisor success.
+- Browser TLS remains own leaf-SPKI exception,not browser CA-chain proof; existing proper-CA whole11 preparation is recorded separately in `UI-V5-INDEPENDENT.md`.
+- Verdict:functional UI subset ACCEPT;cleanup residual HOLD,parent joint HOLD,performance NOT PASS. R16/older Unknown and historical UI/P4 failures remain untouched.
+- These known-success CloseACK facts support Main deciding a separately authorized SDK3 run on R17; this verifier neither authorizes nor executes that run or asserts ongoing fixture health via a fresh probe.
