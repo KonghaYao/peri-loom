@@ -13,6 +13,8 @@
    PITR 和存储一致性。特别注意托管数据库与底层原生 CLI 的不同权限边界。
 4. 阅读 [SDK 路径](USER-PATH-SDK.md)，分别验收 Go、TypeScript 和 Rust 客户端，
    核对 TLS、整数精度、请求关联及错误处理；不要把 UI 成功当作三个 SDK 均通过。
+   继续阅读 [调用者安全路径](USER-PATH-CALLER-SAFETY.md)，区分正常 ACK、未知结果与明确迁移，
+   核对显式关闭/重连的前提、TLS 与独立观察凭据；该清单不代表用户已手工执行。
 5. 阅读 [并发路径](USER-PATH-CONCURRENCY.md)，使用独立客户端验收持锁竞争、
    holder 提交进展和已提交前缀；这些是候选人工步骤，不代表已经执行或性能通过。
    需要显式 writer profile 时，继续阅读 [Writer admission 路径](USER-PATH-WRITER-ADMISSION.md)；
