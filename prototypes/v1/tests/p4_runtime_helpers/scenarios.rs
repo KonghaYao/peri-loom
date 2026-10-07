@@ -10,7 +10,8 @@ use super::remote::Fixture;
 
 #[test]
 fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()> {
-    let fixture = Fixture::new(AccessRole::Writer, 1000).context("watchdog race: fixture")?;
+    let fixture = Fixture::new_with_grant_observer(AccessRole::Writer, 1000)
+        .context("watchdog race: fixture")?;
     fixture
         .acquire(AccessRole::Writer)
         .context("watchdog race: initial acquire")?;

@@ -1,22 +1,21 @@
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result};
 use peri_loom_v1::authority::ownership::OwnershipAuthority;
 use peri_loom_v1::authority::Authority;
 use peri_loom_v1::authority_rpc::auth::AuthConfig;
-use peri_loom_v1::authority_rpc::protocol::{
-    AuthorityCommand, RpcRequest, RpcResponse, MAX_RPC_BYTES, PROTOCOL_VERSION,
+use peri_loom_v1::authority_rpc::client::diagnostics::{
+    rejection_observer, RejectionObserver, RejectionReceiver,
 };
+use peri_loom_v1::authority_rpc::protocol::AuthorityCommand;
 use peri_loom_v1::authority_rpc::server::Server;
 use peri_loom_v1::authority_rpc::startup::AuthorityStartup;
 use peri_loom_v1::authority_rpc::{AuthorityClient, RemoteAuthorityProvider};
 use peri_loom_v1::database::RemoteDatabase;
 use peri_loom_v1::namespace::Namespace;
-use peri_loom_v1::object_store::{LocalObjectStore, PreconditionFailed};
+use peri_loom_v1::object_store::LocalObjectStore;
 use peri_loom_v1::ownership::types::{
     AccessRole, GrantIntent, GrantReply, GrantRequest, LeaseIntent, NonceReply, OwnershipCommand,
     RenewIntent, RenewRequest,
@@ -34,8 +33,7 @@ pub struct Fixture {
     pub gate: Arc<Gate>,
     pub lease: GrantReply,
     pub identifier: DatabaseId,
-    control_endpoint: String,
-    control_credential: String,
+    grant_rejections: Option<Mutex<RejectionReceiver>>,
     server: Option<JoinHandle<Result<()>>>,
     _objects: tempfile::TempDir,
     _cache: tempfile::TempDir,
@@ -44,6 +42,18 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(role: AccessRole, ttl_ms: u64) -> Result<Self> {
+        Self::configured(role, ttl_ms, None)
+    }
+
+    pub fn new_with_grant_observer(role: AccessRole, ttl_ms: u64) -> Result<Self> {
+        Self::configured(role, ttl_ms, Some(rejection_observer()))
+    }
+
+    fn configured(
+        role: AccessRole,
+        ttl_ms: u64,
+        observer: Option<(RejectionObserver, RejectionReceiver)>,
+    ) -> Result<Self> {
         let objects = tempfile::tempdir()?;
         let cache = tempfile::tempdir()?;
         let state = tempfile::tempdir()?;
@@ -82,7 +92,13 @@ impl Fixture {
         let server = Server::bind("127.0.0.1:0".parse()?, authority, auth, startup)?;
         let endpoint = format!("http://{}/", server.local_addr());
         let server = std::thread::spawn(move || server.run());
-        let control = AuthorityClient::new(&endpoint, control_token.clone())?;
+        let (control, grant_rejections) = match observer {
+            Some((observer, receiver)) => (
+                AuthorityClient::new_with_rejection_observer(&endpoint, control_token, observer)?,
+                Some(Mutex::new(receiver)),
+            ),
+            None => (AuthorityClient::new(&endpoint, control_token)?, None),
+        };
         let provider = RemoteAuthorityProvider::new(
             AuthorityClient::new(&endpoint, worker_token)?,
             worker_id.clone(),
@@ -122,8 +138,7 @@ impl Fixture {
             gate,
             lease,
             identifier,
-            control_endpoint: endpoint,
-            control_credential: control_token,
+            grant_rejections,
             server: Some(server),
             _objects: objects,
             _cache: cache,
@@ -161,14 +176,6 @@ impl Fixture {
     }
 
     pub fn grant_next(&self, epoch: u64) -> Result<GrantReply> {
-        self.grant_next_inner(epoch, false)
-    }
-
-    pub fn grant_next_diagnosed(&self, epoch: u64) -> Result<GrantReply> {
-        self.grant_next_inner(epoch, true)
-    }
-
-    fn grant_next_inner(&self, epoch: u64, diagnosed: bool) -> Result<GrantReply> {
         let intent = GrantIntent {
             database: self.identifier.clone(),
             worker_id: "worker_c".into(),
@@ -186,152 +193,37 @@ impl Fixture {
                 .context("next grant: challenge RPC")?,
         )
         .context("next grant: decode challenge")?;
-        let request = GrantRequest {
-            request_id: format!("grant_c_{epoch}"),
-            nonce: nonce.nonce,
-            intent,
-        };
-        let result = if diagnosed {
-            self.diagnosed_grant(request)
-        } else {
-            self.control.call(AuthorityCommand::Grant { request })
-        };
-        serde_json::from_value(result.context("next grant: grant RPC")?)
-            .context("next grant: decode grant")
+        serde_json::from_value(
+            self.control
+                .call(AuthorityCommand::Grant {
+                    request: GrantRequest {
+                        request_id: format!("grant_c_{epoch}"),
+                        nonce: nonce.nonce,
+                        intent,
+                    },
+                })
+                .context("next grant: grant RPC")?,
+        )
+        .context("next grant: decode grant")
     }
-
-    fn diagnosed_grant(&self, request: GrantRequest) -> Result<serde_json::Value> {
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .http1_only()
-            .pool_max_idle_per_host(0)
-            .retry(reqwest::retry::never())
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|_| anyhow!("diagnostic transport initialization failed"))?;
-        let request_id = request.request_id.clone();
-        let bytes = serde_json::to_vec(&RpcRequest {
-            version: PROTOCOL_VERSION,
-            request_id: request_id.clone(),
-            command: AuthorityCommand::Grant { request },
-        })?;
-        ensure!(
-            bytes.len() <= MAX_RPC_BYTES,
-            "diagnostic request body limit"
-        );
-        let response = client
-            .post(&self.control_endpoint)
-            .bearer_auth(&self.control_credential)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(bytes)
-            .send()
-            .map_err(|_| anyhow!("diagnostic transport failed; outcome may be unknown"))?;
-        ensure!(response.status().is_success(), "diagnostic HTTP rejected");
-        ensure!(
-            response
-                .content_length()
-                .is_none_or(|length| length <= MAX_RPC_BYTES as u64),
-            "diagnostic response body limit"
-        );
-        let mut bytes = Vec::new();
-        response
-            .take(MAX_RPC_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| anyhow!("diagnostic response transport failed; outcome may be unknown"))?;
-        ensure!(
-            bytes.len() <= MAX_RPC_BYTES,
-            "diagnostic response body limit"
-        );
-        let value: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid diagnostic response"))?;
-        ensure!(
-            value
-                .as_object()
-                .is_some_and(|object| object.contains_key("result")),
-            "diagnostic result field missing"
-        );
-        let response: RpcResponse =
-            serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid diagnostic response"))?;
-        ensure!(
-            response.version == PROTOCOL_VERSION && response.request_id == request_id,
-            "diagnostic response identity mismatch"
-        );
-        if response.ok {
-            ensure!(
-                !response.precondition_failed && response.error.is_none(),
-                "inconsistent diagnostic response"
-            );
-            return Ok(response.result.unwrap_or(serde_json::Value::Null));
-        }
-        ensure!(
-            response.result.is_none() && response.error.is_some(),
-            "inconsistent diagnostic error response"
-        );
-        if response.precondition_failed {
-            return Err(PreconditionFailed.into());
-        }
-        Err(anyhow!("authority operation rejected").context(format!(
-            "diagnosed grant rejection: {:?}",
-            grant_cause(response.error.as_deref().unwrap_or_default())
-        )))
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum GrantCause {
-    ExpectedEpoch,
-    NonceMissing,
-    NonceStaleOrMismatch,
-    NonceOwnershipChanged,
-    LeaseExpired,
-    LeaseUnavailable,
-    LeaseIdentity,
-    AuthorityTerm,
-    NamespaceBlocked,
-    ClockUnavailable,
-    NonceCapacity,
-    Unclassified,
-}
-
-fn grant_cause(message: &str) -> GrantCause {
-    match message {
-        "Fenced expected epoch" => GrantCause::ExpectedEpoch,
-        "Unauthorized nonce missing" => GrantCause::NonceMissing,
-        "Unauthorized stale or mismatched nonce" => GrantCause::NonceStaleOrMismatch,
-        "Fenced nonce expected ownership changed" => GrantCause::NonceOwnershipChanged,
-        "LeaseExpired" | "LeaseExpired grant completed too late" => GrantCause::LeaseExpired,
-        "Fenced lease unavailable" => GrantCause::LeaseUnavailable,
-        "Fenced lease identity" | "Fenced grant replay" => GrantCause::LeaseIdentity,
-        "Fenced authority term" => GrantCause::AuthorityTerm,
-        "UnknownOutcome namespace blocked" => GrantCause::NamespaceBlocked,
-        "Unavailable lease clock" | "Unavailable monotonic clock regression" => {
-            GrantCause::ClockUnavailable
-        }
-        "nonce capacity exceeded" => GrantCause::NonceCapacity,
-        _ => GrantCause::Unclassified,
-    }
-}
-
-#[test]
-fn grant_cause_is_closed_and_never_includes_private_payload() {
-    assert_eq!(
-        grant_cause("Fenced expected epoch"),
-        GrantCause::ExpectedEpoch
-    );
-    assert_eq!(
-        grant_cause("Fenced nonce expected ownership changed"),
-        GrantCause::NonceOwnershipChanged
-    );
-    for message in [
-        "private SQL token namespace",
-        "Fenced expected epoch secret",
-        "private: LeaseExpired",
-    ] {
-        let cause = grant_cause(message);
-        assert_eq!(cause, GrantCause::Unclassified);
-        assert_eq!(format!("{cause:?}"), "Unclassified");
+    pub fn grant_next_diagnosed(&self, epoch: u64) -> Result<GrantReply> {
+        let receiver = self
+            .grant_rejections
+            .as_ref()
+            .context("grant diagnostic not enabled")?;
+        let capture = receiver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("grant diagnostic receiver poisoned"))?
+            .begin();
+        let result = self.grant_next(epoch);
+        let observed = receiver
+            .lock()
+            .map_err(|_| anyhow::anyhow!("grant diagnostic receiver poisoned"))?
+            .finish(capture);
+        result.map_err(|error| match observed {
+            Some(cause) => error.context(format!("diagnosed grant rejection: {cause:?}")),
+            None => error.context("grant diagnostic unavailable"),
+        })
     }
 }
 

@@ -6,10 +6,14 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[doc(hidden)]
+pub mod diagnostics;
+
 pub struct AuthorityClient {
     endpoint: String,
     token: String,
     http: Client,
+    observer: Option<diagnostics::RejectionObserver>,
 }
 
 pub(crate) fn random_id() -> Result<String> {
@@ -25,6 +29,23 @@ pub(crate) fn random_id() -> Result<String> {
 
 impl AuthorityClient {
     pub fn new(endpoint: &str, token: String) -> Result<Arc<Self>> {
+        Self::configured(endpoint, token, None)
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_rejection_observer(
+        endpoint: &str,
+        token: String,
+        observer: diagnostics::RejectionObserver,
+    ) -> Result<Arc<Self>> {
+        Self::configured(endpoint, token, Some(observer))
+    }
+
+    fn configured(
+        endpoint: &str,
+        token: String,
+        observer: Option<diagnostics::RejectionObserver>,
+    ) -> Result<Arc<Self>> {
         let url = url::Url::parse(endpoint).context("invalid authority endpoint")?;
         let loopback = match url.host() {
             Some(url::Host::Ipv4(address)) => address.is_loopback(),
@@ -63,10 +84,12 @@ impl AuthorityClient {
             endpoint: url.to_string(),
             token,
             http,
+            observer,
         }))
     }
 
     pub fn call(&self, command: AuthorityCommand) -> Result<serde_json::Value> {
+        let is_grant = matches!(&command, AuthorityCommand::Grant { .. });
         let request_id = match &command {
             AuthorityCommand::Grant { request } => request.request_id.clone(),
             AuthorityCommand::Renew { request } => request.request_id.clone(),
@@ -84,6 +107,13 @@ impl AuthorityClient {
             bytes.len() <= MAX_RPC_BYTES,
             "authority request body limit exceeded"
         );
+        let observation = if is_grant {
+            self.observer
+                .as_ref()
+                .map(|observer| observer.begin_grant())
+        } else {
+            None
+        };
         let response = self
             .http
             .post(&self.endpoint)
@@ -141,6 +171,9 @@ impl AuthorityClient {
         );
         if response.precondition_failed {
             return Err(PreconditionFailed.into());
+        }
+        if let Some(observation) = observation {
+            observation.reject(response.error.as_deref().unwrap_or_default());
         }
         anyhow::bail!("authority operation rejected")
     }
