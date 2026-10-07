@@ -117,12 +117,16 @@ func parseCPUTime(value string) (float64, bool) {
 	return seconds + days*86400, true
 }
 
+type metricsSource interface {
+	Metrics(context.Context) (json.RawMessage, *Failure)
+}
+
 type Observer struct {
-	Config     ConnectionConfig
-	Management *Client
-	Artifacts  *Artifacts
-	MaxRSS     int64
-	identities map[int]string
+	Config        ConnectionConfig
+	MetricsClient metricsSource
+	Artifacts     *Artifacts
+	MaxRSS        int64
+	identities    map[int]string
 }
 
 func (observer *Observer) Sample(ctx context.Context) error {
@@ -148,8 +152,8 @@ func (observer *Observer) Sample(ctx context.Context) error {
 	}
 	var metrics json.RawMessage
 	status := "unavailable"
-	if observer.Management != nil {
-		if actual, failure := observer.Management.Metrics(ctx); failure == nil {
+	if observer.MetricsClient != nil {
+		if actual, failure := observer.MetricsClient.Metrics(ctx); failure == nil {
 			metrics, status = actual, "available"
 		}
 	}

@@ -41,6 +41,7 @@ type ConnectionConfig struct {
 	SourceRoot         string       `json:"source_root"`
 	ManagementEndpoint string       `json:"management_endpoint,omitempty"`
 	ManagementKey      string       `json:"management_key,omitempty"`
+	MetricsKey         string       `json:"metrics_key,omitempty"`
 	Databases          []DatabaseID `json:"databases,omitempty"`
 	NoisyTenant        *Target      `json:"noisy_tenant,omitempty"`
 	Processes          []Process    `json:"processes,omitempty"`
@@ -212,6 +213,9 @@ func (config ConnectionConfig) Validate() error {
 	if config.ManagementKey != "" && (config.ManagementEndpoint == "" || !validKey(config.ManagementKey)) {
 		return errors.New("invalid private management connection")
 	}
+	if config.MetricsKey != "" && (config.ManagementEndpoint == "" || !validKey(config.MetricsKey)) {
+		return errors.New("invalid private metrics connection")
+	}
 	workerIDs := map[string]bool{}
 	for _, worker := range config.WorkerIDs {
 		if !Label(worker) || workerIDs[worker] {
@@ -260,7 +264,7 @@ func validKey(value string) bool {
 func (config ConnectionConfig) Redacted() map[string]any {
 	output := map[string]any{"endpoint": config.Endpoint, "project": config.Project, "database": config.Database,
 		"fixture_only": config.FixtureOnly, "ca_file": config.CAFile, "management_endpoint": config.ManagementEndpoint,
-		"management_key": "[REDACTED]", "api_key": "[REDACTED]", "databases": config.Databases,
+		"management_key": "[REDACTED]", "metrics_key": "[REDACTED]", "api_key": "[REDACTED]", "databases": config.Databases,
 		"processes": config.Processes, "worker_ids": config.WorkerIDs, "migration_worker": config.MigrationWorker,
 		"fault_endpoint": config.FaultEndpoint, "source_root": config.SourceRoot}
 	if config.NoisyTenant != nil {

@@ -283,6 +283,7 @@ def provision(configuration, plan, label, api=None):
                   "database": plan["databases"][0], "databases": plan["databases"], "fixture_only": True,
                   "ca_file": configuration["connection"]["ca_file"], "source_root": str(pathlib.Path(__file__).resolve().parents[3]),
                   "management_endpoint": endpoint_value, "management_key": keys[plan["project"]],
+                  "metrics_key": keys["global"],
                   "processes": configuration["processes"], "worker_ids": configuration["workers"],
                   "migration_worker": next(worker for worker in configuration["workers"] if worker != primary_worker),
                   "noisy_tenant": {"endpoint": endpoint_value,
@@ -297,6 +298,8 @@ def provision(configuration, plan, label, api=None):
 
 
 def self_test():
+    import contextlib
+    import io
     import tempfile
     import unittest
     from unittest import mock
@@ -335,16 +338,22 @@ def self_test():
 
                 fake = mock.Mock()
                 fake.call.side_effect = confirmation
-                provision(configuration, plan, "credential_unit", fake)
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured):
+                    provision(configuration, plan, "credential_unit", fake)
+                self.assertEqual(captured.getvalue(), "")
                 result = decode(read_file(configuration["output"]))
                 self.assertEqual(result["management_key"], result["api_key"])
                 self.assertEqual(result["management_key"], issued[plan["project"]])
                 self.assertNotEqual(result["management_key"], global_key)
-                self.assertNotIn(global_key, json.dumps(result))
+                self.assertEqual(result["metrics_key"], global_key)
+                operational = {name: value for name, value in result.items() if name != "metrics_key"}
+                self.assertNotIn(global_key, json.dumps(operational))
                 noisy = result["noisy_tenant"]
                 self.assertEqual(noisy["api_key"], issued[plan["noisy_project"]])
                 self.assertNotIn(result["api_key"], json.dumps(noisy))
                 self.assertNotIn("management_key", noisy)
+                self.assertNotIn("metrics_key", noisy)
                 self.assertTrue(all(database["namespace"]["tenant"] == "local_" + plan["project"]
                                     for database in result["databases"]))
                 self.assertNotIn(noisy["database"], result["databases"])

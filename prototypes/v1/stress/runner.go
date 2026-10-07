@@ -44,13 +44,10 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 	if err := runner.Settings.Validate(); err != nil {
 		return "", err
 	}
-	for _, credential := range []string{runner.Config.APIKey, runner.Config.ManagementKey} {
+	for _, credential := range runner.credentials() {
 		if credential != "" && strings.Contains(runner.OutputDir, credential) {
 			return "", errors.New("output path must not contain a credential")
 		}
-	}
-	if runner.Config.NoisyTenant != nil && strings.Contains(runner.OutputDir, runner.Config.NoisyTenant.APIKey) {
-		return "", errors.New("output path must not contain a credential")
 	}
 	scenarios, err := SelectScenarios(runner.Settings.Cases)
 	if err != nil {
@@ -77,11 +74,7 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 	}
 	identifier := hex.EncodeToString(entropy[:])
 	directory := filepath.Join(runner.OutputDir, "run_"+identifier)
-	secrets := []string{runner.Config.APIKey, runner.Config.ManagementKey}
-	if runner.Config.NoisyTenant != nil {
-		secrets = append(secrets, runner.Config.NoisyTenant.APIKey)
-	}
-	artifacts, err := NewArtifacts(directory, runner.Settings.MaxArtifactBytes, secrets)
+	artifacts, err := NewArtifacts(directory, runner.Settings.MaxArtifactBytes, runner.credentials())
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +100,10 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 	if management != nil {
 		management.artifacts = artifacts
 	}
-	observer := &Observer{Config: runner.Config, Management: management, Artifacts: artifacts, MaxRSS: runner.Settings.MaxRSSBytes, identities: map[int]string{}}
+	observer, err := runner.observer(artifacts, ids, budget)
+	if err != nil {
+		return directory, err
+	}
 	observeErrors := make(chan error, 1)
 	observerDone := make(chan struct{})
 	observeCtx, stopObserving := context.WithCancel(ctx)
@@ -249,6 +245,34 @@ func (runner SerialRunner) clients(prefix string, ids *IDs, budget *DataBudget, 
 		}
 	}
 	return fixtures, management, nil
+}
+
+func (runner SerialRunner) credentials() []string {
+	credentials := []string{runner.Config.APIKey, runner.Config.ManagementKey, runner.Config.MetricsKey}
+	if runner.Config.NoisyTenant != nil {
+		credentials = append(credentials, runner.Config.NoisyTenant.APIKey)
+	}
+	return credentials
+}
+
+func (runner SerialRunner) metricsClient(ids *IDs, budget *DataBudget) (*Client, error) {
+	if runner.Config.MetricsKey == "" {
+		return nil, nil
+	}
+	return NewClient(runner.Config.ManagementEndpoint, runner.Config.MetricsKey, runner.Config.CAFile, runner.Settings, ids, budget)
+}
+
+func (runner SerialRunner) observer(artifacts *Artifacts, ids *IDs, budget *DataBudget) (*Observer, error) {
+	metrics, err := runner.metricsClient(ids, budget)
+	if err != nil {
+		return nil, err
+	}
+	observer := &Observer{Config: runner.Config, Artifacts: artifacts, MaxRSS: runner.Settings.MaxRSSBytes, identities: map[int]string{}}
+	if metrics != nil {
+		metrics.artifacts = artifacts
+		observer.MetricsClient = metrics
+	}
+	return observer, nil
 }
 
 func smokeCorrectness(ctx context.Context, fixture *Fixture, ids *IDs) (failure *Failure) {
