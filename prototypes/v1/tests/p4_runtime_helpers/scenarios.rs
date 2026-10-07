@@ -37,7 +37,11 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
             Ok(())
         });
         let result = (|| -> Result<()> {
+            let mut previous_lease = fixture.lease.clone();
             for epoch in 2..=5 {
+                let cleanup = fixture
+                    .arm_cleanup(&previous_lease.binding)
+                    .context("watchdog race: arm old cleanup")?;
                 fixture
                     .runtime
                     .command(OwnershipCommand::RevokeDatabase {
@@ -45,6 +49,13 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
                         expected_epoch: epoch - 1,
                     })
                     .context("watchdog race: revoke")?;
+                fixture
+                    .await_cleanup(cleanup, &previous_lease.binding)
+                    .context("watchdog race: await old cleanup")?;
+                assert_eq!(
+                    fixture.runtime.status()?.databases[0].mode,
+                    OwnershipMode::Revoked
+                );
                 let lease = fixture
                     .grant_next_diagnosed(epoch)
                     .context("watchdog race: next grant")?;
@@ -83,6 +94,7 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
                         .mode,
                     OwnershipMode::Writer
                 );
+                previous_lease = lease;
             }
             Ok(())
         })();

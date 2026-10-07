@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use peri_loom_v1::authority::ownership::OwnershipAuthority;
 use peri_loom_v1::authority::Authority;
 use peri_loom_v1::authority_rpc::auth::AuthConfig;
@@ -15,15 +15,15 @@ use peri_loom_v1::authority_rpc::startup::AuthorityStartup;
 use peri_loom_v1::authority_rpc::{AuthorityClient, RemoteAuthorityProvider};
 use peri_loom_v1::database::RemoteDatabase;
 use peri_loom_v1::namespace::Namespace;
-use peri_loom_v1::object_store::LocalObjectStore;
+use peri_loom_v1::object_store::{LocalObjectStore, ObjectStore};
 use peri_loom_v1::ownership::types::{
-    AccessRole, GrantIntent, GrantReply, GrantRequest, LeaseIntent, NonceReply, OwnershipCommand,
-    RenewIntent, RenewRequest,
+    AccessRole, DatabaseOwnership, GrantIntent, GrantReply, GrantRequest, LeaseBinding,
+    LeaseIntent, NonceReply, OwnershipCommand, OwnershipMode, RenewIntent, RenewRequest,
 };
 use peri_loom_v1::ownership::OwnershipRuntime;
 use peri_loom_v1::runtime::{DatabaseId, WorkerLimits};
 
-use super::clock_gate::{BlockingStore, FakeClock, Gate};
+use super::clock_gate::{BlockingStore, CleanupCapture, CleanupObserver, FakeClock, Gate};
 
 pub struct Fixture {
     pub runtime: Arc<OwnershipRuntime>,
@@ -34,6 +34,8 @@ pub struct Fixture {
     pub lease: GrantReply,
     pub identifier: DatabaseId,
     grant_rejections: Option<Mutex<RejectionReceiver>>,
+    cleanup: Option<Arc<CleanupObserver>>,
+    backing: Arc<LocalObjectStore>,
     server: Option<JoinHandle<Result<()>>>,
     _objects: tempfile::TempDir,
     _cache: tempfile::TempDir,
@@ -76,9 +78,13 @@ impl Fixture {
             database.compact_wal()?;
             drop(database);
         }
+        let cleanup = observer
+            .as_ref()
+            .map(|_| Arc::new(CleanupObserver::default()));
         let store = Arc::new(BlockingStore {
-            inner: backing,
+            inner: backing.clone(),
             gate: gate.clone(),
+            cleanup: cleanup.clone(),
         });
         let authority = OwnershipAuthority::new(store, authority_clock.clone());
         let worker_id = "worker_c".to_owned();
@@ -139,6 +145,8 @@ impl Fixture {
             lease,
             identifier,
             grant_rejections,
+            cleanup,
+            backing,
             server: Some(server),
             _objects: objects,
             _cache: cache,
@@ -151,6 +159,35 @@ impl Fixture {
             lease: self.lease.clone(),
             role,
         })?;
+        Ok(())
+    }
+
+    pub fn arm_cleanup(&self, binding: &LeaseBinding) -> Result<CleanupCapture> {
+        ensure!(
+            binding.database == self.identifier,
+            "cleanup database mismatch"
+        );
+        let key = self.identifier.namespace.key("authority/root")?;
+        let object = self.backing.get(&key)?.context("cleanup root missing")?;
+        self.cleanup
+            .as_ref()
+            .context("cleanup observer disabled")?
+            .arm(key, binding, &object.bytes)
+    }
+
+    pub fn await_cleanup(&self, capture: CleanupCapture, binding: &LeaseBinding) -> Result<()> {
+        capture.wait()?;
+        let state: DatabaseOwnership =
+            serde_json::from_value(self.control.call(AuthorityCommand::GetDatabaseState {
+                database: self.identifier.clone(),
+            })?)?;
+        ensure!(
+            state.database == binding.database
+                && state.epoch == binding.epoch
+                && state.mode == OwnershipMode::Writer
+                && state.binding.as_ref() == Some(binding),
+            "cleanup authority barrier state mismatch"
+        );
         Ok(())
     }
 
