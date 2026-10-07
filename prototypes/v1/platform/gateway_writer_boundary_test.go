@@ -90,6 +90,14 @@ func TestGatewayWriterOwnerRateCreditSurvivesGeneralExhaustion(test *testing.T) 
 	if response.Code != 200 {
 		test.Fatal("general exhausted owner rate credit")
 	}
+	fixture.gateway.admission.mu.Lock()
+	state := fixture.gateway.admission.projects["project-a"]
+	exhausted := state.tokens < 1 && state.ownerTokens == 0
+	state.last = time.Now().Add(time.Second)
+	fixture.gateway.admission.mu.Unlock()
+	if !exhausted {
+		test.Fatal("first owner request did not consume emergency credit with general exhausted")
+	}
 	before := fixture.upstream.count("query")
 	response = gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
 	if gatewayCode(test, response) != "quota_exceeded" || fixture.upstream.count("query") != before {

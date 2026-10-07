@@ -113,7 +113,7 @@ func (gate *gatewayAdmission) reserveLane(project string, quota Quotas, session,
 		}
 		state.tokens = min(generalRate, state.tokens+elapsed*generalRate)
 		credit := &state.tokens
-		if profile && owner {
+		if profile && owner && state.tokens < 1 {
 			credit = &state.ownerTokens
 		}
 		if *credit < 1 {

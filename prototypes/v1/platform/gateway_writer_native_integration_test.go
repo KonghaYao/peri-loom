@@ -295,3 +295,55 @@ func TestGatewayWriterNativeV2ReservedProgress(test *testing.T) {
 	}
 	test.Log("actual GoCLI writer_admission=true + native private v2; C4 general3 blocked, idle Close ACK, constraint owner retained, reserved COMMIT, three contenders complete, explicit ROLLBACK and Close ACK; no SQL retry")
 }
+
+func TestGatewayWriterNativeV2ConsecutiveOwnerRPCsBorrowSharedRate(test *testing.T) {
+	if os.Getenv("PERI_NATIVE_WRITER_PROFILE_TEST") != "1" {
+		test.Skip("opt-in actual native owner-rate fixture; requires authorized execution and explicit PERI_RUST_BINARY")
+	}
+	started := time.Now()
+	defer func() { test.Logf("actual owner-rate test body elapsed including startup=%s", time.Since(started)) }()
+	binary := os.Getenv("PERI_RUST_BINARY")
+	if binary == "" {
+		test.Fatal("PERI_RUST_BINARY must explicitly identify the newly frozen compatible Rust executable")
+	}
+	content, err := os.ReadFile(binary)
+	if err != nil {
+		test.Fatal("explicit Rust executable unreadable")
+	}
+	test.Logf("actual Rust executable SHA256=%x", sha256.Sum256(content))
+	fixture := writerNativeProfileFixture(test, Quotas{MaxSessions: 8, MaxConcurrent: 4, RequestsPerSecond: 100})
+	if !fixture.config.WriterAdmission {
+		test.Fatal("actual GoCLI writer_admission not configured")
+	}
+	session := fixture.open(fixture.credential, fixture.database)
+	writerNativeMust(test, fixture, "execute", map[string]any{"session": session, "sql": "CREATE TABLE owner_rate_proof(id INTEGER PRIMARY KEY, amount INTEGER); INSERT INTO owner_rate_proof VALUES(1,10)"})
+	burstStarted := time.Now()
+	writerNativeMust(test, fixture, "execute", map[string]any{"session": session, "sql": "BEGIN IMMEDIATE"})
+	first := writerNativeMust(test, fixture, "query", map[string]any{"session": session, "sql": "SELECT amount FROM owner_rate_proof WHERE id=1"})
+	if string(first.Result) != "[[10]]" {
+		test.Fatal("initial native transaction read did not match seed")
+	}
+	writerNativeMust(test, fixture, "execute", map[string]any{"session": session, "sql": "UPDATE owner_rate_proof SET amount=amount+1 WHERE id=1"})
+	second := writerNativeMust(test, fixture, "query", map[string]any{"session": session, "sql": "SELECT amount FROM owner_rate_proof WHERE id=1"})
+	if string(second.Result) != "[[11]]" {
+		test.Fatal("consecutive native owner read did not see its acknowledged update")
+	}
+	failed := writerNativeRequest(fixture, "execute", map[string]any{"session": session, "sql": "INSERT INTO owner_rate_proof VALUES(1,999)"})
+	if failed.err != nil || failed.status != 400 || failed.reply.OK || failed.reply.Error.Code != "sql_error" || !failed.reply.Error.ExecutionCompleted || !failed.reply.Error.MayHaveCommitted {
+		test.Fatalf("native owner constraint not settled: status=%d code=%s transport=%v", failed.status, failed.reply.Error.Code, failed.err)
+	}
+	writerNativeMust(test, fixture, "execute", map[string]any{"session": session, "sql": "UPDATE owner_rate_proof SET amount=amount+1 WHERE id=1"})
+	writerNativeMust(test, fixture, "execute", map[string]any{"session": session, "sql": "COMMIT"})
+	test.Logf("actual BEGIN through consecutive owner query/update/constraint/COMMIT elapsed=%s; no sleeps or SQL retries", time.Since(burstStarted))
+	committed := writerNativeMust(test, fixture, "query", map[string]any{"session": session, "sql": "SELECT amount FROM owner_rate_proof WHERE id=1"})
+	if string(committed.Result) != "[[12]]" {
+		test.Fatal("actual owner COMMIT lost acknowledged updates or applied rejected insert")
+	}
+	closed := writerNativeMust(test, fixture, "close", map[string]any{"session": session})
+	var ack struct {
+		Closed bool `json:"closed"`
+	}
+	if json.Unmarshal(closed.Result, &ack) != nil || !ack.Closed {
+		test.Fatal("actual native owner Close ACK missing")
+	}
+}

@@ -152,3 +152,126 @@ func TestWriterAdmissionQuotaTransitionDoesNotMintCredit(test *testing.T) {
 		test.Fatal("disabling profile minted general credit")
 	}
 }
+
+func frozenWriterRateFixture() (*gatewayAdmission, Quotas) {
+	quota := Quotas{MaxSessions: 8, MaxConcurrent: 4, RequestsPerSecond: 4, MaxSQLBytes: 64, MaxResultBytes: 64}
+	state := &projectAdmission{profile: true, tokens: 3, ownerTokens: 1}
+	gate := &gatewayAdmission{projects: map[string]*projectAdmission{"project": state}, writerAdmission: true}
+	return gate, quota
+}
+
+func reserveAtFrozenWriterRate(gate *gatewayAdmission, quota Quotas, owner bool) (*admissionPermit, bool) {
+	gate.mu.Lock()
+	gate.projects["project"].last = time.Now().Add(time.Hour)
+	gate.mu.Unlock()
+	return gate.reserveWriter("project", quota, owner)
+}
+
+func TestWriterAdmissionOwnerBorrowsGeneralBeforeEmergencyWithinTotalBurst(test *testing.T) {
+	gate, quota := frozenWriterRateFixture()
+	state := gate.projects["project"]
+	for count := 0; count < 2; count++ {
+		permit, ok := reserveAtFrozenWriterRate(gate, quota, true)
+		if !ok {
+			test.Fatal("consecutive owner RPC rejected while general rate credits are idle")
+		}
+		permit.finish()
+	}
+	if state.tokens != 1 || state.ownerTokens != 1 {
+		test.Fatal("trusted owner did not debit general first and preserve emergency credit")
+	}
+	third, ok := reserveAtFrozenWriterRate(gate, quota, true)
+	if !ok {
+		test.Fatal("third general-backed owner credit missing")
+	}
+	third.finish()
+	if state.tokens != 0 || state.ownerTokens != 1 {
+		test.Fatal("owner minted credit or used emergency before general exhaustion")
+	}
+	if _, ok := reserveAtFrozenWriterRate(gate, quota, false); ok {
+		test.Fatal("non-owner borrowed emergency rate credit")
+	}
+	emergency, ok := reserveAtFrozenWriterRate(gate, quota, true)
+	if !ok {
+		test.Fatal("general exhaustion stranded the emergency owner credit")
+	}
+	emergency.finish()
+	for _, owner := range []bool{true, false} {
+		if _, ok := reserveAtFrozenWriterRate(gate, quota, owner); ok {
+			test.Fatal("four-credit original total burst expanded")
+		}
+	}
+	if state.tokens != 0 || state.ownerTokens != 0 || state.active != 0 || state.ownerActive != 0 {
+		test.Fatal("finished permits refunded rate credits or retained concurrency")
+	}
+}
+
+func TestWriterAdmissionThreeGeneralKeepEmergencyOwnerAndOriginalConcurrency(test *testing.T) {
+	gate, quota := frozenWriterRateFixture()
+	for count := 0; count < 3; count++ {
+		permit, ok := reserveAtFrozenWriterRate(gate, quota, false)
+		if !ok {
+			test.Fatal("general capacity fell below the fixed three-slot contract")
+		}
+		defer permit.finish()
+	}
+	if _, ok := reserveAtFrozenWriterRate(gate, quota, false); ok {
+		test.Fatal("fourth general consumed reserved concurrency or emergency credit")
+	}
+	owner, ok := reserveAtFrozenWriterRate(gate, quota, true)
+	if !ok {
+		test.Fatal("three occupied general lanes blocked reserved owner")
+	}
+	defer owner.finish()
+	state := gate.projects["project"]
+	if state.active != 4 || state.ownerActive != 1 || state.tokens != 0 || state.ownerTokens != 0 {
+		test.Fatal("original total concurrency or four-credit burst accounting changed")
+	}
+	if _, ok := reserveAtFrozenWriterRate(gate, quota, true); ok {
+		test.Fatal("owner borrowing created a second concurrent owner permit")
+	}
+}
+
+func TestWriterAdmissionFractionalGeneralCannotMintWholeOwnerCredit(test *testing.T) {
+	gate, quota := frozenWriterRateFixture()
+	state := gate.projects["project"]
+	state.tokens = 0.75
+	permit, ok := reserveAtFrozenWriterRate(gate, quota, true)
+	if !ok {
+		test.Fatal("fractional general balance prevented emergency fallback")
+	}
+	permit.finish()
+	if state.tokens != 0.75 || state.ownerTokens != 0 {
+		test.Fatal("emergency fallback rounded or transferred general credit")
+	}
+	for _, owner := range []bool{true, false} {
+		if _, ok := reserveAtFrozenWriterRate(gate, quota, owner); ok {
+			test.Fatal("fractional remainder admitted an extra request")
+		}
+	}
+}
+
+func TestWriterAdmissionOwnerBorrowRefillPreservesOriginalAggregateRate(test *testing.T) {
+	gate, quota := frozenWriterRateFixture()
+	state := gate.projects["project"]
+	state.tokens, state.ownerTokens = 0, 0
+	state.last = time.Now().Add(-time.Second)
+	permit, ok := gate.reserveWriter("project", quota, true)
+	if !ok {
+		test.Fatal("original aggregate rate failed to refill")
+	}
+	permit.finish()
+	if state.tokens != 2 || state.ownerTokens != 1 {
+		test.Fatal("refilled owner failed to preserve emergency and debit shared credit")
+	}
+	for count := 0; count < 3; count++ {
+		permit, ok := reserveAtFrozenWriterRate(gate, quota, true)
+		if !ok {
+			test.Fatal("refill lost an original aggregate rate credit")
+		}
+		permit.finish()
+	}
+	if _, ok := reserveAtFrozenWriterRate(gate, quota, true); ok {
+		test.Fatal("refill minted more than original four total credits")
+	}
+}
