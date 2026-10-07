@@ -18,6 +18,8 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 		Errors: map[string]int{}, PerProjectAcked: map[string]int{}, PerProjectOffered: map[string]int{}, ShortGate: settings.Smoke < 10*time.Second || settings.Measure < 30*time.Second}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	dispatch := newPhaseDispatch(ctx)
+	defer dispatch.stopOffers()
 	period := time.Second / time.Duration(settings.OfferedRate)
 	result.RequestedDurationNS = duration.Nanoseconds()
 	result.PlannedOffers = int((duration + period - 1) / period)
@@ -54,7 +56,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			fixture, session := fixtures[slot%len(fixtures)], sessions[slot]
 			for {
 				select {
-				case <-ctx.Done():
+				case <-dispatch.context.Done():
 					return
 				case job, open := <-jobs[slot]:
 					if !open {
@@ -66,14 +68,17 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 					}
 					random := rand.New(rand.NewSource(settings.Seed ^ int64(job.Sequence+1)*6364136223846793005))
 					task := fixture.Model.Task(kind, job.BusinessID, random)
+					if !dispatch.admit() {
+						return
+					}
 					began := time.Now()
 					record := OperationRecord{Type: "operation", Scenario: name, Phase: phase, Sequence: job.Sequence, BusinessID: job.BusinessID,
 						Project: fixture.Target.Project, Database: fixture.Target.Database, Slot: slot, OfferedAt: job.Offered.UTC().Format(time.RFC3339Nano),
 						StartedAt: began.UTC().Format(time.RFC3339Nano), QueueNS: dequeued.Sub(job.Offered).Nanoseconds(), PrepareNS: began.Sub(dequeued).Nanoseconds()}
-					rows, identifier, failure := session.SQL(ctx, task.Query, task.SQL)
+					rows, identifier, failure := phaseSQL(ctx, session, settings.RequestTimeout, task.Query, task.SQL)
 					record.RequestIDs = []string{identifier}
 					if task.Flow == "rollback" && failure == nil {
-						rows, identifier, failure = session.SQL(ctx, true, "SELECT count(*) FROM "+fixture.Model.Table("probe")+" WHERE id='"+job.BusinessID+"'")
+						rows, identifier, failure = phaseSQL(ctx, session, settings.RequestTimeout, true, "SELECT count(*) FROM "+fixture.Model.Table("probe")+" WHERE id='"+job.BusinessID+"'")
 						record.RequestIDs = append(record.RequestIDs, identifier)
 					}
 					ended := time.Now()
@@ -87,9 +92,15 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 					if record.Acked {
 						record.Mutations = task.Mutations
 					}
-					events <- record
-					if failure != nil && failure.Class != "admission" || record.Acked && !record.Correct {
+					stop := failure != nil && failure.Class != "admission" || record.Acked && !record.Correct
+					if stop || artifacts.failed.Load() {
+						dispatch.stopOffers()
+					}
+					if artifacts.failed.Load() || failure != nil && failure.Class == "artifact_error" {
 						cancel()
+					}
+					events <- record
+					if stop {
 						return
 					}
 				}
@@ -115,13 +126,13 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			if delay := time.Until(intended); delay > 0 {
 				timer := time.NewTimer(delay)
 				select {
-				case <-ctx.Done():
+				case <-dispatch.context.Done():
 					timer.Stop()
 					return
 				case <-timer.C:
 				}
 			}
-			if ctx.Err() != nil || !time.Now().Before(deadline) {
+			if !dispatch.admit() || !time.Now().Before(deadline) {
 				break
 			}
 			slot := sequence % count
@@ -144,7 +155,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 		if remaining > 0 {
 			timer := time.NewTimer(remaining)
 			select {
-			case <-ctx.Done():
+			case <-dispatch.context.Done():
 				timer.Stop()
 			case <-timer.C:
 			}
@@ -165,7 +176,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			if !event.Correct {
 				result.CorrectnessFailures++
 				result.Status, result.Reason = "FAIL", "operation_rows_or_index_plan_mismatch"
-				cancel()
+				dispatch.stopOffers()
 			}
 		} else if event.Failure != nil {
 			result.Errors[event.Failure.Class]++
@@ -175,7 +186,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			if event.Failure.TimedOut {
 				result.Timeouts++
 			}
-			if event.Failure.Class != "admission" {
+			if event.Failure.Class != "admission" && result.Status == "COMPLETE" {
 				result.Status, result.Reason = "FAIL", event.Failure.Code
 			}
 		}
