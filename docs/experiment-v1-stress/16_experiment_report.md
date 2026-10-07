@@ -1,0 +1,31 @@
+# R14 metrics/checkpoint: runner evidence, independent verification pending
+
+- Execution observed 2026-10-07 UTC / 2026-10-08 Asia/Shanghai; main GO followed F beforeload whole11/source189/hash/caps PASS.
+- Authorized HEAD `bd325e3c1e54c8237590a6ce79f8bb9ec175b45a`; exact186 sources + 3 nonoverlapping artifacts = 189 unique inputs.
+- Spec SHA256 `579b7fe0caeef2c27c02c0dec55fd831c05906f0a1f10ffc63ca0f57fb292e08`; preflight passed frozen hashes, permissions, closed profile and owned identities.
+- Immutable CLI `/private/tmp/peri-stress-metrics-credentials-bin`, SHA256 `3763966431cc39492427c13c8d8f3ff1ce8ff35c6040e675f71361755a3d76b5`; same frozen Go/Native artifacts.
+- New fixture `/private/tmp/peri-stress-r14-metrics-z64ev16j`, launcher57658, HTTPS19452; all old Unknown fixtures untouched.
+- Single provision label r14metrics, exit0; output stress-r14metrics.json; no retries/new labels/reruns.
+- Spec `/private/tmp/peri-stress-r14-checkpoint-results-t3vq6sy7/operator-spec.json`; gate joint-pass-round14.json; unchanged.
+- Closed checkpoint_reopen C1/2, W1s/S2s/M5s, offered25, rows1000, seed20261007, request10s; RSS512MiB/generated256MiB/artifact64MiB caps unchanged.
+- Owned CLI PID65767, runner PPID65641; CLI/runner exit0, child_alive=false, retained_pid=null.
+- Run `e3b31750ea2667ad`: COMPLETE; elapsed27.250510916s; checkpoint HTTP200 ACK1, lifecycle unknown0.
+- Six workload phases: offered400, attempted46, acked46, completed46, admission_dropped345, queue_expired9.
+- Workload unknown0, cleanup_unknown0, timeouts0, correctness_failures0; three recorded correctness checks PASS.
+- Actual metrics gateway GET records24: HTTP200=24, HTTP403=0; all recorded operation failure fields empty/null.
+- Resource samples24/24: management_metrics_status=available, native_metrics_status=available_reported_map, processes_status=available.
+- Nested worker-a and worker-b separately inspected: worker_map_present=true, metrics_map_present=true, resources_map_present=true in24/24 samples each.
+- Both workers: checkpoint/cold_open/execute/query/segment_get/segment_put/wal_durability/native_commit_durability maps present in24/24 samples each.
+- Both workers: observed_workers healthy=true in24/24 samples each; no worker-level available/unavailable/status/error flag found among inspected fixed status keys.
+- These are recorded map-presence/health observations, not proof of complete, fresh or universally available Native instrumentation from HTTP200 alone.
+- No secret connection/config, authorization header, token, raw SQL/error or namespace output; no ad-hoc credential changes by runner.
+- New platform.log parsed only via the closed nine-field management diagnostic whitelist; accepted diagnostic records0, safe failure stage none recorded.
+- No Native/root-cause attribution; functional checkpoint evidence only, independent oracle verification pending.
+- Guard FUNCTIONAL_ONLY_CONFOUNDED, clean_join=true, may_have_unknown=false, first_stop=null.
+- Guard17 samples; maximum consecutive sample gap2.094847167s; CLI soft_stop_sent=false, hard_stop_sent=false.
+- External unowned esbuild PID55991/PPID55988 recorded as confound; confounded=true, performance_pass=false.
+- Owned caffeinate exit-15; no whole launcher/user-process kill, guard bypass, HTTP/SQL retry or post-run API action.
+- Source/HEAD/spec/caps/seed/deadline unchanged; no independent verifier, commit or next-case execution by runner.
+- Evidence: output guarded-events.jsonl, run_e3b31750ea2667ad/run.json and operations.jsonl; new fixture logs/platform.log.
+- Conclusion: metrics requests succeeded without403, reported worker maps were visible, checkpoint ACKed with unknown0; no performance claim.
+- Runner report only; independent verification and further execution require separate F/main authorization.
