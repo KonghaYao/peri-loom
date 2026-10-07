@@ -75,6 +75,15 @@
 5. 保留原响应、 `request_id` 、匹配binary SHA及已有闭集诊断：event/action/cause_class/execution_completed，若已有则记录native_cause_class；不新增参数强造日志，不输出SQL、key/token或原始私有错误。诊断缺失不等于成功；闭集分类也不能解除Unknown或替代完成/清理证明。
 6. 保留受影响实例/session/namespace状态与第一次失败证据，由主控安排授权后的隔离调查及安全处置；不删除cache或对旧UnknownDB做恢复试探。另起新隔离实例也须授权，且新实例成功不能把旧请求改记PASS。**预期/证据/STOP**：健康ACK后核oracle；失败/未知保存关联证据并停止，未确认终态保持UNKNOWN/BLOCKED。
 
+## 八、观测凭证隔离验收
+
+1. metrics Go/Python代码已独立ACCEPT并提交 `dea239f`；这是代码门禁，不是实际观测成功。本组尚未按本页人工执行，实际metrics运行待授权R14，不能提前记真实性能PASS。
+2. 使用该提交对应的已验收新stressCLI及匹配私有fixture配置，记录binary/source SHA；旧严格CLI会拒绝新增字段，不用旧binary或删字段绕过检查。新CLI只从private fixture JSON的可选 `metrics_key` 读取观测凭证，不新增公开参数或另造profile API。
+3. metrics独立client仅用控制凭证GET全局metrics；项目SQL/API与management仍用各自项目凭证，不取得global权限。noisy项目保持身份隔离，不把metrics key借给业务/维护或跨项目调用，不放宽server Auth。
+4. `metrics_key` absent/null时明确unavailable，不回退到项目维护/API key；HTTP403保留原样，指标缺失不算0负载，也不捏造management/native metrics。有效凭证的预期是正常TLS下GET成功且指标schema有效，不能只凭CLI退出确认观测完整。
+5. token只由授权私有fixture准备流程生成并写入受控私有文件（目录0700、文件0600），不得stdout/log/git或放argv；不传用户S3 raw keys给worker/stressCLI。沿用proper CA/hostname验证，不绕TLS；凭据或身份不匹配立即停止。
+6. **预期/证据/STOP**：授权实际运行后保存非秘密request关联、metrics状态/安全错误码与matching binary SHA；失败或业务结果未知即STOP，不SQL/HTTP retry、盲Close/reopen或触旧UnknownDB。新隔离也须另授，代码ACCEPT不替代R14实际记录，更不把403改写为成功。
+
 ## 验收记录与后续
 
 1. 每组记录执行者、匹配binary SHA、实际操作顺序、request ID、预期与实际公共终态、fresh ledger/integrity；执行失败保留，不以retry或临时提高配额/预算覆盖。秘密与任意用户SQL内容不进入公开记录。
