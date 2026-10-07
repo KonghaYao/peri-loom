@@ -15,6 +15,7 @@ use crate::ownership::types::{validate_label, OwnershipCommand, OwnershipMode};
 use crate::ownership::OwnershipRuntime;
 use crate::session::Budget;
 
+use super::diagnostics::{Action, Diagnostics};
 use super::protocol::{WorkerCommand, WorkerRequest, WorkerResponse};
 use super::sessions::{rows, Sessions};
 
@@ -50,6 +51,7 @@ struct State {
     stopped: AtomicBool,
     inflight: AtomicUsize,
     sql_inflight: AtomicUsize,
+    diagnostics: Diagnostics,
     limits: WorkerLimits,
 }
 
@@ -123,6 +125,7 @@ impl WorkerServer {
                 stopped: AtomicBool::new(false),
                 inflight: AtomicUsize::new(0),
                 sql_inflight: AtomicUsize::new(0),
+                diagnostics: Diagnostics::default(),
                 limits,
             }),
         })
@@ -225,7 +228,7 @@ impl State {
             ensure!(parsed.version == 1, "unsupported worker protocol version");
             validate_label(&parsed.request_id)?;
             ensure!(!self.stopped.load(Ordering::SeqCst), "worker stopping");
-            self.dispatch(parsed.command, control)
+            self.dispatch(parsed.command, control, &identifier)
         })();
         let response = match result {
             Ok(result) => WorkerResponse {
@@ -248,7 +251,7 @@ impl State {
         http::reply(stream, 200, &serde_json::to_vec(&response)?)
     }
 
-    fn dispatch(&self, command: WorkerCommand, control: bool) -> Result<Value> {
+    fn dispatch(&self, command: WorkerCommand, control: bool, request_id: &str) -> Result<Value> {
         match command {
             WorkerCommand::GetMetrics => {
                 ensure!(control, "control authorization required");
@@ -288,7 +291,11 @@ impl State {
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
                     "SQL byte budget exceeded"
                 );
-                self.sessions.handle(&session)?.execute(&sql)?;
+                let handle = self.sessions.handle(&session)?;
+                if let Err(error) = handle.execute(&sql) {
+                    self.diagnostics.emit(Action::Execute, request_id, &error);
+                    return Err(error);
+                }
                 Ok(json!({"executed": true}))
             }
             WorkerCommand::Query { session, sql } => {
@@ -296,7 +303,14 @@ impl State {
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
                     "SQL byte budget exceeded"
                 );
-                Ok(rows(self.sessions.handle(&session)?.query(&sql)?))
+                let handle = self.sessions.handle(&session)?;
+                match handle.query(&sql) {
+                    Ok(result) => Ok(rows(result)),
+                    Err(error) => {
+                        self.diagnostics.emit(Action::Query, request_id, &error);
+                        Err(error)
+                    }
+                }
             }
             WorkerCommand::Checkpoint { session } => {
                 Metrics::global().observe(
