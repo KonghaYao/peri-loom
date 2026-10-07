@@ -92,6 +92,25 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await controller.send(controller.child, controller.owner, signal.SIGTERM))
         self.assertTrue(controller.journal.events[-1]['may_have_unknown'])
 
+    async def test_final_unknown_risk_nonzero_child_without_spawn_inference(self):
+        for child_exit, spawned, expected_unknown in [(1, True, True), (0, True, False), (None, False, False)]:
+            with self.subTest(child_exit=child_exit, spawned=spawned):
+                controller = self.controller()
+                child = controller.child
+                child.returncode = child_exit
+                if not spawned:
+                    controller.child = controller.owner = None
+                exit_code, result = controller.finish()
+                self.assertEqual(result['may_have_unknown'], expected_unknown)
+                self.assertEqual(controller.journal.events[-1]['may_have_unknown'], expected_unknown)
+                self.assertEqual(exit_code, 0 if spawned and child_exit == 0 else 1)
+                self.assertEqual(result['status'], 'CHILD_COMPLETE_PENDING_VERIFIER' if spawned and child_exit == 0 else 'HOLD')
+                self.assertIsNone(result['first_stop'])
+                self.assertFalse(result['soft_stop_sent'])
+                self.assertFalse(result['hard_stop_sent'])
+                self.assertFalse(result['child_alive'])
+                self.assertEqual(child.signals, [])
+
     async def test_monitor_does_not_exit_after_sticky_error(self):
         controller = self.controller()
         calls = []
