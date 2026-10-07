@@ -119,13 +119,18 @@ class Project:
             self.launch = json.loads(launch_path.read_text())
             if self.launch["backend"] != self.arguments.backend or self.launch["listen"] != self.arguments.listen or self.launch["tls"] != self.arguments.tls:
                 raise RuntimeError("existing runtime identity/configuration cannot be silently rebound")
+            if self.launch.get("writer_admission", False) != self.arguments.writer_admission:
+                raise RuntimeError("existing writer admission profile cannot be silently rebound")
             if self.arguments.backend == "s3" and self.launch.get("storage_identity") != storage_identity("s3"):
                 raise RuntimeError("existing S3 storage identity cannot be silently rebound")
             self.config = json.loads((self.directory / "platform.json").read_text())
+            if self.config.get("writer_admission", False) != self.arguments.writer_admission:
+                raise RuntimeError("writer admission configuration mismatch")
             return
         authority = free_address()
         broker = free_address()
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
+        self.launch["writer_admission"] = self.arguments.writer_admission
         worker_auth = {}
         worker_config = []
         sql_tokens, key_tokens = {}, {}
@@ -152,6 +157,7 @@ class Project:
             "bootstrap_key": secrets.token_hex(32), "gateway_listen": self.arguments.listen, "broker_listen": broker,
             "worker_sql_tokens": sql_tokens, "worker_key_tokens": key_tokens, "worker_authority_tokens": worker_auth,
             "insecure_loopback": not self.arguments.tls,
+            "writer_admission": self.arguments.writer_admission,
         }
         if self.arguments.tls:
             certificate = pathlib.Path(os.environ.get("PERI_TLS_CERT", self.directory / "keys/gateway.crt"))
@@ -219,6 +225,7 @@ class Project:
         for identity, worker in self.launch["workers"].items():
             environment = safe_environment()
             environment.update({"PERI_WORKER_AUTHORITY_TOKEN": worker["authority_token"], "PERI_WORKER_CONTROL_TOKEN": worker["control_token"], "PERI_WORKER_SQL_TOKEN": worker["sql_token"], "PERI_WORKER_KEY_TOKEN": worker["key_token"], "PERI_KMS_ENDPOINT": "http://" + self.config["broker_listen"]})
+            environment["PERI_WORKER_WRITER_PROFILE"] = "1" if self.arguments.writer_admission else "0"
             self.start(identity, [str(self.rust), "owned-worker", "http://" + self.launch["authority"], worker["cache"], identity, worker["address"]], environment)
         scheme = "https://" if self.arguments.tls else "http://"
         address = self.arguments.listen.replace("0.0.0.0:", "127.0.0.1:")
@@ -308,6 +315,7 @@ def main():
     parser.add_argument("--listen", default="127.0.0.1:9443")
     parser.add_argument("--tls", action="store_true")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--writer-admission", action="store_true")
     arguments = parser.parse_args()
     project = Project(arguments)
     signal.signal(signal.SIGTERM, lambda signum, frame: project.stop.set())

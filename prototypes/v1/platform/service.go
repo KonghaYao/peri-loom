@@ -83,7 +83,7 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 	if err != nil {
 		return err
 	}
-	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit})
+	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission})
 	if err != nil {
 		return err
 	}

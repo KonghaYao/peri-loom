@@ -3,17 +3,24 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use peri_loom_v1::ownership::types::{AccessRole, OwnershipCommand, OwnershipMode};
 
 use super::remote::Fixture;
 
 #[test]
 fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()> {
-    let fixture = Fixture::new(AccessRole::Writer, 1000)?;
-    fixture.acquire(AccessRole::Writer)?;
-    let handle = fixture.runtime.open_session(&fixture.identifier)?;
-    handle.execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")?;
+    let fixture = Fixture::new(AccessRole::Writer, 1000).context("watchdog race: fixture")?;
+    fixture
+        .acquire(AccessRole::Writer)
+        .context("watchdog race: initial acquire")?;
+    let handle = fixture
+        .runtime
+        .open_session(&fixture.identifier)
+        .context("watchdog race: setup open session")?;
+    handle
+        .execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")
+        .context("watchdog race: setup execute")?;
     drop(handle);
     let stopping = Arc::new(AtomicBool::new(false));
     std::thread::scope(|scope| -> Result<()> {
@@ -21,18 +28,25 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
         let stopped = stopping.clone();
         let watchdog = scope.spawn(move || -> Result<()> {
             while !stopped.load(Ordering::SeqCst) {
-                runtime.status()?;
+                runtime
+                    .status()
+                    .context("watchdog race: background status")?;
                 std::thread::yield_now();
             }
             Ok(())
         });
         let result = (|| -> Result<()> {
             for epoch in 2..=5 {
-                fixture.runtime.command(OwnershipCommand::RevokeDatabase {
-                    database: fixture.identifier.clone(),
-                    expected_epoch: epoch - 1,
-                })?;
-                let lease = fixture.grant_next(epoch)?;
+                fixture
+                    .runtime
+                    .command(OwnershipCommand::RevokeDatabase {
+                        database: fixture.identifier.clone(),
+                        expected_epoch: epoch - 1,
+                    })
+                    .context("watchdog race: revoke")?;
+                let lease = fixture
+                    .grant_next(epoch)
+                    .context("watchdog race: next grant")?;
                 let timeout = Instant::now() + Duration::from_secs(5);
                 loop {
                     let acquired = fixture.runtime.command(OwnershipCommand::AcquireDatabase {
@@ -41,15 +55,31 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
                     });
                     match acquired {
                         Ok(_) => break,
-                        Err(error) if Instant::now() >= timeout => return Err(error),
+                        Err(error) if Instant::now() >= timeout => {
+                            return Err(error).context("watchdog race: acquire retry exhausted")
+                        }
                         Err(_) => std::thread::yield_now(),
                     }
                 }
-                let handle = fixture.runtime.open_session(&fixture.identifier)?;
-                assert_eq!(handle.query("SELECT id FROM items")?[0][0].to_string(), "1");
+                let handle = fixture
+                    .runtime
+                    .open_session(&fixture.identifier)
+                    .context("watchdog race: acquired open session")?;
+                assert_eq!(
+                    handle
+                        .query("SELECT id FROM items")
+                        .context("watchdog race: acquired query")?[0][0]
+                        .to_string(),
+                    "1"
+                );
                 drop(handle);
                 assert_eq!(
-                    fixture.runtime.status()?.databases[0].mode,
+                    fixture
+                        .runtime
+                        .status()
+                        .context("watchdog race: foreground status")?
+                        .databases[0]
+                        .mode,
                     OwnershipMode::Writer
                 );
             }

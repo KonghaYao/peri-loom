@@ -3,8 +3,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use turso_core::Value;
 
+use super::types::LeaseBinding;
 use crate::resources::ResourceUsage;
 use crate::runtime::DatabaseHandle;
+use crate::session::SessionWriterState;
 
 use super::context::LeaseContext;
 use super::runtime::OwnershipRuntime;
@@ -16,6 +18,21 @@ pub struct OwnedHandle {
 }
 
 impl OwnedHandle {
+    pub(crate) fn writer_state(&self) -> Result<SessionWriterState> {
+        self.handle.as_ref().unwrap().writer_state()
+    }
+
+    pub(crate) fn begin_close(&self) -> Result<()> {
+        self.handle.as_ref().unwrap().begin_close()
+    }
+
+    pub(crate) fn request_close_until(&self, deadline: std::time::Instant) -> Result<()> {
+        self.handle.as_ref().unwrap().request_close_until(deadline)
+    }
+
+    pub(crate) fn lease_binding_snapshot(&self) -> Result<LeaseBinding> {
+        Ok(self.context.lock()?.binding.clone())
+    }
     pub fn execute(&self, sql: &str) -> Result<()> {
         self.handle.as_ref().unwrap().execute(sql)
     }

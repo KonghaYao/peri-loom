@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    mpsc, Arc, Mutex,
+    mpsc, Arc, Mutex, Weak,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,12 +10,14 @@ use peri_loom_v1::{
     database::{RemoteDatabase, RemoteSession},
     namespace::Namespace,
     object_store::{MemoryObjectStore, ObjectStore, PutCondition, StoredObject},
-    session::Budget,
+    session::{AdmissionError, Budget},
 };
 use turso_core::LimboError;
 
 struct PrefixHook {
-    statements: usize,
+    database: Weak<RemoteDatabase>,
+    session: u64,
+    observed_owner: bool,
     reached: mpsc::Sender<()>,
     resume: mpsc::Receiver<()>,
 }
@@ -43,11 +45,17 @@ impl TestStore {
         receiver
     }
 
-    fn pause_before_second_begin(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+    fn pause_after_committed_owner_release(
+        &self,
+        database: &Arc<RemoteDatabase>,
+        session: &RemoteSession,
+    ) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
         let (reached_sender, reached_receiver) = mpsc::channel();
         let (resume_sender, resume_receiver) = mpsc::channel();
         *self.prefix.lock().unwrap() = Some(PrefixHook {
-            statements: 0,
+            database: Arc::downgrade(database),
+            session: session.admission_id(),
+            observed_owner: false,
             reached: reached_sender,
             resume: resume_receiver,
         });
@@ -65,14 +73,18 @@ impl ObjectStore for TestStore {
             let wait = waiting.take().unwrap();
             let _ = wait.reached.send(());
         }
-        Ok(())
-    }
-
-    fn validate_transaction(&self, _: bool) -> Result<()> {
+        drop(waiting);
         let mut pending = self.prefix.lock().unwrap();
         let pause = if let Some(hook) = pending.as_mut() {
-            hook.statements += 1;
-            hook.statements == 4
+            let database = hook
+                .database
+                .upgrade()
+                .context("prefix fixture was destroyed")?;
+            let status = database.writer_admission_status()?;
+            if status.owner == Some(hook.session) {
+                hook.observed_owner = true;
+            }
+            hook.observed_owner && status.owner.is_none()
         } else {
             false
         };
@@ -253,7 +265,9 @@ fn prefix_then_blocked_begin(
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = Arc::new(fixture.database.session()?);
-    let (reached, resume) = fixture.store.pause_before_second_begin();
+    let (reached, resume) = fixture
+        .store
+        .pause_after_committed_owner_release(&fixture.database, &contender);
     let (sender, receiver) = mpsc::channel();
     let writer = contender.clone();
     let query_duration = budget.max_query_duration;
@@ -268,6 +282,14 @@ fn prefix_then_blocked_begin(
         reached
             .recv_timeout(Duration::from_secs(1))
             .context("committed prefix hook did not arrive")?;
+        ensure!(
+            fixture.database.writer_admission_status()?.owner.is_none(),
+            "prefix hook fired before confirmed native writer release"
+        );
+        ensure!(
+            ledger(&fixture.database.session()?)? == ["20"],
+            "prefix hook fired before prefix became visible to a new native reader"
+        );
         holder.execute("BEGIN IMMEDIATE;")?;
         let physical = fixture.store.physical.load(Ordering::SeqCst);
         thread::sleep(hook_delay);
@@ -276,20 +298,15 @@ fn prefix_then_blocked_begin(
             .recv_timeout(Duration::from_secs(6))
             .context("blocked suffix did not terminate")?
             .unwrap_err();
+        ensure!(
+            error.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline),
+            "expected typed admission deadline after committed prefix: {error:#}"
+        );
         if duration_error {
-            ensure!(
-                format!("{error:#}").contains("query duration budget exceeded"),
-                "cumulative batch budget cause lost: {error:#}"
-            );
             ensure!(
                 started.elapsed() >= query_duration
                     && started.elapsed() < query_duration + Duration::from_millis(150),
                 "budget reset between statements or hook delay not accounted"
-            );
-        } else {
-            ensure!(
-                matches!(error.downcast_ref::<LimboError>(), Some(LimboError::Busy)),
-                "expected typed Busy after committed prefix: {error:#}"
             );
         }
         ensure!(
@@ -315,7 +332,7 @@ fn prefix_then_blocked_begin(
 }
 
 #[test]
-fn single_batch_committed_prefix_survives_later_typed_busy() -> Result<()> {
+fn single_batch_committed_prefix_survives_later_typed_admission_deadline() -> Result<()> {
     prefix_then_blocked_begin(Budget::default(), Duration::ZERO, false)
 }
 
@@ -332,7 +349,7 @@ fn all_statements_share_original_query_budget_including_prefix_pause() -> Result
 }
 
 #[test]
-fn default_five_second_batch_budget_cuts_off_suffix_before_four_second_backoff() -> Result<()> {
+fn default_five_second_batch_budget_includes_prefix_pause_and_suffix_queue() -> Result<()> {
     ensure!(
         Budget::default().max_query_duration == Duration::from_secs(5),
         "default query budget changed"

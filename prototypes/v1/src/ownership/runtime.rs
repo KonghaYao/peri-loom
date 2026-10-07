@@ -137,6 +137,7 @@ impl OwnershipRuntime {
     }
 
     pub fn open_session(self: &Arc<Self>, identifier: &DatabaseId) -> Result<OwnedHandle> {
+        self.worker.ensure_instance_available(identifier)?;
         let context = self.context(identifier)?;
         context.check(Some(false))?;
         let epoch = {
@@ -230,6 +231,8 @@ impl OwnershipRuntime {
 
     fn acquire(self: &Arc<Self>, lease: GrantReply, role: AccessRole) -> Result<()> {
         lease.binding.database.validate()?;
+        self.worker
+            .ensure_instance_available(&lease.binding.database)?;
         ensure!(
             lease.binding.worker_id == self.worker_id,
             "lease belongs to another worker"
@@ -346,6 +349,8 @@ impl OwnershipRuntime {
     }
 
     fn renew(&self, lease: GrantReply) -> Result<()> {
+        self.worker
+            .ensure_instance_available(&lease.binding.database)?;
         let context = self.context(&lease.binding.database)?;
         context.check(None)?;
         {
@@ -433,6 +438,11 @@ impl OwnershipRuntime {
     }
 
     pub(super) fn finish_detach(&self, context: &LeaseContext) -> Result<()> {
+        let identifier = context.lock()?.binding.database.clone();
+        if let Err(error) = self.worker.ensure_instance_available(&identifier) {
+            let _ = context.quarantine();
+            return Err(error);
+        }
         let (identifier, epoch, generation, unload) = {
             let mut state = context.lock()?;
             if state.detaching

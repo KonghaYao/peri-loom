@@ -54,6 +54,28 @@ func NewSQLUpstream(workerSQLTokens map[string]string) (SQLUpstream, error) {
 }
 
 func (upstream *sqlHTTPUpstream) Call(ctx context.Context, worker controller.Worker, requestID string, command any, output any) error {
+	_, err := upstream.callVersion(ctx, worker, requestID, command, output, 1)
+	return err
+}
+
+func (upstream *sqlHTTPUpstream) CallWriter(ctx context.Context, worker controller.Worker, requestID string, command any, output any) (*SessionWriterState, error) {
+	var state *SessionWriterState
+	err := upstream.callVersionInto(ctx, worker, requestID, command, output, 2, &state)
+	return state, err
+}
+
+func (upstream *sqlHTTPUpstream) WriterProfile(ctx context.Context, worker controller.Worker, requestID string) error {
+	var state *SessionWriterState
+	return upstream.callVersionInto(ctx, worker, requestID, map[string]any{"command": "writer_profile_status"}, nil, 2, &state)
+}
+
+func (upstream *sqlHTTPUpstream) callVersion(ctx context.Context, worker controller.Worker, requestID string, command any, output any, version uint32) (*SessionWriterState, error) {
+	var state *SessionWriterState
+	err := upstream.callVersionInto(ctx, worker, requestID, command, output, version, &state)
+	return state, err
+}
+
+func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker controller.Worker, requestID string, command any, output any, version uint32, state **SessionWriterState) error {
 	token, found := upstream.tokens[worker.ID]
 	endpoint, err := sqlEndpoint(worker.Address)
 	if !found || err != nil || ctx == nil || !sqlLabel(requestID) || !sqlOutput(output) {
@@ -67,9 +89,16 @@ func (upstream *sqlHTTPUpstream) Call(ctx context.Context, worker controller.Wor
 	}
 	switch operation {
 	case "open_session", "execute", "query", "close_session":
+		if version == 2 && !writerCommandValid(operation, encoded, fields) {
+			return &SQLRPCError{}
+		}
+	case "writer_profile_status":
+		if version != 2 || len(fields) != 1 {
+			return &SQLRPCError{}
+		}
 	case "checkpoint", "compact", "diagnostics":
 		var session string
-		if len(fields) != 2 || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) || sqlJSONValue(ctx, json.NewDecoder(bytes.NewReader(encoded)), 0) != nil {
+		if version != 1 || len(fields) != 2 || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) || sqlJSONValue(ctx, json.NewDecoder(bytes.NewReader(encoded)), 0) != nil {
 			return &SQLRPCError{}
 		}
 	default:
@@ -84,7 +113,7 @@ func (upstream *sqlHTTPUpstream) Call(ctx context.Context, worker controller.Wor
 		Version   uint32          `json:"version"`
 		RequestID string          `json:"request_id"`
 		Command   json.RawMessage `json:"command"`
-	}{1, requestID, encoded})
+	}{version, requestID, encoded})
 	if err != nil || len(body) > sqlWireLimit {
 		return &SQLRPCError{}
 	}
@@ -116,6 +145,14 @@ func (upstream *sqlHTTPUpstream) Call(ctx context.Context, worker controller.Wor
 	body, err = io.ReadAll(io.LimitReader(response.Body, sqlWireLimit+1))
 	if err != nil || len(body) > sqlWireLimit {
 		return &SQLRPCError{Ambiguous: true, cause: ctx.Err()}
+	}
+	if version == 2 {
+		if operation == "writer_profile_status" {
+			return sqlDecodeWriterProfile(ctx, body, requestID)
+		}
+		var err error
+		*state, err = sqlDecodeWriter(ctx, body, requestID, output)
+		return err
 	}
 	return sqlDecode(ctx, body, requestID, output)
 }

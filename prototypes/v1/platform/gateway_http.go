@@ -124,11 +124,24 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(503, "gateway_closing")
 		return
 	}
-	permit, found = gateway.admission.reserve(principal.Project, project.Quotas, action == "open", action == "close")
+	deferredAdmission := action != "open" && gateway.admission.eligible(project.Quotas)
+	if !deferredAdmission {
+		permit, found = gateway.admission.reserve(principal.Project, project.Quotas, action == "open", action == "close")
+	}
 	gateway.mu.Unlock()
-	if !found {
+	if !deferredAdmission && !found {
 		result = gatewayFailure(429, "quota_exceeded")
 		return
+	}
+	var releaseClassification func()
+	if deferredAdmission {
+		var ok bool
+		releaseClassification, ok = gateway.admission.classify(principal.Project, project.Quotas)
+		if !ok {
+			result = gatewayFailure(429, "quota_exceeded")
+			return
+		}
+		defer releaseClassification()
 	}
 	limit := sqlWireLimit
 	if project.Quotas.MaxSQLBytes <= (sqlWireLimit-8192)/6 {
@@ -153,11 +166,17 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(413, "sql_limit")
 		return
 	}
+	if releaseClassification != nil {
+		releaseClassification()
+	}
 	switch action {
 	case "open":
-		result = gateway.open(ctx, principal, *parsed.Database, identifier, permit)
+		result = gateway.open(ctx, principal, *parsed.Database, identifier, permit, project.Quotas)
 	case "execute", "query", "close":
 		result = gateway.dispatch(ctx, principal, parsed, identifier, action, project.Quotas, permit, strings.Contains(request.Header.Get("Accept"), "application/x-ndjson"))
+		if result.permit != nil {
+			permit = result.permit
+		}
 	}
 }
 

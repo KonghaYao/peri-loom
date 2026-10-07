@@ -24,6 +24,7 @@ type ServiceConfig struct {
 	TLSCertificate        string                   `json:"tls_certificate,omitempty"`
 	TLSKey                string                   `json:"tls_key,omitempty"`
 	InsecureLoopback      bool                     `json:"insecure_loopback,omitempty"`
+	WriterAdmission       bool                     `json:"writer_admission,omitempty"`
 	WorkerSQLTokens       map[string]string        `json:"worker_sql_tokens"`
 	WorkerKeyTokens       map[string]string        `json:"worker_key_tokens"`
 	WorkerAuthorityTokens map[string]string        `json:"worker_authority_tokens"`

@@ -1,5 +1,7 @@
 mod files;
 mod lock;
+mod native;
+mod native_file;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,11 +23,15 @@ use crate::storage::RemoteStorage;
 use crate::wal::{apply_batch, DurableWal, RemoteWal, WalBatch};
 use files::RemoteFile;
 use lock::DirectoryLock;
+use native::NativeIoGate;
+pub(crate) use native::NativeIoToken;
+use native_file::NativeFile;
 
 pub struct RemoteIO {
     platform: Arc<PlatformIO>,
     shared: Arc<Shared>,
     path: String,
+    native: Arc<NativeIoGate>,
 }
 
 struct Shared {
@@ -90,6 +96,7 @@ impl RemoteIO {
         );
         Ok(Arc::new(Self {
             platform: Arc::new(PlatformIO::new()?),
+            native: Arc::new(NativeIoGate::default()),
             shared: Arc::new(Shared {
                 storage,
                 wal,
@@ -104,6 +111,17 @@ impl RemoteIO {
 
     pub fn storage(&self) -> Arc<RemoteStorage> {
         self.shared.storage.clone()
+    }
+
+    pub(crate) fn disable_native_dispatch(&self) {
+        self.native.disable();
+    }
+
+    pub(crate) fn retirement_token(
+        self: &Arc<Self>,
+        deadline: std::time::Instant,
+    ) -> Result<NativeIoToken<'_>> {
+        self.native.retirement_token(self.clone(), deadline)
     }
     pub fn database_path(&self) -> String {
         self.path.clone()
@@ -341,26 +359,34 @@ impl IO for RemoteIO {
         flags: OpenFlags,
         direct: bool,
     ) -> turso_core::Result<Arc<dyn File>> {
+        let _ticket = self.native.enter()?;
         if let Some(wal) = self.kind(path) {
             self.shared
                 .storage
                 .store()
                 .validate_session()
                 .map_err(adapter_error)?;
-            return Ok(Arc::new(RemoteFile {
-                shared: self.shared.clone(),
-                wal,
-                readonly: flags.contains(OpenFlags::ReadOnly)
-                    || self.shared.storage.store().access_role() == AccessRole::ReadOnly,
-            }));
+            return Ok(NativeFile::wrap_synchronous(
+                Arc::new(RemoteFile {
+                    shared: self.shared.clone(),
+                    wal,
+                    readonly: flags.contains(OpenFlags::ReadOnly)
+                        || self.shared.storage.store().access_role() == AccessRole::ReadOnly,
+                }),
+                self.native.clone(),
+            ));
         }
         if !is_temporary(path) {
             return Err(adapter_error("only native temporary files may use host IO"));
         }
-        self.platform.open_file(path, flags, direct)
+        Ok(NativeFile::wrap_platform(
+            self.platform.open_file(path, flags, direct)?,
+            self.native.clone(),
+        ))
     }
 
     fn remove_file(&self, path: &str) -> turso_core::Result<()> {
+        let _ticket = self.native.enter()?;
         match self.kind(path) {
             Some(false) => Err(adapter_error("cannot remove virtual database")),
             Some(true) => {
@@ -380,10 +406,20 @@ impl IO for RemoteIO {
     }
 
     fn step(&self) -> turso_core::Result<()> {
+        let _ticket = self.native.enter()?;
         self.platform.step()
     }
 
+    fn cancel(&self, completions: &[Completion]) -> turso_core::Result<()> {
+        let _ticket = self.native.enter()?;
+        for completion in completions {
+            completion.abort();
+        }
+        Ok(())
+    }
+
     fn file_id(&self, path: &str) -> turso_core::Result<FileId> {
+        let _ticket = self.native.enter()?;
         if let Some(wal) = self.kind(path) {
             Ok(FileId::from_path_hash(&format!(
                 "peri-loom:{}:{}:{wal}",

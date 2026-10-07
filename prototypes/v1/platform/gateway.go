@@ -20,17 +20,21 @@ type Gateway struct {
 }
 
 type gatewaySession struct {
-	mu       sync.Mutex
-	public   string
-	upstream string
-	worker   controller.Worker
-	binding  controller.Binding
-	database controller.DatabaseID
-	project  string
-	subject  string
-	poisoned bool
-	moved    bool
-	closed   bool
+	mu             sync.Mutex
+	public         string
+	upstream       string
+	worker         controller.Worker
+	binding        controller.Binding
+	database       controller.DatabaseID
+	project        string
+	subject        string
+	poisoned       bool
+	moved          bool
+	closed         bool
+	writerProtocol bool
+	writerKnown    bool
+	writerOwner    bool
+	writerSequence uint64
 }
 
 type gatewayResult struct {
@@ -41,13 +45,19 @@ type gatewayResult struct {
 	session    *gatewaySession
 	finish     func()
 	stream     []byte
+	permit     *admissionPermit
 }
 
 func NewGateway(config GatewayConfig) (*Gateway, error) {
 	if config.State == nil || config.Placements == nil || config.Identity == nil || config.Upstream == nil || config.Audit == nil {
 		return nil, errors.New("missing gateway dependency")
 	}
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: &gatewayAdmission{projects: map[string]*projectAdmission{}}, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
+	if config.WriterAdmission {
+		if _, ok := config.Upstream.(WriterSQLUpstream); !ok {
+			return nil, errors.New("writer admission requires versioned SQL upstream")
+		}
+	}
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: &gatewayAdmission{projects: map[string]*projectAdmission{}, writerAdmission: config.WriterAdmission}, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {
@@ -105,7 +115,7 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 				Closed bool `json:"closed"`
 			}
 			if err == nil {
-				err = gateway.config.Upstream.Call(ctx, session.worker, identifier, map[string]any{"command": "close_session", "session": session.upstream}, &reply)
+				err = gateway.callSession(ctx, session, session.binding, identifier, map[string]any{"command": "close_session", "session": session.upstream}, &reply)
 			}
 			if err == nil && !reply.Closed {
 				err = &SQLRPCError{Ambiguous: true}

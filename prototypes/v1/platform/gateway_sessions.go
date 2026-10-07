@@ -8,7 +8,7 @@ import (
 	controller "peri-loom/controller"
 )
 
-func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit) gatewayResult {
+func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) gatewayResult {
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
@@ -29,7 +29,28 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		Session  string `json:"session"`
 		Readonly *bool  `json:"readonly"`
 	}
-	err = gateway.config.Upstream.Call(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
+	var writerState *SessionWriterState
+	writerProtocol := gateway.admission.eligible(quota)
+	if writerProtocol {
+		probeID, probeErr := controller.RandomID()
+		if probeErr != nil {
+			return gatewayFailure(503, "upstream_unavailable")
+		}
+		if probeErr = gateway.config.Upstream.(WriterSQLUpstream).WriterProfile(ctx, worker, probeID); probeErr != nil {
+			return gatewayFailure(503, "writer_profile_unavailable")
+		}
+		currentWorker, currentBinding, routeErr := gateway.route(database)
+		if routeErr != nil || !sameGatewayBinding(binding, currentBinding) || worker.Address != currentWorker.Address {
+			return gatewayFailure(409, "placement_unavailable")
+		}
+		if !principalBindingValid(principal, currentBinding) || gateway.authorize(principal, database) != nil {
+			return gatewayFailure(403, "forbidden")
+		}
+		binding = currentBinding
+		writerState, err = gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
+	} else {
+		err = gateway.config.Upstream.Call(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
+	}
 	if err != nil {
 		return gateway.upstreamFailure(err, nil, permit)
 	}
@@ -40,7 +61,10 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if err != nil {
 		return gateway.unknown(nil, permit)
 	}
-	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject}
+	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, writerProtocol: writerProtocol}
+	if writerProtocol && (!session.acceptWriterState(writerState, binding) || writerState.Owner) {
+		return gateway.unknown(nil, permit)
+	}
 	session.mu.Lock()
 	gateway.mu.Lock()
 	if _, exists := gateway.sessions[identifier]; exists {
@@ -64,13 +88,31 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 	if !session.mu.TryLock() {
 		return gatewayFailure(409, "session_busy")
 	}
+	if permit == nil {
+		if failure := gateway.writerDispatchGuard(principal, session, action); failure.code != "" {
+			session.mu.Unlock()
+			return failure
+		}
+		var ok bool
+		if action == "close" {
+			permit, ok = gateway.admission.reserve(principal.Project, quota, false, true)
+		} else {
+			permit, ok = gateway.admission.reserveWriter(principal.Project, quota, session.writerProtocol && session.writerKnown && session.writerOwner)
+		}
+		if !ok {
+			session.mu.Unlock()
+			return gatewayFailure(429, "quota_exceeded")
+		}
+	}
 	result := gateway.dispatchLocked(ctx, principal, request, requestID, action, quota, permit, ndjson, session)
+	result.permit = permit
 	result.session = session
 	result.finish = session.mu.Unlock
 	return result
 }
 
 func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool, session *gatewaySession) gatewayResult {
+	currentBinding := session.binding
 	if gateway.authorize(principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
@@ -101,6 +143,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			session.moved = true
 			return gatewayFailure(409, "session_moved")
 		}
+		currentBinding = binding
 		if principal.Role == "read_only" && binding.Role != "read_only" {
 			return gatewayFailure(403, "readonly_placement_required")
 		}
@@ -114,7 +157,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		var reply struct {
 			Closed bool `json:"closed"`
 		}
-		err := gateway.config.Upstream.Call(ctx, session.worker, requestID, command, &reply)
+		err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
 		if err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
@@ -129,7 +172,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		var reply struct {
 			Executed bool `json:"executed"`
 		}
-		err := gateway.config.Upstream.Call(ctx, session.worker, requestID, command, &reply)
+		err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
 		if err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
@@ -139,7 +182,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: map[string]bool{"executed": true}, dispatched: true}
 	}
 	var reply json.RawMessage
-	err := gateway.config.Upstream.Call(ctx, session.worker, requestID, command, &reply)
+	err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
 	if err != nil {
 		return gateway.upstreamFailure(err, session, permit)
 	}

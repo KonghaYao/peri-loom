@@ -131,11 +131,24 @@ type SQLUpstream interface {
 	Call(context.Context, controller.Worker, string, any, any) error
 }
 
+type SessionWriterState struct {
+	Session  string             `json:"session"`
+	Binding  controller.Binding `json:"binding"`
+	Owner    bool               `json:"owner"`
+	Sequence uint64             `json:"sequence"`
+}
+
+type WriterSQLUpstream interface {
+	CallWriter(context.Context, controller.Worker, string, any, any) (*SessionWriterState, error)
+	WriterProfile(context.Context, controller.Worker, string) error
+}
+
 type GatewayConfig struct {
-	State      StateStore
-	Placements controller.MetadataStore
-	Controller *controller.Controller
-	Identity   Identity
-	Upstream   SQLUpstream
-	Audit      Audit
+	State           StateStore
+	Placements      controller.MetadataStore
+	Controller      *controller.Controller
+	Identity        Identity
+	Upstream        SQLUpstream
+	Audit           Audit
+	WriterAdmission bool
 }

@@ -1,23 +1,26 @@
-use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{bail, ensure, Result};
-use serde_json::{json, Value};
+use anyhow::{ensure, Result};
 
 use crate::authority_rpc::http;
-use crate::metrics::{Metrics, Operation};
-use crate::ownership::types::{validate_label, OwnershipCommand, OwnershipMode};
+use crate::ownership::types::{validate_label, OwnershipMode};
 use crate::ownership::OwnershipRuntime;
 use crate::session::Budget;
 
-use super::diagnostics::{Action, Diagnostics};
+use super::admission::{Admission, Lane};
+use super::diagnostics::Diagnostics;
+use super::outcome::failure_response;
 use super::protocol::{WorkerCommand, WorkerRequest, WorkerResponse};
-use super::sessions::{rows, Sessions};
+use super::sessions::Sessions;
+use super::transport::{read_request, token_matches};
+
+mod shutdown;
+
+use shutdown::WorkerThreads;
 
 #[derive(Clone, Debug)]
 pub struct WorkerLimits {
@@ -43,29 +46,22 @@ pub struct WorkerServer {
     state: Arc<State>,
 }
 
-struct State {
-    runtime: Arc<OwnershipRuntime>,
-    sessions: Sessions,
+pub(super) struct State {
+    pub runtime: Arc<OwnershipRuntime>,
+    pub sessions: Sessions,
     control_token: String,
     sql_token: String,
-    stopped: AtomicBool,
-    inflight: AtomicUsize,
-    sql_inflight: AtomicUsize,
-    diagnostics: Diagnostics,
-    limits: WorkerLimits,
+    pub stopped: AtomicBool,
+    pub inflight: AtomicUsize,
+    pub admission: Arc<Admission>,
+    pub diagnostics: Diagnostics,
+    pub limits: WorkerLimits,
 }
 
 struct Ticket(Arc<State>);
 impl Drop for Ticket {
     fn drop(&mut self) {
         self.0.inflight.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-struct SqlTicket<'a>(&'a AtomicUsize);
-impl Drop for SqlTicket<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -92,6 +88,24 @@ impl WorkerServer {
         sql_token: String,
         limits: WorkerLimits,
     ) -> Result<Self> {
+        Self::bind_with_limits_and_writer_profile(
+            address,
+            runtime,
+            control_token,
+            sql_token,
+            limits,
+            false,
+        )
+    }
+
+    pub fn bind_with_limits_and_writer_profile(
+        address: SocketAddr,
+        runtime: Arc<OwnershipRuntime>,
+        control_token: String,
+        sql_token: String,
+        limits: WorkerLimits,
+        enabled: bool,
+    ) -> Result<Self> {
         ensure!(
             limits.max_inflight > limits.control_reserve && limits.control_reserve > 0,
             "worker requires a positive reserved control capacity"
@@ -112,6 +126,7 @@ impl WorkerServer {
             control_token.len() >= 32 && sql_token.len() >= 32 && control_token != sql_token,
             "worker requires distinct nonempty control and SQL credentials of at least 32 bytes"
         );
+        let admission = Admission::new(limits.max_inflight, limits.control_reserve, enabled)?;
         let listener = TcpListener::bind(address)?;
         crate::session::Budget::set_default(crate::session::Budget::default())?;
         listener.set_nonblocking(true)?;
@@ -124,7 +139,7 @@ impl WorkerServer {
                 sql_token,
                 stopped: AtomicBool::new(false),
                 inflight: AtomicUsize::new(0),
-                sql_inflight: AtomicUsize::new(0),
+                admission,
                 diagnostics: Diagnostics::default(),
                 limits,
             }),
@@ -138,24 +153,40 @@ impl WorkerServer {
     pub fn run(self) -> Result<()> {
         let watchdog_state = self.state.clone();
         let watchdog = thread::spawn(move || {
+            let mut failure = None;
             while !watchdog_state.stopped.load(Ordering::SeqCst) {
-                if let Ok(status) = watchdog_state.runtime.status() {
-                    for database in status.databases {
-                        if matches!(
-                            database.mode,
-                            OwnershipMode::Revoked | OwnershipMode::Detached
-                        ) {
-                            let _ = watchdog_state.sessions.clear_database(&database.database);
+                match watchdog_state.runtime.status() {
+                    Ok(status) => {
+                        for database in status.databases {
+                            if matches!(
+                                database.mode,
+                                OwnershipMode::Revoked | OwnershipMode::Detached
+                            ) {
+                                if let Err(error) =
+                                    watchdog_state.sessions.clear_database(&database.database)
+                                {
+                                    failure.get_or_insert(error);
+                                }
+                            }
                         }
+                    }
+                    Err(error) => {
+                        failure.get_or_insert(error);
                     }
                 }
                 thread::sleep(Duration::from_millis(100));
             }
+            match failure {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         });
-        let mut workers = Vec::new();
+        let mut workers = WorkerThreads::default();
         let result = (|| {
             while !self.state.stopped.load(Ordering::SeqCst) {
-                workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
+                if workers.reap_finished() || watchdog.is_finished() {
+                    break;
+                }
                 let (mut connection, _) = match self.listener.accept() {
                     Ok(connection) => connection,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -183,12 +214,7 @@ impl WorkerServer {
         })();
         self.state.stopped.store(true, Ordering::SeqCst);
         drop(self.listener);
-        for worker in workers {
-            let _ = worker.join();
-        }
-        let _ = watchdog.join();
-        self.state.sessions.clear()?;
-        result
+        workers.finish(watchdog, result, || self.state.sessions.clear())
     }
 }
 
@@ -204,241 +230,117 @@ impl State {
         if !control && !sql {
             return http::reply(stream, 403, b"{\"error\":\"unauthorized\"}");
         }
-        let _sql_ticket = if sql {
-            let capacity = self.limits.max_inflight - self.limits.control_reserve;
-            if self
-                .sql_inflight
-                .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    (current < capacity).then_some(current + 1)
-                })
-                .is_err()
-            {
-                return http::reply(stream, 429, b"{\"error\":\"SQL lane saturated\"}");
-            }
-            Some(SqlTicket(&self.sql_inflight))
-        } else {
-            None
-        };
         let parsed = match serde_json::from_slice::<WorkerRequest>(&request.body) {
             Ok(parsed) => parsed,
             Err(_) => return http::reply(stream, 400, b"{\"error\":\"invalid worker request\"}"),
         };
+        let version = parsed.version;
         let identifier = parsed.request_id.clone();
-        let result = (|| {
-            ensure!(parsed.version == 1, "unsupported worker protocol version");
-            validate_label(&parsed.request_id)?;
+        let stateful = matches!(
+            &parsed.command,
+            WorkerCommand::OpenSession { .. }
+                | WorkerCommand::Execute { .. }
+                | WorkerCommand::Query { .. }
+                | WorkerCommand::CloseSession { .. }
+        );
+        if version == 2
+            && (control
+                || !self.admission.enabled()
+                || !stateful && !matches!(&parsed.command, WorkerCommand::WriterProfileStatus))
+        {
+            return http::reply(stream, 400, b"{\"error\":\"writer profile unavailable\"}");
+        }
+        let mut call = None;
+        let prepared = (|| {
+            ensure!(
+                version == 1 || version == 2,
+                "unsupported worker protocol version"
+            );
+            validate_label(&identifier)?;
             ensure!(!self.stopped.load(Ordering::SeqCst), "worker stopping");
-            self.dispatch(parsed.command, control, &identifier)
+            let administrative = matches!(
+                &parsed.command,
+                WorkerCommand::Ownership { .. }
+                    | WorkerCommand::GetMetrics
+                    | WorkerCommand::Shutdown
+            );
+            ensure!(
+                administrative == control,
+                "worker command authorization required"
+            );
+            ensure!(
+                version == 2 || !matches!(&parsed.command, WorkerCommand::WriterProfileStatus),
+                "writer profile requires protocol v2"
+            );
+            match &parsed.command {
+                WorkerCommand::Execute { session, sql } | WorkerCommand::Query { session, sql } => {
+                    ensure!(
+                        sql.len() <= Budget::trusted_default().max_sql_bytes,
+                        "SQL byte budget exceeded"
+                    );
+                    call = Some(self.sessions.begin(session)?);
+                }
+                WorkerCommand::Checkpoint { session }
+                | WorkerCommand::Compact { session }
+                | WorkerCommand::Diagnostics { session } => {
+                    call = Some(self.sessions.begin(session)?);
+                }
+                _ => {}
+            }
+            Ok(())
         })();
+        let mut terminal = None;
+        let lane = if control {
+            Lane::Control
+        } else if prepared.is_ok()
+            && self.admission.enabled()
+            && matches!(&parsed.command, WorkerCommand::CloseSession { session } if self.sessions.known(session))
+        {
+            Lane::Cleanup
+        } else if prepared.is_ok() && version == 2 && call.as_ref().is_some_and(|call| call.owner) {
+            Lane::Owner
+        } else {
+            Lane::General
+        };
+        let lane_ticket = self.admission.try_acquire(lane)?;
+        if lane_ticket.is_none() {
+            return http::reply(
+                stream,
+                429,
+                b"{\"error\":\"worker execution lane saturated\"}",
+            );
+        }
+        let result = prepared.and_then(|()| {
+            self.dispatch(
+                parsed.command,
+                control,
+                &identifier,
+                version,
+                call.as_ref(),
+                &mut terminal,
+            )
+        });
+        let result = if version == 2 && stateful && terminal.is_none() && result.is_ok() {
+            Err(anyhow::anyhow!("worker session terminal state unavailable"))
+        } else {
+            result
+        };
         let response = match result {
             Ok(result) => WorkerResponse {
-                version: 1,
+                version,
                 request_id: identifier,
                 ok: true,
                 result: Some(result),
                 error: None,
                 execution_completed: None,
+                session_state: terminal,
             },
-            Err(error) => WorkerResponse {
-                version: 1,
-                request_id: identifier,
-                ok: false,
-                result: None,
-                error: Some(format!("{error:#}")),
-                execution_completed: (!control).then_some(true),
-            },
+            Err(error) => failure_response(version, identifier, control, error, terminal),
         };
-        http::reply(stream, 200, &serde_json::to_vec(&response)?)
+        let bytes = serde_json::to_vec(&response)?;
+        drop(call);
+        let result = http::reply(stream, 200, &bytes);
+        drop(lane_ticket);
+        result
     }
-
-    fn dispatch(&self, command: WorkerCommand, control: bool, request_id: &str) -> Result<Value> {
-        match command {
-            WorkerCommand::GetMetrics => {
-                ensure!(control, "control authorization required");
-                Ok(json!({
-                    "metrics": Metrics::global().snapshot(),
-                    "resources": self.runtime.status()?.resources,
-                    "http_inflight": self.inflight.load(Ordering::SeqCst),
-                    "sql_inflight": self.sql_inflight.load(Ordering::SeqCst),
-                    "sessions": self.sessions.len()?,
-                }))
-            }
-            WorkerCommand::Ownership { action } => {
-                ensure!(control, "control authorization required");
-                let revoked = match &action {
-                    OwnershipCommand::RevokeDatabase { database, .. } => Some(database.clone()),
-                    _ => None,
-                };
-                let result = self.runtime.command(action)?;
-                if let Some(identifier) = revoked {
-                    self.sessions.clear_database(&identifier)?;
-                }
-                Ok(result)
-            }
-            WorkerCommand::Shutdown => {
-                ensure!(control, "control authorization required");
-                self.stopped.store(true, Ordering::SeqCst);
-                Ok(json!({"stopping": true}))
-            }
-            _ if control => bail!("SQL authorization required"),
-            WorkerCommand::OpenSession { database } => self.sessions.open(&database),
-            WorkerCommand::CloseSession { session } => {
-                self.sessions.close(&session)?;
-                Ok(json!({"closed": true}))
-            }
-            WorkerCommand::Execute { session, sql } => {
-                ensure!(
-                    sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let handle = self.sessions.handle(&session)?;
-                if let Err(error) = handle.execute(&sql) {
-                    self.diagnostics.emit(Action::Execute, request_id, &error);
-                    return Err(error);
-                }
-                Ok(json!({"executed": true}))
-            }
-            WorkerCommand::Query { session, sql } => {
-                ensure!(
-                    sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let handle = self.sessions.handle(&session)?;
-                match handle.query(&sql) {
-                    Ok(result) => Ok(rows(result)),
-                    Err(error) => {
-                        self.diagnostics.emit(Action::Query, request_id, &error);
-                        Err(error)
-                    }
-                }
-            }
-            WorkerCommand::Checkpoint { session } => {
-                Metrics::global().observe(
-                    Operation::Checkpoint,
-                    || self.sessions.handle(&session)?.checkpoint(),
-                    |_| 0,
-                )?;
-                Ok(json!({"checkpointed": true}))
-            }
-            WorkerCommand::Compact { session } => {
-                self.sessions.handle(&session)?.compact_wal()?;
-                Ok(json!({"compacted": true}))
-            }
-            WorkerCommand::Diagnostics { session } => self.sessions.handle(&session)?.diagnostics(),
-        }
-    }
-}
-
-fn token_matches(supplied: &str, expected: &str) -> bool {
-    let supplied = blake3::hash(supplied.as_bytes());
-    let expected = blake3::hash(expected.as_bytes());
-    supplied
-        .as_bytes()
-        .iter()
-        .zip(expected.as_bytes())
-        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-        == 0
-}
-
-fn read_request(stream: &mut TcpStream, max_body_bytes: usize) -> Result<http::Request> {
-    stream.set_nonblocking(false)?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut reader = BufReader::new(stream);
-    let mut headers = BTreeMap::new();
-    let mut consumed = 0;
-    let first = header_line(&mut reader, &mut consumed, deadline)?;
-    let parts = first.split(' ').collect::<Vec<_>>();
-    ensure!(
-        parts.len() == 3
-            && parts[0] == "POST"
-            && parts[2] == "HTTP/1.1"
-            && parts[1].starts_with('/')
-            && parts[1].bytes().all(|byte| byte.is_ascii_graphic()),
-        "invalid HTTP request line"
-    );
-    let path = parts[1].to_owned();
-    loop {
-        let line = header_line(&mut reader, &mut consumed, deadline)?;
-        if line.is_empty() {
-            break;
-        }
-        let (name, value) = line
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("invalid HTTP header"))?;
-        ensure!(
-            !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
-            "invalid HTTP header name"
-        );
-        ensure!(
-            headers
-                .insert(name.to_ascii_lowercase(), value.trim().to_owned())
-                .is_none(),
-            "duplicate HTTP header"
-        );
-    }
-    ensure!(
-        !headers.contains_key("transfer-encoding"),
-        "chunked requests unsupported"
-    );
-    ensure!(
-        headers.get("host").is_some_and(|host| !host.is_empty()),
-        "HTTP Host required"
-    );
-    let length: usize = headers
-        .get("content-length")
-        .ok_or_else(|| anyhow::anyhow!("HTTP Content-Length required"))?
-        .parse()?;
-    ensure!(
-        length > 0 && length <= max_body_bytes,
-        "worker HTTP body budget exceeded"
-    );
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or_else(|| anyhow::anyhow!("HTTP request deadline elapsed"))?;
-    reader.get_mut().set_read_timeout(Some(remaining))?;
-    let mut body = Vec::with_capacity(length);
-    reader.take(length as u64).read_to_end(&mut body)?;
-    ensure!(
-        body.len() == length && Instant::now() <= deadline,
-        "incomplete or expired HTTP body"
-    );
-    Ok(http::Request {
-        path,
-        authorization: headers.remove("authorization").unwrap_or_default(),
-        body,
-    })
-}
-
-fn header_line(
-    reader: &mut BufReader<&mut TcpStream>,
-    consumed: &mut usize,
-    deadline: Instant,
-) -> Result<String> {
-    const MAX_HEADERS: usize = 32 * 1024;
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or_else(|| anyhow::anyhow!("HTTP header deadline elapsed"))?;
-    reader.get_mut().set_read_timeout(Some(remaining))?;
-    let mut bytes = Vec::new();
-    reader
-        .by_ref()
-        .take((MAX_HEADERS - *consumed + 1) as u64)
-        .read_until(b'\n', &mut bytes)?;
-    *consumed += bytes.len();
-    ensure!(
-        *consumed <= MAX_HEADERS && bytes.ends_with(b"\r\n"),
-        "invalid or oversized HTTP headers"
-    );
-    bytes.truncate(bytes.len() - 2);
-    let text = String::from_utf8(bytes)?;
-    ensure!(
-        text.bytes()
-            .all(|byte| byte.is_ascii_graphic() || byte == b' ' || byte == b'\t'),
-        "invalid HTTP header bytes"
-    );
-    Ok(text)
 }

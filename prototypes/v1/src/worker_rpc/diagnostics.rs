@@ -6,6 +6,7 @@ use serde::Serialize;
 use turso_core::{CompletionError, LimboError};
 
 use crate::ownership::types::validate_label;
+use crate::session::AdmissionError;
 
 const MAX_DIAGNOSTICS: usize = 64;
 
@@ -52,7 +53,19 @@ fn policy(message: &str) -> Option<&'static str> {
 }
 
 fn classify(error: &Error) -> &'static str {
+    if !super::outcome::execution_completed(error) {
+        return "outcome_unsettled";
+    }
     for cause in error.chain() {
+        if let Some(admission) = cause.downcast_ref::<AdmissionError>() {
+            return match admission {
+                AdmissionError::Conflict => "admission_conflict",
+                AdmissionError::QueueFull => "admission_queue_full",
+                AdmissionError::Deadline => "admission_deadline",
+                AdmissionError::Closing => "admission_closing",
+                AdmissionError::Quarantine => "admission_quarantine",
+            };
+        }
         if let Some(native) = cause.downcast_ref::<LimboError>() {
             return match native {
                 LimboError::Busy => "busy",
@@ -100,11 +113,15 @@ impl Diagnostics {
             return None;
         }
         let mut bytes = serde_json::to_vec(&Record {
-            event: "native_sql_terminal_error",
+            event: if super::outcome::execution_completed(error) {
+                "native_sql_terminal_error"
+            } else {
+                "native_sql_unsettled_outcome"
+            },
             action,
             request_id,
             cause_class: classify(error),
-            execution_completed: true,
+            execution_completed: super::outcome::execution_completed(error),
         })
         .ok()?;
         bytes.push(b'\n');
@@ -130,6 +147,7 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
+    use crate::session::AdmissionError;
     use anyhow::{anyhow, Context, Result};
     use serde_json::Value;
     use turso_core::{CompletionError, LimboError};
@@ -141,6 +159,45 @@ mod tests {
             .context("step bounded remote SQL")
             .context("privateSecret SQL SELECT credential FROM secrets")
             .unwrap_err()
+    }
+
+    #[test]
+    fn typed_admission_errors_have_fixed_classes_without_native_busy_or_payload() -> Result<()> {
+        let diagnostics = Diagnostics::default();
+        for (error, expected) in [
+            (AdmissionError::Conflict, "admission_conflict"),
+            (AdmissionError::QueueFull, "admission_queue_full"),
+            (AdmissionError::Deadline, "admission_deadline"),
+            (AdmissionError::Closing, "admission_closing"),
+            (AdmissionError::Quarantine, "admission_quarantine"),
+        ] {
+            let error = anyhow::Error::new(error).context("private SQL session namespace token");
+            assert_eq!(classify(&error), expected);
+            let record = diagnostics
+                .record(Action::Execute, "safe-request", &error)
+                .unwrap();
+            let value: Value = serde_json::from_slice(&record)?;
+            assert_eq!(value["cause_class"], expected);
+            assert!(!String::from_utf8(record)?.contains("private SQL"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsettled_outcome_is_not_a_completed_terminal_error_or_native_busy() -> Result<()> {
+        let error = anyhow::Error::new(LimboError::Busy)
+            .context(crate::session::UnsettledSqlOutcome)
+            .context("private SQL namespace token");
+        let record = Diagnostics::default()
+            .record(Action::Execute, "same-request", &error)
+            .unwrap();
+        let value: Value = serde_json::from_slice(&record)?;
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        assert_eq!(value["event"], "native_sql_unsettled_outcome");
+        assert_eq!(value["cause_class"], "outcome_unsettled");
+        assert_eq!(value["execution_completed"], false);
+        assert!(!String::from_utf8(record)?.contains("private SQL"));
+        Ok(())
     }
 
     #[test]

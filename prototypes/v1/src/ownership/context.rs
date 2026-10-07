@@ -23,6 +23,13 @@ pub(super) struct LeaseContext {
 }
 
 impl LeaseContext {
+    pub fn quarantine(&self) -> Result<()> {
+        let mut state = self.lock()?;
+        state.mode = OwnershipMode::Revoked;
+        state.deadline_ms = 0;
+        Ok(())
+    }
+
     pub fn lock(&self) -> Result<MutexGuard<'_, LeaseState>> {
         self.state
             .lock()

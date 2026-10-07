@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use peri_loom_v1::authority::ownership::OwnershipAuthority;
 use peri_loom_v1::authority::Authority;
 use peri_loom_v1::authority_rpc::auth::AuthConfig;
@@ -162,19 +162,26 @@ impl Fixture {
             ttl_ms: 1000,
             role: AccessRole::Writer,
         };
-        let nonce: NonceReply =
-            serde_json::from_value(self.control.call(AuthorityCommand::Challenge {
-                intent: LeaseIntent::Grant(intent.clone()),
-            })?)?;
-        Ok(serde_json::from_value(self.control.call(
-            AuthorityCommand::Grant {
-                request: GrantRequest {
-                    request_id: format!("grant_c_{epoch}"),
-                    nonce: nonce.nonce,
-                    intent,
-                },
-            },
-        )?)?)
+        let nonce: NonceReply = serde_json::from_value(
+            self.control
+                .call(AuthorityCommand::Challenge {
+                    intent: LeaseIntent::Grant(intent.clone()),
+                })
+                .context("next grant: challenge RPC")?,
+        )
+        .context("next grant: decode challenge")?;
+        serde_json::from_value(
+            self.control
+                .call(AuthorityCommand::Grant {
+                    request: GrantRequest {
+                        request_id: format!("grant_c_{epoch}"),
+                        nonce: nonce.nonce,
+                        intent,
+                    },
+                })
+                .context("next grant: grant RPC")?,
+        )
+        .context("next grant: decode grant")
     }
 }
 

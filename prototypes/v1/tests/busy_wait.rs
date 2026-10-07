@@ -10,7 +10,7 @@ use peri_loom_v1::{
     database::{RemoteDatabase, RemoteSession},
     namespace::Namespace,
     object_store::{MemoryObjectStore, ObjectStore, PutCondition, StoredObject},
-    session::Budget,
+    session::{AdmissionError, Budget},
 };
 use turso_core::LimboError;
 
@@ -169,7 +169,7 @@ fn holder_commit_and_reader_progress_while_same_writer_call_waits() -> Result<()
 }
 
 #[test]
-fn four_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> {
+fn default_writer_admission_deadline_exhausts_without_batch_side_effects() -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = fixture.database.session()?;
@@ -182,12 +182,12 @@ fn four_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> 
         .unwrap_err();
     let elapsed = started.elapsed();
     ensure!(
-        matches!(error.downcast_ref::<LimboError>(), Some(LimboError::Busy)),
-        "expected terminal Busy, got {error:#}"
+        error.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline),
+        "expected typed admission deadline, got {error:#}"
     );
     ensure!(
-        elapsed >= Duration::from_millis(3800) && elapsed < Duration::from_millis(5500),
-        "offline four-second backoff observation exceeded the test budget"
+        elapsed >= Budget::default().max_query_duration && elapsed < Duration::from_secs(6),
+        "writer queue did not share the original default query budget"
     );
     ensure!(
         fixture.store.physical.load(Ordering::SeqCst) == physical,
@@ -195,23 +195,26 @@ fn four_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> 
     );
     ensure!(
         fixture.store.checks.load(Ordering::SeqCst) < 4000,
-        "busy timeout used a spinning driver"
+        "writer admission used a spinning queue"
     );
     ensure!(
         !contender.in_transaction()?,
         "failed BEGIN retained transaction"
     );
     holder.execute("ROLLBACK;")?;
-    ensure!(ledger(&contender)?.is_empty(), "busy batch wrote a prefix");
+    ensure!(
+        ledger(&contender)?.is_empty(),
+        "expired queued batch wrote a prefix"
+    );
     eprintln!(
-        "terminal={:?} four_second_backoff_observed=true physical_io=0 single_batch_call=1 ledger_empty=true",
-        error.downcast_ref::<LimboError>()
+        "terminal={:?} original_five_second_budget=true physical_io=0 single_batch_call=1 ledger_empty=true",
+        error.downcast_ref::<AdmissionError>()
     );
     Ok(())
 }
 
 #[test]
-fn write_query_budget_shorter_than_busy_timeout_stops_before_io() -> Result<()> {
+fn short_write_query_admission_budget_stops_before_io() -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = fixture.database.session()?;
@@ -230,12 +233,12 @@ fn write_query_budget_shorter_than_busy_timeout_stops_before_io() -> Result<()> 
         .unwrap_err();
     let elapsed = started.elapsed();
     ensure!(
-        format!("{error:#}").contains("query duration budget exceeded"),
+        error.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline),
         "wrong short-budget terminal error: {error:#}"
     );
     ensure!(
         elapsed >= Duration::from_millis(40) && elapsed < Duration::from_millis(300),
-        "query budget lost to four-second busy candidate"
+        "query budget was reset by writer admission"
     );
     ensure!(
         fixture.store.physical.load(Ordering::SeqCst) == physical,
@@ -250,7 +253,7 @@ fn write_query_budget_shorter_than_busy_timeout_stops_before_io() -> Result<()> 
         ledger(&contender)?.is_empty(),
         "expired write-query produced side effects"
     );
-    eprintln!("query_budget_ms=40 shorter_than_busy_timeout=true physical_io=0 ledger_empty=true terminal={error:#}");
+    eprintln!("query_budget_ms=40 admission_deadline=true physical_io=0 ledger_empty=true terminal={error:#}");
     Ok(())
 }
 
@@ -269,7 +272,7 @@ fn expired_ingress_budget_never_starts_a_write() -> Result<()> {
         )
         .unwrap_err();
     ensure!(
-        format!("{error:#}").contains("query duration budget exceeded"),
+        error.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline),
         "expired budget was not enforced"
     );
     ensure!(
@@ -284,7 +287,7 @@ fn expired_ingress_budget_never_starts_a_write() -> Result<()> {
 }
 
 #[test]
-fn local_clock_expiry_or_revocation_during_sleep_stops_before_io() -> Result<()> {
+fn local_clock_expiry_or_revocation_during_admission_wait_stops_before_io() -> Result<()> {
     for revoke in [false, true] {
         let fixture = Fixture::open()?;
         let holder = fixture.database.session()?;

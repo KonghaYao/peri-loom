@@ -441,16 +441,24 @@ fn query_pragma_cannot_disable_next_commit_and_host_files_are_rejected() -> Resu
     let database = open(store.clone(), cache.path())?;
     database.execute("CREATE TABLE items(id INTEGER PRIMARY KEY)")?;
     database.query("PRAGMA synchronous=OFF")?;
-    store.mode.store(1, Ordering::SeqCst);
-    assert!(database.execute("INSERT INTO items VALUES(1)").is_err());
     let io = database.io();
     let path = cache.path().join("attached.db");
     assert!(io
         .open_file(path.to_str().unwrap(), OpenFlags::Create, false)
         .is_err());
     assert!(!path.exists());
+    let dynamic: Arc<dyn IO> = io.clone();
+    let temporary = TempFile::new(&dynamic)?;
+    drop(temporary);
+    store.mode.store(1, Ordering::SeqCst);
+    assert!(database.execute("INSERT INTO items VALUES(1)").is_err());
+    assert!(io
+        .open_file(path.to_str().unwrap(), OpenFlags::Create, false)
+        .is_err());
+    assert!(!path.exists());
     let dynamic: Arc<dyn IO> = io;
-    let _temporary = TempFile::new(&dynamic)?;
+    assert!(TempFile::new(&dynamic).is_err());
+    assert!(database.writer_admission_status()?.quarantined);
     Ok(())
 }
 

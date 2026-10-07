@@ -1,4 +1,5 @@
 use super::{registry::Instance, DatabaseId, WorkerRuntime};
+use crate::session::SessionWriterState;
 use crate::{resources::ResourceUsage, session::RemoteSession};
 use anyhow::{ensure, Result};
 use std::sync::Arc;
@@ -29,6 +30,15 @@ impl DatabaseHandle {
     pub fn execute(&self, sql: &str) -> Result<()> {
         self.session.as_ref().unwrap().execute(sql)
     }
+    pub(crate) fn writer_state(&self) -> Result<SessionWriterState> {
+        self.session.as_ref().unwrap().writer_state()
+    }
+    pub(crate) fn begin_close(&self) -> Result<()> {
+        self.session.as_ref().unwrap().begin_close()
+    }
+    pub(crate) fn request_close_until(&self, deadline: std::time::Instant) -> Result<()> {
+        self.session.as_ref().unwrap().request_close_until(deadline)
+    }
     pub fn query(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
         self.session.as_ref().unwrap().query(sql)
     }
@@ -43,20 +53,20 @@ impl DatabaseHandle {
             !self.in_transaction()?,
             "cannot checkpoint an active transaction"
         );
-        self.database.as_ref().unwrap().database().checkpoint()
+        self.database.as_ref().unwrap().database()?.checkpoint()
     }
     pub fn compact_wal(&self) -> Result<()> {
         ensure!(
             !self.in_transaction()?,
             "cannot compact WAL in an active transaction"
         );
-        self.database.as_ref().unwrap().database().compact_wal()
+        self.database.as_ref().unwrap().database()?.compact_wal()
     }
     pub fn resources(&self) -> Result<ResourceUsage> {
-        self.database.as_ref().unwrap().database().resources()
+        self.database.as_ref().unwrap().database()?.resources()
     }
     pub fn diagnostics(&self) -> Result<serde_json::Value> {
-        let database = self.database.as_ref().unwrap().database();
+        let database = self.database.as_ref().unwrap().database()?;
         let storage = database.storage();
         storage.store().validate_session()?;
         let manifest = storage.manifest();

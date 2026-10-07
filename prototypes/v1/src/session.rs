@@ -1,85 +1,125 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
-use turso_core::{Connection, Statement, SyncMode, Value};
+use anyhow::Result;
+use turso_core::{Connection, SyncMode, Value};
 
 use crate::database::RemoteDatabase;
-use crate::metrics::{Metrics, Operation};
-use crate::object_store::ObjectStore;
 
+mod admission;
 mod budget;
 mod drive;
+mod execution;
+mod lane;
+pub use admission::{AdmissionError, AdmissionStatus};
+pub(crate) use admission::{SessionWriterState, UnsettledSqlOutcome, WriterAdmission};
 pub use budget::Budget;
-use budget::ExecutionBudget;
+pub(crate) use budget::RequestDeadline;
+pub(crate) use lane::SessionLane;
 
 pub struct RemoteSession {
-    connection: Mutex<Arc<Connection>>,
-    database: Arc<RemoteDatabase>,
+    pub(crate) lane: Arc<SessionLane>,
 }
 
 impl RemoteSession {
-    pub(crate) fn new(database: Arc<RemoteDatabase>, connection: Arc<Connection>) -> Self {
+    pub(crate) fn new(database: Arc<RemoteDatabase>, connection: Arc<Connection>) -> Result<Self> {
         connection.set_busy_timeout(Duration::from_secs(4));
-        Self {
-            connection: Mutex::new(connection),
-            database,
-        }
+        let lane = Arc::new(SessionLane::new(connection, database.admission())?);
+        database.register_lane(&lane)?;
+        lane.attach_database(database)?;
+        Ok(Self { lane })
     }
 
     pub fn execute(&self, sql: &str) -> Result<()> {
-        let _operation = self.database.operation()?;
-        let connection = self.connection()?;
-        execute_sql(&connection, &self.database.storage().store(), sql)
+        self.execute_with_budget(sql, &Budget::trusted_default())
     }
 
     pub fn query(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
-        let _operation = self.database.operation()?;
-        let connection = self.connection()?;
-        query_sql(&connection, &self.database.storage().store(), sql)
+        self.query_with_budget(sql, &Budget::trusted_default())
     }
 
     pub fn execute_with_budget(&self, sql: &str, budget: &Budget) -> Result<()> {
-        let _operation = self.database.operation()?;
-        let connection = self.connection()?;
-        execute_bounded(&connection, &self.database.storage().store(), sql, budget)
+        self.lane
+            .execute(self.lane.database()?.as_ref(), sql, budget)
     }
 
     pub fn query_with_budget(&self, sql: &str, budget: &Budget) -> Result<Vec<Vec<Value>>> {
-        let _operation = self.database.operation()?;
-        let connection = self.connection()?;
-        query_bounded(&connection, &self.database.storage().store(), sql, budget)
+        self.lane.query(self.lane.database()?.as_ref(), sql, budget)
     }
 
     pub fn in_transaction(&self) -> Result<bool> {
-        self.database.storage().store().validate_session()?;
-        Ok(!self.connection()?.get_auto_commit())
+        self.lane.in_transaction(self.lane.database()?.as_ref())
     }
 
     pub fn is_readonly(&self) -> Result<bool> {
-        self.database.storage().store().validate_session()?;
-        Ok(self.connection()?.is_readonly(0))
+        self.lane.is_readonly(self.lane.database()?.as_ref())
     }
 
-    fn connection(&self) -> Result<MutexGuard<'_, Arc<Connection>>> {
-        self.connection
-            .lock()
-            .map_err(|_| anyhow!("remote session connection mutex poisoned"))
+    #[doc(hidden)]
+    pub fn admission_id(&self) -> u64 {
+        self.lane.control.id
+    }
+
+    pub(crate) fn writer_state(&self) -> Result<SessionWriterState> {
+        self.lane.database()?.admission().healthy()?;
+        Ok(self.lane.hint())
+    }
+
+    pub(crate) fn begin_close(&self) -> Result<()> {
+        self.lane.begin_close(self.lane.database()?.as_ref());
+        Ok(())
+    }
+
+    pub(crate) fn request_close(&self) -> Result<()> {
+        let database = self
+            .lane
+            .database()
+            .map_err(|error| error.context(UnsettledSqlOutcome))?;
+        let result = self.lane.close(&database);
+        if result.is_err() {
+            database.admission().quarantine();
+            if database
+                .cleanup_deferred_until(std::time::Instant::now() + Duration::from_secs(20))
+                .is_err()
+            {
+                if let Some(failure) = database.cleanup_failure() {
+                    return result
+                        .map_err(|error| error.context(UnsettledSqlOutcome).context(failure));
+                }
+            }
+        }
+        result.map_err(|error| error.context(UnsettledSqlOutcome))
+    }
+
+    pub(crate) fn request_close_until(&self, deadline: std::time::Instant) -> Result<()> {
+        let database = self
+            .lane
+            .database()
+            .map_err(|error| error.context(UnsettledSqlOutcome))?;
+        let result = self
+            .lane
+            .close_until(&database, &RequestDeadline::until(deadline));
+        if result.is_err() {
+            database.admission().quarantine();
+            if database.cleanup_deferred_until(deadline).is_err() {
+                if let Some(failure) = database.cleanup_failure() {
+                    return result
+                        .map_err(|error| error.context(UnsettledSqlOutcome).context(failure));
+                }
+            }
+        }
+        result.map_err(|error| error.context(UnsettledSqlOutcome))
+    }
+
+    #[doc(hidden)]
+    pub fn close(&self) -> Result<()> {
+        self.request_close()
     }
 }
 
 impl Drop for RemoteSession {
     fn drop(&mut self) {
-        let _operation = self.database.cleanup_operation();
-        let connection = self
-            .connection
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        configure(connection);
-        if !connection.get_auto_commit() {
-            let _ = connection.execute("ROLLBACK");
-        }
-        let _ = connection.close();
+        let _ = self.request_close();
     }
 }
 
@@ -87,99 +127,4 @@ pub(crate) fn configure(connection: &Connection) {
     connection.set_sync_mode(SyncMode::Full);
     connection.wal_auto_actions_disable();
     connection.set_load_extension_enabled(false);
-}
-
-pub(crate) fn execute_sql(
-    connection: &Arc<Connection>,
-    store: &Arc<dyn ObjectStore>,
-    sql: &str,
-) -> Result<()> {
-    execute_bounded(connection, store, sql, &Budget::trusted_default())
-}
-
-pub(crate) fn query_sql(
-    connection: &Arc<Connection>,
-    store: &Arc<dyn ObjectStore>,
-    sql: &str,
-) -> Result<Vec<Vec<Value>>> {
-    query_bounded(connection, store, sql, &Budget::trusted_default())
-}
-
-fn execute_bounded(
-    connection: &Arc<Connection>,
-    store: &Arc<dyn ObjectStore>,
-    sql: &str,
-    budget: &Budget,
-) -> Result<()> {
-    Metrics::global().observe(
-        Operation::Execute,
-        || {
-            let mut guard = ExecutionBudget::install(connection, sql, budget, store.clone())?;
-            let mut runner = connection.query_runner(sql.as_bytes());
-            let mut steps = 0;
-            loop {
-                guard.check()?;
-                store.validate_local()?;
-                configure(connection);
-                let Some(statement) = runner.next() else {
-                    break;
-                };
-                if let Some(mut statement) = statement.context("prepare remote SQL statement")? {
-                    store.validate_transaction(!connection.get_auto_commit())?;
-                    step_rows(&mut statement, store.as_ref(), &mut guard, false, steps)?;
-                    steps += statement.metrics().vm_steps;
-                }
-            }
-            Ok(())
-        },
-        |_| 0,
-    )
-}
-
-fn query_bounded(
-    connection: &Arc<Connection>,
-    store: &Arc<dyn ObjectStore>,
-    sql: &str,
-    budget: &Budget,
-) -> Result<Vec<Vec<Value>>> {
-    Metrics::global().observe(
-        Operation::Query,
-        || {
-            let mut guard = ExecutionBudget::install(connection, sql, budget, store.clone())?;
-            store.validate_transaction(!connection.get_auto_commit())?;
-            configure(connection);
-            let Some(mut statement) = connection.query(sql).context("prepare remote query")? else {
-                return Ok(Vec::new());
-            };
-            step_rows(&mut statement, store.as_ref(), &mut guard, true, 0)
-        },
-        |_| 0,
-    )
-}
-
-fn step_rows(
-    statement: &mut Statement,
-    store: &dyn ObjectStore,
-    guard: &mut ExecutionBudget<'_>,
-    collect: bool,
-    prior_steps: u64,
-) -> Result<Vec<Vec<Value>>> {
-    let mut rows = Vec::new();
-    loop {
-        guard.check()?;
-        store.validate_local()?;
-        let row = drive::next_row(statement, store, guard).context("step bounded remote SQL")?;
-        if let Some(row) = row {
-            guard.account_row(row.get_values())?;
-            if collect {
-                rows.push(row.get_values().cloned().collect());
-            }
-        } else {
-            guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
-            store.validate_local()?;
-            break;
-        }
-        guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
-    }
-    Ok(rows)
 }

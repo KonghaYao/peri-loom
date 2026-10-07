@@ -6,6 +6,8 @@ use crate::object_store::ObjectStore;
 use anyhow::{ensure, Result};
 use turso_core::{Connection, Value};
 
+use super::admission::{AdmissionError, SessionControl};
+
 #[derive(Clone, Debug)]
 pub struct Budget {
     pub max_sql_bytes: usize,
@@ -65,6 +67,40 @@ fn defaults() -> &'static RwLock<Budget> {
     DEFAULT.get_or_init(|| RwLock::new(Budget::compatibility()))
 }
 
+pub(crate) struct RequestDeadline {
+    pub started: Instant,
+    end: Instant,
+}
+
+impl RequestDeadline {
+    pub fn until(deadline: Instant) -> Self {
+        let started = Instant::now();
+        Self {
+            started,
+            end: deadline,
+        }
+    }
+    pub fn new(budget: &Budget) -> Result<Self> {
+        budget.validate()?;
+        let started = Instant::now();
+        let end = started
+            .checked_add(budget.max_query_duration)
+            .ok_or_else(|| anyhow::anyhow!("query deadline overflow"))?;
+        Ok(Self { started, end })
+    }
+
+    pub fn end(&self) -> Instant {
+        self.end
+    }
+
+    pub fn check(&self) -> Result<()> {
+        if Instant::now() >= self.end {
+            return Err(AdmissionError::Deadline.into());
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct ExecutionBudget<'a> {
     connection: &'a Connection,
     budget: &'a Budget,
@@ -72,6 +108,7 @@ pub(super) struct ExecutionBudget<'a> {
     steps: Arc<AtomicU64>,
     rows: usize,
     bytes: usize,
+    control: Arc<SessionControl>,
 }
 
 impl<'a> ExecutionBudget<'a> {
@@ -80,17 +117,20 @@ impl<'a> ExecutionBudget<'a> {
         sql: &str,
         budget: &'a Budget,
         store: Arc<dyn ObjectStore>,
+        deadline: &RequestDeadline,
+        control: Arc<SessionControl>,
     ) -> Result<Self> {
         budget.validate()?;
         ensure!(
             sql.len() <= budget.max_sql_bytes,
             "SQL byte budget exceeded"
         );
-        let started = Instant::now();
+        let started = deadline.started;
         let steps = Arc::new(AtomicU64::new(0));
         let progress_steps = steps.clone();
         let max_steps = budget.max_vm_steps;
         let duration = budget.max_query_duration;
+        let progress_control = control.clone();
         connection.set_progress_handler(
             1000,
             Some(Box::new(move || {
@@ -100,6 +140,7 @@ impl<'a> ExecutionBudget<'a> {
                 executed >= max_steps
                     || started.elapsed() >= duration
                     || store.validate_local().is_err()
+                    || progress_control.closing.load(Ordering::Acquire)
             })),
         );
         Ok(Self {
@@ -109,14 +150,19 @@ impl<'a> ExecutionBudget<'a> {
             steps,
             rows: 0,
             bytes: 0,
+            control,
         })
     }
 
     pub fn check(&self) -> Result<()> {
-        ensure!(
-            self.started.elapsed() < self.budget.max_query_duration,
-            "query duration budget exceeded"
-        );
+        if self.control.closing.load(Ordering::Acquire) {
+            return Err(AdmissionError::Closing.into());
+        }
+        if self.started.elapsed() >= self.budget.max_query_duration {
+            return Err(
+                anyhow::anyhow!("query duration budget exceeded").context(AdmissionError::Deadline)
+            );
+        }
         ensure!(
             self.steps.load(Ordering::Relaxed) < self.budget.max_vm_steps,
             "VM step budget exceeded"

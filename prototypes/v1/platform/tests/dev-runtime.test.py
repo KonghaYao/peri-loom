@@ -16,7 +16,7 @@ spec.loader.exec_module(dev)
 
 class RuntimeTests(unittest.TestCase):
     def project(self, directory):
-        return dev.Project(argparse.Namespace(run_dir=directory, no_build=True, backend="local", listen="127.0.0.1:19443", tls=False))
+        return dev.Project(argparse.Namespace(run_dir=directory, no_build=True, backend="local", listen="127.0.0.1:19443", tls=False, writer_admission=False))
 
     def test_already_exited_uncertain_platform_is_not_clean(self):
         with tempfile.TemporaryDirectory(prefix="peri-test-launcher-") as directory:

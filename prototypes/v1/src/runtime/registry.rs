@@ -11,6 +11,7 @@ use std::{
 pub(super) struct Registry {
     pub entries: BTreeMap<DatabaseId, Entry>,
     pub sessions: usize,
+    pub quarantined: BTreeMap<DatabaseId, u64>,
 }
 
 pub(super) enum Entry {
@@ -44,9 +45,10 @@ pub(super) struct Loading {
 }
 
 pub(super) struct Instance {
-    database: Option<Arc<RemoteDatabase>>,
+    database: Mutex<Option<Arc<RemoteDatabase>>>,
     runtime: Weak<WorkerRuntime>,
     identifier: DatabaseId,
+    epoch: u64,
 }
 
 impl Instance {
@@ -54,22 +56,75 @@ impl Instance {
         database: Arc<RemoteDatabase>,
         runtime: &Arc<WorkerRuntime>,
         identifier: DatabaseId,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            database: Some(database),
+        epoch: u64,
+    ) -> Result<Arc<Self>> {
+        let instance = Arc::new(Self {
+            database: Mutex::new(Some(database.clone())),
             runtime: Arc::downgrade(runtime),
             identifier,
-        })
+            epoch,
+        });
+        let weak = Arc::downgrade(&instance);
+        database.on_native_reclaimed(move || {
+            if let Some(instance) = weak.upgrade() {
+                instance.record_quarantine();
+                let native = instance
+                    .database
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                drop(native);
+            }
+        })?;
+        Ok(instance)
     }
 
-    pub fn database(&self) -> &Arc<RemoteDatabase> {
-        self.database.as_ref().unwrap()
+    pub fn database(&self) -> Result<Arc<RemoteDatabase>> {
+        self.database
+            .lock()
+            .map_err(|_| crate::session::AdmissionError::Quarantine)?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| crate::session::AdmissionError::Quarantine.into())
+    }
+
+    pub fn resources(&self) -> Result<Option<crate::resources::ResourceUsage>> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| crate::session::AdmissionError::Quarantine)?
+            .clone();
+        database.map(|database| database.resources()).transpose()
+    }
+
+    fn record_quarantine(&self) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            let mut registry = runtime
+                .registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            registry
+                .quarantined
+                .entry(self.identifier.clone())
+                .or_insert(self.epoch);
+        }
     }
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        drop(self.database.take());
+        let database = self
+            .database
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if database
+            .as_ref()
+            .is_some_and(|database| database.admission().healthy().is_err())
+        {
+            self.record_quarantine();
+        }
+        drop(database);
         if let Some(runtime) = self.runtime.upgrade() {
             runtime.finish_retiring(&self.identifier);
         }

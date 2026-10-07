@@ -1,4 +1,5 @@
 mod handle;
+mod quarantine;
 mod registry;
 pub mod types;
 
@@ -67,6 +68,7 @@ impl WorkerRuntime {
         identifier.validate()?;
         loop {
             let mut registry = self.lock()?;
+            registry.check_available(&identifier)?;
             if let Some(entry) = registry.entries.get(&identifier) {
                 ensure!(entry.epoch() == epoch, "database epoch mismatch");
                 match entry {
@@ -101,10 +103,7 @@ impl WorkerRuntime {
                     }
                 }
             }
-            ensure!(
-                registry.entries.len() < self.limits.max_open_databases,
-                "worker database capacity exceeded"
-            );
+            registry.check_capacity(self.limits.max_open_databases)?;
             ensure!(
                 registry.sessions < self.limits.max_total_sessions,
                 "worker session capacity exceeded"
@@ -118,7 +117,7 @@ impl WorkerRuntime {
             drop(registry);
             let opened = self
                 .load(&identifier, epoch)
-                .map(|database| Instance::new(database, self, identifier.clone()));
+                .and_then(|database| Instance::new(database, self, identifier.clone(), epoch));
             let mut registry = self.lock()?;
             let draining = matches!(registry.entries.get(&identifier), Some(Entry::Loading(loading)) if loading.draining);
             match opened {
@@ -202,7 +201,7 @@ impl WorkerRuntime {
         identifier: DatabaseId,
         database: Arc<Instance>,
     ) -> Result<DatabaseHandle> {
-        match database.database().session() {
+        match database.database().and_then(|database| database.session()) {
             Ok(session) => Ok(DatabaseHandle::new(
                 self.clone(),
                 identifier,
@@ -220,6 +219,7 @@ impl WorkerRuntime {
     pub fn close(&self, identifier: &DatabaseId) -> Result<bool> {
         identifier.validate()?;
         let mut registry = self.lock()?;
+        registry.check_available(identifier)?;
         let Some(entry) = registry.entries.get(identifier) else {
             return Ok(false);
         };
@@ -239,6 +239,7 @@ impl WorkerRuntime {
     pub fn drain(&self, identifier: &DatabaseId) -> Result<bool> {
         identifier.validate()?;
         let mut registry = self.lock()?;
+        registry.check_available(identifier)?;
         let Some(entry) = registry.entries.get_mut(identifier) else {
             return Ok(false);
         };
@@ -268,12 +269,14 @@ impl WorkerRuntime {
 
     pub fn evict_idle(&self, idle: Duration) -> Result<Vec<DatabaseId>> {
         let mut registry = self.lock()?;
+        registry.observe_all_quarantines();
         let identifiers: Vec<_> = registry
             .entries
             .iter()
             .filter_map(|(identifier, entry)| match entry {
                 Entry::Loaded(loaded)
                     if loaded.sessions == 0
+                        && !registry.quarantined.contains_key(identifier)
                         && loaded
                             .idle_since
                             .is_some_and(|since| since.elapsed() >= idle) =>
@@ -298,7 +301,8 @@ impl WorkerRuntime {
     }
 
     pub fn status(&self) -> Result<WorkerStatus> {
-        let registry = self.lock()?;
+        let mut registry = self.lock()?;
+        registry.observe_all_quarantines();
         let mut status = WorkerStatus {
             active_sessions: registry.sessions,
             ..WorkerStatus::default()
@@ -356,8 +360,9 @@ impl WorkerRuntime {
         drop(registry);
         for (mut information, database) in databases {
             information.resources = database
-                .map(|database| database.database().resources())
-                .transpose()?;
+                .map(|database| database.resources())
+                .transpose()?
+                .flatten();
             status.databases.push(information);
         }
         Ok(status)
@@ -368,12 +373,14 @@ impl WorkerRuntime {
             .registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.observe_quarantine(identifier);
+        let quarantined = registry.quarantined.contains_key(identifier);
         let remove = if let Some(Entry::Loaded(loaded)) = registry.entries.get_mut(identifier) {
             loaded.sessions -= 1;
             if loaded.sessions == 0 {
                 loaded.idle_since = Some(Instant::now());
             }
-            loaded.draining && loaded.sessions == 0
+            loaded.draining && loaded.sessions == 0 && !quarantined
         } else {
             false
         };
@@ -396,13 +403,15 @@ impl WorkerRuntime {
             .map_err(|_| anyhow!("worker registry mutex poisoned"))
     }
 
+    pub(crate) fn ensure_instance_available(&self, identifier: &DatabaseId) -> Result<()> {
+        self.lock()?.check_available(identifier)
+    }
+
     pub(super) fn finish_retiring(&self, identifier: &DatabaseId) {
         let mut registry = self
             .registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if matches!(registry.entries.get(identifier), Some(Entry::Retiring(_))) {
-            registry.entries.remove(identifier);
-        }
+        registry.finish_retiring(identifier);
     }
 }

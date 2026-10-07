@@ -112,7 +112,8 @@ fn worker(arguments: &[String]) -> Result<()> {
             5_000,
         )?),
     };
-    let server = WorkerServer::bind_with_limits(
+    let writer_profile = writer_profile_setting()?;
+    let server = WorkerServer::bind_with_limits_and_writer_profile(
         arguments[4].parse()?,
         runtime,
         credential("PERI_WORKER_CONTROL_TOKEN")?,
@@ -123,10 +124,20 @@ fn worker(arguments: &[String]) -> Result<()> {
             max_sessions: setting("PERI_WORKER_MAX_SESSIONS", 128)?,
             max_request_bytes: setting("PERI_WORKER_MAX_REQUEST_BYTES", 512 * 1024)?,
         },
+        writer_profile,
     )?;
     crate::session::Budget::set_default(budget)?;
     ready("owned-worker", server.local_addr()?)?;
     server.run()
+}
+
+fn writer_profile_setting() -> Result<bool> {
+    match std::env::var("PERI_WORKER_WRITER_PROFILE") {
+        Ok(value) if value == "1" => Ok(true),
+        Ok(value) if value == "0" => Ok(false),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        _ => anyhow::bail!("invalid PERI_WORKER_WRITER_PROFILE"),
+    }
 }
 
 fn setting<Value: std::str::FromStr>(name: &str, default: Value) -> Result<Value> {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ownership::types::OwnershipCommand;
+use crate::ownership::types::{LeaseBinding, OwnershipCommand};
 use crate::runtime::DatabaseId;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14,6 +14,7 @@ pub struct WorkerRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkerCommand {
+    WriterProfileStatus,
     Ownership { action: OwnershipCommand },
     OpenSession { database: DatabaseId },
     Execute { session: String, sql: String },
@@ -28,6 +29,15 @@ pub enum WorkerCommand {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SessionState {
+    pub session: String,
+    pub binding: LeaseBinding,
+    pub owner: bool,
+    pub sequence: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerResponse {
     pub version: u32,
     pub request_id: String,
@@ -36,4 +46,6 @@ pub struct WorkerResponse {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_completed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<SessionState>,
 }

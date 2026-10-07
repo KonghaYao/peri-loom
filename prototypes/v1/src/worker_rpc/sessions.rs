@@ -1,114 +1,192 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value as JsonValue};
 use turso_core::{Numeric, Value};
 
-use crate::ownership::{OwnedHandle, OwnershipRuntime};
+use crate::ownership::OwnershipRuntime;
 use crate::runtime::DatabaseId;
+use crate::session::Budget;
+
+use super::protocol::SessionState;
+use super::session_entry::{Entry, SessionCall};
+
+#[derive(Default)]
+struct Registry {
+    sessions: BTreeMap<String, Arc<Entry>>,
+    opening: usize,
+}
 
 pub(super) struct Sessions {
     runtime: Arc<OwnershipRuntime>,
-    sessions: Mutex<BTreeMap<String, (DatabaseId, Arc<OwnedHandle>)>>,
+    registry: Mutex<Registry>,
     max_sessions: usize,
+}
+
+struct Opening<'sessions>(&'sessions Sessions);
+
+impl Drop for Opening<'_> {
+    fn drop(&mut self) {
+        let mut registry = self
+            .0
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(registry.opening > 0, "worker opening accounting underflow");
+        registry.opening -= 1;
+    }
 }
 
 impl Sessions {
     pub fn new(runtime: Arc<OwnershipRuntime>, max_sessions: usize) -> Self {
         Self {
             runtime,
-            sessions: Mutex::new(BTreeMap::new()),
+            registry: Mutex::new(Registry::default()),
             max_sessions,
         }
     }
 
-    pub fn open(&self, database: &DatabaseId) -> Result<JsonValue> {
+    pub fn open(
+        &self,
+        database: &DatabaseId,
+        version: u32,
+    ) -> Result<(JsonValue, Option<SessionState>)> {
         database.validate()?;
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
-        ensure!(
-            sessions.len() < self.max_sessions,
-            "worker session capacity exceeded"
-        );
+        {
+            let mut registry = self
+                .registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
+            ensure!(
+                registry.sessions.len() + registry.opening < self.max_sessions,
+                "worker session capacity exceeded"
+            );
+            registry.opening += 1;
+        }
+        let _opening = Opening(self);
         let handle = Arc::new(self.runtime.open_session(database)?);
+        let readonly = handle.is_readonly()?;
         let mut random = [0u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
         let identifier = random
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let readonly = handle.is_readonly()?;
-        let std::collections::btree_map::Entry::Vacant(entry) = sessions.entry(identifier.clone())
+        let entry = Entry::new(database.clone(), handle)?;
+        let terminal = if version == 2 {
+            Some(entry.opened_state(&identifier)?)
+        } else {
+            None
+        };
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
+        let std::collections::btree_map::Entry::Vacant(slot) =
+            registry.sessions.entry(identifier.clone())
         else {
             anyhow::bail!("session identity collision");
         };
-        entry.insert((database.clone(), handle));
-        Ok(json!({"session": identifier, "readonly": readonly}))
+        slot.insert(entry);
+        Ok((
+            json!({"session": identifier, "readonly": readonly}),
+            terminal,
+        ))
     }
 
-    pub fn handle(&self, identifier: &str) -> Result<Arc<OwnedHandle>> {
-        crate::ownership::types::validate_label(identifier)?;
-        self.sessions
+    fn entry(&self, identifier: &str) -> Result<Arc<Entry>> {
+        ensure!(
+            identifier.len() == 64
+                && identifier
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "invalid worker session identity"
+        );
+        self.registry
             .lock()
             .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?
+            .sessions
             .get(identifier)
-            .map(|(_, handle)| handle.clone())
+            .cloned()
             .context("unknown worker session")
     }
 
-    pub fn close(&self, identifier: &str) -> Result<()> {
-        crate::ownership::types::validate_label(identifier)?;
-        let handle = self
-            .sessions
-            .lock()
-            .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?
-            .remove(identifier)
-            .context("unknown worker session")?;
-        drop(handle);
+    pub fn begin(&self, identifier: &str) -> Result<SessionCall> {
+        self.entry(identifier)?.begin(identifier)
+    }
+
+    pub fn known(&self, identifier: &str) -> bool {
+        self.entry(identifier)
+            .and_then(|entry| entry.available())
+            .unwrap_or(false)
+    }
+
+    pub fn close(&self, identifier: &str, version: u32) -> Result<Option<SessionState>> {
+        let deadline = Instant::now() + Budget::trusted_default().max_query_duration;
+        let entry = self.entry(identifier)?;
+        let terminal = entry.close(identifier, deadline, version)?;
+        self.remove(identifier, &entry)?;
+        Ok(terminal)
+    }
+
+    fn remove(&self, identifier: &str, entry: &Arc<Entry>) -> Result<()> {
+        let removed = {
+            let mut registry = self
+                .registry
+                .lock()
+                .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
+            ensure!(
+                registry
+                    .sessions
+                    .get(identifier)
+                    .is_some_and(|current| Arc::ptr_eq(current, entry)),
+                "worker session identity changed"
+            );
+            registry.sessions.remove(identifier)
+        };
+        drop(removed);
         Ok(())
     }
 
     pub fn clear(&self) -> Result<()> {
-        let handles = std::mem::take(
-            &mut *self
-                .sessions
+        self.clear_matching(|_| true)
+    }
+
+    pub fn clear_database(&self, database: &DatabaseId) -> Result<()> {
+        self.clear_matching(|entry| entry.database == *database)
+    }
+
+    fn clear_matching(&self, selected: impl Fn(&Entry) -> bool) -> Result<()> {
+        let entries = {
+            let registry = self
+                .registry
                 .lock()
-                .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?,
-        );
-        drop(handles);
+                .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
+            registry
+                .sessions
+                .iter()
+                .filter(|(_, entry)| selected(entry))
+                .map(|(identifier, entry)| (identifier.clone(), entry.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (identifier, entry) in entries {
+            let deadline = Instant::now() + Budget::trusted_default().max_query_duration;
+            entry.close(&identifier, deadline, 1)?;
+            self.remove(&identifier, &entry)?;
+        }
         Ok(())
     }
 
     pub fn len(&self) -> Result<usize> {
         Ok(self
-            .sessions
+            .registry
             .lock()
             .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?
+            .sessions
             .len())
-    }
-
-    pub fn clear_database(&self, database: &DatabaseId) -> Result<()> {
-        let removed = {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
-            let identifiers = sessions
-                .iter()
-                .filter(|(_, (identifier, _))| identifier == database)
-                .map(|(session, _)| session.clone())
-                .collect::<Vec<_>>();
-            identifiers
-                .into_iter()
-                .filter_map(|identifier| sessions.remove(&identifier))
-                .collect::<Vec<_>>()
-        };
-        drop(removed);
-        Ok(())
     }
 }
 
