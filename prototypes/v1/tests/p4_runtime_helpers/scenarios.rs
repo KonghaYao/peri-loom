@@ -45,7 +45,7 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
                     })
                     .context("watchdog race: revoke")?;
                 let lease = fixture
-                    .grant_next(epoch)
+                    .grant_next_diagnosed(epoch)
                     .context("watchdog race: next grant")?;
                 let timeout = Instant::now() + Duration::from_secs(5);
                 loop {
