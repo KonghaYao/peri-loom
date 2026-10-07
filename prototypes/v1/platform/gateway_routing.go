@@ -39,8 +39,13 @@ func (gateway *Gateway) route(database controller.DatabaseID) (controller.Worker
 		return controller.Worker{}, controller.Binding{}, errors.New("placement unavailable")
 	}
 	placement, found := metadata.Placements[database.Key()]
-	if !found || placement.Database != database || placement.Phase != "active" || placement.DesiredState != "active" || placement.Grant == nil {
+	if !found || placement.Database != database || placement.DesiredState != "active" || placement.Grant == nil {
 		return controller.Worker{}, controller.Binding{}, errors.New("database not active")
+	}
+	switch placement.Phase {
+	case "active", "renew_intent", "renew_pending", "renew_worker_pending":
+	default:
+		return controller.Worker{}, controller.Binding{}, errors.New("database not serving")
 	}
 	binding := placement.Grant.Binding
 	if binding.Database != database || binding.Epoch != placement.Epoch || binding.WorkerID != placement.DesiredWorker || binding.LeaseID != placement.LeaseID || binding.Role != placement.Role || binding.RootIncarnation == "" || binding.AuthorityTerm == 0 || binding.BranchIncarnation == 0 || placement.Grant.RemainingTTLMS == 0 || (binding.Role != "writer" && binding.Role != "read_only") {

@@ -88,7 +88,7 @@ func TestGatewayMigrationInvalidatesOldSessionAndFreshOpenRoutesNewWorker(test *
 		test.Fatal(err)
 	}
 	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
-	if gatewayCode(test, response) != "session_moved" || fixture.upstream.count("query") != 0 {
+	if gatewayCode(test, response) != "placement_unavailable" || fixture.upstream.count("query") != 0 {
 		test.Fatal("old session dispatched during migration")
 	}
 	err = fixture.placements.Update(func(metadata *controller.Metadata) error {

@@ -82,13 +82,22 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	}
 	if principal.Database != nil {
 		_, binding, err := gateway.route(session.database)
-		if err != nil || !principalBindingValid(principal, binding) {
+		if err != nil {
+			return gatewayFailure(409, "placement_unavailable")
+		}
+		if !principalBindingValid(principal, binding) {
 			return gatewayFailure(403, "token_binding_mismatch")
 		}
 	}
 	if action != "close" {
+		if session.moved {
+			return gatewayFailure(409, "session_moved")
+		}
 		worker, binding, err := gateway.route(session.database)
-		if session.moved || err != nil || !sameGatewayBinding(session.binding, binding) || worker.Address != session.worker.Address {
+		if err != nil {
+			return gatewayFailure(409, "placement_unavailable")
+		}
+		if !sameGatewayBinding(session.binding, binding) || worker.Address != session.worker.Address {
 			session.moved = true
 			return gatewayFailure(409, "session_moved")
 		}
