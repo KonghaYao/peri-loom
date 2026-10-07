@@ -169,7 +169,7 @@ fn holder_commit_and_reader_progress_while_same_writer_call_waits() -> Result<()
 }
 
 #[test]
-fn one_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> {
+fn four_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = fixture.database.session()?;
@@ -186,15 +186,15 @@ fn one_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> {
         "expected terminal Busy, got {error:#}"
     );
     ensure!(
-        elapsed >= Duration::from_millis(900) && elapsed < Duration::from_secs(2),
-        "busy timeout did not bound lock wait"
+        elapsed >= Duration::from_millis(3800) && elapsed < Duration::from_millis(5500),
+        "offline four-second backoff observation exceeded the test budget"
     );
     ensure!(
         fixture.store.physical.load(Ordering::SeqCst) == physical,
         "held-lock wait dispatched physical object I/O"
     );
     ensure!(
-        fixture.store.checks.load(Ordering::SeqCst) < 1000,
+        fixture.store.checks.load(Ordering::SeqCst) < 4000,
         "busy timeout used a spinning driver"
     );
     ensure!(
@@ -204,7 +204,7 @@ fn one_second_busy_timeout_exhausts_without_batch_side_effects() -> Result<()> {
     holder.execute("ROLLBACK;")?;
     ensure!(ledger(&contender)?.is_empty(), "busy batch wrote a prefix");
     eprintln!(
-        "terminal={:?} waited_one_second=true physical_io=0 single_batch_call=1 ledger_empty=true",
+        "terminal={:?} four_second_backoff_observed=true physical_io=0 single_batch_call=1 ledger_empty=true",
         error.downcast_ref::<LimboError>()
     );
     Ok(())
@@ -235,7 +235,7 @@ fn write_query_budget_shorter_than_busy_timeout_stops_before_io() -> Result<()> 
     );
     ensure!(
         elapsed >= Duration::from_millis(40) && elapsed < Duration::from_millis(300),
-        "query budget lost to one-second lock wait"
+        "query budget lost to four-second busy candidate"
     );
     ensure!(
         fixture.store.physical.load(Ordering::SeqCst) == physical,

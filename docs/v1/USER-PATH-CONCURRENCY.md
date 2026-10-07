@@ -17,7 +17,8 @@
 4. 私有加载程序分别调用 `sdk.NewClient(endpoint, credential, options)` 得到
    `holderClient` 和 `contenderClient`；`options.RootCAs` 使用正常信任链，
    `options.Timeout` 可设 15s。每组调用使用独立的 30s context，并显式检查返回 error。
-   客户端期限必须给 1s native busy 策略留 RPC 余量；这些数值不是完成时限保证。
+   客户端期限必须给 4s native busy DEV 候选留 RPC 余量；4s 是累计 backoff，
+   不是 wall-clock 硬上限或 FIFO 保证，默认 5s query budget 仍覆盖整次 batch。
 5. 以下代码可合并进该程序，使用 `context`、`encoding/json`、`errors` 和
    `sdk "peri-loom/platform/sdk/go"`。修改其 `run`：保留私有加载与 CA 设置，
    将原常量查询 smoke 替换为两个 client 的初始化和本页对应函数的一次调用，
@@ -111,7 +112,7 @@ func heldLockPath(ctx context.Context, holderClient, contenderClient *sdk.Client
 
 5. **证据/限制**：保留 request ID、终态 flags、各 ACK 与 oracle，不记录凭据。
    SDK 只暴露类型化 `*sdk.Error` 的 `sql_error`，HTTP 不携带 native Busy 原因，
-   因而本组不能仅凭 code 证明 `LimboError::Busy`，也不能声称恰好 1s 返回。
+   因而本组不能仅凭 code 证明 `LimboError::Busy`，也不能声称恰好 4s 返回。
    typed native Busy 的证据来自离线 `tests/concurrent_sessions.rs` / `tests/busy_wait.rs`。
    行 2 缺失是本组特定序列的 oracle，不是任意 `sql_error` 都没有副作用的承诺。
 

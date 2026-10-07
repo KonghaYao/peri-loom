@@ -20,7 +20,7 @@ pub struct RemoteSession {
 
 impl RemoteSession {
     pub(crate) fn new(database: Arc<RemoteDatabase>, connection: Arc<Connection>) -> Self {
-        connection.set_busy_timeout(Duration::from_secs(1));
+        connection.set_busy_timeout(Duration::from_secs(4));
         Self {
             connection: Mutex::new(connection),
             database,

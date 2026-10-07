@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
 use peri_loom_v1::{
@@ -140,10 +140,16 @@ fn held_immediate_transaction_returns_typed_busy_without_batch_side_effects() ->
         )?;
         ensure!(holder.in_transaction()?, "holder did not enter transaction");
         let failed_operation = "failed_b_while_locked";
+        let started = Instant::now();
         let error = contender
             .execute_with_budget(&batch(failed_operation, 7), &budget())
             .unwrap_err();
         assert_busy(backend, failed_operation, &error)?;
+        ensure!(
+            started.elapsed() >= Duration::from_millis(3800)
+                && started.elapsed() < Duration::from_millis(5500),
+            "offline held-lock wait did not observe four-second backoff within query budget"
+        );
         ensure!(
             !contender.in_transaction()?,
             "failed BEGIN left an active contender transaction"
