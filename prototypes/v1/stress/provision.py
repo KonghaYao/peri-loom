@@ -282,7 +282,7 @@ def provision(configuration, plan, label, api=None):
         output = {"endpoint": endpoint_value, "project": plan["project"], "api_key": keys[plan["project"]],
                   "database": plan["databases"][0], "databases": plan["databases"], "fixture_only": True,
                   "ca_file": configuration["connection"]["ca_file"], "source_root": str(pathlib.Path(__file__).resolve().parents[3]),
-                  "management_endpoint": endpoint_value, "management_key": keys["global"],
+                  "management_endpoint": endpoint_value, "management_key": keys[plan["project"]],
                   "processes": configuration["processes"], "worker_ids": configuration["workers"],
                   "migration_worker": next(worker for worker in configuration["workers"] if worker != primary_worker),
                   "noisy_tenant": {"endpoint": endpoint_value,
@@ -297,8 +297,67 @@ def provision(configuration, plan, label, api=None):
 
 
 def self_test():
+    import tempfile
+    import unittest
+    from unittest import mock
     from provision_tests import run
-    return run()
+
+    class ProjectCredentialTests(unittest.TestCase):
+        def test_management_and_noisy_credentials_are_project_scoped(self):
+            with tempfile.TemporaryDirectory(prefix="peri-provision-credential-unit-") as temporary:
+                directory = pathlib.Path(temporary).resolve()
+                global_key = "bootstrap_" * 5
+                configuration = {"directory": directory, "output": directory / "parent.json", "processes": [],
+                                 "connection": {"endpoint": "https://127.0.0.1:9443", "global_api_key": global_key,
+                                                "ca_file": "/synthetic/ca.crt"}, "workers": ["worker-a", "worker-b"]}
+                plan = build_plan("credential_unit")
+                issued = {}
+
+                def confirmation(route, key, body=None):
+                    if body is None:
+                        self.assertEqual(route, "/v1/catalog")
+                        self.assertEqual(key, global_key)
+                        return {"projects": {}, "databases": {}}
+                    if route == "/v1/projects/create":
+                        self.assertEqual(key, global_key)
+                        return {"id": body["id"], "organization": "local", "tenant": "local_" + body["id"],
+                                "region": "local", "quotas": QUOTAS}
+                    if route == "/v1/keys/create":
+                        self.assertEqual(key, global_key)
+                        identifier = body["project"] + "_key"
+                        issued[body["project"]] = "plk1_" + identifier + "_" + "synthetic_" * 5
+                        return {"key": identifier, "project": body["project"], "role": "admin", "subject": body["subject"],
+                                "credential": issued[body["project"]], "shown_once": True}
+                    self.assertEqual(route, "/v1/databases/create")
+                    self.assertEqual(key, issued[body["project"]])
+                    self.assertEqual(body["database"]["namespace"]["tenant"], "local_" + body["project"])
+                    return {"database": body["database"], "phase": "active", "desired_state": "active", "role": "writer", "desired_worker": "worker-b"}
+
+                fake = mock.Mock()
+                fake.call.side_effect = confirmation
+                provision(configuration, plan, "credential_unit", fake)
+                result = decode(read_file(configuration["output"]))
+                self.assertEqual(result["management_key"], result["api_key"])
+                self.assertEqual(result["management_key"], issued[plan["project"]])
+                self.assertNotEqual(result["management_key"], global_key)
+                self.assertNotIn(global_key, json.dumps(result))
+                noisy = result["noisy_tenant"]
+                self.assertEqual(noisy["api_key"], issued[plan["noisy_project"]])
+                self.assertNotIn(result["api_key"], json.dumps(noisy))
+                self.assertNotIn("management_key", noisy)
+                self.assertTrue(all(database["namespace"]["tenant"] == "local_" + plan["project"]
+                                    for database in result["databases"]))
+                self.assertNotIn(noisy["database"], result["databases"])
+                self.assertEqual(fake.call.call_count, 10)
+
+    original = run()
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(ProjectCredentialTests)
+    with mock.patch("socket.socket", side_effect=AssertionError("network forbidden")) as sockets:
+        result = unittest.TextTestRunner(verbosity=2).run(suite)
+    passed = original == 0 and result.wasSuccessful() and sockets.call_count == 0
+    print(json.dumps({"credential_self_test": "PASS" if passed else "FAIL", "tests": result.testsRun,
+                      "failures": len(result.failures), "errors": len(result.errors), "network_calls": sockets.call_count}))
+    return 0 if passed else 1
 
 
 def main(arguments=None):
