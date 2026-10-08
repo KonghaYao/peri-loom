@@ -60,6 +60,9 @@
    多语句已提交前缀仍可能存在；不自动 rollback/retry。标志缺失或畸形不能冒充该终态。
 4. CLI 的 SQL/shell错误路径直接返回错误，不自动 Close；CLI也不会替用户保留一个错误后可继续输入的 shell来自动恢复。
    SDK的 `Close` 方法本身不是“不确定性解决器”，调用者必须避免在 unknown路径无条件调用它。
+5. 若 Open 本身返回 `outcome_unknown`，即使尚未拿到 session句柄、还未提交任何 query，也停止该组操作。
+   保存公开 request ID与隔离数据库身份，不 Close、重开或发额外 API/SQL probe；没有 query不证明 Open已取消或未改变状态。
+   先按既有证据区分“业务未开始”与“Open结果未知”，不能把HTTP502或无句柄改写成已确认拒绝。
 
 源码：`prototypes/v1/platform/sdk/go/types.go`、`prototypes/v1/platform/sdk/go/session.go`、`prototypes/v1/platform/sdk/typescript/client.ts`。
 自动验收范围：CLI cleanup mock覆盖丢失/畸形响应、error不盲Close；SDK terminal tests覆盖终态标志。
