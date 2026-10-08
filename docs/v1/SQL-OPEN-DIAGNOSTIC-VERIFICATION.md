@@ -1,0 +1,14 @@
+# Single SQL Open diagnostic — independent read-only verification
+
+- 2026-10-08 verdict: **ACCEPT this one fresh Open ACK; historical Unknown cause NOT_REPRODUCED**, not common13, cleanup, or performance PASS.
+- Main-authorized execution at Root `84014e57db6f14f0e3ce848118264c1088104059`; fixture `/private/tmp/peri-sql-open-diagnostic-vlpylera`, HTTPS19456. Main reports actual tool exit0; persisted strict outcome independently confirms `OPEN_ACK`.
+- Request `open_diag_319ccc007caef856006336c4_open`: HTTP200, 165 response bytes, exact version1/request-ID/ok/result/error envelope; writer session returned. Response SHA256 `4e6d418c2758fcb5f575ef6684c01d041a9a1b8372498f504d7db7716a9bfa8f`.
+- Intent is attempt1/default Close=false; outcome queries0/retries0/Close=false. Safe audit has exactly one matching `open/ok`; no query/execute/close actions. One preceding fresh diagnostic DB creation is separate from Open, not SQL replay.
+- Frozen tool3 hashes match `/private/tmp/peri-sql-open-experiment-dev.mqqCdlDd/freeze.json`, SHA256 `38300c82a39e96bc18763dc33264be6e185fc69a4746e91974ac27362c605cd1`; prior offline fifteen tests are not rerun or confused with actual Open evidence.
+- Current141 accepted source hashes match `/tmp/peri-sql-open-observation-independent/source-before.json`, SHA256 `2b8c628dd2763a7414a4db7b6a00d68407e3a45cdbe1432af7a674e80d1789db`; launcher dev/bootstrap pins also match current files.
+- Go12ad SHA256 `12ad5621f7fdfff7629caddcd6ea27bdf1e3e3d43d6a7a5f71faaf274b247696`; Native97 `97e1aed88dc52b2759e55ac5d644df5a89175b5298b945f3a242234242e1b697`; independently hashed binaries match launch-intent/proof.
+- Readiness proof and launcher record agree on fresh fixture, HTTPS19456, S3 backend, writer profile and observer enabled; whole-smoke=false. Static tool transport verifies fixture CA, literal loopback, no proxy/redirect, request-header/body ID equality and a single wire attempt. No independent network/TLS rerun performed.
+- Observer file is zero bytes. Success has no terminal observer event by design: this supplies **no rejection-stage attribution, observer completeness or absence-of-defect proof**.
+- Launch-proof SHA256 `46d9fa29967214e4b8afc40898444bb02dcd10dea5141fdc0b78a6b46f822b1d`; outcome SHA256 `2eca933870f2e9cfc477f907e86af36bcb4b8cb513462a7dcf809b89dc1afc35`; wire SHA256 `2cf6b34e13c2ba79b00aa2fa71bde2564a566599f16850611857309d7e88351d`.
+- Successful session/fixture retained without Close; this is **not a clean shutdown or completed session lifecycle**. Bootstrap/demo setup is not counted as zero total fixture activity; the diagnostic itself issued no SQL query.
+- Verifier only read safe evidence/source/artifacts: no credentials/connection/private keys, API, SQL, Close/reopen/retry, signals, build or tests. Historical Unknown namespaces/outcomes remain untouched. Source/raw gate RELEASE; future actions need separate Main authorization.
