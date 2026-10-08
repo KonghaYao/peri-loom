@@ -1,0 +1,15 @@
+# Matched-project Open/Close — independent read-only verification
+
+- 2026-10-08: **ACCEPT this matched Open/Close functional subset; source/raw RELEASE**. Historical Unknown cause remains **NOT_REPRODUCED**, not common13 or performance PASS.
+- Main reports actual once-only tool exit0; fixture `/private/tmp/peri-sql-open-diagnostic-6kd1nb3v/peri-stress-693cbb766368`, HTTPS19457, captured Root `64414f54f20475d0f55b3318394b863576230467`. No whole-smoke run.
+- `opendiag_660e536d54b1_open`: HTTP200/152B, exact version1/request-ID/ok/error/result contract, writer session returned. Response SHA256 `65faed532b1a18ff7a04896b768a59a1490683179ab1e91f6efccb1e13362dc7`.
+- Authorized post-success `opendiag_660e536d54b1_close`: HTTP200/105B, exact correlated envelope, `closed=true`. Response SHA256 `eb0fa28beab4bd079bedee0ffb52cf24e9fac7658a1464f8554d1d88219421ee`.
+- Persisted attempt1 intent explicitly enables success Close; outcome queries0/retries0. Safe audit confirms exactly one `open/ok`, then one `close/ok`; no query/execute actions. Close ACK is not whole-fixture/process shutdown proof.
+- Original Root provisioning path is unchanged: pinned `fixture/build_plan/provision`, catalog check, primary project/key/four DBs followed by noisy project/key/DB. All nine reservation request IDs have exactly admitted→complete audit pairs in original order before Open.
+- Reservation SHA256 `835faf5327a7c86ed21c068ed78e6eba2f091c4ba7c3366a5402cd90537c4771`. Provision adapter validates project/DB/output binding and uses project—not global—credential for Open/Close; credential-bearing output/connection files were not read by this verifier.
+- Tool3 plus pinned dependencies3 match `/private/tmp/peri-sql-open-project-dev.HPvRcnIx/freeze.json`, SHA256 `28bf3318a415351c02f7ecc1deeac52277c71134a967038c07fb237c55d4abf4`; prior independent eight offline tests are not rerun or counted as actual operations.
+- Current accepted141 source map still matches `/tmp/peri-sql-open-observation-independent/source-before.json`, SHA256 `2b8c628dd2763a7414a4db7b6a00d68407e3a45cdbe1432af7a674e80d1789db`; dev/bootstrap pins also match.
+- Go SHA256 `12ad5621f7fdfff7629caddcd6ea27bdf1e3e3d43d6a7a5f71faaf274b247696`; Native `97e1aed88dc52b2759e55ac5d644df5a89175b5298b945f3a242234242e1b697`; rehashed artifacts agree with launch intent/proof. Readiness, S3/TLS, writer profile and observer-enabled metadata agree.
+- Pinned helper preserves CA verification, literal loopback/no proxy/no redirects, header/body request-ID equality, single attempts and Close only after strict success. This is source plus persisted evidence verification, not an independent network replay.
+- Observer0B is expected for successful calls and supplies no terminal-stage, completeness, root-cause or absence-of-defect proof. Historical Unknowns and the first unclosed diagnostic session are not reclassified or touched.
+- Outcome SHA256 `750124c84c9632e3411de8d5f41bd2bfa1c70c8b9dbe2976d7f0ee5ba7747a5f`; launch-proof `7b8d491c778f4a4bf63cbec9b315d0ab222f0030a63256bdf9905818c32c27c8`. Raw/private0600 evidence retained; verifier performed no API, SQL, Close, retry, probe, signals, build or tests.
