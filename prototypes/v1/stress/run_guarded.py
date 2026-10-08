@@ -1,5 +1,5 @@
 """Python >=3.12/macOS: python3 run_guarded.py --spec /private/operator.json; no API/keys/env dumps.
-0600 spec: phase_profile=mixed(default)/architecture/common; exact profile command; artifacts/sources={absolute:sha256}, output0700, launcher/services/owner_roots={pid,ppid,uid,start,argv}, soft_stop_capable=true.
+0600 spec <=1MiB/2048 frozen identities: phase_profile=mixed(default)/architecture/common; exact profile command; artifacts/sources={absolute:sha256}, output0700, launcher/services/owner_roots={pid,ppid,uid,start,argv}, soft_stop_capable=true.
 hard_max_seconds<=3600; hard_grace_seconds=5 (0.1..30); interval_seconds=2/probe_timeout_seconds=2; RSS<=512MiB/output<=64MiB. strict-stop default; record-confound requires functional_only=true.
 Journal: wall/mono, owner proof, sticky STOP, host/awake, retainedPID/mayunknown/no-clean; no implicit retained-child kill, never performance_pass.
 """
@@ -17,6 +17,7 @@ import sys
 import time
 from guard_profiles import parameters
 FIELDS = ('pid', 'ppid', 'uid', 'start', 'argv')
+MAX_SPEC_BYTES = 1 << 20
 BUILDERS = {'cargo', 'rustc', 'clippy-driver', 'go', 'compile', 'link', 'clang', 'clang++', 'cc', 'gcc', 'make', 'ninja', 'esbuild'}
 MIXED = parameters()
 def require(condition, reason):
@@ -31,6 +32,13 @@ def proof(observed, expected):
 def metadata(path):
     info = Path(path).lstat()
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode]
+def read_spec(path):
+    private(path, 0o600)
+    require(path.stat().st_size <= MAX_SPEC_BYTES, 'oversized_spec')
+    with path.open('rb') as source:
+        body = source.read(MAX_SPEC_BYTES + 1)
+    require(len(body) <= MAX_SPEC_BYTES, 'oversized_spec')
+    return json.loads(body)
 def validate(spec):
     require(sys.version_info >= (3, 12), 'Python_3.12_or_newer_required')
     selected = parameters(spec.get('phase_profile', 'mixed'))
@@ -325,9 +333,7 @@ def main():
     journal = None
     lock = None
     try:
-        private(args.spec, 0o600)
-        require(args.spec.stat().st_size <= 64 << 10, 'oversized_spec')
-        spec = json.loads(args.spec.read_text())
+        spec = read_spec(args.spec)
         frozen = validate(spec)
         output = Path(spec['output'])
         lock = os.open(output / '.guarded.lock', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

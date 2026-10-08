@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import importlib.util
 import itertools
+import json
 import os
 from pathlib import Path
 import signal
@@ -378,6 +379,37 @@ class ValidationTests(unittest.TestCase):
                 binary.chmod(0o700)
                 with self.assertRaisesRegex(ValueError, 'immutable_CLI'):
                     guarded.validate(spec)
+
+    def test_spec_above_legacy_limit_accepts_bounded_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filename = Path(directory).resolve() / 'spec.json'
+            expected = {'sources': {'synthetic': 'x' * (65 << 10)}}
+            filename.write_text(json.dumps(expected))
+            filename.chmod(0o600)
+            self.assertGreater(filename.stat().st_size, 64 << 10)
+            self.assertEqual(guarded.read_spec(filename), expected)
+
+    def test_spec_above_new_limit_rejects_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filename = Path(directory).resolve() / 'spec.json'
+            filename.write_bytes(b' ' * (guarded.MAX_SPEC_BYTES + 1))
+            filename.chmod(0o600)
+            with patch.object(Path, 'open') as opened:
+                with self.assertRaisesRegex(ValueError, 'oversized_spec'):
+                    guarded.read_spec(filename)
+                opened.assert_not_called()
+
+    def test_spec_growth_after_stat_still_has_bounded_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            filename = Path(directory).resolve() / 'spec.json'
+            filename.write_bytes(b'{}')
+            filename.chmod(0o600)
+            with patch.object(Path, 'open') as opened:
+                reader = opened.return_value.__enter__.return_value
+                reader.read.return_value = b' ' * (guarded.MAX_SPEC_BYTES + 1)
+                with self.assertRaisesRegex(ValueError, 'oversized_spec'):
+                    guarded.read_spec(filename)
+                reader.read.assert_called_once_with(guarded.MAX_SPEC_BYTES + 1)
 
 
 if __name__ == '__main__':
