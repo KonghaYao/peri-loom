@@ -33,10 +33,10 @@
 | UI stage reporter / private v5 | `UI-STAGE-REPORTER-INDEPENDENT.md`：离线14PASS；`UI-V5-INDEPENDENT.md`：Gauss affected10独立PASS | v5 offline接受不代替actual browser/API证明，不追认旧失败实际cause。 |
 | 现有UI实际失败 | `SDK-UI-ISOLATED-INDEPENDENT.md`：R15 wrapper/capture exit1、wire/model未证明，combined HOLD | 保留旧失败/潜在unknown不操作；新的实际JSON/NDJSON、refs、CloseACK、storage/served-lineage证据待James/Gauss。 |
 | R16唯一actual UI | `UI-R16-INDEPENDENT.md`：Gauss独立FAIL/HOLD；captureSchema、owned SIGTERM、diag/wire0、无oracle | 静态确定捕获器错拒GET catalog合法空response ID，是捕获器兼容缺陷而非生产BUG；不追认本次实际cause。 |
-| R17新fixture / actual UI | proper-CA whole11通过；`UI-R17-INDEPENDENT.md`接受实际功能：helper/capture0、四查询、CloseACK、refs、storage0、八wire关联 | ownChrome joined0但dangling SingletonLock残留，supervisor末尾assert退出1；cleanup HOLD，不称整体exit0。 |
+| R17新fixture / actual UI | proper-CA whole11通过；`UI-R17-INDEPENDENT.md`接受实际功能：helper/capture0、四查询、CloseACK、refs、storage0、八wire关联 | 原supervisor锁断言退出1保留；`UI-PROFILE-CLEANUP-VERIFICATION.md`单列后续own锁清理接受，不改写原exit。 |
 | R17当前SDK3 | `FINAL-SDK-CURRENT-VERIFICATION.md`：Go i64/integrity、TS bigint、Rust as_i64四个实际known-success case独立接受 | Native97e1/GoC252与18项选定输入一致；不是全SDK suite、Unknown恢复、完整删除syscall或性能证明。 |
 | Linux Local subset | `../experiment-v1-stress/LINUX-CURRENT-INDEPENDENT.md`接受base9e image：UID10001/properCA/whole11/actual container0 OOMfalse/clean marker | 不包含后续observer；4109 regular限定context非completeRepoClosed，非LinuxS3；service逐退出码未由空logs单独证明。作者B，Gauss独立。 |
-| 最终Linux交付 | 旧startup exit2/mode错误及修复后接受证据均保留 | 旧image未含Stage1 observer；latest闭包可另gate。C本批仅test变化不因算法修复要求新生产image；不得称现image latest Ready。Main授权，B/Gauss。 |
+| 最新Linux Local交付 | `FINAL-LINUX-CURRENT-VERIFICATION.md`独立接受image49e6d3、当前diagnostics、UID10001、properCA/whole11、退出0/clean marker | 限定4111regular/十link排除；非Linux S3、HA或逐服务exit完整证明。旧首次失败保留，不宣称生产Ready。 |
 | Metrics/checkpoint观察 | `../experiment-v1-stress/16_verification.md`实际标题/内容为R14：24 GET200/0 metrics403、checkpoint ACK1、unknown0 | 文件编号16不是R16；只接受该run功能/报告map，不证明每项仪表精度或native checkpoint算法修复。Main/E执行，F核验。 |
 | 压力/性能 | 已有架构/SQL子场景与上述R14功能证据；原失败和external builder confound保留 | performance NOT PASS；未完成/STOP后的phase不是通过，不以新功能smoke替代最后授权压力及独立对抗验收。E独占runner，F/Main。 |
 
@@ -50,6 +50,6 @@
 ## 4. 最终裁定所缺的闭环
 
 1. **当前native测试门禁接受**：F full Root413 unique PASS/0 FAIL/5 ignored；Main另跑S3 opt-in5 PASS、F只读接受。本批仍不修生产completion；产品lifecycle completion架构边界与historical cause not proven保留。
-2. **UI功能接受 / cleanup HOLD**：R16首失败保留；R17实际UI与SDK3限定功能已独立接受。supervisor退出1/锁残留仍保留，C开发仅自建profile的守护清理、F独立验证后才实际删除。
-3. **部署版本边界不变**：已接受Linux仅其冻结Local subset；latest image闭包由Main另定gate。本批test-only同步不是生产算法修复，不据此要求重建Native97e1或生产image。
+2. **UI功能与后续cleanup接受**：R16首失败、R17原supervisor退出1保留；实际UI/SDK3限定功能和后阶段own锁删除分别独立接受，不用清理阶段洗绿旧执行。
+3. **当前Linux Local部署接受**：latest冻结闭包含当前production diagnostics，实际非root/TLS/whole11/退出clean已核；S3/HA/逐服务exit边界不变，不称整个生产部署验证完毕。
 4. **NOT PASS：性能与最终全项目结论**；待授权完整压力/对抗证据及以上HOLD解除。无缺失证据补零、忽略失败或未知请求盲Close/重试。
