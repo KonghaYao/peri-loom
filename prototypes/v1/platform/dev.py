@@ -106,6 +106,9 @@ class Project:
         self.stop = threading.Event()
 
     def prepare(self):
+        observer = getattr(self.arguments, "sql_open_observer", False)
+        if observer and (pathlib.Path(self.arguments.run_dir).is_symlink() or self.directory.is_symlink() or self.directory.exists() and (not self.directory.is_dir() or any(self.directory.iterdir()))):
+            raise RuntimeError("SQL open observer requires a fresh empty runtime")
         private_directory(self.directory)
         for name in ("logs", "keys", "keys/kms", "authority", "controller", "platform", "cache-a", "cache-b"):
             private_directory(self.directory / name)
@@ -117,6 +120,8 @@ class Project:
         launch_path = self.directory / "launch.json"
         if launch_path.exists():
             self.launch = json.loads(launch_path.read_text())
+            if self.launch.get("sql_open_observer", False) != observer:
+                raise RuntimeError("SQL open observer profile cannot be silently rebound")
             if self.launch["backend"] != self.arguments.backend or self.launch["listen"] != self.arguments.listen or self.launch["tls"] != self.arguments.tls:
                 raise RuntimeError("existing runtime identity/configuration cannot be silently rebound")
             if self.launch.get("writer_admission", False) != self.arguments.writer_admission:
@@ -131,6 +136,7 @@ class Project:
         broker = free_address()
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
         self.launch["writer_admission"] = self.arguments.writer_admission
+        self.launch["sql_open_observer"] = observer
         worker_auth = {}
         worker_config = []
         sql_tokens, key_tokens = {}, {}
@@ -221,7 +227,9 @@ class Project:
                     raise RuntimeError(name + " is required for the authority only")
             authority_environment.update({name: value for name, value in os.environ.items() if name.startswith("S3_")})
         self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
-        self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], safe_environment())
+        platform_environment = safe_environment()
+        platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"
+        self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], platform_environment)
         for identity, worker in self.launch["workers"].items():
             environment = safe_environment()
             environment.update({"PERI_WORKER_AUTHORITY_TOKEN": worker["authority_token"], "PERI_WORKER_CONTROL_TOKEN": worker["control_token"], "PERI_WORKER_SQL_TOKEN": worker["sql_token"], "PERI_WORKER_KEY_TOKEN": worker["key_token"], "PERI_KMS_ENDPOINT": "http://" + self.config["broker_listen"]})
@@ -316,6 +324,7 @@ def main():
     parser.add_argument("--tls", action="store_true")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--writer-admission", action="store_true")
+    parser.add_argument("--sql-open-observer", action="store_true")
     arguments = parser.parse_args()
     project = Project(arguments)
     signal.signal(signal.SIGTERM, lambda signum, frame: project.stop.set())

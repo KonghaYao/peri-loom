@@ -2,12 +2,18 @@ package platform
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"syscall"
 	"time"
 
 	controller "peri-loom/controller"
@@ -21,6 +27,13 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 		return err
 	}
 	defer state.Close()
+	observation, err := startServiceSQLOpenObservation(ctx, config.StateDirectory, os.Getenv("PERI_SQL_OPEN_OBSERVER"))
+	if err != nil {
+		return err
+	}
+	if observation != nil {
+		defer observation.stop()
+	}
 	metadata, err := controller.OpenStore(config.MetadataDirectory)
 	if err != nil {
 		return err
@@ -83,7 +96,11 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 	if err != nil {
 		return err
 	}
-	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission})
+	var observer *SQLOpenObserver
+	if observation != nil {
+		observer = observation.observer
+	}
+	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission, OpenObserver: observer})
 	if err != nil {
 		return err
 	}
@@ -156,4 +173,118 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 
 func hardenedServer(handler http.Handler) *http.Server {
 	return &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 * 1024}
+}
+
+type serviceSQLOpenObservation struct {
+	observer *SQLOpenObserver
+	stream   string
+	stopping chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+type serviceSQLOpenRecord struct {
+	Stream             string `json:"stream"`
+	CallSequence       uint64 `json:"call_sequence"`
+	RequestID          string `json:"request_id"`
+	Stage              string `json:"stage"`
+	Reason             string `json:"reason"`
+	Classification     string `json:"classification,omitempty"`
+	RPCError           bool   `json:"rpc_error"`
+	Ambiguous          bool   `json:"ambiguous"`
+	Rejected           bool   `json:"rejected"`
+	ExecutionCompleted bool   `json:"execution_completed"`
+}
+
+func startServiceSQLOpenObservation(ctx context.Context, directory, enabled string) (*serviceSQLOpenObservation, error) {
+	if enabled == "" || enabled == "0" {
+		return nil, nil
+	}
+	if enabled != "1" {
+		return nil, errors.New("invalid SQL open observer profile")
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("SQL open observer private directory unavailable")
+	}
+	identity, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || identity.Uid != uint32(os.Getuid()) {
+		return nil, errors.New("SQL open observer private directory unavailable")
+	}
+	streamBytes := make([]byte, 16)
+	if _, err := rand.Read(streamBytes); err != nil {
+		return nil, errors.New("SQL open observer stream unavailable")
+	}
+	path := filepath.Join(directory, "sql-open-observation.jsonl")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0600)
+	if err != nil {
+		return nil, errors.New("SQL open observer file unavailable")
+	}
+	actual, statError := file.Stat()
+	parent, parentError := os.Lstat(directory)
+	if statError != nil || parentError != nil || !os.SameFile(info, parent) || !actual.Mode().IsRegular() || actual.Mode().Perm() != 0600 {
+		file.Close()
+		return nil, errors.New("SQL open observer file identity unavailable")
+	}
+	observation := &serviceSQLOpenObservation{observer: NewSQLOpenObserver(), stream: hex.EncodeToString(streamBytes), stopping: make(chan struct{}), done: make(chan struct{})}
+	go observation.consume(ctx, file)
+	return observation, nil
+}
+
+func (observation *serviceSQLOpenObservation) stop() bool {
+	observation.stopOnce.Do(func() { close(observation.stopping) })
+	select {
+	case <-observation.done:
+		return true
+	case <-time.After(100 * time.Millisecond):
+		return false
+	}
+}
+
+func (observation *serviceSQLOpenObservation) consume(ctx context.Context, output io.WriteCloser) {
+	defer close(observation.done)
+	defer output.Close()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	encoder := json.NewEncoder(output)
+	count := 0
+	drain := func() bool {
+		for count < 64 {
+			record, found := observation.observer.TryReceive()
+			if !found {
+				return true
+			}
+			count++
+			projected := serviceSQLOpenRecord{
+				Stream: observation.stream, CallSequence: record.CallSequence, RequestID: record.RequestID,
+				Stage: record.Stage, Reason: record.Reason, Classification: record.Classification,
+				RPCError: record.RPCError, Ambiguous: record.Ambiguous, Rejected: record.Rejected, ExecutionCompleted: record.ExecutionCompleted,
+			}
+			if encoder.Encode(projected) != nil {
+				return false
+			}
+		}
+		return true
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			if drain() && count < 64 {
+				encoder.Encode(serviceSQLOpenRecord{Stream: observation.stream, Stage: "observer", Reason: "bounded_stop", Classification: "UNPROVEN"})
+			}
+			return
+		case <-observation.stopping:
+			if drain() && count < 64 {
+				encoder.Encode(serviceSQLOpenRecord{Stream: observation.stream, Stage: "observer", Reason: "bounded_stop", Classification: "UNPROVEN"})
+			}
+			return
+		case <-ticker.C:
+			if !drain() {
+				return
+			}
+			if count == 64 {
+				return
+			}
+		}
+	}
 }

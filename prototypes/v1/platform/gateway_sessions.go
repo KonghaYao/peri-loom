@@ -47,30 +47,32 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 			return gatewayFailure(403, "forbidden")
 		}
 		binding = currentBinding
+		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
 		writerState, err = gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
 	} else {
+		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
 		err = gateway.config.Upstream.Call(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
 	}
 	if err != nil {
-		return gateway.upstreamFailure(err, nil, permit)
+		return observeSQLOpenResult(ctx, requestID, sqlOpenUpstreamResult, gateway.upstreamFailure(err, nil, permit), err)
 	}
 	if !upstreamSessionID(reply.Session) || reply.Readonly == nil || *reply.Readonly != (binding.Role == "read_only") {
-		return gateway.unknown(nil, permit)
+		return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
 	}
 	identifier, err := controller.RandomID()
 	if err != nil {
-		return gateway.unknown(nil, permit)
+		return observeSQLOpenResult(ctx, requestID, sqlOpenPublicID, gateway.unknown(nil, permit), nil)
 	}
 	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, writerProtocol: writerProtocol}
 	if writerProtocol && (!session.acceptWriterState(writerState, binding) || writerState.Owner) {
-		return gateway.unknown(nil, permit)
+		return observeSQLOpenResult(ctx, requestID, sqlOpenWriterBinding, gateway.unknown(nil, permit), nil)
 	}
 	session.mu.Lock()
 	gateway.mu.Lock()
 	if _, exists := gateway.sessions[identifier]; exists {
 		gateway.mu.Unlock()
 		session.mu.Unlock()
-		return gateway.unknown(nil, permit)
+		return observeSQLOpenResult(ctx, requestID, sqlOpenCollision, gateway.unknown(nil, permit), nil)
 	}
 	gateway.sessions[identifier] = session
 	gateway.mu.Unlock()

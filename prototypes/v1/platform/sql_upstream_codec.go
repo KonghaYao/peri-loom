@@ -19,7 +19,9 @@ func sqlOutput(output any) bool {
 }
 
 func sqlDecode(ctx context.Context, body []byte, requestID string, output any) error {
-	invalid := func() error { return &SQLRPCError{Ambiguous: true, cause: ctx.Err()} }
+	invalid := func() error {
+		return observeSQLOpenError(ctx, requestID, sqlOpenCodecV1, sqlOpenStrictDecode, &SQLRPCError{Ambiguous: true, cause: ctx.Err()})
+	}
 	if !utf8.Valid(body) {
 		return invalid()
 	}
@@ -61,7 +63,7 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 		if message == nil || !bytes.Equal(bytes.TrimSpace(fields["result"]), []byte("null")) {
 			return invalid()
 		}
-		return &SQLRPCError{Ambiguous: !hasCompleted, ExecutionCompleted: hasCompleted}
+		return observeSQLOpenError(ctx, requestID, sqlOpenCodecV1, sqlOpenWorkerNegative, &SQLRPCError{Ambiguous: !hasCompleted, ExecutionCompleted: hasCompleted})
 	}
 	if message != nil {
 		return invalid()

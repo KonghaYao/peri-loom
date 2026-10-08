@@ -12,7 +12,10 @@ import (
 )
 
 func sqlDecodeWriter(ctx context.Context, body []byte, requestID string, output any) (*SessionWriterState, error) {
-	invalid := func() (*SessionWriterState, error) { return nil, &SQLRPCError{Ambiguous: true} }
+	reason := sqlOpenStrictDecode
+	invalid := func() (*SessionWriterState, error) {
+		return nil, observeSQLOpenError(ctx, requestID, sqlOpenCodecV2, reason, &SQLRPCError{Ambiguous: true})
+	}
 	if !utf8.Valid(body) {
 		return invalid()
 	}
@@ -57,6 +60,7 @@ func sqlDecodeWriter(ctx context.Context, body []byte, requestID string, output 
 	var failure *SQLRPCError
 	settled := err == nil || errors.As(err, &failure) && failure.ExecutionCompleted && !failure.Ambiguous
 	if settled != found {
+		reason = sqlOpenWriterPresence
 		return invalid()
 	}
 	if err == nil && output != nil {

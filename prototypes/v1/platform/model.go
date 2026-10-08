@@ -151,4 +151,5 @@ type GatewayConfig struct {
 	Upstream        SQLUpstream
 	Audit           Audit
 	WriterAdmission bool
+	OpenObserver    *SQLOpenObserver
 }
