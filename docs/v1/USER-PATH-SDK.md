@@ -212,9 +212,10 @@
      typeof value === "bigint" ? value.toString() : value);
    ```
 
-5. 该 smoke 的 `finally` 会尝试一次显式 close，包括 query 失败时；这是示例的释放动作，
-   不是 query 重试，也不能证明未知 query 已回滚。失败信息的 stage 可能因此显示 close。
-   若需要审计首次 query 失败，保留其错误码、请求 ID 与服务端证据，不能只看最终 stage。
+5. 该 smoke 仅在 query 成功返回且精确整数断言通过后发送一次显式 close，没有失败清理用的
+   `finally`。遇到 Unknown、确认失败或 transport 错误即停止，不发送清理 close、不重放；
+   若 close 自身失败也不重试。保留首次失败的 stage、错误码、请求 ID 与服务端证据，
+   不把关闭或重新打开会话当作未知 query 已回滚的证明。
 
 ## 4. Rust：现有真实 smoke 入口
 
@@ -237,9 +238,10 @@
    期望打印 `Rust SDK live verified-TLS SELECT exact-i64/status/explicit-close PASS`。
 3. `serde_json::Value::as_i64()` 必须精确得到两个测试整数；不要先转浮点数。
    Rust 的 `ClientOptions.trusted_ca_pem` 加入正常信任根，不关闭名字或证书链校验。
-4. 当前 example 在 status 失败时另发一次只读 status 诊断请求，报告脱敏的 HTTP 状态或
-   证书错误类别。它不是 SQL 重试，也不能替代首次失败或作为未知 mutation 的结果证明。
-   query 发出后 example 会尝试一次 close，即使 query 失败；close ACK 不证明 query 未执行。
+4. 当前 example 在 status 失败时立即停止，报告脱敏的 stage 与错误码，不发送额外 status
+   诊断请求、不重试，也不继续 open；首次失败不能由后续读回或重新打开会话抵消。
+   example 仅在 query 成功且行形状、精确整数校验通过后发送一次 close；query 失败或校验失败
+   即停止，不发送清理 close 或重放。close 自身失败也停止、不重试；close ACK 不证明未知 query 未执行。
 
 ## 5. 事务、明确错误与未知结果
 
