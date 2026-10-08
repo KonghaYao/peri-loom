@@ -3,6 +3,27 @@
 本目录的用户路径以真实可运行入口为准。每组使用有序操作步骤，供人工逐项验收；
 功能验收、故障演练和性能测量分开记录。测试通过不等于生产 HA 或无限资源保证。
 
+## 最新已观察入口（2026-10-08）
+
+1. 最近已观察的运行入口为 `https://127.0.0.1:19457/`；本节不执行新 health probe，
+   不保证阅读时服务仍在线，也不表示用户已按本页完成手工验收。
+2. 使用私有 `0600` 连接文件：
+   `/private/tmp/peri-sql-open-diagnostic-6kd1nb3v/peri-stress-693cbb766368/connection.json`。
+   按其中 proper CA 正常验证 TLS；项目 Key 用于项目 SQL/管理，不 dump Key、不用 S3 后台 Key 或全局管理员 Key 替代。
+3. 此 launcher 配置的数据库是 `local_default/demo/main`；SDK/UI 使用该配置，不混用 stress parent config 或旧 Unknown 库。
+4. 已接受的实际范围见 [SDK 四 case / UI 功能](FINAL-SDK-UI-GO-OBSERVATION-VERIFICATION.md)、
+   [common 13 scenarios](FINAL-COMMON-OBSERVED-VERIFICATION.md) 与 [Linux Local](FINAL-LINUX-GO-OVERLAY-VERIFICATION.md)；
+   仅限各报告的实际版本与范围，不把历史 proof 冒充新版本调用证据，不表示全覆盖或 Linux S3 部署通过。
+5. 后阶段 [UI 19457 own-profile cleanup](UI-19457-PROFILE-CLEANUP-VERIFICATION.md) 已独立接受，不再 pending；
+   旧 Unknown、原 supervisor exit1 及其原始证据保留，不洗绿，不对旧会话盲 Close、重开或重放。
+6. 后续操作按 [运维](USER-PATH-OPERATIONS.md)、[平台](USER-PATH-PLATFORM.md)、[数据库](USER-PATH-DATABASE.md) 路径逐组授权执行；
+   写入、恢复、迁移、故障演练使用另行授权的独立目标，不因本节入口可用而自动执行。
+7. 三种 SDK 与 UI 分别按 [SDK](USER-PATH-SDK.md)、[平台](USER-PATH-PLATFORM.md) 和 [调用者安全](USER-PATH-CALLER-SAFETY.md) 路径记录；
+   Unknown/transport 失败立即停止，不自动重试、清理或读回作为取消证明。
+8. 并发步骤继续见 [并发](USER-PATH-CONCURRENCY.md) 与 [Writer admission](USER-PATH-WRITER-ADMISSION.md)；
+   [最新限定联合验收](FINAL-JOINT-DELIVERY-VERIFICATION.md) 为 prototype `FUNCTIONAL ACCEPT`，远端发布未证明、cold/HA 覆盖仅部分、非 production READY；
+   当前边界仍为 `PERF NOT PASS`，不抵消旧 Unknown，也不等于用户手工验收通过。
+
 ## 阅读与执行顺序
 
 1. 阅读 [运维路径](USER-PATH-OPERATIONS.md)，构建并启动独立的测试实例，确认

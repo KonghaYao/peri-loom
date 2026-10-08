@@ -14,7 +14,7 @@
 | P3：多DB、idle卸载、真实kill/cache删除、lazy迁移 | `P3-VERIFICATION.md`：165常规+4 live；`P3-ACCEPTANCE.md` | 当前S3 multi-DB/unload/fresh-cache case及R16 migration/suspend/resume通过；非全部SIGKILL、冷故障或大DB lazy读量证明。 |
 | P4：epoch/lease、stale WAL/HEAD fence、退出quiescence | `P4-VERIFICATION.md`：254常规+5 live，原修正版PASS | 当前full Root含P4 25 PASS，另轮S3 fence通过；test completion合同接受，不证明新增产品completion barrier或历史失败根因修复。 |
 | P5：registry/placement、失联/failover、graceful migration | `P5-VERIFICATION.md`：62顶层、1 helper skip，normal/race通过 | 历史8实际进程故障场景已签发；当前R16 lifecycle子集通过，不是重跑所有失联/reconciliation场景。 |
-| P6：gateway/auth/quota、KMS/encryption、SDK/UI、metrics/部署 | `P6-VERIFICATION.md`：原冻结Rust/Go/live SDK/UI/Linux接受 | SDK4cases、R17 UI功能/后阶段cleanup、Linux Local各有冻结接受；新observer common功能已独立接受，新Go SDK/UI/Linux实际门禁仍PENDING，非全项目PASS。 |
+| P6：gateway/auth/quota、KMS/encryption、SDK/UI、metrics/部署 | `P6-VERIFICATION.md`：原冻结Rust/Go/live SDK/UI/Linux接受 | 新Go SDK4/UI功能、后阶段own-lock cleanup、Linux Local overlay与common分别接受；`FINAL-JOINT-DELIVERY-VERIFICATION.md`限定prototype功能/source audit已接受，非production或全项目PASS。 |
 | 原联合：跨阶段native+S3 cold/fence | `JOINT-VERIFICATION.md`：325 unique native PASS/5 ignored；复用明确列出的P6证据 | 历史功能PASS保留；该fault fixture后续退出1明确非clean，且不覆盖后来的observer/client生产源码。 |
 
 ## 2. 最新增量证明与当前门禁
@@ -36,9 +36,9 @@
 | 现有UI实际失败 | `SDK-UI-ISOLATED-INDEPENDENT.md`：R15 wrapper/capture exit1、wire/model未证明，combined HOLD | 旧失败/潜在unknown原样保留、不操作；R17新隔离功能另列接受，不追认旧run成功或完整served lineage。 |
 | R16唯一actual UI | `UI-R16-INDEPENDENT.md`：Gauss独立FAIL/HOLD；captureSchema、owned SIGTERM、diag/wire0、无oracle | 静态确定捕获器错拒GET catalog合法空response ID，是捕获器兼容缺陷而非生产BUG；不追认本次实际cause。 |
 | R17新fixture / actual UI | proper-CA whole11通过；`UI-R17-INDEPENDENT.md`接受实际功能：helper/capture0、四查询、CloseACK、refs、storage0、八wire关联 | 原supervisor锁断言exit1保留；`UI-PROFILE-CLEANUP-VERIFICATION.md`接受后阶段delete1/lexists=false，不改原exit，非原子same-UID限制保留。 |
-| R17冻结SDK3 | `FINAL-SDK-CURRENT-VERIFICATION.md`：Go i64/integrity、TS bigint、Rust as_i64四个实际known-success case独立接受 | Native97e1/GoC252与18项选定输入一致；不继承为Go12ad上的SDK/UI实际门禁，非全SDK suite、Unknown恢复、完整删除syscall或性能证明。 |
+| 当前Go12ad SDK/UI功能 | `FINAL-SDK-UI-GO-OBSERVATION-VERIFICATION.md`（3aef6ab）：SDK4 known-success与UI四query/八wire/CloseACK1/storage0独立接受，59项lineage匹配 | 原PRE-SPAWN0dispatch失败及supervisor1保留；`UI-19457-PROFILE-CLEANUP-VERIFICATION.md`（ce5325b）接受后阶段cleanup0/delete1/lock absent，非原UI整体验收或原子same-UID保证。 |
 | Linux Local subset | `../experiment-v1-stress/LINUX-CURRENT-INDEPENDENT.md`接受base9e image：UID10001/properCA/whole11/actual container0 OOMfalse/clean marker | 不包含后续observer；4109 regular限定context非completeRepoClosed，非LinuxS3；service逐退出码未由空logs单独证明。作者B，Gauss独立。 |
-| 已验Linux Local交付 | `FINAL-LINUX-CURRENT-VERIFICATION.md`独立接受base4a32/image49e6d3、该冻结Native diagnostics、UID10001、properCA/whole11、退出0/clean marker | 限定4111regular/十link排除；不覆盖新Go observer，eed仅编译未部署；非Linux S3、HA或逐服务exit完整证明，不宣称latest生产Ready。 |
+| 新Go Linux Local overlay | `FINAL-LINUX-GO-OVERLAY-VERIFICATION.md`（071a935）：image c534、Go eed payload、UID10001、properCA/whole11、stop/wait0/OOMfalse/clean marker限定接受 | 两文件Go overlay，继承base49e6d3/Linux Native60eb/CLI7b99及旧launcher adf658，不是current Root dev.py；observer=0，非重编全部产物、完整源码闭包、Linux S3/HA或逐服务exit证明。 |
 | Metrics/checkpoint观察 | `../experiment-v1-stress/16_verification.md`实际标题/内容为R14：24 GET200/0 metrics403、checkpoint ACK1、unknown0 | 文件编号16不是R16；只接受该run功能/报告map，不证明每项仪表精度或native checkpoint算法修复。Main/E执行，F核验。 |
 | 旧common Open未知 | `FINAL-COMMON-CURRENT-VERIFICATION.md`保留旧run：首次Open HTTP502/outcome_unknown，CLI自然exit1、UNRESOLVED/HOLD；13cases全部NOT RUN、零业务ACK/Query/Execute | metrics GET200先于失败、非后续健康证明；unknown无closed cause，namespace保留不重试/Close/reopen；external builder confound=true、performance_pass=false。 |
 | 最新observer common实际 | `FINAL-COMMON-OBSERVED-VERIFICATION.md`（920f16a）：F FUNCTIONAL ACCEPT；13scenarios、72timed phases、1863 workflow ACK、38correctness PASS、ledger210、unknown/cleanup_unknown0；CLI/guard0、checkpoint ACK | 72phases来自12cases，constraint_error_reuse另行顺序验；ledger209显式+1源码重建，预期sql_error/rollback未过滤；功能仅本run，external builder confound/performance_pass=false，旧Unknown保留。 |
@@ -48,11 +48,11 @@
 1. R16前置binding引用既有独立报告；本次仅读报告、不重新访问fixture。R16失败、R17成功与后阶段锁删除证据互不改写。
 2. 既有R16独立报告核whole SHA `dc5f3e8d186c3c640a7bf11f0ff54f7ae9da1652573c7eed56a1b84a17a47704`；`external_s3_fixture` / `certificate_verified` / 11 checks PASS，不是本次重跑。
 3. Rust test-only批未改变Native97e1生产bytes；旧common为97e1/C252/376及1214+3输入，新已验common为97e1/12ad/376及1219+3输入；功能ACCEPT不解决旧Open未知、不证明NativeRollback或空native cache。
-4. 11file observer与本次common已有各自独立报告；新PREP proof SHA `3b051ff35feb527bece30e5c3b923e5474224979be384a85c13bff665cca1537`仍仅前置门禁。新Go上的SDK/UI/Linux实际验证PENDING，旧产物gate不继承。
+4. 11file observer/common、Go12ad SDK/UI与Linux eed overlay分别有新独立实际报告；F最终joint核1222身份并限定接受，审计Root ce5325b，非整Root Git-clean/完整仓库闭包；PREP proof仍仅前置门禁，不代替实际验收或继承旧产物gate。
 
-## 4. 最终裁定所缺的闭环
+## 4. 限定交付与保留边界
 
 1. **当前native测试门禁接受**：F full Root413 unique PASS/0 FAIL/5 ignored；Main另跑S3 opt-in5 PASS、F只读接受。本批仍不修生产completion；产品lifecycle completion架构边界与historical cause not proven保留。
-2. **UI功能与后续cleanup接受**：R16首失败、R17原supervisor退出1保留；实际UI/SDK3限定功能和后阶段own锁删除分别独立接受，不用清理阶段洗绿旧执行。
-3. **冻结Linux Local部署接受**：base4a32/image49e6d3含其Native diagnostics，非root/TLS/whole11/退出clean已核；新Go observer仅另有Linux编译证据，不继承部署/SDK/UI门禁，S3/HA/逐服务exit边界不变。
-4. **最新common功能ACCEPT；全项目HOLD、性能NOT PASS**：F独立接受13/72/1863workflowACK/ledger210/unknown0，限定confounded run；新Go SDK/UI/Linux实际门禁仍PENDING，旧Open502未知/13未运行、历史根因/退役/rollback未证明保留，不批准新执行。
+2. **当前SDK/UI功能与后续cleanup接受**：Go12ad上的SDK4/UI功能独立接受；19457原supervisor1与R16/R17旧失败保留，另授权own锁cleanup0不洗绿原执行，无完整served-lineage/browser CA-chain或Unknown恢复证明。
+3. **新Go Linux Local overlay限定接受**：image c534含Go eed，非root/TLS/whole11/退出clean已核；Native/CLI与旧launcher继承，不是完整current Root部署，observer关闭，S3/HA/逐服务exit边界不变。
+4. **限定prototype功能/source audit ACCEPT；性能NOT PASS**：`FINAL-JOINT-DELIVERY-VERIFICATION.md`已冻结独立接受，非production READY、完整项目/all-features或新Main joint_pass；旧Open502未知/13未运行与历史cause/退役/rollback未证保留。未push/remote publication与clone可用性未证，完整cold-fault/长期HA未覆盖，不批准新执行。
