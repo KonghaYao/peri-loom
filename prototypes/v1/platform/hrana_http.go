@@ -91,8 +91,11 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	if serveHranaV3(writer, request, handler) {
 		return
 	}
+	if serveHranaV3JSONCursor(writer, request, handler) {
+		return
+	}
 	parts := strings.Split(request.URL.Path, "/")
-	if len(parts) != 7 || parts[0] != "" || parts[1] != "db" || parts[5] != "v2" || parts[6] != "pipeline" || request.URL.RawQuery != "" {
+	if len(parts) != 7 || parts[0] != "" || parts[1] != "db" || (parts[5] != "v2" && parts[5] != "v3") || parts[6] != "pipeline" || request.URL.RawQuery != "" {
 		http.NotFound(writer, request)
 		return
 	}

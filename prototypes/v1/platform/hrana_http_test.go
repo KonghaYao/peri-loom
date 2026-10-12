@@ -110,12 +110,12 @@ func TestHranaAuthenticationAndNativeWrite(t *testing.T) {
 	if response := call(fixture.tokenB, path, write); response.Code != 403 {
 		t.Fatalf("cross-project credential: %d", response.Code)
 	}
-	if response := call(fixture.tokenA, "/db/tenant-a/db-a/main/v3/pipeline", write); response.Code != 404 {
-		t.Fatalf("unsupported v3: %d", response.Code)
-	}
 	response := call(fixture.tokenA, path, write)
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"last_insert_rowid":"9223372036854775807"`) || fixture.upstream.count("statement") != 1 {
 		t.Fatalf("native write metadata missing: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(fixture.tokenA, "/db/tenant-a/db-a/main/v3/pipeline", `{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}},{"type":"close"}]}`); response.Code != 200 || fixture.upstream.count("statement") != 2 {
+		t.Fatalf("v3 JSON pipeline: %d %s", response.Code, response.Body.String())
 	}
 }
 
