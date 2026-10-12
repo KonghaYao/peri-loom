@@ -153,6 +153,7 @@ impl DatabaseProvider for RemoteAuthorityProvider {
             session,
             binding,
             role,
+            retirement: std::sync::atomic::AtomicU8::new(0),
         }))
     }
 }
@@ -162,10 +163,15 @@ struct RemoteStore {
     session: String,
     binding: LeaseBinding,
     role: AccessRole,
+    retirement: std::sync::atomic::AtomicU8,
 }
 
 impl RemoteStore {
     fn call(&self, operation: SessionOperation) -> Result<serde_json::Value> {
+        ensure!(
+            self.retirement.load(std::sync::atomic::Ordering::Acquire) == 0,
+            "remote scope retired or unsettled"
+        );
         self.client.call(AuthorityCommand::Session {
             session: self.session.clone(),
             operation,
@@ -193,8 +199,78 @@ impl RemoteStore {
 }
 
 impl ObjectStore for RemoteStore {
+    fn append_wal(&self, request: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
+        request.validate()?;
+        ensure!(
+            self.role == AccessRole::Writer
+                && request.namespace == self.binding.database.namespace
+                && request.epoch == self.binding.epoch,
+            "Fenced WAL append identity"
+        );
+        let result = (|| {
+            let lsn: u64 = serde_json::from_value(self.call(SessionOperation::AppendWal {
+                request: request.clone(),
+            })?)?;
+            ensure!(lsn > 0, "invalid WAL append result");
+            Ok(Some(lsn))
+        })();
+        if result.as_ref().is_err_and(|error: &anyhow::Error| {
+            !error.is::<super::client::KnownAuthorityRejection>()
+                && !error.is::<crate::object_store::PreconditionFailed>()
+        }) {
+            self.retirement
+                .store(3, std::sync::atomic::Ordering::Release);
+        }
+        result
+    }
+
+    fn retire_scope(&self, deadline: std::time::Instant) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        match self
+            .retirement
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {}
+            Err(2) => return Ok(()),
+            Err(_) => anyhow::bail!("remote scope retirement pending or unknown; refusing retry"),
+        }
+        let result = (|| {
+            let proof = self.client.call_until(
+                AuthorityCommand::CloseSession {
+                    session: self.session.clone(),
+                },
+                deadline,
+            )?;
+            let binding: LeaseBinding = serde_json::from_value(proof["binding"].clone())?;
+            ensure!(
+                proof["closed"] == true && proof["drained"] == true && binding == self.binding,
+                "remote scope retirement proof mismatch"
+            );
+            Ok(())
+        })();
+        self.retirement
+            .store(if result.is_ok() { 2 } else { 3 }, Ordering::Release);
+        result
+    }
+
     fn access_role(&self) -> AccessRole {
         self.role
+    }
+
+    fn checked_get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.get(key)
+    }
+
+    fn checked_put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.put(key, bytes, condition)
+    }
+
+    fn checked_delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.delete(key, expected)
+    }
+
+    fn checked_list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.list(prefix)
     }
 
     fn validate_session(&self) -> Result<()> {
@@ -284,6 +360,9 @@ impl ObjectStore for RemoteStore {
 
 impl Drop for RemoteStore {
     fn drop(&mut self) {
+        if self.retirement.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            return;
+        }
         let _ = self.client.call(AuthorityCommand::CloseSession {
             session: self.session.clone(),
         });

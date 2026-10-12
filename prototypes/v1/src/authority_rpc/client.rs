@@ -16,6 +16,17 @@ pub struct AuthorityClient {
     observer: Option<diagnostics::RejectionObserver>,
 }
 
+#[derive(Debug)]
+pub(crate) struct KnownAuthorityRejection;
+
+impl std::fmt::Display for KnownAuthorityRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("authority operation rejected")
+    }
+}
+
+impl std::error::Error for KnownAuthorityRejection {}
+
 pub(crate) fn random_id() -> Result<String> {
     let mut bytes = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
@@ -89,6 +100,22 @@ impl AuthorityClient {
     }
 
     pub fn call(&self, command: AuthorityCommand) -> Result<serde_json::Value> {
+        self.call_with_deadline(command, None)
+    }
+
+    pub(crate) fn call_until(
+        &self,
+        command: AuthorityCommand,
+        deadline: std::time::Instant,
+    ) -> Result<serde_json::Value> {
+        self.call_with_deadline(command, Some(deadline))
+    }
+
+    fn call_with_deadline(
+        &self,
+        command: AuthorityCommand,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<serde_json::Value> {
         let is_grant = matches!(&command, AuthorityCommand::Grant { .. });
         let request_id = match &command {
             AuthorityCommand::Grant { request } => request.request_id.clone(),
@@ -114,12 +141,21 @@ impl AuthorityClient {
         } else {
             None
         };
-        let response = self
+        let mut pending = self
             .http
             .post(&self.endpoint)
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(bytes)
+            .body(bytes);
+        if let Some(deadline) = deadline {
+            pending = pending.timeout(
+                deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .context("scope retirement deadline")?
+                    .min(Duration::from_secs(30)),
+            );
+        }
+        let response = pending
             .send()
             .map_err(|_| anyhow::anyhow!("authority transport failed; outcome may be unknown"))?;
         ensure!(
@@ -175,6 +211,6 @@ impl AuthorityClient {
         if let Some(observation) = observation {
             observation.reject(response.error.as_deref().unwrap_or_default());
         }
-        anyhow::bail!("authority operation rejected")
+        Err(KnownAuthorityRejection.into())
     }
 }

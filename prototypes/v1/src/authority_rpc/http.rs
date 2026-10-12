@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
@@ -116,7 +116,13 @@ fn line(
 
 pub(crate) fn reply(stream: &mut TcpStream, status: u16, body: &[u8]) -> Result<()> {
     stream.set_nonblocking(false)?;
+    stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write_reply(stream, status, body)
+}
+
+fn write_reply(writer: &mut impl Write, status: u16, body: &[u8]) -> Result<()> {
+    let mut output = BufWriter::new(writer);
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -124,8 +130,57 @@ pub(crate) fn reply(stream: &mut TcpStream, status: u16, body: &[u8]) -> Result<
         503 => "Service Unavailable",
         _ => "Error",
     };
-    write!(stream, "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
-    stream.write_all(body)?;
-    stream.flush()?;
+    write!(output, "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+    output.write_all(body)?;
+    output.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Writes {
+        pieces: Vec<Vec<u8>>,
+    }
+
+    impl Write for Writes {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.pieces.push(bytes.to_vec());
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn small_reply_does_not_fragment_header_and_body_into_tiny_writes() -> Result<()> {
+        let body = br#"{"ok":true}"#;
+        let mut output = Writes::default();
+        write_reply(&mut output, 200, body)?;
+        assert_eq!(output.pieces.len(), 1);
+        assert!(output.pieces[0].starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(output.pieces[0].ends_with(body));
+        assert!(String::from_utf8_lossy(&output.pieces[0]).contains("Content-Length: 11\r\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn large_reply_preserves_body_and_content_length_without_unbounded_buffering() -> Result<()> {
+        let body = vec![83; 16384];
+        let mut output = Writes::default();
+        write_reply(&mut output, 200, &body)?;
+        let bytes = output.pieces.concat();
+        let offset = bytes
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert_eq!(&bytes[offset..], body);
+        assert!(String::from_utf8_lossy(&bytes[..offset]).contains("Content-Length: 16384\r\n"));
+        Ok(())
+    }
 }

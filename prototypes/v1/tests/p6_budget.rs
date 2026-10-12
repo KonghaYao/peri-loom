@@ -23,6 +23,24 @@ fn open() -> Result<(tempfile::TempDir, tempfile::TempDir, Arc<RemoteDatabase>)>
 const RECURSIVE: &str = "WITH RECURSIVE forever(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM forever) SELECT sum(value) FROM forever";
 
 #[test]
+fn single_statement_result_budget_rejects_before_delivery_and_session_recovers() -> Result<()> {
+    let (_objects, _cache, database) = open()?;
+    let session = database.session()?;
+    let budget = Budget {
+        max_rows: 1,
+        ..Budget::default()
+    };
+    assert!(session
+        .statement_with_budget("SELECT 1 UNION ALL SELECT 2", &[], &budget)
+        .is_err());
+    let result = session.statement("SELECT 9 AS recovered", &[])?;
+    assert_eq!(result.cols[0].name, "recovered");
+    assert_eq!(result.rows[0][0].to_string(), "9");
+    assert_eq!(result.affected_row_count, 0);
+    Ok(())
+}
+
+#[test]
 fn recursive_vm_abort_and_handler_cleanup() -> Result<()> {
     let (_objects, _cache, database) = open()?;
     let session = database.session()?;

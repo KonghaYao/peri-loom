@@ -8,7 +8,7 @@ import (
 	controller "peri-loom/controller"
 )
 
-func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) gatewayResult {
+func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) (result gatewayResult) {
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
@@ -25,6 +25,14 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
+	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", map[string]any{"command": "open_session", "database": database})
+	if err != nil {
+		return operationAdmissionFailure(err)
+	}
+	defer func() {
+		result.operationID, result.operationStage, result.operationDatabase = operationID, "open_session", database
+		result.operationPending = true
+	}()
 	var reply struct {
 		Session  string `json:"session"`
 		Readonly *bool  `json:"readonly"`
@@ -113,7 +121,7 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 	return result
 }
 
-func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool, session *gatewaySession) gatewayResult {
+func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool, session *gatewaySession) (result gatewayResult) {
 	currentBinding := session.binding
 	if gateway.authorize(principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
@@ -122,7 +130,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayFailure(403, "invalid_session")
 	}
 	if session.poisoned {
-		return gatewayFailure(502, "outcome_unknown")
+		return gateway.isolatedSessionFailure(session.database)
 	}
 	if principal.Database != nil {
 		_, binding, err := gateway.route(session.database)
@@ -154,6 +162,48 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayFailure(403, "forbidden")
 	}
 	command := map[string]any{"command": action, "session": session.upstream}
+	switch action {
+	case "cursor_open":
+		command["command"] = "open_read_cursor"
+		if request.WriteCursor {
+			command["command"] = "open_write_cursor"
+		}
+		args := request.Args
+		if args == nil {
+			args = []sqlArgument{}
+		}
+		namedArgs := request.NamedArgs
+		if namedArgs == nil {
+			namedArgs = []namedSQLArgument{}
+		}
+		command["args"] = args
+		command["named_args"] = namedArgs
+	case "cursor_fetch":
+		command["command"] = "fetch_read_cursor"
+		if request.WriteCursor {
+			command["command"] = "fetch_write_cursor"
+		}
+		command["max_rows"] = request.MaxRows
+	case "cursor_close":
+		command["command"] = "close_read_cursor"
+		if request.WriteCursor {
+			command["command"] = "close_write_cursor"
+		}
+	}
+	stage := "tool_rpc"
+	if action == "close" {
+		stage = "close_session"
+	} else if action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open" {
+		command["sql"] = request.SQL
+	}
+	operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", action, stage, session.worker.ID, session.upstream, command)
+	if err != nil {
+		return operationAdmissionFailure(err)
+	}
+	defer func() {
+		result.operationID, result.operationStage, result.operationDatabase = operationID, stage, session.database
+		result.operationPending = true
+	}()
 	if action == "close" {
 		command["command"] = "close_session"
 		var reply struct {
@@ -169,7 +219,74 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		gateway.removeSession(session)
 		return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
 	}
-	command["sql"] = request.SQL
+	if action == "cursor_open" {
+		var reply json.RawMessage
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+			return gateway.upstreamFailure(err, session, permit)
+		}
+		if len(reply) > quota.MaxResultBytes || !validCursorOpenResult(reply) {
+			return gateway.unknown(session, permit)
+		}
+		return gatewayResult{value: reply, dispatched: true}
+	}
+	if action == "cursor_fetch" {
+		var reply json.RawMessage
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+			return gateway.upstreamFailure(err, session, permit)
+		}
+		if len(reply) > quota.MaxResultBytes || !validCursorFetchResponse(reply, request.MaxRows, request.WriteCursor) {
+			return gateway.unknown(session, permit)
+		}
+		return gatewayResult{value: reply, dispatched: true}
+	}
+	if action == "cursor_close" {
+		var reply struct {
+			Closed bool `json:"closed"`
+		}
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+			return gateway.upstreamFailure(err, session, permit)
+		}
+		if !reply.Closed {
+			return gateway.unknown(session, permit)
+		}
+		return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
+	}
+	if action == "describe" {
+		var reply json.RawMessage
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+			return gateway.upstreamFailure(err, session, permit)
+		}
+		if len(reply) > quota.MaxResultBytes {
+			return gatewayResult{status: 413, code: "result_limit", dispatched: true}
+		}
+		if !validDescribeResult(reply) {
+			return gateway.unknown(session, permit)
+		}
+		return gatewayResult{value: reply, dispatched: true}
+	}
+	if action == "statement" {
+		args := request.Args
+		if args == nil {
+			args = []sqlArgument{}
+		}
+		command["args"] = args
+		namedArgs := request.NamedArgs
+		if namedArgs == nil {
+			namedArgs = []namedSQLArgument{}
+		}
+		command["named_args"] = namedArgs
+		var reply json.RawMessage
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+			return gateway.upstreamFailure(err, session, permit)
+		}
+		if len(reply) > quota.MaxResultBytes {
+			return gatewayResult{status: 413, code: "result_limit", dispatched: true}
+		}
+		if !validStatementResult(reply) {
+			return gateway.unknown(session, permit)
+		}
+		return gatewayResult{value: reply, dispatched: true}
+	}
 	if action == "execute" {
 		var reply struct {
 			Executed bool `json:"executed"`
@@ -184,7 +301,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: map[string]bool{"executed": true}, dispatched: true}
 	}
 	var reply json.RawMessage
-	err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
+	err = gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
 	if err != nil {
 		return gateway.upstreamFailure(err, session, permit)
 	}
@@ -213,8 +330,9 @@ func (gateway *Gateway) unknown(session *gatewaySession, permit *admissionPermit
 	return gatewayResult{status: 502, code: "outcome_unknown", dispatched: true, session: session}
 }
 
-func (gateway *Gateway) upstreamFailure(err error, session *gatewaySession, permit *admissionPermit) gatewayResult {
+func (gateway *Gateway) upstreamFailure(err error, session *gatewaySession, permit *admissionPermit) (result gatewayResult) {
 	var failure *SQLRPCError
+	defer func() { result.rpc = failure }()
 	if errors.As(err, &failure) && failure.ExecutionCompleted && !failure.Ambiguous {
 		return gatewayResult{status: 400, code: "sql_error", dispatched: true}
 	}

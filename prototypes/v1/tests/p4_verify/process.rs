@@ -4,14 +4,17 @@ use super::{
         authority_arguments, Cluster, Process, AUTHORITY_CONTROL, WORKER_A, WORKER_B,
     },
 };
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use peri_loom_v1::{
     authority_rpc::{
         client::AuthorityClient,
         protocol::{AuthorityCommand, MaintenanceOperation, SessionOperation},
     },
     object_store::{PutCondition, StoredObject},
-    ownership::types::{AccessRole, OwnershipCommand},
+    ownership::types::{
+        AccessRole, GrantReply, LeaseIntent, NonceReply, OwnershipCommand, RenewIntent,
+        RenewRequest,
+    },
     worker_rpc::protocol::WorkerCommand,
 };
 use serde_json::json;
@@ -239,10 +242,18 @@ fn actual_two_workers_fence_cached_sql_commit_head_and_worker_maintenance() -> R
 
 #[test]
 fn authority_sigkill_causes_partition_refusal_and_default_dirty_restart_refusal() -> Result<()> {
+    use peri_loom_v1::ownership::{clock::SystemLeaseClock, types::LeaseClock};
+    let clock = SystemLeaseClock;
+    let started = clock.now_ms()?;
     let mut cluster = Cluster::new()?;
     let mut worker = cluster.worker("verify-a", WORKER_A)?;
     let id = identifier("partition");
-    let lease = cluster.grant(id.clone(), "verify-a", 10, 0, 2000)?;
+    let mut lease = cluster.grant(id.clone(), "verify-a", 10, 0, 2000)?;
+    eprintln!(
+        "P4_KILL_SETUP stage=grant_ack elapsed_ms={} binding={}",
+        clock.now_ms()? - started,
+        serde_json::to_string(&lease)?
+    );
     worker.worker(
         true,
         WorkerCommand::Ownership {
@@ -252,13 +263,27 @@ fn authority_sigkill_causes_partition_refusal_and_default_dirty_restart_refusal(
             },
         },
     )?;
+    eprintln!(
+        "P4_KILL_SETUP stage=acquire_ack elapsed_ms={}",
+        clock.now_ms()? - started
+    );
     let opened = worker.worker(
         false,
         WorkerCommand::OpenSession {
             database: id.clone(),
         },
     )?;
+    eprintln!(
+        "P4_KILL_SETUP stage=open_ack elapsed_ms={}",
+        clock.now_ms()? - started
+    );
     let session = opened["session"].as_str().unwrap().to_owned();
+    lease = renew_partition_setup(&cluster, &worker, &lease)?;
+    eprintln!(
+        "P4_KILL_SETUP stage=pre_sql_renew_ack elapsed_ms={} binding={}",
+        clock.now_ms()? - started,
+        serde_json::to_string(&lease)?
+    );
     worker.worker(
         false,
         WorkerCommand::Execute {
@@ -266,7 +291,44 @@ fn authority_sigkill_causes_partition_refusal_and_default_dirty_restart_refusal(
             sql: "CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)".into(),
         },
     )?;
+    eprintln!(
+        "P4_KILL_SETUP stage=execute_ack elapsed_ms={}",
+        clock.now_ms()? - started
+    );
+    lease = renew_partition_setup(&cluster, &worker, &lease)?;
+    eprintln!(
+        "P4_KILL_SETUP stage=pre_kill_renew_ack elapsed_ms={} binding={}",
+        clock.now_ms()? - started,
+        serde_json::to_string(&lease)?
+    );
+    let live = worker.worker(
+        true,
+        WorkerCommand::Ownership {
+            action: OwnershipCommand::GetDatabaseState {
+                database: id.clone(),
+            },
+        },
+    )?;
+    ensure!(
+        live["mode"] == "writer"
+            && live["remaining_ttl_ms"]
+                .as_u64()
+                .is_some_and(|remaining| remaining > 0),
+        "partition fault setup lease is not live: {live}"
+    );
+    eprintln!(
+        "P4_KILL_SETUP stage=live_before_kill elapsed_ms={} state={live}",
+        clock.now_ms()? - started
+    );
+    eprintln!(
+        "P4_KILL_SETUP stage=kill_begin elapsed_ms={}",
+        clock.now_ms()? - started
+    );
     assert_eq!(cluster.authority.kill()?.signal(), Some(9));
+    eprintln!(
+        "P4_KILL_SETUP stage=kill_ack signal=9 elapsed_ms={}",
+        clock.now_ms()? - started
+    );
     assert!(worker
         .worker(
             false,
@@ -320,4 +382,48 @@ fn authority_sigkill_causes_partition_refusal_and_default_dirty_restart_refusal(
     assert!(worker.wait()?.success());
     eprintln!("P4 independent actual authority SIGKILL signal=9: cached SQL partition refused, default dirty restart exited nonzero, expired renewal did not resurrect");
     Ok(())
+}
+
+fn renew_partition_setup(
+    cluster: &Cluster,
+    worker: &Process,
+    lease: &GrantReply,
+) -> Result<GrantReply> {
+    let sequence = lease
+        .binding
+        .renewal_sequence
+        .checked_add(1)
+        .context("renewal sequence exhausted")?;
+    let intent = RenewIntent {
+        binding: lease.binding.clone(),
+        sequence,
+        ttl_ms: 2000,
+    };
+    let nonce: NonceReply =
+        serde_json::from_value(cluster.control.call(AuthorityCommand::Challenge {
+            intent: LeaseIntent::Renew(intent.clone()),
+        })?)?;
+    let renewed: GrantReply =
+        serde_json::from_value(cluster.control.call(AuthorityCommand::Renew {
+            request: RenewRequest {
+                request_id: format!("partition-setup-renew-{sequence}"),
+                nonce: nonce.nonce,
+                intent,
+            },
+        })?)?;
+    let mut expected = lease.binding.clone();
+    expected.renewal_sequence = sequence;
+    ensure!(
+        renewed.binding == expected && renewed.remaining_ttl_ms > 0,
+        "setup renewal full identity mismatch"
+    );
+    worker.worker(
+        true,
+        WorkerCommand::Ownership {
+            action: OwnershipCommand::RenewLease {
+                lease: renewed.clone(),
+            },
+        },
+    )?;
+    Ok(renewed)
 }

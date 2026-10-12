@@ -1,10 +1,13 @@
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import pathlib
 import queue
 import secrets
 import signal
+import stat
 import socket
 import subprocess
 import sys
@@ -49,14 +52,96 @@ def private_directory(path):
         raise RuntimeError("runtime directory must be private and not a symlink")
 
 
+def atomic_private_json(destination, value):
+    temporary = destination.with_name(destination.name + "." + secrets.token_hex(16))
+    private_json(temporary, value)
+    os.replace(temporary, destination)
+    descriptor = os.open(destination.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def signed_owned_identity(configuration, identity):
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    key = pathlib.Path(configuration["key_file"]).read_bytes()
+    return {"payload": payload, "mac": hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()}
+
+
+def verify_owned_stop_proofs(run_directory, configuration, workers):
+    """Inspect historical evidence only; this does not authorize a restart."""
+    proof_directory = run_directory / "owned-proof"
+    key_file = run_directory / "keys/owned-proof.key"
+    if (configuration.get("directory") != str(proof_directory)
+            or configuration.get("key_file") != str(key_file)
+            or set(configuration.get("workers", {})) != set(workers)
+            or not isinstance(configuration.get("generation"), str)):
+        raise RuntimeError("owned stop proof configuration mismatch")
+    if not proof_directory.is_dir():
+        raise RuntimeError("owned stop proof directory missing")
+    private_directory(proof_directory)
+    if key_file.is_symlink() or not stat.S_ISREG(key_file.stat().st_mode) or key_file.stat().st_mode & 0o077:
+        raise RuntimeError("owned stop proof key is not private")
+    key = key_file.read_bytes()
+    if len(key) != 32:
+        raise RuntimeError("owned stop proof key invalid")
+    expected = {f"{worker}.{kind}.json" for worker in workers for kind in ("identity", "stop")}
+    if {entry.name for entry in proof_directory.iterdir()} != expected:
+        raise RuntimeError("owned stop proof set incomplete or unexpected")
+    for worker in workers:
+        records = []
+        for kind in ("identity", "stop"):
+            path = proof_directory / f"{worker}.{kind}.json"
+            if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or path.stat().st_mode & 0o077 or path.stat().st_size > 4096:
+                raise RuntimeError("owned stop proof file invalid")
+            try:
+                signed = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
+                if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
+                    raise ValueError("invalid envelope")
+                payload = signed["payload"].encode()
+                if not hmac.compare_digest(signed["mac"], hmac.new(key, payload, hashlib.sha256).hexdigest()):
+                    raise ValueError("bad mac")
+                record = json.loads(signed["payload"], object_pairs_hook=unique_object)
+                if set(record) != {"version", "generation", "worker_id", "nonce", "pid", "started", "waited", "exit_code"}:
+                    raise ValueError("invalid fields")
+            except (ValueError, TypeError, UnicodeError, RuntimeError) as error:
+                raise RuntimeError("owned stop proof validation failed") from error
+            records.append(record)
+        identity, stopped = records
+        if (identity["version"] != 1 or isinstance(identity["version"], bool)
+                or identity["generation"] != configuration["generation"]
+                or identity["worker_id"] != worker or identity["nonce"] != configuration["workers"][worker]
+                or type(identity["pid"]) is not int or identity["pid"] <= 0
+                or not isinstance(identity["started"], str) or not identity["started"]
+                or identity["waited"] is not False or type(identity["exit_code"]) is not int or identity["exit_code"] != 0
+                or stopped != {**identity, "waited": True, "exit_code": 0}
+                or stopped["waited"] is not True or type(stopped["exit_code"]) is not int):
+            raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
+
+
+def stop_owned_worker(run_directory, worker):
+    private_directory(run_directory)
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(40)
+        client.connect(str(run_directory / "owned-stop.sock"))
+        client.sendall(json.dumps({"worker": worker}).encode() + b"\n")
+        reply = json.loads(client.makefile("rb").readline(1024))
+    if reply != {"stopped": True}:
+        raise RuntimeError("owned worker stop unavailable; retain isolation")
+
+
 def free_address():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return f"127.0.0.1:{listener.getsockname()[1]}"
 
 
-def safe_environment():
-    return {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
+def safe_environment(capacity_trace=False):
+    environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
+    if capacity_trace:
+        environment["PERI_CAPACITY_TRACE"] = "1" if os.environ.get("PERI_CAPACITY_TRACE") == "1" else "0"
+    return environment
 
 
 def request(endpoint, credential, path, body, certificate=None):
@@ -104,6 +189,8 @@ class Project:
         self.processes = {}
         self.logs = []
         self.stop = threading.Event()
+        self.owned_identities = {}
+        self.maintenance = None
 
     def prepare(self):
         observer = getattr(self.arguments, "sql_open_observer", False)
@@ -115,6 +202,10 @@ class Project:
         self.rust = pathlib.Path(os.environ.get("PERI_RUST_BINARY", self.root / "prototypes/v1/target/debug/peri-loom-v1"))
         self.go = pathlib.Path(os.environ.get("PERI_PLATFORM_BINARY", self.directory / "peri-platform"))
         if not self.arguments.no_build:
+            frontend = self.root / "prototypes/v1/platform/frontend"
+            if not (frontend / "node_modules").is_dir():
+                subprocess.run(["npm", "ci"], cwd=frontend, check=True, env=safe_environment())
+            subprocess.run(["npm", "run", "build"], cwd=frontend, check=True, env=safe_environment())
             subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(self.root / "prototypes/v1/Cargo.toml")], check=True, env=safe_environment())
             subprocess.run(["go", "build", "-o", str(self.go), "./cmd/peri-platform"], cwd=self.root / "prototypes/v1/platform", check=True, env=safe_environment())
         launch_path = self.directory / "launch.json"
@@ -131,7 +222,10 @@ class Project:
             self.config = json.loads((self.directory / "platform.json").read_text())
             if self.config.get("writer_admission", False) != self.arguments.writer_admission:
                 raise RuntimeError("writer admission configuration mismatch")
-            return
+            configuration = self.config.get("owned_stop_proof")
+            if configuration:
+                verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            raise RuntimeError("owned worker incarnation cannot be relaunched; use a fresh fixture")
         authority = free_address()
         broker = free_address()
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
@@ -165,6 +259,15 @@ class Project:
             "insecure_loopback": not self.arguments.tls,
             "writer_admission": self.arguments.writer_admission,
         }
+        proof_directory = self.directory / "owned-proof"
+        private_directory(proof_directory)
+        proof_key = self.directory / "keys/owned-proof.key"
+        descriptor = os.open(proof_key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(secrets.token_bytes(32))
+            output.flush()
+            os.fsync(output.fileno())
+        self.config["owned_stop_proof"] = {"generation": secrets.token_hex(32), "directory": str(proof_directory), "key_file": str(proof_key), "workers": {identity: secrets.token_hex(32) for identity in self.launch["workers"]}}
         if self.arguments.tls:
             certificate = pathlib.Path(os.environ.get("PERI_TLS_CERT", self.directory / "keys/gateway.crt"))
             private_key = pathlib.Path(os.environ.get("PERI_TLS_KEY", self.directory / "keys/gateway.key"))
@@ -195,12 +298,19 @@ class Project:
         private_json(launch_path, self.launch)
 
     def start(self, name, command, environment):
+        if name in self.owned_identities:
+            raise RuntimeError("owned worker incarnation cannot be reused")
         path = self.directory / "logs" / (name + ".log")
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         log = os.fdopen(descriptor, "w")
         self.logs.append(log)
         process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True)
         self.processes[name] = process
+        configuration = self.config.get("owned_stop_proof")
+        if configuration and name in configuration["workers"]:
+            identity = {"version": 1, "generation": configuration["generation"], "worker_id": name, "nonce": configuration["workers"][name], "pid": process.pid, "started": secrets.token_hex(32), "waited": False, "exit_code": 0}
+            self.owned_identities[name] = identity
+            atomic_private_json(pathlib.Path(configuration["directory"]) / (name + ".identity.json"), signed_owned_identity(configuration, identity))
         ready = queue.Queue()
         def read_output():
             for line in process.stdout:
@@ -215,9 +325,57 @@ class Project:
             raise RuntimeError(name + " readiness rejected")
         return event
 
+    def stop_worker(self, worker):
+        if worker not in self.owned_identities:
+            raise RuntimeError("worker is not owned by this launcher")
+        process = self.processes[worker]
+        if process.poll() is None:
+            process.terminate()
+        try:
+            exit_code = process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            exit_code = process.wait(timeout=10)
+        self.record_joined_worker_stop(worker, exit_code)
+
+    def record_joined_worker_stop(self, worker, exit_code):
+        proof = dict(self.owned_identities[worker], waited=True, exit_code=exit_code)
+        configuration = self.config["owned_stop_proof"]
+        atomic_private_json(pathlib.Path(configuration["directory"]) / (worker + ".stop.json"), signed_owned_identity(configuration, proof))
+
+    def start_maintenance(self):
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(self.directory / "owned-stop.sock"))
+        os.chmod(self.directory / "owned-stop.sock", 0o600)
+        listener.listen(2)
+        listener.settimeout(0.2)
+        self.maintenance = listener
+        def serve():
+            while not self.stop.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                with connection:
+                    connection.settimeout(2)
+                    try:
+                        incoming = json.loads(connection.makefile("rb").readline(1024), object_pairs_hook=unique_object)
+                        if set(incoming) != {"worker"} or not isinstance(incoming["worker"], str):
+                            raise RuntimeError("invalid owned worker request")
+                        self.stop_worker(incoming["worker"])
+                        connection.sendall(b'{"stopped":true}\n')
+                    except Exception:
+                        try:
+                            connection.sendall(b'{"stopped":false}\n')
+                        except OSError:
+                            pass
+        threading.Thread(target=serve, daemon=True).start()
+
     def run(self):
         self.prepare()
-        authority_environment = safe_environment()
+        authority_environment = safe_environment(capacity_trace=True)
         authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
         backend = str(self.directory / "backend")
         if self.arguments.backend == "s3":
@@ -229,12 +387,14 @@ class Project:
         self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
         platform_environment = safe_environment()
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"
+        platform_environment["PERI_HRANA_EXPERIMENTAL"] = "1" if os.environ.get("PERI_HRANA_EXPERIMENTAL") == "1" else "0"
         self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], platform_environment)
         for identity, worker in self.launch["workers"].items():
-            environment = safe_environment()
+            environment = safe_environment(capacity_trace=True)
             environment.update({"PERI_WORKER_AUTHORITY_TOKEN": worker["authority_token"], "PERI_WORKER_CONTROL_TOKEN": worker["control_token"], "PERI_WORKER_SQL_TOKEN": worker["sql_token"], "PERI_WORKER_KEY_TOKEN": worker["key_token"], "PERI_KMS_ENDPOINT": "http://" + self.config["broker_listen"]})
             environment["PERI_WORKER_WRITER_PROFILE"] = "1" if self.arguments.writer_admission else "0"
             self.start(identity, [str(self.rust), "owned-worker", "http://" + self.launch["authority"], worker["cache"], identity, worker["address"]], environment)
+        self.start_maintenance()
         scheme = "https://" if self.arguments.tls else "http://"
         address = self.arguments.listen.replace("0.0.0.0:", "127.0.0.1:")
         endpoint = scheme + address
@@ -268,6 +428,9 @@ class Project:
                     print(json.dumps({"degraded": True, "service": name, "reason": "worker_stopped_controller_reconciles_remaining_capacity"}), flush=True)
 
     def cleanup(self):
+        if self.maintenance is not None:
+            self.maintenance.close()
+            (self.directory / "owned-stop.sock").unlink(missing_ok=True)
         failures = []
         platform = self.processes.get("platform")
         if platform:
@@ -290,6 +453,7 @@ class Project:
                 if process.returncode != 0:
                     failures.append(name + " exited before a joined clean proof")
                 continue
+            shutdown_acknowledged = True
             try:
                 if name == "authority":
                     address, token, path = self.launch["authority"], self.config["controller"]["authority_token"], "/"
@@ -298,11 +462,17 @@ class Project:
                     address, token, path = worker["address"], worker["control_token"], "/control"
                 request("http://" + address, token, path, {"version": 1, "command": {"command": "shutdown"}})
             except RuntimeError:
+                shutdown_acknowledged = False
                 failures.append(name + " shutdown response incomplete")
             try:
                 result = process.wait(timeout=20)
                 if result != 0:
                     failures.append(name + " exited without a clean proof")
+                elif shutdown_acknowledged and name in self.owned_identities:
+                    try:
+                        self.record_joined_worker_stop(name, result)
+                    except (OSError, RuntimeError, ValueError):
+                        failures.append(name + " owned stop proof unavailable")
             except subprocess.TimeoutExpired:
                 failures.append(name + " still running; killed and dirty restart must be reconciled")
                 process.kill()
@@ -325,7 +495,16 @@ def main():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--writer-admission", action="store_true")
     parser.add_argument("--sql-open-observer", action="store_true")
+    parser.add_argument("--stop-worker", choices=("worker-a", "worker-b"))
     arguments = parser.parse_args()
+    if arguments.stop_worker:
+        try:
+            stop_owned_worker(pathlib.Path(arguments.run_dir).resolve(), arguments.stop_worker)
+        except Exception:
+            print("owned worker stop unavailable; retain isolation", file=sys.stderr)
+            return 1
+        print(json.dumps({"stopped": True, "remote_terminal": "not_proven", "recovery": "new_database_or_fixture_required"}))
+        return 0
     project = Project(arguments)
     signal.signal(signal.SIGTERM, lambda signum, frame: project.stop.set())
     signal.signal(signal.SIGINT, lambda signum, frame: project.stop.set())

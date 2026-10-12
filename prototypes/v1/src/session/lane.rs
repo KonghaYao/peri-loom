@@ -10,12 +10,15 @@ use super::admission::{
     AdmissionError, SessionControl, SessionWriterState, UnsettledSqlOutcome, WriterAdmission,
 };
 use super::budget::{Budget, RequestDeadline};
-use super::execution;
+use super::execution::{self, ReadCursor, WriteCursor};
+use super::{DescribeResult, StatementResult, WriteCursorPage};
 use crate::database::RemoteDatabase;
 
 pub(crate) struct SessionLane {
     pub control: Arc<SessionControl>,
     pub(crate) connection: Mutex<Option<Arc<Connection>>>,
+    read_cursor: Mutex<Option<ReadCursor>>,
+    write_cursor: Mutex<Option<WriteCursor>>,
     database: Mutex<Option<Arc<RemoteDatabase>>>,
     closed: AtomicBool,
     retired_unsettled: AtomicBool,
@@ -25,6 +28,8 @@ impl SessionLane {
     pub fn new(connection: Arc<Connection>, admission: &WriterAdmission) -> Result<Self> {
         Ok(Self {
             connection: Mutex::new(Some(connection)),
+            read_cursor: Mutex::new(None),
+            write_cursor: Mutex::new(None),
             database: Mutex::new(None),
             control: admission.register()?,
             closed: AtomicBool::new(false),
@@ -79,6 +84,24 @@ impl SessionLane {
                     if connection.is_none() {
                         return Err(AdmissionError::Quarantine.into());
                     }
+                    if !cleanup
+                        && self
+                            .read_cursor
+                            .lock()
+                            .map_err(|_| AdmissionError::Quarantine)?
+                            .is_some()
+                    {
+                        anyhow::bail!("read cursor is active on this session");
+                    }
+                    if !cleanup
+                        && self
+                            .write_cursor
+                            .lock()
+                            .map_err(|_| AdmissionError::Quarantine)?
+                            .is_some()
+                    {
+                        anyhow::bail!("write cursor is active on this session");
+                    }
                     return Ok(connection);
                 }
                 Err(TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(10)),
@@ -98,6 +121,7 @@ impl SessionLane {
     }
 
     pub fn execute(&self, database: &RemoteDatabase, sql: &str, budget: &Budget) -> Result<()> {
+        let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
         let connection = self.lock(database, &deadline, false)?;
         let result = execution::execute(
@@ -118,6 +142,7 @@ impl SessionLane {
         sql: &str,
         budget: &Budget,
     ) -> Result<Vec<Vec<Value>>> {
+        let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
         let connection = self.lock(database, &deadline, false)?;
         let result = execution::query(
@@ -127,6 +152,294 @@ impl SessionLane {
             sql,
             budget,
             &deadline,
+        );
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn describe(
+        &self,
+        database: &RemoteDatabase,
+        sql: &str,
+        budget: &Budget,
+    ) -> Result<DescribeResult> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(budget)?;
+        let connection = self.lock(database, &deadline, false)?;
+        let result = execution::describe(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            sql,
+            budget,
+            &deadline,
+        );
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn statement(
+        &self,
+        database: &RemoteDatabase,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        budget: &Budget,
+    ) -> Result<StatementResult> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(budget)?;
+        let connection = self.lock(database, &deadline, false)?;
+        let result = execution::statement(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            sql,
+            args,
+            named_args,
+            budget,
+            &deadline,
+        );
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn open_read_cursor(
+        &self,
+        database: &RemoteDatabase,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        budget: &Budget,
+    ) -> Result<Vec<super::StatementColumn>> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(budget)?;
+        let connection = self.lock(database, &deadline, false)?;
+        let result = execution::open_read_cursor(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            sql,
+            args,
+            named_args,
+            budget,
+        )
+        .and_then(|(cursor, cols)| {
+            database.admission().settle(
+                &self.control,
+                connection
+                    .as_ref()
+                    .ok_or(AdmissionError::Quarantine)?
+                    .is_in_write_tx(),
+            )?;
+            let mut slot = self
+                .read_cursor
+                .lock()
+                .map_err(|_| AdmissionError::Quarantine)?;
+            *slot = Some(cursor);
+            Ok(cols)
+        });
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn fetch_read_cursor(
+        &self,
+        database: &RemoteDatabase,
+        page_size: usize,
+    ) -> Result<(Vec<Vec<Value>>, bool)> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+        let connection = self.lock(database, &deadline, true)?;
+        self.check(database)?;
+        database.storage().store().validate_local()?;
+        let native = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
+        let mut cursor = self
+            .read_cursor
+            .lock()
+            .map_err(|_| AdmissionError::Quarantine)?
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("read cursor not open"))?;
+        let result =
+            execution::fetch_read_cursor(database, native, &self.control, &mut cursor, page_size);
+        let result = match result {
+            Ok((rows, true)) => {
+                drop(cursor);
+                database.admission().settle(
+                    &self.control,
+                    native.is_in_write_tx() || native.get_pager().holds_write_lock(),
+                )?;
+                Ok((rows, true))
+            }
+            Ok((rows, false)) => {
+                if let Err(error) = database.admission().settle(
+                    &self.control,
+                    native.is_in_write_tx() || native.get_pager().holds_write_lock(),
+                ) {
+                    let _ = execution::cancel_read_cursor(database, native, &self.control, cursor);
+                    return Err(error.context(UnsettledSqlOutcome));
+                }
+                *self
+                    .read_cursor
+                    .lock()
+                    .map_err(|_| AdmissionError::Quarantine)? = Some(cursor);
+                Ok((rows, false))
+            }
+            Err(error) => {
+                if execution::cancel_read_cursor(database, native, &self.control, cursor).is_err() {
+                    Err(error.context(UnsettledSqlOutcome))
+                } else {
+                    Err(error)
+                }
+            }
+        };
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn close_read_cursor(&self, database: &RemoteDatabase) -> Result<()> {
+        let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+        let connection = self.lock(database, &deadline, true)?;
+        let cursor = self
+            .read_cursor
+            .lock()
+            .map_err(|_| AdmissionError::Quarantine)?
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("read cursor not open"))?;
+        let result = execution::cancel_read_cursor(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            cursor,
+        );
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn open_write_cursor(
+        &self,
+        database: &RemoteDatabase,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        budget: &Budget,
+    ) -> Result<Vec<super::StatementColumn>> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(budget)?;
+        let connection = self.lock(database, &deadline, false)?;
+        let result = execution::open_write_cursor(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            sql,
+            args,
+            named_args,
+            budget,
+        )
+        .and_then(|(cursor, cols)| {
+            database.admission().settle(
+                &self.control,
+                connection
+                    .as_ref()
+                    .ok_or(AdmissionError::Quarantine)?
+                    .is_in_write_tx(),
+            )?;
+            *self
+                .write_cursor
+                .lock()
+                .map_err(|_| AdmissionError::Quarantine)? = Some(cursor);
+            Ok(cols)
+        });
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn fetch_write_cursor(
+        &self,
+        database: &RemoteDatabase,
+        page_size: usize,
+    ) -> Result<WriteCursorPage> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+        let connection = self.lock(database, &deadline, true).map_err(|error| {
+            database.admission().quarantine();
+            error.context(UnsettledSqlOutcome)
+        })?;
+        let native = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
+        let mut cursor = self
+            .write_cursor
+            .lock()
+            .map_err(|_| AdmissionError::Quarantine)?
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("write cursor not open"))?;
+        let result = self
+            .check(database)
+            .and_then(|()| database.storage().store().validate_local())
+            .and_then(|()| {
+                execution::fetch_write_cursor(
+                    database,
+                    native,
+                    &self.control,
+                    &mut cursor,
+                    page_size,
+                )
+            });
+        let result = match result {
+            Ok(page) if page.done => {
+                if let Err(error) =
+                    execution::settle_write_cursor(database, native, &self.control, cursor)
+                {
+                    database.admission().quarantine();
+                    Err(error.context(UnsettledSqlOutcome))
+                } else {
+                    Ok(page)
+                }
+            }
+            Ok(page) => {
+                if let Err(error) = database.admission().settle(
+                    &self.control,
+                    native.is_in_write_tx() || native.get_pager().holds_write_lock(),
+                ) {
+                    let _ = execution::cancel_write_cursor(database, native, &self.control, cursor);
+                    database.admission().quarantine();
+                    Err(error.context(UnsettledSqlOutcome))
+                } else {
+                    *self
+                        .write_cursor
+                        .lock()
+                        .map_err(|_| AdmissionError::Quarantine)? = Some(cursor);
+                    Ok(page)
+                }
+            }
+            Err(error) => {
+                if execution::cancel_write_cursor(database, native, &self.control, cursor).is_err()
+                {
+                    Err(error.context(UnsettledSqlOutcome))
+                } else {
+                    Err(error)
+                }
+            }
+        };
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    pub fn close_write_cursor(&self, database: &RemoteDatabase) -> Result<()> {
+        let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+        let connection = self.lock(database, &deadline, true).map_err(|error| {
+            database.admission().quarantine();
+            error.context(UnsettledSqlOutcome)
+        })?;
+        let cursor = self
+            .write_cursor
+            .lock()
+            .map_err(|_| AdmissionError::Quarantine)?
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("write cursor not open"))?;
+        let result = execution::cancel_write_cursor(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            cursor,
         );
         drop(connection);
         self.finish_call(database, result)
@@ -206,8 +519,24 @@ impl SessionLane {
         if self.closed.load(Ordering::Acquire) {
             return Ok(());
         }
-        let _operation = database.operation_until(deadline, true)?;
         let native = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
+        if let Some(cursor) = self
+            .read_cursor
+            .lock()
+            .map_err(|_| AdmissionError::Quarantine)?
+            .take()
+        {
+            execution::cancel_read_cursor(database, native, &self.control, cursor)?;
+        }
+        if let Some(cursor) = self
+            .write_cursor
+            .lock()
+            .map_err(|_| AdmissionError::Quarantine)?
+            .take()
+        {
+            execution::cancel_write_cursor(database, native, &self.control, cursor)?;
+        }
+        let _operation = database.operation_until(deadline, true)?;
         super::configure(native);
         if let Err(error) = native.close() {
             database.admission().quarantine();

@@ -23,6 +23,14 @@ impl MetricsObjectStore {
 }
 
 impl ObjectStore for MetricsObjectStore {
+    fn append_wal(&self, request: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
+        self.inner.append_wal(request)
+    }
+
+    fn retire_scope(&self, deadline: std::time::Instant) -> Result<()> {
+        self.inner.retire_scope(deadline)
+    }
+
     fn supports_strict_fencing(&self) -> bool {
         self.inner.supports_strict_fencing()
     }

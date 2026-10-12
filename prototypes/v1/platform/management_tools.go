@@ -66,6 +66,13 @@ func (management *Management) inspect(ctx context.Context, principal Principal, 
 	if err := management.config.Identity.Authorize(principal, input.Database, "view"); err != nil {
 		return nil, err
 	}
+	state, err := management.config.State.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	if _, blocked := isolatedOperation(state, input.Database, true); blocked {
+		return management.operations(principal, input, "/v1/databases/operations")
+	}
 	if path == "/v1/databases/gc-inspect" {
 		return management.authorityMaintenance(ctx, input.Database, input.RequestID, map[string]any{"operation": "gc_inspect"})
 	}
@@ -84,13 +91,17 @@ func (management *Management) inspect(ctx context.Context, principal Principal, 
 	if refsErr != nil {
 		refs = map[string]string{"status": "unavailable", "reason": "authority_inspection_failed"}
 	}
-	var diagnostics any = map[string]string{"status": "unavailable", "reason": "placement_not_active"}
+	var diagnostics any = map[string]string{"status": "unavailable", "reason": "placement_not_active", "scope": "native_control_ownership_state"}
 	if placement.Phase == "active" {
-		native, diagnosticErr := management.nativeTool(ctx, principal, input, "/v1/databases/diagnostics")
-		if diagnosticErr == nil {
-			diagnostics = native
-		} else {
-			diagnostics = map[string]string{"status": "unavailable", "reason": "native_inspection_failed"}
+		diagnostics = map[string]string{"status": "unavailable", "reason": "native_inspection_failed", "scope": "native_control_ownership_state"}
+		worker, exists := metadata.Workers[placement.DesiredWorker]
+		requestID, identifierErr := controller.RandomID()
+		if exists && identifierErr == nil {
+			var native controller.Actual
+			diagnosticErr := management.config.Authority.Worker(ctx, worker, requestID, map[string]any{"command": "get_database_state", "database": input.Database}, &native)
+			if diagnosticErr == nil && native.Database == input.Database && (native.Binding == nil || native.Binding.Database == input.Database && native.Binding.WorkerID == worker.ID && native.Binding.Epoch == native.Epoch) {
+				diagnostics = map[string]any{"status": "available", "scope": "native_control_ownership_state", "read_only": true, "state": native}
+			}
 		}
 	}
 	return map[string]any{"placement": placement, "worker": metadata.Workers[placement.DesiredWorker], "refs": refs, "diagnostics": diagnostics}, nil
@@ -98,9 +109,33 @@ func (management *Management) inspect(ctx context.Context, principal Principal, 
 
 func (management *Management) nativeTool(ctx context.Context, principal Principal, input managementRequest, path string) (output any, failure error) {
 	stage, phase := "authorize", "unknown"
+	registered, businessCompleted := false, false
+	operationID := ""
+	var permit *admissionPermit
 	defer func() {
+		if registered {
+			if err := finishOperation(management.config.State, input.Database, operationID, failure, businessCompleted); err != nil {
+				output, failure = nil, &SQLRPCError{Ambiguous: true, cause: err}
+			}
+		}
+		if permit != nil {
+			if registered && failure != nil {
+				permit.retain()
+				management.config.Resources.holdOperation(input.Database, operationID, permit)
+			} else {
+				permit.finish()
+			}
+		}
 		if failure != nil {
 			failure = management.nativeToolFailure(path, stage, phase, input.RequestID, failure)
+			var tool *nativeToolError
+			var rpc *SQLRPCError
+			if registered && errors.As(failure, &tool) && (!errors.As(failure, &rpc) || rpc.Ambiguous) {
+				tool.unknown = true
+			}
+			if errors.As(failure, &tool) {
+				tool.operationID = operationID
+			}
 		}
 	}()
 	action := "checkpoint"
@@ -109,6 +144,19 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 	}
 	if err := management.config.Identity.Authorize(principal, input.Database, action); err != nil {
 		return nil, err
+	}
+	state, err := management.config.State.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	if record, blocked := isolatedOperation(state, input.Database, true); blocked {
+		if action == "view" {
+			if err := management.config.Identity.Authorize(principal, input.Database, "manage"); err != nil {
+				return nil, err
+			}
+			return map[string]any{"status": "isolated", "operation": record}, nil
+		}
+		return nil, ErrDatabaseQuarantined
 	}
 	stage = "placement"
 	placement, err := management.config.Controller.Status(input.Database)
@@ -131,14 +179,56 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 		Readonly bool   `json:"readonly"`
 	}
 	stage = "open_session"
+	if management.config.Resources != nil {
+		descriptor := state.Databases[input.Database.Key()]
+		var admitted bool
+		permit, admitted = management.config.Resources.admission.reserveLane(descriptor.Project, state.Projects[descriptor.Project].Quotas, true, false, true)
+		if !admitted {
+			return nil, errors.New("native resource admission unavailable")
+		}
+	}
+	operationID, err = registerOperation(management.config.State, input.Database, input.RequestID, "management", nativeDiagnosticAction(path), stage, worker.ID, "", map[string]any{"path": path, "database": input.Database})
+	if err != nil {
+		return nil, err
+	}
+	registered = true
 	if err := management.config.Upstream.Call(ctx, worker, input.RequestID+"-open", map[string]any{"command": "open_session", "database": input.Database}, &opened); err != nil {
 		return nil, err
 	}
+	if !upstreamSessionID(opened.Session) {
+		return nil, &SQLRPCError{Ambiguous: true}
+	}
+	if err := updateOperation(management.config.State, input.Database, operationID, func(record *OperationRecord) {
+		record.Session = opened.Session
+		record.Stage = "tool_rpc"
+		record.CleanupOutcome = "pending"
+	}); err != nil {
+		return nil, &SQLRPCError{Ambiguous: true, cause: err}
+	}
 	defer func() {
+		if failure != nil {
+			return
+		}
+		stage = "close_session"
+		if err := updateOperation(management.config.State, input.Database, operationID, func(record *OperationRecord) {
+			record.Stage = stage
+			record.BusinessOutcome = "completed"
+		}); err != nil {
+			output, failure = nil, &SQLRPCError{Ambiguous: true, cause: err}
+			return
+		}
 		cleanup, cancel := context.WithTimeout(context.Background(), defaultToolCleanupTimeout)
 		defer cancel()
-		var closed any
-		_ = management.config.Upstream.Call(cleanup, worker, input.RequestID+"-close", map[string]any{"command": "close_session", "session": opened.Session}, &closed)
+		var closed struct {
+			Closed bool `json:"closed"`
+		}
+		if err := management.config.Upstream.Call(cleanup, worker, input.RequestID+"-close", map[string]any{"command": "close_session", "session": opened.Session}, &closed); err != nil {
+			output, failure = nil, err
+			return
+		}
+		if !closed.Closed {
+			output, failure = nil, &SQLRPCError{Ambiguous: true, cause: errors.New("native tool Close acknowledgement missing")}
+		}
 	}()
 	command := map[string]any{"session": opened.Session}
 	switch path {
@@ -155,5 +245,6 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 	var result any
 	stage = "tool_rpc"
 	err = management.config.Upstream.Call(ctx, worker, input.RequestID, command, &result)
+	businessCompleted = err == nil
 	return result, err
 }

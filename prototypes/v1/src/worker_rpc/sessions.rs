@@ -198,7 +198,7 @@ pub(super) fn rows(rows: Vec<Vec<Value>>) -> JsonValue {
     )
 }
 
-fn value(value: &Value) -> JsonValue {
+pub(super) fn value(value: &Value) -> JsonValue {
     match value {
         Value::Null => JsonValue::Null,
         Value::Numeric(Numeric::Integer(integer)) => json!(integer),

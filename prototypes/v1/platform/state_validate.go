@@ -20,6 +20,15 @@ func validRole(role string) bool {
 }
 
 func validateState(state State, previous *State) error {
+	if (state.OwnedRunGeneration == "") != (state.OwnedRunBinding == "") || state.OwnedRunBinding != "" && !ownedProofToken(state.OwnedRunBinding) || previous != nil && previous.OwnedRunBinding != "" && state.OwnedRunBinding != previous.OwnedRunBinding {
+		return errors.New("owned run binding immutable")
+	}
+	if state.OwnedRunGeneration != "" && !ownedProofToken(state.OwnedRunGeneration) || previous != nil && previous.OwnedRunGeneration != "" && state.OwnedRunGeneration != previous.OwnedRunGeneration {
+		return errors.New("owned run generation immutable")
+	}
+	if err := validateOperations(state, previous); err != nil {
+		return err
+	}
 	if state.Version != 1 || state.Organizations == nil || state.Projects == nil || state.Databases == nil || state.APIKeys == nil || state.Keys == nil {
 		return errors.New("invalid state version/maps")
 	}

@@ -30,6 +30,16 @@ pub struct SdkError {
     pub outcome_unknown: bool,
     pub execution_completed: bool,
     pub may_have_committed: bool,
+    pub operation_id: Option<Box<str>>,
+    pub stage: Option<Box<str>>,
+    pub business_outcome: Option<Box<str>>,
+    pub cleanup_outcome: Option<Box<str>>,
+    pub execution_proven: Option<bool>,
+    pub ambiguous: Option<bool>,
+    pub rejected: Option<bool>,
+    pub retry_allowed: Option<bool>,
+    pub possible_commit: Option<bool>,
+    pub rpc_observation: Option<RpcObservation>,
 }
 
 impl SdkError {
@@ -40,6 +50,16 @@ impl SdkError {
             outcome_unknown: unknown,
             execution_completed: false,
             may_have_committed: false,
+            operation_id: None,
+            stage: None,
+            business_outcome: None,
+            cleanup_outcome: None,
+            execution_proven: None,
+            ambiguous: None,
+            rejected: None,
+            retry_allowed: None,
+            possible_commit: None,
+            rpc_observation: None,
         }
     }
 }
@@ -61,6 +81,10 @@ pub struct ManagementRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<crate::runtime::DatabaseId>,
     pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +144,65 @@ pub(super) struct Failure {
     pub execution_completed: bool,
     #[serde(default)]
     pub may_have_committed: bool,
+    #[serde(default, deserialize_with = "present")]
+    pub operation_id: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub stage: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub business_outcome: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub cleanup_outcome: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub execution_proven: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    pub ambiguous: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    pub rejected: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    pub retry_allowed: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    pub possible_commit: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    pub rpc_observation: Option<RpcObservation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RpcObservation {
+    pub ambiguous: bool,
+    pub rejected: bool,
+    pub execution_completed: bool,
+}
+
+fn present<'de, Deserializer, Field>(
+    deserializer: Deserializer,
+) -> Result<Option<Field>, Deserializer::Error>
+where
+    Deserializer: serde::Deserializer<'de>,
+    Field: Deserialize<'de>,
+{
+    Field::deserialize(deserializer).map(Some)
+}
+
+impl Failure {
+    pub(super) fn valid_metadata(&self) -> bool {
+        self.stage.as_deref().is_none_or(|stage| {
+            matches!(
+                stage,
+                "open_session" | "tool_rpc" | "close_session" | "unknown"
+            )
+        }) && self.business_outcome.as_deref().is_none_or(|outcome| {
+            matches!(
+                outcome,
+                "not_proven" | "unknown" | "completed" | "not_executed" | "not_applicable"
+            )
+        }) && self.cleanup_outcome.as_deref().is_none_or(|outcome| {
+            matches!(
+                outcome,
+                "not_proven" | "not_applicable" | "pending" | "unknown" | "completed"
+            )
+        })
+    }
 }
 
 pub(super) fn label(value: &str) -> bool {
@@ -132,6 +215,10 @@ pub(super) fn label(value: &str) -> bool {
 
 pub(super) fn safe_code(value: &str) -> &'static str {
     match value {
+        "database_isolated" => "database_isolated",
+        "operation_recorded" => "operation_recorded",
+        "operation_registration_unavailable" => "operation_registration_unavailable",
+        "session_unusable" => "session_unusable",
         "sql_error" => "sql_error",
         "outcome_unknown" => "outcome_unknown",
         "session_moved" => "session_moved",

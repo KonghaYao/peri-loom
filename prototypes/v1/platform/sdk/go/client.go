@@ -105,7 +105,11 @@ func (client *Client) call(ctx context.Context, path, identifier string, input a
 		if code == "sql_error" && (!reply.Error.ExecutionCompleted || !reply.Error.MayHaveCommitted) {
 			return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
 		}
-		return &Error{Code: code, RequestID: identifier, OutcomeUnknown: code == "outcome_unknown", ExecutionCompleted: reply.Error.ExecutionCompleted, MayHaveCommitted: reply.Error.MayHaveCommitted}
+		failure := &Error{Code: code, RequestID: identifier, OutcomeUnknown: code == "outcome_unknown", ExecutionCompleted: reply.Error.ExecutionCompleted, MayHaveCommitted: reply.Error.MayHaveCommitted || reply.Error.PossibleCommit, OperationID: reply.Error.OperationID, Stage: reply.Error.Stage, BusinessOutcome: reply.Error.BusinessOutcome, CleanupOutcome: reply.Error.CleanupOutcome, ExecutionProven: reply.Error.ExecutionProven, Ambiguous: reply.Error.Ambiguous, Rejected: reply.Error.Rejected, RetryAllowed: reply.Error.RetryAllowed}
+		if reply.Error.RPCObservation != nil {
+			failure.Ambiguous, failure.Rejected, failure.ExecutionCompleted = reply.Error.RPCObservation.Ambiguous, reply.Error.RPCObservation.Rejected, reply.Error.RPCObservation.ExecutionCompleted
+		}
+		return failure
 	}
 	if reply.Error != nil || response.StatusCode < 200 || response.StatusCode >= 300 || len(reply.Result) == 0 {
 		return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
@@ -136,6 +140,7 @@ func (client *Client) Management(ctx context.Context, operation string, request 
 	path := "/v1/databases/" + strings.TrimPrefix(operation, "databases/")
 	operation = strings.TrimPrefix(operation, "databases/")
 	switch operation {
+	case "operations", "operations/decision", "operations/clear", "operations/retire-local", "diagnostics":
 	case "create", "delete", "snapshot", "branch", "clone", "restore", "restore-point", "pitr", "suspend", "resume", "migrate", "status", "checkpoint", "schema", "gc", "gc-inspect", "refs", "compact", "drop-snapshot", "retain-after", "rewrap":
 	case "organizations/create", "projects/create", "keys/create", "keys/revoke", "tokens":
 		path = "/v1/" + operation

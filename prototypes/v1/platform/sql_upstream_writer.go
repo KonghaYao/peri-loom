@@ -83,16 +83,38 @@ func writerCommandValid(operation string, encoded []byte, fields map[string]json
 		return decoder.Decode(&command) == nil && command.Database.Validate() == nil
 	}
 	expected := 3
-	if operation == "close_session" {
+	if operation == "close_session" || operation == "close_read_cursor" || operation == "close_write_cursor" {
 		expected = 2
+	} else if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" {
+		expected = 5
 	}
 	var session string
 	if len(fields) != expected || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) {
 		return false
 	}
-	if expected == 3 {
+	if expected == 3 && operation != "fetch_read_cursor" && operation != "fetch_write_cursor" {
 		var statement string
 		if json.Unmarshal(fields["sql"], &statement) != nil || bytes.Equal(bytes.TrimSpace(fields["sql"]), []byte("null")) {
+			return false
+		}
+	}
+	if operation == "fetch_read_cursor" || operation == "fetch_write_cursor" {
+		var maxRows int
+		return json.Unmarshal(fields["max_rows"], &maxRows) == nil && maxRows >= 1 && maxRows <= 256
+	}
+	if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" {
+		var args []sqlArgument
+		var namedArgs []namedSQLArgument
+		if json.Unmarshal(fields["args"], &args) != nil || args == nil || !validSQLArguments(args) || json.Unmarshal(fields["named_args"], &namedArgs) != nil || namedArgs == nil || len(args)+len(namedArgs) > 999 {
+			return false
+		}
+		for _, argument := range namedArgs {
+			if argument.Name == "" || len(argument.Name) > 256 || !validSQLArguments([]sqlArgument{argument.Value}) {
+				return false
+			}
+		}
+		var sql string
+		if json.Unmarshal(fields["sql"], &sql) != nil || sql == "" {
 			return false
 		}
 	}

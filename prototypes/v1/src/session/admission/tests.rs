@@ -18,6 +18,56 @@ fn wait_queue(admission: &WriterAdmission, expected: &[u64]) {
 }
 
 #[test]
+fn native_trace_observes_admission_release_and_cancel_without_changing_fifo() -> Result<()> {
+    let trace = crate::capacity_trace::test_trace();
+    let admission = Arc::new(WriterAdmission {
+        trace: Some(trace.clone()),
+        ..WriterAdmission::default()
+    });
+    let holder = admission.register()?;
+    let waiter = admission.register()?;
+    admission.acquire(&holder, false, || Ok(()))?.settle(true)?;
+    thread::scope(|scope| -> Result<()> {
+        let admission_clone = admission.clone();
+        let waiter_clone = waiter.clone();
+        let waiting = scope.spawn(move || {
+            admission_clone
+                .acquire(&waiter_clone, false, || Ok(()))
+                .err()
+                .unwrap()
+        });
+        wait_queue(&admission, &[waiter.id]);
+        admission.close_requested(&waiter);
+        assert!(waiting.join().unwrap().is::<AdmissionError>());
+        Ok(())
+    })?;
+    admission
+        .acquire(&holder, false, || Ok(()))?
+        .settle(false)?;
+    let snapshot = trace.test_events();
+    let events = snapshot["events"].as_array().unwrap();
+    let kinds = events
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            "enqueue",
+            "admit",
+            "enqueue",
+            "cancel",
+            "owner_reuse",
+            "release"
+        ]
+    );
+    assert_eq!(events[2]["holderControlId"], events[0]["controlId"]);
+    assert!(admission.status()?.owner.is_none());
+    assert!(admission.status()?.queued.is_empty());
+    Ok(())
+}
+
+#[test]
 fn coordinator_model_fifo_cancel_head_and_atomic_hint() -> Result<()> {
     let admission = Arc::new(WriterAdmission::default());
     let holder = admission.register()?;

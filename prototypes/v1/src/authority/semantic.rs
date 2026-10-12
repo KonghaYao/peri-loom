@@ -49,6 +49,7 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
             "replay_baseline_lsn",
             "entries",
             "receipts",
+            "receipt_digests",
             "commit"
         ]
         .contains(&key.as_str())),
@@ -83,6 +84,13 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
             .values()
             .all(|lsn| *lsn > 0 && *lsn <= index.last_lsn),
         "invalid WAL receipt"
+    );
+    ensure!(
+        index
+            .receipt_digests
+            .iter()
+            .all(|(identity, digest)| index.receipts.contains_key(identity) && valid_hash(digest)),
+        "invalid WAL receipt digest"
     );
     if let Some(WalCommit { lsn, position }) = index.commit {
         ensure!(
@@ -240,8 +248,10 @@ impl<'a> Walker<'a> {
     fn bytes(&mut self, entry: &ObjectEntry) -> Result<Vec<u8>> {
         self.direct(entry)?;
         if !self.bytes.contains_key(&entry.blob) {
-            self.bytes
-                .insert(entry.blob.clone(), self.authority.read_blob(entry)?);
+            self.bytes.insert(
+                entry.blob.clone(),
+                self.authority.read_metadata_blob(entry)?,
+            );
         }
         Ok(self.bytes[&entry.blob].clone())
     }

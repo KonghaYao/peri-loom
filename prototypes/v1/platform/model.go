@@ -76,13 +76,18 @@ type KeyDescriptor struct {
 }
 
 type State struct {
-	Version       uint32                   `json:"version"`
-	Revision      uint64                   `json:"revision"`
-	Organizations map[string]Organization  `json:"organizations"`
-	Projects      map[string]Project       `json:"projects"`
-	Databases     map[string]Database      `json:"databases"`
-	APIKeys       map[string]APIKey        `json:"api_keys"`
-	Keys          map[string]KeyDescriptor `json:"keys"`
+	Version            uint32                     `json:"version"`
+	Revision           uint64                     `json:"revision"`
+	Organizations      map[string]Organization    `json:"organizations"`
+	Projects           map[string]Project         `json:"projects"`
+	Databases          map[string]Database        `json:"databases"`
+	APIKeys            map[string]APIKey          `json:"api_keys"`
+	Keys               map[string]KeyDescriptor   `json:"keys"`
+	Operations         map[string]OperationRecord `json:"operations,omitempty"`
+	OperationSequence  uint64                     `json:"operation_sequence,omitempty"`
+	OperationEvictions uint64                     `json:"operation_evictions,omitempty"`
+	OwnedRunGeneration string                     `json:"owned_run_generation,omitempty"`
+	OwnedRunBinding    string                     `json:"owned_run_binding,omitempty"`
 }
 
 type StateStore interface {

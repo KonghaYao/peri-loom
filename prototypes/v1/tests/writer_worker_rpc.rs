@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Result};
-use peri_loom_v1::ownership::types::AccessRole;
+use peri_loom_v1::ownership::types::{AccessRole, OwnershipCommand};
 use peri_loom_v1::worker_rpc::protocol::{WorkerCommand, WorkerRequest};
 use peri_loom_v1::worker_rpc::server::{WorkerLimits, WorkerServer};
 use serde_json::{json, Value};
@@ -19,6 +19,227 @@ use serde_json::{json, Value};
 const CONTROL: &str = "writer_control_credential__________________";
 const SQL: &str = "writer_sql_credential______________________";
 static REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+#[ignore = "requires PERI_CAPACITY_TRACE=1; run explicitly with --ignored --nocapture"]
+fn opt_in_worker_capacity_page_maps_loaded_queue_before_execute_or_query() -> Result<()> {
+    assert_eq!(std::env::var("PERI_CAPACITY_TRACE").as_deref(), Ok("1"));
+    let worker = Worker::new(true)?;
+    let (session, _) = worker.open(2)?;
+    let (_, before) = worker.call(WorkerCommand::GetMetrics, 1, true)?;
+    let trace = &before["result"]["capacity_trace"];
+    let mapping = trace["runtimeMappings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mapping| mapping["databaseId"] == json!(worker.fixture.identifier))
+        .unwrap();
+    let ring = trace["databases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ring| ring["queueInstance"] == mapping["queueInstance"])
+        .unwrap();
+    assert_eq!(mapping["status"], "available");
+    assert_eq!(ring["status"], "available");
+    assert_eq!(ring["sequence"], 0);
+    assert_eq!(ring["lost"], 0);
+    assert_eq!(ring["epoch"], json!(worker.fixture.lease.binding.epoch));
+    let stream_id = ring["streamId"].as_str().unwrap().to_owned();
+    let command = WorkerCommand::GetCapacityTrace {
+        stream_id: stream_id.clone(),
+        after_sequence: 0,
+        max_events: 128,
+    };
+    let (_, denied) = worker.call(command.clone(), 1, false)?;
+    assert_eq!(denied["ok"], false);
+    let (_, page) = worker.call(command, 1, true)?;
+    assert_eq!(page["ok"], true);
+    let result = &page["result"];
+    assert_eq!(result["status"], "available");
+    assert_eq!(result["stream"]["status"], "available");
+    assert_eq!(result["stream"]["databaseId"], mapping["databaseId"]);
+    assert_eq!(result["stream"]["epoch"], mapping["epoch"]);
+    assert_eq!(result["stream"]["queueInstance"], mapping["queueInstance"]);
+    assert_eq!(result["stream"]["streamId"], json!(stream_id));
+    assert_eq!(result["stream"]["sequence"], 0);
+    assert_eq!(result["stream"]["lost"], 0);
+    assert_eq!(result["stream"]["dropped"], 0);
+    assert_eq!(result["stream"]["prefixGap"], false);
+    assert_eq!(result["stream"]["events"], json!([]));
+    assert_eq!(result["afterSequence"], 0);
+    assert_eq!(result["nextSequence"], 0);
+    assert_eq!(result["hasMore"], false);
+    for field in ["pid", "startUnixMicros", "generation"] {
+        assert_eq!(result["source"][field], trace["source"][field]);
+    }
+    assert!(serde_json::to_vec(result)?.len() <= 64 * 1024);
+    let (_, gap) = worker.call(
+        WorkerCommand::GetCapacityTrace {
+            stream_id: stream_id.clone(),
+            after_sequence: 1,
+            max_events: 128,
+        },
+        1,
+        true,
+    )?;
+    assert_eq!(gap["result"]["status"], "sequence_gap");
+    assert_eq!(gap["result"]["stream"]["prefixGap"], true);
+    let (_, missing) = worker.call(
+        WorkerCommand::GetCapacityTrace {
+            stream_id: "NOT-LIVE-missing-stream".into(),
+            after_sequence: 0,
+            max_events: 128,
+        },
+        1,
+        true,
+    )?;
+    assert_eq!(missing["result"]["status"], "stream_unavailable");
+    let (_, after) = worker.call(WorkerCommand::GetMetrics, 1, true)?;
+    for operation in ["execute", "query"] {
+        assert!(before["result"]["metrics"][operation]["total"]
+            .as_u64()
+            .is_some());
+        assert_eq!(
+            after["result"]["metrics"][operation]["total"],
+            before["result"]["metrics"][operation]["total"]
+        );
+    }
+    assert_eq!(after["result"]["sessions"], 1);
+    let (_, closed) = worker.call(WorkerCommand::CloseSession { session }, 2, false)?;
+    assert_eq!(closed["ok"], true);
+    worker
+        .fixture
+        .runtime
+        .command(OwnershipCommand::RevokeDatabase {
+            database: worker.fixture.identifier.clone(),
+            expected_epoch: worker.fixture.lease.binding.epoch,
+        })?;
+    let (_, retired) = worker.call(
+        WorkerCommand::GetCapacityTrace {
+            stream_id: stream_id.clone(),
+            after_sequence: 0,
+            max_events: 128,
+        },
+        1,
+        true,
+    )?;
+    assert_eq!(retired["ok"], false);
+    let (_, retired_gap) = worker.call(
+        WorkerCommand::GetCapacityTrace {
+            stream_id,
+            after_sequence: u64::MAX,
+            max_events: 128,
+        },
+        1,
+        true,
+    )?;
+    assert_eq!(retired_gap["ok"], true);
+    assert_eq!(retired_gap["result"]["status"], "sequence_gap");
+    assert_eq!(retired_gap["result"]["stream"]["prefixGap"], true);
+    assert_eq!(retired_gap["result"]["stream"]["gap"], true);
+    assert_eq!(retired_gap["result"]["stream"]["lost"], 0);
+    assert_eq!(retired_gap["result"]["afterSequence"], json!(u64::MAX));
+    assert_eq!(
+        retired_gap["result"]["source"]["generation"],
+        trace["source"]["generation"]
+    );
+    println!("CAPACITY_PRE_EXECUTE_PAGE live_queue_mapping=1 open_session=1 execute_delta=0 query_delta=0 cursor_gap_preserved=1 unavailable_preserved=1 retired_mapping_rejected=1 retired_gap_preserved=1");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires PERI_CAPACITY_TRACE=1; run explicitly with --ignored --nocapture"]
+fn opt_in_native_capacity_trace_joins_reserved_cleanup_to_fresh_ack() -> Result<()> {
+    assert_eq!(
+        std::env::var("PERI_CAPACITY_TRACE").as_deref(),
+        Ok("1"),
+        "capacity trace opt-in test requires PERI_CAPACITY_TRACE=1"
+    );
+    assert!(peri_loom_v1::capacity_trace::enabled());
+    let worker = Worker::new(true)?;
+    let (session, _) = worker.open(2)?;
+    assert_eq!(
+        worker.execute(&session, "CREATE TABLE capacity_test(value INTEGER)")?["ok"],
+        true
+    );
+    let begin = worker.execute(&session, "BEGIN IMMEDIATE")?;
+    assert_eq!(begin["session_state"]["owner"], true);
+    assert_eq!(
+        worker.execute(&session, "INSERT INTO capacity_test VALUES (1)")?["ok"],
+        true
+    );
+    let committed = worker.execute(&session, "COMMIT")?;
+    assert_eq!(committed["ok"], true);
+    assert_eq!(committed["session_state"]["owner"], false);
+    assert!(
+        committed["session_state"]["sequence"].as_u64().unwrap()
+            > begin["session_state"]["sequence"].as_u64().unwrap()
+    );
+    let (_, metrics) = worker.call(WorkerCommand::GetMetrics, 1, true)?;
+    let trace = &metrics["result"]["capacity_trace"];
+    assert_eq!(trace["enabled"], true);
+    let mapping = trace["runtimeMappings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mapping| mapping["databaseId"] == json!(worker.fixture.identifier))
+        .unwrap();
+    let database = trace["databases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|database| database["queueInstance"] == mapping["queueInstance"])
+        .unwrap();
+    assert!(database["events"].is_null());
+    let stream_id = database["streamId"].as_str().unwrap().to_owned();
+    let command = WorkerCommand::GetCapacityTrace {
+        stream_id: stream_id.clone(),
+        after_sequence: 0,
+        max_events: 128,
+    };
+    let (_, denied) = worker.call(command.clone(), 1, false)?;
+    assert_eq!(denied["ok"], false);
+    let (_, page) = worker.call(command, 1, true)?;
+    assert_eq!(page["ok"], true);
+    assert_eq!(page["result"]["enabled"], true);
+    assert!(serde_json::to_vec(&page)?.len() < 64 * 1024);
+    let events = page["result"]["stream"]["events"].as_array().unwrap();
+    let finish = events
+        .iter()
+        .find(|event| {
+            event["kind"] == "cleanup_finish" && event["requestId"] == committed["request_id"]
+        })
+        .unwrap();
+    assert_eq!(finish["success"], true);
+    assert_eq!(finish["reservedLane"], "owner_sql");
+    assert_eq!(finish["operation"], "COMMIT");
+    assert_eq!(
+        finish["terminalSequence"],
+        committed["session_state"]["sequence"]
+    );
+    assert!(events.iter().any(|event| event["kind"] == "release"
+        && event["controlId"] == finish["controlId"]
+        && event["requestId"] == committed["request_id"]));
+    let serialized = serde_json::to_string(&page["result"])?;
+    assert!(!serialized.contains(&session));
+    assert!(!serialized.contains(CONTROL));
+    assert!(!serialized.contains(SQL));
+    let (_, invalid) = worker.call(
+        WorkerCommand::GetCapacityTrace {
+            stream_id,
+            after_sequence: 0,
+            max_events: 0,
+        },
+        1,
+        true,
+    )?;
+    assert_eq!(invalid["ok"], false);
+    println!(
+        "CAPACITY_TRACE_OPT_IN_ASSERTIONS_COMPLETE enabled=1 reserved_cleanup_ack_join=verified"
+    );
+    Ok(())
+}
 
 struct Worker {
     fixture: remote::Fixture,

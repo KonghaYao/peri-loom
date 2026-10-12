@@ -1,6 +1,8 @@
 mod local;
 mod memory;
 pub mod metrics;
+#[path = "object_store/local/payload.rs"]
+pub(crate) mod payload;
 mod s3;
 mod signing;
 mod transport;
@@ -46,6 +48,14 @@ impl std::fmt::Display for PreconditionFailed {
 impl std::error::Error for PreconditionFailed {}
 
 pub trait ObjectStore: Send + Sync {
+    fn append_wal(&self, _: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    fn retire_scope(&self, _: std::time::Instant) -> Result<()> {
+        Ok(())
+    }
+
     fn supports_strict_fencing(&self) -> bool {
         false
     }
@@ -64,6 +74,26 @@ pub trait ObjectStore: Send + Sync {
 
     fn validate_transaction(&self, _in_transaction: bool) -> Result<()> {
         self.validate_session()
+    }
+
+    fn checked_get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.validate_session()?;
+        self.get(key)
+    }
+
+    fn checked_put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.validate_session()?;
+        self.put(key, bytes, condition)
+    }
+
+    fn checked_delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.validate_session()?;
+        self.delete(key, expected)
+    }
+
+    fn checked_list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.validate_session()?;
+        self.list(prefix)
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>>;

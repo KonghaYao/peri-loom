@@ -24,7 +24,7 @@ WORKDIR /app
 COPY --from=rust-build /out/peri-loom-v1 /usr/local/bin/peri-loom-v1
 COPY --from=go-build /out/peri-platform /usr/local/bin/peri-platform
 COPY --from=go-build /out/peri /usr/local/bin/peri
-COPY prototypes/v1/platform/dev.py /app/prototypes/v1/platform/dev.py
+COPY --chmod=0555 prototypes/v1/platform/dev.py /app/prototypes/v1/platform/dev.py
 ENV PERI_RUST_BINARY=/usr/local/bin/peri-loom-v1 PERI_PLATFORM_BINARY=/usr/local/bin/peri-platform PYTHONUNBUFFERED=1
 USER 10001:10001
 EXPOSE 9443

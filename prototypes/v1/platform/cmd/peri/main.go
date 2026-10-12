@@ -30,6 +30,8 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 	if len(arguments) == 0 || arguments[0] == "help" {
 		fmt.Fprintln(output, "peri COMMAND --endpoint HTTPS_URL --database TENANT/DATABASE/BRANCH [--credential-file PRIVATE_FILE] [--ca-file CERTIFICATE]")
 		fmt.Fprintln(output, "Commands: create delete snapshot branch clone restore restore-point pitr suspend resume migrate status checkpoint schema compact refs gc shell sql")
+		fmt.Fprintln(output, "Isolation: operations diagnostics operations/decision --operation-id ID --decision retain_isolation_new_database_required; operations/retire-local requires launcher-owned stop+Wait proof and never clears isolation.")
+		fmt.Fprintln(output, "Operation history retains at most 256 safe known terminal records; unresolved/isolation records are never evicted. Missing history proves neither non-execution nor safe replay; request IDs remain correlation-only.")
 		fmt.Fprintln(output, "Credentials: PERI_API_KEY environment or private credential file; SQL requires --execute/--query, shell uses :execute/:query/:reconnect/:quit. No SQL/session replay.")
 		return nil
 	}
@@ -50,6 +52,8 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 	safety := flags.Uint64("safety-window-ms", 60000, "")
 	collect := flags.Bool("collect", false, "")
 	identifier := flags.String("request-id", "", "")
+	operationID := flags.String("operation-id", "", "")
+	decision := flags.String("decision", "", "")
 	execute := flags.String("execute", "", "")
 	query := flags.String("query", "", "")
 	timeout := flags.Duration("timeout", 30*time.Second, "")
@@ -116,7 +120,7 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 	if *timestamp != 0 && *sequence != 0 {
 		return errors.New("choose sequence or timestamp")
 	}
-	request := sdk.ManagementRequest{Database: &database, RequestID: *identifier, Project: *project, Name: *name, Snapshot: *snapshot, WorkerID: *worker, Sequence: *sequence, TimestampMS: *timestamp}
+	request := sdk.ManagementRequest{Database: &database, RequestID: *identifier, Project: *project, Name: *name, Snapshot: *snapshot, WorkerID: *worker, Sequence: *sequence, TimestampMS: *timestamp, OperationID: *operationID, Decision: *decision}
 	if command == "create" || command == "branch" || command == "clone" {
 		request.Role = *role
 	}

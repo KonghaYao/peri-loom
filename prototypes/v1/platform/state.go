@@ -33,7 +33,39 @@ func OpenStateStore(directory string) (StateStore, error) {
 		disk.close()
 		return nil, err
 	}
-	return &stateStore{disk: disk, state: state}, nil
+	store := &stateStore{disk: disk, state: state}
+	known, _ := operationCounts(state)
+	if known > operationKnownRetention {
+		if err := updateOperationRecords(store, nil); err != nil {
+			disk.close()
+			return nil, err
+		}
+	}
+	for _, record := range state.Operations {
+		if operationNeedsRecovery(record) {
+			if err := store.Update(func(candidate *State) error {
+				for key, pending := range candidate.Operations {
+					if operationNeedsRecovery(pending) {
+						openedSession := pending.State == "terminal"
+						pending.State = "quarantined"
+						pending.MayHaveCommitted = true
+						if pending.Stage == "close_session" || openedSession {
+							pending.CleanupOutcome = "unknown"
+						} else {
+							pending.BusinessOutcome = "unknown"
+						}
+						candidate.Operations[key] = pending
+					}
+				}
+				return nil
+			}); err != nil {
+				disk.close()
+				return nil, err
+			}
+			break
+		}
+	}
+	return store, nil
 }
 
 func (store *stateStore) Snapshot() (State, error) {

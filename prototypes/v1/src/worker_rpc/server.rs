@@ -236,11 +236,23 @@ impl State {
         };
         let version = parsed.version;
         let identifier = parsed.request_id.clone();
+        let write_cursor_request = matches!(
+            &parsed.command,
+            WorkerCommand::OpenWriteCursor { .. } | WorkerCommand::FetchWriteCursor { .. }
+        );
         let stateful = matches!(
             &parsed.command,
             WorkerCommand::OpenSession { .. }
                 | WorkerCommand::Execute { .. }
                 | WorkerCommand::Query { .. }
+                | WorkerCommand::Describe { .. }
+                | WorkerCommand::Statement { .. }
+                | WorkerCommand::OpenReadCursor { .. }
+                | WorkerCommand::FetchReadCursor { .. }
+                | WorkerCommand::CloseReadCursor { .. }
+                | WorkerCommand::OpenWriteCursor { .. }
+                | WorkerCommand::FetchWriteCursor { .. }
+                | WorkerCommand::CloseWriteCursor { .. }
                 | WorkerCommand::CloseSession { .. }
         );
         if version == 2
@@ -262,6 +274,7 @@ impl State {
                 &parsed.command,
                 WorkerCommand::Ownership { .. }
                     | WorkerCommand::GetMetrics
+                    | WorkerCommand::GetCapacityTrace { .. }
                     | WorkerCommand::Shutdown
             );
             ensure!(
@@ -273,7 +286,12 @@ impl State {
                 "writer profile requires protocol v2"
             );
             match &parsed.command {
-                WorkerCommand::Execute { session, sql } | WorkerCommand::Query { session, sql } => {
+                WorkerCommand::Execute { session, sql }
+                | WorkerCommand::Query { session, sql }
+                | WorkerCommand::Describe { session, sql }
+                | WorkerCommand::Statement { session, sql, .. }
+                | WorkerCommand::OpenReadCursor { session, sql, .. }
+                | WorkerCommand::OpenWriteCursor { session, sql, .. } => {
                     ensure!(
                         sql.len() <= Budget::trusted_default().max_sql_bytes,
                         "SQL byte budget exceeded"
@@ -282,7 +300,11 @@ impl State {
                 }
                 WorkerCommand::Checkpoint { session }
                 | WorkerCommand::Compact { session }
-                | WorkerCommand::Diagnostics { session } => {
+                | WorkerCommand::Diagnostics { session }
+                | WorkerCommand::FetchReadCursor { session, .. }
+                | WorkerCommand::CloseReadCursor { session }
+                | WorkerCommand::FetchWriteCursor { session, .. }
+                | WorkerCommand::CloseWriteCursor { session } => {
                     call = Some(self.sessions.begin(session)?);
                 }
                 _ => {}
@@ -310,6 +332,50 @@ impl State {
                 b"{\"error\":\"worker execution lane saturated\"}",
             );
         }
+        let trace_guard = if crate::capacity_trace::enabled() {
+            call.as_ref()
+                .and_then(|call| call.handle().lease_binding_snapshot().ok())
+                .map(|binding| {
+                    let reserved_lane = match lane {
+                        Lane::Owner => Some("owner_sql"),
+                        Lane::Cleanup => Some("cleanup_sql"),
+                        _ => None,
+                    };
+                    let cleanup = if reserved_lane.is_some() {
+                        match &parsed.command {
+                            WorkerCommand::Execute { sql, .. }
+                            | WorkerCommand::Statement { sql, .. } => {
+                                let normalized = sql.trim().trim_end_matches(';').trim();
+                                if ["COMMIT", "COMMIT TRANSACTION", "END", "END TRANSACTION"]
+                                    .iter()
+                                    .any(|statement| normalized.eq_ignore_ascii_case(statement))
+                                {
+                                    Some("COMMIT")
+                                } else if ["ROLLBACK", "ROLLBACK TRANSACTION"]
+                                    .iter()
+                                    .any(|statement| normalized.eq_ignore_ascii_case(statement))
+                                {
+                                    Some("ROLLBACK")
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    crate::capacity_trace::enter(
+                        binding.database,
+                        binding.epoch,
+                        identifier.clone(),
+                        cleanup,
+                        reserved_lane,
+                    )
+                })
+        } else {
+            None
+        };
         let result = prepared.and_then(|()| {
             self.dispatch(
                 parsed.command,
@@ -325,6 +391,26 @@ impl State {
         } else {
             result
         };
+        if trace_guard.is_some() {
+            if let Some(context) = crate::capacity_trace::context() {
+                if let (Some(trace), Some(operation)) = (context.ring, context.cleanup) {
+                    trace.record(crate::capacity_trace::Event {
+                        kind: "cleanup_finish",
+                        operation: Some(operation),
+                        reserved_lane: context.reserved_lane,
+                        control_id: context.control_id,
+                        request_id: Some(identifier.clone()),
+                        success: Some(
+                            result.is_ok()
+                                && terminal.as_ref().is_some_and(|terminal| !terminal.owner),
+                        ),
+                        terminal_sequence: terminal.as_ref().map(|terminal| terminal.sequence),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        drop(trace_guard);
         let response = match result {
             Ok(result) => WorkerResponse {
                 version,
@@ -338,8 +424,20 @@ impl State {
             Err(error) => failure_response(version, identifier, control, error, terminal),
         };
         let bytes = serde_json::to_vec(&response)?;
-        drop(call);
         let result = http::reply(stream, 200, &bytes);
+        if result.is_err() && write_cursor_request && response.ok {
+            if let Some(call) = call.as_ref() {
+                if response
+                    .result
+                    .as_ref()
+                    .is_some_and(|result| result["done"] == true)
+                    || call.handle().close_write_cursor().is_err()
+                {
+                    let _ = call.handle().quarantine_unknown_write_result();
+                }
+            }
+        }
+        drop(call);
         drop(lane_ticket);
         result
     }

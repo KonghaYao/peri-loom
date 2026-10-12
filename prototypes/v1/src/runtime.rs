@@ -1,4 +1,6 @@
+mod capacity;
 mod handle;
+mod health;
 mod quarantine;
 mod registry;
 pub mod types;
@@ -23,6 +25,7 @@ pub struct WorkerRuntime {
     cache_root: PathBuf,
     limits: WorkerLimits,
     registry: Mutex<Registry>,
+    native_instances: Mutex<Vec<(DatabaseId, std::sync::Weak<RemoteDatabase>)>>,
 }
 
 impl WorkerRuntime {
@@ -61,6 +64,7 @@ impl WorkerRuntime {
             cache_root: cache_root.as_ref().to_path_buf(),
             limits,
             registry: Mutex::new(Registry::default()),
+            native_instances: Mutex::new(Vec::new()),
         }))
     }
 

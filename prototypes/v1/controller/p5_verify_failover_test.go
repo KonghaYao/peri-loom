@@ -93,6 +93,7 @@ func TestP5VerifyAutomaticActualKillFailoverPreservesACKAndRejectsRevivedOldGran
 	if err != nil || placed.Phase != "active" || placed.DesiredWorker != "verify-a" || placed.Grant == nil {
 		test.Fatalf("initial real placement failed: phase=%s worker=%s err=%v", placed.Phase, placed.DesiredWorker, err)
 	}
+	p5VerifyRun(test, control)
 	session := cluster.open("verify-a", database)
 	cluster.execute("verify-a", session, "CREATE TABLE records(id INTEGER PRIMARY KEY); INSERT INTO records VALUES(1)")
 	for _, operation := range []string{"checkpoint", "compact"} {
@@ -116,7 +117,6 @@ func TestP5VerifyAutomaticActualKillFailoverPreservesACKAndRejectsRevivedOldGran
 	if _, err := os.Stat(workerA.cache); !os.IsNotExist(err) {
 		test.Fatal("old worker whole cache still exists")
 	}
-	p5VerifyRun(test, control)
 	failedOver := p5VerifyWaitPlacement(test, control, database, func(actual Placement) bool {
 		return actual.Phase == "active" && actual.DesiredWorker == "verify-b" && actual.Epoch > placed.Epoch
 	})

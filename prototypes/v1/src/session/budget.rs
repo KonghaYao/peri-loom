@@ -175,6 +175,19 @@ impl<'a> ExecutionBudget<'a> {
         self.check()
     }
 
+    pub fn resume_bytes(&mut self, bytes: usize) -> Result<()> {
+        ensure!(
+            bytes <= self.budget.max_result_bytes,
+            "result byte budget exceeded"
+        );
+        self.bytes = bytes;
+        Ok(())
+    }
+
+    pub fn accounted_bytes(&self) -> usize {
+        self.bytes
+    }
+
     pub fn account_row<'value>(
         &mut self,
         values: impl Iterator<Item = &'value Value>,

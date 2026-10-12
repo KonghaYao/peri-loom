@@ -2,3 +2,6 @@
 	path = prototypes/p0/turso
 	url = https://github.com/KonghaYao/turso.git
 	branch = codex/p0-core-prototype
+[submodule "third_party/sqlite"]
+	path = third_party/sqlite
+	url = https://github.com/sqlite/sqlite.git

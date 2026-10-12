@@ -114,7 +114,7 @@ fn physical_put_ticket_blocks_takeover_until_terminal_response() -> Result<()> {
 }
 
 #[test]
-fn final_root_guard_rechecks_expiry_after_slow_candidate_semantic_read() -> Result<()> {
+fn final_root_guard_rechecks_expiry_after_uncached_candidate_read() -> Result<()> {
     for after_upload in [false, true] {
         let (raw, clock, authority) = fixture()?;
         let binding = authority
@@ -134,8 +134,12 @@ fn final_root_guard_rechecks_expiry_after_slow_candidate_semantic_read() -> Resu
         let expired = Arc::new(AtomicBool::new(false));
         let observed = expired.clone();
         let expiry = Hook {
-            needle: blob,
-            skip: usize::from(after_upload),
+            needle: if after_upload {
+                "authority/root".into()
+            } else {
+                blob
+            },
+            skip: 0,
             action: Box::new(move || {
                 clock.set(1100);
                 observed.store(true, Ordering::SeqCst);
@@ -154,14 +158,7 @@ fn final_root_guard_rechecks_expiry_after_slow_candidate_semantic_read() -> Resu
                     *captured.lock().unwrap() = reserved;
                     *captured_bytes.lock().unwrap() =
                         source.memory.get(&key).unwrap().unwrap().bytes;
-                    let reader = source.clone();
-                    *source.before_get.lock().unwrap() = Some(Hook {
-                        needle: "authority/root".into(),
-                        skip: 0,
-                        action: Box::new(move || {
-                            *reader.before_get.lock().unwrap() = Some(expiry);
-                        }),
-                    });
+                    *source.before_get.lock().unwrap() = Some(expiry);
                 }),
             });
         } else {

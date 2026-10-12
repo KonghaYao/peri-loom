@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestStoreInterruptedMetadataWritePoisonsAndFloorPreventsReallocation(t *testing.T) {
+func TestStoreInterruptedMetadataWritePoisonsAndMissingIntentPreventsReallocation(t *testing.T) {
 	directory := t.TempDir()
 	store, err := OpenStore(directory)
 	if err != nil {
@@ -47,6 +47,9 @@ func TestStoreInterruptedMetadataWritePoisonsAndFloorPreventsReallocation(t *tes
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(directory, "metadata.json"), old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(directory, metadataPendingName)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := OpenStore(directory); err == nil {

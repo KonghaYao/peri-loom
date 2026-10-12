@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,6 +21,25 @@ import (
 )
 
 func RunService(parent context.Context, config ServiceConfig, output io.Writer) error {
+	var verifier WorkerStopVerifier
+	if config.OwnedStopProof != nil {
+		adapter, err := NewOwnedStopProofVerifier(*config.OwnedStopProof)
+		if err != nil {
+			return err
+		}
+		verifier = adapter
+	}
+	return runService(parent, config, output, verifier)
+}
+
+func RunServiceWithWorkerStopVerifier(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) error {
+	if verifier == nil {
+		return errors.New("owned worker stop verifier required")
+	}
+	return runService(parent, config, output, verifier)
+}
+
+func runService(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	state, err := OpenStateStore(config.StateDirectory)
@@ -27,6 +47,19 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 		return err
 	}
 	defer state.Close()
+	if config.OwnedStopProof != nil {
+		if err := bindOwnedRunGeneration(state, *config.OwnedStopProof); err != nil {
+			return err
+		}
+	} else {
+		snapshot, err := state.Snapshot()
+		if err != nil {
+			return err
+		}
+		if snapshot.OwnedRunGeneration != "" {
+			return errors.New("owned run proof configuration required")
+		}
+	}
 	observation, err := startServiceSQLOpenObservation(ctx, config.StateDirectory, os.Getenv("PERI_SQL_OPEN_OBSERVER"))
 	if err != nil {
 		return err
@@ -80,6 +113,7 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 	if err != nil {
 		return err
 	}
+	transport = &isolatedControlTransport{ControlTransport: transport, store: state}
 	control, err := controller.NewController(metadata, transport, controller.ReconcileConfig{LeaseTTL: 30 * time.Second, HeartbeatTimeout: 5 * time.Second, Interval: time.Second})
 	if err != nil {
 		return err
@@ -109,7 +143,11 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 	if err != nil {
 		return err
 	}
-	management, err := NewManagement(ManagementConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Authority: transport, Keys: broker, Upstream: upstream, Audit: audit, Metrics: gateway, Telemetry: telemetry})
+	capacityTrace, err := newCapacityTraceBridge(config.Controller)
+	if err != nil {
+		return err
+	}
+	management, err := NewManagement(ManagementConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Authority: transport, Keys: broker, Upstream: upstream, Audit: audit, Metrics: gateway, Telemetry: telemetry, Resources: gateway, StopProof: verifier, CapacityTrace: capacityTrace})
 	if err != nil {
 		return err
 	}
@@ -123,10 +161,7 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 		return err
 	}
 	defer publicListener.Close()
-	publicMux := http.NewServeMux()
-	publicMux.Handle("/v1/sql/", gateway)
-	publicMux.Handle("/v1/", management)
-	publicMux.Handle("/", AdminHandler())
+	publicMux := newPublicMux(gateway, management)
 	publicServer := hardenedServer(publicMux)
 	publicServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
 	brokerServer := hardenedServer(broker)
@@ -169,6 +204,42 @@ func RunService(parent context.Context, config ServiceConfig, output io.Writer) 
 		}
 	}
 	return errors.Join(failure, shutdownError, gateway.Close(shutdown))
+}
+
+func newPublicMux(gateway *Gateway, management http.Handler) *http.ServeMux {
+	publicMux := http.NewServeMux()
+	publicMux.Handle("/v1/sql/", gateway)
+	hrana := http.NotFoundHandler()
+	hranaEnabled := os.Getenv("PERI_HRANA_EXPERIMENTAL") == "1"
+	if hranaEnabled {
+		hrana = newHranaHTTP(gateway)
+		gateway.mu.Lock()
+		gateway.hrana = hrana.(*hranaHTTP)
+		gateway.mu.Unlock()
+	}
+	publicMux.HandleFunc("/v1/platform/capabilities", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		if request.Method != http.MethodGet || request.URL.RawQuery != "" || strings.ContainsAny(request.Host, "/@?#\\\r\n") {
+			http.NotFound(writer, request)
+			return
+		}
+		scheme := "http"
+		if request.TLS != nil {
+			scheme = "https"
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"version":       1,
+			"hrana_http":    hranaEnabled,
+			"hrana_ws":      hranaEnabled,
+			"public_origin": scheme + "://" + request.Host,
+		})
+	})
+	publicMux.Handle("/db/", hrana)
+	publicMux.Handle("/v1/", management)
+	publicMux.Handle("/", AdminHandler())
+	return publicMux
 }
 
 func hardenedServer(handler http.Handler) *http.Server {

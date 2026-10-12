@@ -3,6 +3,8 @@ pub mod client;
 pub(crate) mod http;
 pub mod protocol;
 pub mod provider;
+mod scope;
+mod seal;
 pub mod server;
 pub mod startup;
 

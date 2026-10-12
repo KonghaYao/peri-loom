@@ -53,6 +53,8 @@ type OperationRecord struct {
 	Type             string     `json:"type"`
 	Scenario         string     `json:"scenario"`
 	Phase            string     `json:"phase"`
+	Concurrency      int        `json:"concurrency"`
+	Terminal         string     `json:"transaction_terminal,omitempty"`
 	Sequence         int        `json:"offered_sequence"`
 	BusinessID       string     `json:"business_operation_id"`
 	RequestIDs       []string   `json:"request_ids"`
@@ -78,6 +80,7 @@ type PhaseResult struct {
 	Scenario               string         `json:"scenario"`
 	Phase                  string         `json:"phase"`
 	Concurrency            int            `json:"concurrency"`
+	EffectiveSlots         map[string]int `json:"per_project_effective_slots,omitempty"`
 	Status                 string         `json:"status"`
 	Reason                 string         `json:"reason,omitempty"`
 	StartedAt              string         `json:"started_at_observed"`
@@ -85,6 +88,7 @@ type PhaseResult struct {
 	ElapsedNS              int64          `json:"elapsed_ns"`
 	OfferingElapsedNS      int64          `json:"offering_elapsed_ns"`
 	ConfiguredRate         int            `json:"configured_offered_per_second"`
+	EffectiveRate          float64        `json:"effective_configured_offered_per_second"`
 	RequestedDurationNS    int64          `json:"requested_duration_ns"`
 	PlannedOffers          int            `json:"planned_offers"`
 	MissedOffers           int            `json:"scheduled_offers_not_emitted"`

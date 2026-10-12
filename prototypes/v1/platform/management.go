@@ -15,16 +15,19 @@ import (
 type MetricsProvider interface{ Metrics() map[string]any }
 
 type ManagementConfig struct {
-	State      StateStore
-	Placements controller.MetadataStore
-	Controller *controller.Controller
-	Identity   Identity
-	Authority  controller.ControlTransport
-	Keys       KeyBroker
-	Upstream   SQLUpstream
-	Audit      Audit
-	Metrics    MetricsProvider
-	Telemetry  *Telemetry
+	State         StateStore
+	Placements    controller.MetadataStore
+	Controller    *controller.Controller
+	Identity      Identity
+	Authority     controller.ControlTransport
+	Keys          KeyBroker
+	Upstream      SQLUpstream
+	Audit         Audit
+	Metrics       MetricsProvider
+	Telemetry     *Telemetry
+	Resources     *Gateway
+	StopProof     WorkerStopVerifier
+	CapacityTrace *capacityTraceBridge
 }
 
 type Management struct {
@@ -49,10 +52,15 @@ type managementRequest struct {
 	TimestampMS    uint64                `json:"timestamp_ms"`
 	SafetyWindowMS uint64                `json:"safety_window_ms"`
 	ExpiresMS      int64                 `json:"expires_ms"`
+	OperationID    string                `json:"operation_id"`
+	Decision       string                `json:"decision"`
 	Quotas         Quotas                `json:"quotas"`
 }
 
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+var errManagementForbidden = errors.New("forbidden")
+var errDatabaseQuotaExceeded = errors.New("database quota exceeded")
 
 func NewManagement(config ManagementConfig) (*Management, error) {
 	if config.State == nil || config.Placements == nil || config.Controller == nil || config.Identity == nil || config.Authority == nil || config.Keys == nil || config.Upstream == nil || config.Audit == nil {
@@ -100,13 +108,39 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 	event.Outcome = "complete"
 	if err != nil {
 		event.Outcome = "incomplete"
+		if managementOutcomeUnknown(err) {
+			event.Outcome = "outcome_unknown"
+		}
 	}
 	event.TimestampMS = time.Now().UnixMilli()
 	if management.config.Audit.Record(event) != nil {
+		if managementOutcomeUnknown(err) {
+			managementUnknownReply(response, input.RequestID, err)
+			return
+		}
 		managementReply(response, 503, input.RequestID, nil, "outcome_unknown")
 		return
 	}
 	if err != nil {
+		if managementOutcomeUnknown(err) {
+			managementUnknownReply(response, input.RequestID, err)
+			return
+		}
+		if errors.Is(err, ErrDatabaseQuarantined) || errors.Is(err, ErrOperationExists) {
+			managementReply(response, 409, input.RequestID, nil, "database_isolated")
+			return
+		}
+		var native *nativeToolError
+		if !errors.As(err, &native) {
+			if errors.Is(err, errManagementForbidden) {
+				managementReply(response, 403, input.RequestID, nil, "forbidden")
+				return
+			}
+			if errors.Is(err, errDatabaseQuotaExceeded) {
+				managementReply(response, 429, input.RequestID, nil, "quota_exceeded")
+				return
+			}
+		}
 		managementReply(response, 409, input.RequestID, nil, "operation_incomplete")
 		return
 	}
@@ -114,10 +148,38 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 }
 
 func (management *Management) dispatch(request *http.Request, principal Principal, input managementRequest) (any, error) {
+	if strings.HasPrefix(request.URL.Path, "/v1/databases/") {
+		if request.URL.Path == "/v1/databases/operations" || request.URL.Path == "/v1/databases/operations/decision" || request.URL.Path == "/v1/databases/operations/clear" || request.URL.Path == "/v1/databases/operations/retire-local" {
+			if request.URL.Path == "/v1/databases/operations/retire-local" {
+				return management.retireLocal(request.Context(), principal, input)
+			}
+			return management.operations(principal, input, request.URL.Path)
+		}
+		if input.Database.Validate() == nil && request.URL.Path != "/v1/databases/status" && request.URL.Path != "/v1/databases/refs" && request.URL.Path != "/v1/databases/gc-inspect" && request.URL.Path != "/v1/databases/schema" && request.URL.Path != "/v1/databases/diagnostics" {
+			state, err := management.config.State.Snapshot()
+			if err != nil {
+				return nil, err
+			}
+			if request.URL.Path == "/v1/databases/create" {
+				project, exists := state.Projects[input.Project]
+				if !exists {
+					return nil, errors.New("project missing")
+				}
+				if project.Tenant != input.Database.Namespace.Tenant || principal.Role != "admin" && principal.Role != "developer" || principal.Project != "*" && principal.Project != input.Project {
+					return nil, errManagementForbidden
+				}
+			} else if err := management.config.Identity.Authorize(principal, input.Database, "manage"); err != nil {
+				return nil, err
+			}
+			if _, blocked := isolatedOperation(state, input.Database, true); blocked {
+				return nil, ErrDatabaseQuarantined
+			}
+		}
+	}
 	switch request.URL.Path {
 	case "/v1/reconcile":
 		if principal.Role != "admin" || principal.Project != "*" {
-			return nil, errors.New("controller reconciliation denied")
+			return nil, errManagementForbidden
 		}
 		return map[string]bool{"ok": true}, management.config.Controller.Reconcile(request.Context())
 	case "/v1/organizations/create":
@@ -144,7 +206,7 @@ func (management *Management) dispatch(request *http.Request, principal Principa
 		return management.maintenance(request.Context(), principal, input, request.URL.Path)
 	case "/v1/databases/status", "/v1/databases/refs", "/v1/databases/gc-inspect":
 		return management.inspect(request.Context(), principal, input, request.URL.Path)
-	case "/v1/databases/schema", "/v1/databases/checkpoint", "/v1/databases/compact":
+	case "/v1/databases/schema", "/v1/databases/checkpoint", "/v1/databases/compact", "/v1/databases/diagnostics":
 		return management.nativeTool(request.Context(), principal, input, request.URL.Path)
 	case "/v1/databases/rewrap":
 		if err := management.config.Identity.Authorize(principal, input.Database, "keys"); err != nil {
@@ -157,6 +219,10 @@ func (management *Management) dispatch(request *http.Request, principal Principa
 }
 
 func (management *Management) read(response http.ResponseWriter, request *http.Request, principal Principal) {
+	if request.URL.Path == "/v1/capacity-trace" {
+		management.capacityTrace(response, request, principal)
+		return
+	}
 	if request.URL.Path == "/v1/metrics" {
 		if principal.Role != "admin" || principal.Project != "*" || management.config.Metrics == nil {
 			managementReply(response, 403, "", nil, "forbidden")

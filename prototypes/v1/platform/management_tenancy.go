@@ -3,8 +3,11 @@ package platform
 import "errors"
 
 func (management *Management) createOrganization(principal Principal, input managementRequest) (any, error) {
-	if principal.Role != "admin" || principal.Project != "*" || !labelPattern.MatchString(input.ID) || len(input.Name) > 128 || input.Name == "" {
+	if !labelPattern.MatchString(input.ID) || len(input.Name) > 128 || input.Name == "" {
 		return nil, errors.New("organization creation denied")
+	}
+	if principal.Role != "admin" || principal.Project != "*" {
+		return nil, errManagementForbidden
 	}
 	organization := Organization{ID: input.ID, Name: input.Name}
 	err := management.config.State.Update(func(state *State) error {
@@ -40,8 +43,11 @@ func defaultQuotas(quotas Quotas) Quotas {
 }
 
 func (management *Management) createProject(principal Principal, input managementRequest) (any, error) {
-	if principal.Role != "admin" || principal.Project != "*" || !labelPattern.MatchString(input.ID) || !labelPattern.MatchString(input.Organization) || !labelPattern.MatchString(input.Region) {
+	if !labelPattern.MatchString(input.ID) || !labelPattern.MatchString(input.Organization) || !labelPattern.MatchString(input.Region) {
 		return nil, errors.New("project creation denied")
+	}
+	if principal.Role != "admin" || principal.Project != "*" {
+		return nil, errManagementForbidden
 	}
 	project := Project{ID: input.ID, Organization: input.Organization, Tenant: input.Organization + "_" + input.ID, Region: input.Region, Quotas: defaultQuotas(input.Quotas)}
 	err := management.config.State.Update(func(state *State) error {
@@ -64,7 +70,7 @@ func (management *Management) createProject(principal Principal, input managemen
 
 func (management *Management) createAPIKey(principal Principal, input managementRequest) (any, error) {
 	if principal.Role != "admin" || principal.Project != "*" && principal.Project != input.Project {
-		return nil, errors.New("API key creation denied")
+		return nil, errManagementForbidden
 	}
 	key, credential, err := NewAPIKey(management.config.State, input.Subject, input.Project, input.Role, input.ServiceAccount)
 	if err != nil {
@@ -79,8 +85,11 @@ func (management *Management) revokeAPIKey(principal Principal, input management
 		return nil, err
 	}
 	key, exists := state.APIKeys[input.ID]
-	if !exists || principal.Role != "admin" || principal.Project != "*" && principal.Project != key.Project {
+	if !exists {
 		return nil, errors.New("API key revocation denied")
+	}
+	if principal.Role != "admin" || principal.Project != "*" && principal.Project != key.Project {
+		return nil, errManagementForbidden
 	}
 	return map[string]bool{"revoked": true}, RevokeAPIKey(management.config.State, key.ID)
 }

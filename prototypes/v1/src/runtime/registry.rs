@@ -58,6 +58,13 @@ impl Instance {
         identifier: DatabaseId,
         epoch: u64,
     ) -> Result<Arc<Self>> {
+        let mut observers = runtime
+            .native_instances
+            .lock()
+            .map_err(|_| crate::session::AdmissionError::Quarantine)?;
+        observers.retain(|(_, database)| database.strong_count() != 0);
+        observers.push((identifier.clone(), Arc::downgrade(&database)));
+        drop(observers);
         let instance = Arc::new(Self {
             database: Mutex::new(Some(database.clone())),
             runtime: Arc::downgrade(runtime),

@@ -11,12 +11,15 @@ import (
 )
 
 type Gateway struct {
-	config    GatewayConfig
-	mu        sync.Mutex
-	closing   bool
-	sessions  map[string]*gatewaySession
-	admission *gatewayAdmission
-	counters  *gatewayCounters
+	config         GatewayConfig
+	mu             sync.Mutex
+	closing        bool
+	hrana          *hranaHTTP
+	sessions       map[string]*gatewaySession
+	admission      *gatewayAdmission
+	counters       *gatewayCounters
+	operationHolds map[string]*admissionPermit
+	operationMu    sync.Mutex
 }
 
 type gatewaySession struct {
@@ -38,14 +41,20 @@ type gatewaySession struct {
 }
 
 type gatewayResult struct {
-	status     int
-	code       string
-	value      any
-	dispatched bool
-	session    *gatewaySession
-	finish     func()
-	stream     []byte
-	permit     *admissionPermit
+	status               int
+	code                 string
+	value                any
+	dispatched           bool
+	session              *gatewaySession
+	finish               func()
+	stream               []byte
+	permit               *admissionPermit
+	rpc                  *SQLRPCError
+	operationID          string
+	operationStage       string
+	operationDatabase    controller.DatabaseID
+	operationPending     bool
+	operationObservation *OperationStatus
 }
 
 func NewGateway(config GatewayConfig) (*Gateway, error) {
@@ -57,7 +66,41 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 			return nil, errors.New("writer admission requires versioned SQL upstream")
 		}
 	}
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: &gatewayAdmission{projects: map[string]*projectAdmission{}, writerAdmission: config.WriterAdmission}, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
+	state, err := config.State.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	gate := &gatewayAdmission{projects: map[string]*projectAdmission{}, writerAdmission: config.WriterAdmission}
+	retainedSessions := map[string]bool{}
+	holds := map[string]*admissionPermit{}
+	for _, record := range state.Operations {
+		if record.State == "terminal" || record.LocalResourcesRetired {
+			continue
+		}
+		project := gate.projects[record.Project]
+		if project == nil {
+			project = &projectAdmission{}
+			gate.projects[record.Project] = project
+		}
+		project.unknown++
+		if record.Action == "close" {
+			project.control++
+		} else {
+			project.active++
+			project.ownerActive++
+		}
+		resource := record.Project + "/" + record.Worker + "/" + record.Session
+		if record.Session == "" {
+			resource += record.OperationID
+		}
+		countSession := !retainedSessions[resource]
+		if countSession {
+			retainedSessions[resource] = true
+			project.sessions++
+		}
+		holds[operationKey(record.Database, record.OperationID)] = &admissionPermit{gate: gate, project: record.Project, control: record.Action == "close", owner: record.Action != "close", session: countSession, retained: true}
+	}
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {
@@ -70,7 +113,13 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 	}
 	gateway.mu.Lock()
 	gateway.closing = true
+	hrana := gateway.hrana
 	gateway.mu.Unlock()
+	if hrana != nil {
+		if err := hrana.closeWebSockets(ctx); err != nil {
+			return err
+		}
+	}
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -105,20 +154,18 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 				session.mu.Unlock()
 				return errors.New("gateway shutdown metadata unavailable")
 			}
+			if _, blocked := isolatedOperation(state, session.database, true); blocked {
+				session.mu.Unlock()
+				return ErrDatabaseQuarantined
+			}
 			permit, ok := gateway.admission.reserve(session.project, state.Projects[session.project].Quotas, false, true)
 			if !ok {
 				session.mu.Unlock()
 				continue
 			}
 			identifier, err := controller.RandomID()
-			var reply struct {
-				Closed bool `json:"closed"`
-			}
 			if err == nil {
-				err = gateway.callSession(ctx, session, session.binding, identifier, map[string]any{"command": "close_session", "session": session.upstream}, &reply)
-			}
-			if err == nil && !reply.Closed {
-				err = &SQLRPCError{Ambiguous: true}
+				err = gateway.closeTrackedSession(ctx, session, identifier, permit)
 			}
 			if err != nil {
 				var failure *SQLRPCError

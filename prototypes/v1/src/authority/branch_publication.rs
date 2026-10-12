@@ -37,15 +37,18 @@ impl BranchStore {
                     .objects
                     .get(&format!("manifests/{}", next.manifest))
                     .context("HEAD manifest missing")?;
-                let manifest: Manifest = serde_json::from_slice(&self.authority.read_blob(entry)?)?;
+                let manifest: Manifest =
+                    serde_json::from_slice(&self.authority.read_metadata_blob(entry)?)?;
                 let previous = root.branches[&self.branch].head.as_ref();
                 if let Some(previous) = previous {
-                    let head: Head = serde_json::from_slice(&self.authority.read_blob(previous)?)?;
+                    let head: Head =
+                        serde_json::from_slice(&self.authority.read_metadata_blob(previous)?)?;
                     let entry = root
                         .objects
                         .get(&format!("manifests/{}", head.manifest))
                         .context("previous HEAD manifest missing")?;
-                    let old: Manifest = serde_json::from_slice(&self.authority.read_blob(entry)?)?;
+                    let old: Manifest =
+                        serde_json::from_slice(&self.authority.read_metadata_blob(entry)?)?;
                     ensure!(
                         manifest.generation
                             == old

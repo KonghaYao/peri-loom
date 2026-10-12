@@ -47,7 +47,7 @@ func nativeDiagnosticManagement(test *testing.T) (*Management, *gatewayFixture, 
 	}
 	statusStore.MetadataStore = fixture.placements
 	identity := &nativeDiagnosticIdentity{}
-	management := &Management{config: ManagementConfig{Controller: control, Placements: fixture.placements, Identity: identity, Upstream: fixture.upstream}}
+	management := &Management{config: ManagementConfig{State: fixture.state, Controller: control, Placements: fixture.placements, Identity: identity, Upstream: fixture.upstream}}
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		if command["command"] == "checkpoint" {
 			return map[string]bool{"checkpointed": true}, nil
@@ -90,12 +90,8 @@ func TestManagementNativeDiagnosticsStagesPreserveFailureAndCleanup(test *testin
 			if stage != "worker_lookup" && stage != "placement" && (!errors.Is(err, sentinel) || err.Error() != sentinel.Error()) {
 				test.Fatal("original failure changed")
 			}
-			expectedClose := 0
-			if stage == "tool_rpc" {
-				expectedClose = 1
-			}
-			if fixture.upstream.count("close_session") != expectedClose {
-				test.Fatal("cleanup behavior changed")
+			if fixture.upstream.count("close_session") != 0 {
+				test.Fatal("failed native tool triggered automatic cleanup")
 			}
 		})
 	}

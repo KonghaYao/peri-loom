@@ -16,12 +16,13 @@ var ErrStoreClosed = errors.New("metadata store closed")
 var ErrStoreUncertain = errors.New("metadata persistence outcome uncertain; reopen requires durable verification")
 
 type diskStore struct {
-	mutex     sync.Mutex
-	directory string
-	lock      *os.File
-	metadata  Metadata
-	closed    bool
-	uncertain bool
+	mutex       sync.Mutex
+	directory   string
+	lock        *os.File
+	metadata    Metadata
+	closed      bool
+	uncertain   bool
+	initialized bool
 }
 
 type epochFloor struct {
@@ -99,6 +100,9 @@ func OpenStore(directory string) (MetadataStore, error) {
 		if err := validateDirectory(entries); err != nil {
 			return nil, err
 		}
+		if err := recoverMetadataCommit(absolute); err != nil {
+			return nil, err
+		}
 		metadata, floor, err := loadState(absolute)
 		if err != nil {
 			return nil, err
@@ -111,6 +115,7 @@ func OpenStore(directory string) (MetadataStore, error) {
 		}
 		store.metadata = metadata
 	}
+	store.initialized = true
 	success = true
 	return store, nil
 }
@@ -173,19 +178,31 @@ func (store *diskStore) available() error {
 }
 
 func (store *diskStore) persist(metadata Metadata) error {
-	encoded, checksum, err := encodeEnvelope(metadata.Revision, metadata)
+	encoded, encodedFloor, err := metadataCommitFiles(metadata)
 	if err != nil {
 		return err
 	}
-	floor := epochFloor{Version: 1, Revision: metadata.Revision, Epoch: metadata.Epoch, MetadataChecksum: checksum}
-	encodedFloor, _, err := encodeEnvelope(metadata.Revision, floor)
+	intent := metadataCommit{Version: 1, After: metadata}
+	if store.initialized {
+		intent.Before = &store.metadata
+	}
+	if _, err := os.Lstat(filepath.Join(store.directory, metadataPendingName)); !errors.Is(err, os.ErrNotExist) {
+		return errors.New("unfinished or unavailable metadata commit intent")
+	}
+	encodedIntent, _, err := encodeEnvelope(metadata.Revision, intent)
 	if err != nil {
+		return err
+	}
+	if err := atomicFile(store.directory, metadataPendingName, encodedIntent); err != nil {
 		return err
 	}
 	if err := atomicFile(store.directory, "epoch-floor.json", encodedFloor); err != nil {
 		return err
 	}
-	return atomicFile(store.directory, "metadata.json", encoded)
+	if err := atomicFile(store.directory, "metadata.json", encoded); err != nil {
+		return err
+	}
+	return removeMetadataIntent(store.directory)
 }
 
 func (store *diskStore) Close() error {

@@ -78,33 +78,33 @@ func (identity *identity) Authorize(principal Principal, database controller.Dat
 	}
 	key, ok := state.APIKeys[principal.KeyID]
 	if !ok || key.Revoked || key.Subject != principal.Subject || key.Project != principal.Project {
-		return errors.New("forbidden")
+		return errManagementForbidden
 	}
 	if principal.Database != nil {
 		if principal.ExpiresMS <= time.Now().UnixMilli() || *principal.Database != database || !canIssue(key.Role, principal.Role) || (action != "sql" && action != "view") {
-			return errors.New("forbidden")
+			return errManagementForbidden
 		}
 	} else if principal.Role != key.Role || principal.ExpiresMS != 0 || principal.RootIncarnation != "" || principal.BranchIncarnation != 0 || principal.DomainID != "" {
-		return errors.New("forbidden")
+		return errManagementForbidden
 	}
 	if key.Project == "*" {
 		if key.Role == "admin" && principal.Database == nil && (action == "manage" || action == "view" || action == "keys") {
 			return nil
 		}
-		return errors.New("forbidden")
+		return errManagementForbidden
 	}
 	if database.Validate() != nil {
-		return errors.New("forbidden")
+		return errManagementForbidden
 	}
 	record, exists := state.Databases[database.Key()]
 	project, present := state.Projects[key.Project]
 	if !exists || !present || record.Project != key.Project || project.Tenant != database.Namespace.Tenant || record.ID != database {
-		return errors.New("forbidden")
+		return errManagementForbidden
 	}
 	if principal.Database != nil {
 		descriptor, ok := state.Keys[namespaceKey(database.Namespace)]
 		if !ok || !tokenDatabaseReady(record, descriptor) || principal.RootIncarnation != record.RootIncarnation || principal.BranchIncarnation != record.BranchIncarnation || principal.DomainID != descriptor.DomainID {
-			return errors.New("forbidden")
+			return errManagementForbidden
 		}
 	}
 	allowed := false
@@ -119,14 +119,14 @@ func (identity *identity) Authorize(principal Principal, database controller.Dat
 		allowed = principal.Database == nil && key.Role == "admin"
 	}
 	if !allowed {
-		return errors.New("forbidden")
+		return errManagementForbidden
 	}
 	return nil
 }
 
 func (identity *identity) IssueToken(principal Principal, database controller.DatabaseID, role string, expiresMS int64) (string, error) {
 	if principal.Database != nil || principal.Project == "*" || !canIssue(principal.Role, role) {
-		return "", errors.New("forbidden")
+		return "", errManagementForbidden
 	}
 	if err := identity.Authorize(principal, database, "view"); err != nil {
 		return "", err

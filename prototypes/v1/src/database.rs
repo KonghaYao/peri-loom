@@ -153,7 +153,7 @@ impl RemoteDatabase {
             Some(key) => engine.connect_with_encryption(Some(key.native_key()))?,
             None => engine.connect()?,
         };
-        connection.set_temp_store(turso_core::TempStore::Memory);
+        connection.set_temp_store(turso_core::TempStore::Memory)?;
         Ok(connection)
     }
 
@@ -166,6 +166,7 @@ impl RemoteDatabase {
     }
 
     pub fn checkpoint(&self) -> Result<()> {
+        let _reads = crate::authority::request_reads::Scope::enter();
         let result = self.checkpoint_once();
         self.finish_maintenance(result)
     }
@@ -218,6 +219,7 @@ impl RemoteDatabase {
     }
 
     pub fn compact_wal(&self) -> Result<()> {
+        let _reads = crate::authority::request_reads::Scope::enter();
         let result = self.compact_wal_once();
         self.finish_maintenance(result)
     }
@@ -346,5 +348,96 @@ impl RemoteDatabase {
 impl Drop for RemoteDatabase {
     fn drop(&mut self) {
         let _ = self.lane.close(self);
+    }
+}
+
+#[cfg(test)]
+mod remote_wal_sync_failure_tests {
+    use super::*;
+    use crate::object_store::{MemoryObjectStore, PutCondition, StoredObject};
+    use crate::wal::WalAppendRequest;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct FailingAppendStore {
+        inner: MemoryObjectStore,
+        armed: AtomicBool,
+        failures: AtomicUsize,
+    }
+
+    impl ObjectStore for FailingAppendStore {
+        fn supports_strict_fencing(&self) -> bool {
+            true
+        }
+
+        fn append_wal(&self, _: &WalAppendRequest) -> Result<Option<u64>> {
+            if self.armed.load(Ordering::SeqCst) {
+                self.failures.fetch_add(1, Ordering::SeqCst);
+                anyhow::bail!("injected remote WAL append failure");
+            }
+            Ok(None)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+            self.inner.get(key)
+        }
+
+        fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+            self.inner.put(key, bytes, condition)
+        }
+
+        fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+            self.inner.delete(key, expected)
+        }
+
+        fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            self.inner.list(prefix)
+        }
+    }
+
+    fn assert_remote_append_failure_is_unsettled(retry: bool) -> Result<()> {
+        let cache = tempfile::tempdir()?;
+        let store = Arc::new(FailingAppendStore::default());
+        let database = RemoteDatabase::open(
+            store.clone(),
+            Namespace::new("fault", if retry { "retry" } else { "default" })?,
+            cache.path(),
+            1,
+        )?;
+        database.execute("CREATE TABLE entries(value INTEGER)")?;
+        {
+            let lane = database.lane.connection.lock().unwrap();
+            let connection = lane.as_ref().unwrap();
+            assert!(!connection.get_data_sync_retry());
+            if retry {
+                connection.set_data_sync_retry(true);
+            }
+        }
+        store.armed.store(true, Ordering::SeqCst);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            database.execute("INSERT INTO entries VALUES(1)")
+        }));
+        let error = result
+            .expect("remote append failure must return an error")
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("injected remote WAL append failure"),
+            "{message}"
+        );
+        assert!(message.contains("outcome is unsettled"), "{message}");
+        assert_eq!(store.failures.load(Ordering::SeqCst), 1);
+        assert!(database.admission.status()?.quarantined);
+        Ok(())
+    }
+
+    #[test]
+    fn remote_wal_append_failure_returns_unsettled_with_default_retry() -> Result<()> {
+        assert_remote_append_failure_is_unsettled(false)
+    }
+
+    #[test]
+    fn remote_wal_append_failure_returns_unsettled_with_retry_enabled() -> Result<()> {
+        assert_remote_append_failure_is_unsettled(true)
     }
 }

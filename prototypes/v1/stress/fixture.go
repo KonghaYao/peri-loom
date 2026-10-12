@@ -9,24 +9,29 @@ import (
 )
 
 type Fixture struct {
-	Target    Target
-	Client    *Client
-	Model     *Model
-	Acked     []Mutation
-	Artifacts *Artifacts
+	Target     Target
+	Client     *Client
+	Model      *Model
+	Acked      []Mutation
+	Artifacts  *Artifacts
+	Management *Client
 }
 
 type Correctness struct {
-	Status             string `json:"status"`
-	Reason             string `json:"reason,omitempty"`
-	Accounts           int    `json:"accounts"`
-	LedgerRows         int    `json:"ledger_rows"`
-	ExpectedHash       string `json:"expected_hash,omitempty"`
-	ActualHash         string `json:"actual_hash,omitempty"`
-	ExpectedAccountSum int64  `json:"expected_account_sum"`
-	ActualAccountSum   int64  `json:"actual_account_sum"`
-	ExpectedLedgerHash string `json:"expected_ledger_hash,omitempty"`
-	ActualLedgerHash   string `json:"actual_ledger_hash,omitempty"`
+	Database           *DatabaseID `json:"database,omitempty"`
+	Project            string      `json:"project,omitempty"`
+	Phase              string      `json:"phase,omitempty"`
+	Concurrency        int         `json:"concurrency,omitempty"`
+	Status             string      `json:"status"`
+	Reason             string      `json:"reason,omitempty"`
+	Accounts           int         `json:"accounts"`
+	LedgerRows         int         `json:"ledger_rows"`
+	ExpectedHash       string      `json:"expected_hash,omitempty"`
+	ActualHash         string      `json:"actual_hash,omitempty"`
+	ExpectedAccountSum int64       `json:"expected_account_sum"`
+	ActualAccountSum   int64       `json:"actual_account_sum"`
+	ExpectedLedgerHash string      `json:"expected_ledger_hash,omitempty"`
+	ActualLedgerHash   string      `json:"actual_ledger_hash,omitempty"`
 }
 
 func (fixture *Fixture) Setup(ctx context.Context) (failure *Failure) {

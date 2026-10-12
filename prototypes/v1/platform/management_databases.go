@@ -8,8 +8,11 @@ import (
 )
 
 func (management *Management) createDatabase(ctx context.Context, principal Principal, input managementRequest) (any, error) {
-	if input.Database.Validate() != nil || input.Database.Branch != "main" || principal.Role != "admin" && principal.Role != "developer" || principal.Project != "*" && principal.Project != input.Project {
+	if input.Database.Validate() != nil || input.Database.Branch != "main" {
 		return nil, errors.New("database creation denied")
+	}
+	if principal.Role != "admin" && principal.Role != "developer" || principal.Project != "*" && principal.Project != input.Project {
+		return nil, errManagementForbidden
 	}
 	if input.Role == "" {
 		input.Role = "writer"
@@ -43,7 +46,7 @@ func (management *Management) createDatabase(ctx context.Context, principal Prin
 			}
 		}
 		if count >= project.Quotas.MaxDatabases {
-			return errors.New("database quota exceeded")
+			return errDatabaseQuotaExceeded
 		}
 		state.Databases[database.ID.Key()] = database
 		return nil
@@ -66,12 +69,21 @@ func (management *Management) createDatabase(ctx context.Context, principal Prin
 
 func (management *Management) setDatabaseState(database controller.DatabaseID, desired string) error {
 	placement, placementErr := management.config.Controller.Status(database)
+	if desired == "deleted" {
+		unlock := lockOperationNamespace(database.Namespace)
+		defer unlock()
+	}
 	return management.config.State.Update(func(state *State) error {
 		entry, exists := state.Databases[database.Key()]
 		if !exists || entry.State == "deleted" && desired != "deleted" {
 			return errors.New("database identity unavailable")
 		}
 		entry.State = desired
+		if desired == "deleted" {
+			if err := removeKnownDatabaseOperations(state, database); err != nil {
+				return err
+			}
+		}
 		if placementErr == nil && placement.Grant != nil && desired != "deleted" {
 			entry.RootIncarnation = placement.Grant.Binding.RootIncarnation
 			entry.BranchIncarnation = placement.Grant.Binding.BranchIncarnation
@@ -108,6 +120,13 @@ func (management *Management) placement(ctx context.Context, principal Principal
 
 func (management *Management) deleteDatabase(ctx context.Context, principal Principal, input managementRequest) (any, error) {
 	if err := management.config.Identity.Authorize(principal, input.Database, "manage"); err != nil {
+		return nil, err
+	}
+	state, err := management.config.State.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	if err := knownDatabaseDeletionPermitted(state, input.Database); err != nil {
 		return nil, err
 	}
 	if err := management.config.Controller.Suspend(ctx, input.Database); err != nil {
@@ -160,7 +179,7 @@ func (management *Management) fork(ctx context.Context, principal Principal, inp
 			}
 		}
 		if count >= project.Quotas.MaxDatabases {
-			return errors.New("branch quota exceeded")
+			return errDatabaseQuotaExceeded
 		}
 		state.Databases[child.ID.Key()] = child
 		return nil

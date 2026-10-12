@@ -123,6 +123,15 @@ pub fn validate_index_commit(
                 index.receipts.get(&record.append_id) == Some(&record.lsn),
                 "missing WAL append receipt"
             );
+            if let Some(digest) = index.receipt_digests.get(&record.append_id) {
+                ensure!(
+                    digest
+                        == blake3::hash(&serde_json::to_vec(&record)?)
+                            .to_hex()
+                            .as_str(),
+                    "WAL receipt request digest mismatch"
+                );
+            }
         }
         apply_batch(&mut bytes, &record.batch)?;
         if let Some(commit) = record.commit {

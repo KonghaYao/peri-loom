@@ -1,6 +1,6 @@
 # P0 segmented Turso prototype
 
-这是 `docs/v1/01-p0-core-prototype.md` 的本地单进程验证：逻辑数据库由 manifest、不可变的 128 KiB segments 和本地 WAL 构成，而不是完整的物理 `.db` 文件。SQL parser、VM、BTree 使用本地 Turso Git checkout 的 `turso/core`，IO 与存储层负责虚拟数据库文件及持久化。
+本地单进程原型的逻辑数据库由 manifest、不可变的 128 KiB segments 和本地 WAL 构成，而不是完整的物理 `.db` 文件。SQL parser、VM、BTree 使用本地 Turso Git checkout 的 `turso/core`，IO 与存储层负责虚拟数据库文件及持久化。
 
 ## 运行
 
@@ -21,7 +21,7 @@ cargo test --test acceptance
 
 ## Turso fork 跟踪
 
-`turso/` 是父仓库的 Git submodule，`origin` 指向用户提供的 `https://github.com/KonghaYao/turso`，保留指向官方仓库的 `upstream`。开发分支为 `codex/p0-core-prototype`，从已验收的 `8549c16595d2faf1bdd6ee24aee0be8bfabb3d4a` 开始，既有四个 Turso 源码修改完整保留在该分支工作区。
+`turso/` 是父仓库的 Git submodule，`origin` 指向 `https://github.com/KonghaYao/turso`，`upstream` 指向官方仓库。开发分支为 `codex/p0-core-prototype`。
 
 直接在 `turso/core/` 上修改；不再维护 vendor、独立 patch 文件或重放脚本。Turso 改动以它自己的 Git 工作区为准，外围原型代码由 peri-loom 仓库管理：
 
@@ -31,15 +31,13 @@ git -C turso diff
 git -C turso fetch upstream
 ```
 
-父仓库通过 `.gitmodules` 和 gitlink 跟踪 submodule，不再忽略该目录。四个源码修改已提交为 `1a548d14a5be41e32b05bc43cb559cfb8b44dae4`，父仓库 gitlink 跟踪这个提交。提交尚未推送，其他机器暂时无法从远端获取该 revision。`.gitmodules` 的 branch 记录目标开发分支，但不替代 gitlink，也不让普通 init 自动切换分支；分支尚未推送，暂不要使用 `git submodule update --remote`。
+父仓库通过 `.gitmodules` 和 gitlink 跟踪子模块提交；该分支的本地提交发布到 Turso 远端后，其他机器才能从父仓库锁定的提交初始化。发布顺序必须是先子仓库、后父仓库；普通 `submodule update --init` 使用 gitlink，不会自动切换至 `.gitmodules` 配置的分支。
 
 共享 revision 已提交并推送后，新机器在 peri-loom 根目录初始化：
 
 ```sh
 git submodule update --init --recursive
 ```
-
-用户已授予持续提交权限；本轮已提交 Turso 修改并更新父仓库指针，没有执行 push。
 
 ## CLI
 

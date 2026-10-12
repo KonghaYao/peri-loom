@@ -42,11 +42,32 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), "preserved")
         self.assertEqual(list(project.directory.iterdir()), [marker])
 
-    def test_default_off_can_reopen_without_observation_file(self):
+    def test_frontend_build_precedes_embedded_go_build(self):
+        project = self.project(False, no_build=False)
+        project.root = self.root
+        frontend = self.root / "prototypes/v1/platform/frontend"
+        frontend.mkdir(parents=True)
+        (frontend / "node_modules").mkdir()
+        commands = []
+
+        def capture(command, **options):
+            commands.append((command, options.get("cwd")))
+            if command[:2] == ["go", "build"]:
+                raise RuntimeError("build-order-captured")
+
+        with patch.object(dev.subprocess, "run", side_effect=capture):
+            with self.assertRaisesRegex(RuntimeError, "build-order-captured"):
+                project.prepare()
+        self.assertEqual(commands[0], (["npm", "run", "build"], frontend))
+        self.assertEqual(commands[1][0][:2], ["cargo", "build"])
+        self.assertEqual(commands[2][0][:2], ["go", "build"])
+
+    def test_default_off_cannot_reopen_without_stop_proofs(self):
         project = self.project(False)
         project.prepare()
         self.assertIs(project.launch["sql_open_observer"], False)
-        project.prepare()
+        with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
+            project.prepare()
         self.assertFalse((project.directory / "platform" / "sql-open-observation.jsonl").exists())
 
     def test_fresh_enabled_pins_and_cannot_reopen(self):

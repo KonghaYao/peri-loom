@@ -25,7 +25,7 @@ func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewa
 		return gatewayFailure(403, "invalid_session")
 	}
 	if session.poisoned {
-		return gatewayFailure(502, "outcome_unknown")
+		return gateway.isolatedSessionFailure(session.database)
 	}
 	if action != "close" && !session.writerProtocol {
 		return gatewayFailure(503, "writer_profile_unavailable")

@@ -199,7 +199,7 @@ func loadState(directory string) (Metadata, epochFloor, error) {
 func validateDirectory(entries []os.DirEntry) error {
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == "metadata.json" || name == "epoch-floor.json" || name == "metadata.lock" {
+		if name == "metadata.json" || name == "epoch-floor.json" || name == "metadata.lock" || name == metadataPendingName {
 			continue
 		}
 		if strings.HasPrefix(name, ".state-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular() {

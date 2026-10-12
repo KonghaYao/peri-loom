@@ -9,6 +9,123 @@ const originalFetch = globalThis.fetch;
 
 test.afterEach(() => { globalThis.fetch = originalFetch; });
 
+test("management close loss exposes F03 metadata without replay or deduplication", async () => {
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    const body = JSON.parse(new TextDecoder().decode(options.body));
+    assert.equal(body.request_id, "same-correlation");
+    assert.equal(body.operation_id, undefined);
+    return reply(body.request_id, null, { code: "outcome_unknown", operation_id: `server-operation-${calls}`, stage: "close_session", business_outcome: "completed", cleanup_outcome: "unknown", execution_proven: true, ambiguous: true, rejected: false, execution_completed: true, may_have_committed: true, retry_allowed: false });
+  };
+  const client = new Client("http://127.0.0.1:8080", credential);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await assert.rejects(client.management("checkpoint", { database, request_id: "same-correlation" }), (error) => {
+      assert.equal(error.code, "outcome_unknown");
+      assert.equal(error.requestID, "same-correlation");
+      assert.equal(error.operationID, `server-operation-${attempt}`);
+      assert.equal(error.stage, "close_session");
+      assert.equal(error.businessOutcome, "completed");
+      assert.equal(error.cleanupOutcome, "unknown");
+      assert.equal(error.executionProven, true);
+      assert.equal(error.ambiguous, true);
+      assert.equal(error.rejected, false);
+      assert.equal(error.retryAllowed, false);
+      assert.equal(error.executionCompleted, true);
+      assert.equal(error.mayHaveCommitted, true);
+      assert.equal(error.outcomeUnknown, true);
+      return true;
+    });
+    assert.equal(calls, attempt);
+  }
+});
+
+test("gateway Unknown keeps nested RPC observation separate from legacy SQL flags", async () => {
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    const body = JSON.parse(new TextDecoder().decode(options.body));
+    if (url.endsWith("/open")) return reply(body.request_id, { session: identifier, readonly: false });
+    return reply(body.request_id, null, { code: "outcome_unknown", operation_id: "gateway-operation", stage: "tool_rpc", business_outcome: "unknown", cleanup_outcome: "not_applicable", execution_proven: false, retry_allowed: false, possible_commit: true, rpc_observation: { ambiguous: true, rejected: true, execution_completed: true } });
+  };
+  const session = await new Client("http://127.0.0.1:8080", credential).open(database);
+  await assert.rejects(session.execute("COMMIT", "commit-loss"), (error) => {
+    assert.equal(error.operationID, "gateway-operation");
+    assert.equal(error.possibleCommit, true);
+    assert.deepEqual(error.rpcObservation, { ambiguous: true, rejected: true, executionCompleted: true });
+    assert.equal(error.executionCompleted, false);
+    assert.equal(error.mayHaveCommitted, false);
+    assert.equal(error.outcomeUnknown, true);
+    return true;
+  });
+  await assert.rejects(session.execute("COMMIT", "no-replay"), { code: "session_unusable" });
+  assert.equal(calls, 2);
+});
+
+test("F03 malformed metadata fails closed and never leaks partially validated fields", async () => {
+  const invalid = [
+    { operation_id: 42 }, { operation_id: null }, { stage: "placement" }, { stage: null },
+    { business_outcome: "success" }, { cleanup_outcome: "failed" },
+    ...["execution_proven", "ambiguous", "rejected", "retry_allowed", "possible_commit", "execution_completed", "may_have_committed"].flatMap((key) => [{ [key]: "true" }, { [key]: null }]),
+    { rpc_observation: null }, { rpc_observation: [] },
+    { rpc_observation: { ambiguous: true, rejected: false } },
+    { rpc_observation: { ambiguous: true, rejected: false, execution_completed: "true" } },
+    { rpc_observation: { ambiguous: true, rejected: false, execution_completed: true, extra: true } },
+    { extra: true },
+  ];
+  let calls = 0;
+  const client = new Client("http://127.0.0.1:8080", credential);
+  for (const fields of invalid) {
+    globalThis.fetch = async (url, options) => {
+      calls++;
+      const body = JSON.parse(new TextDecoder().decode(options.body));
+      return reply(body.request_id, null, { code: "database_isolated", operation_id: "untrusted-operation", ...fields });
+    };
+    await assert.rejects(client.management("checkpoint", { database, request_id: "bad-metadata" }), (error) => {
+      assert.equal(error.code, "outcome_unknown");
+      assert.equal(error.outcomeUnknown, true);
+      assert.equal(error.operationID, undefined);
+      return true;
+    });
+  }
+  assert.equal(calls, invalid.length);
+});
+
+test("F03 defined management paths pass operation IDs and decisions explicitly", async () => {
+  const client = new Client("http://127.0.0.1:8080", credential);
+  for (const operation of ["operations", "operations/decision", "operations/clear", "operations/retire-local", "diagnostics"]) {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(new URL(url).pathname, `/v1/databases/${operation}`);
+      const body = JSON.parse(new TextDecoder().decode(options.body));
+      assert.equal(body.operation_id, "server-operation");
+      assert.equal(body.request_id, "lookup-correlation");
+      assert.equal(body.decision, "retain_isolation_new_database_required");
+      return reply(body.request_id, { operations: [] });
+    };
+    await client.management(operation, { database, request_id: "lookup-correlation", operation_id: "server-operation", decision: "retain_isolation_new_database_required" });
+  }
+  globalThis.fetch = async () => { throw new Error("invalid request dispatched"); };
+  await assert.rejects(client.management("operations", { database, operation_id: "bad/id" }), { code: "invalid_operation_id" });
+  await assert.rejects(client.management("operations/decision", { database, decision: "retry" }), { code: "invalid_request" });
+  await assert.rejects(client.management("operations/retry", { database }), { code: "invalid_operation" });
+});
+
+test("F03 safe codes and optional metadata preserve old code-only errors", async () => {
+  const client = new Client("http://127.0.0.1:8080", credential);
+  for (const code of ["database_isolated", "operation_recorded", "operation_registration_unavailable", "session_unusable", "future_error"]) {
+    globalThis.fetch = async (url, options) => {
+      const body = JSON.parse(new TextDecoder().decode(options.body));
+      return reply(body.request_id, null, { code });
+    };
+    await assert.rejects(client.management("checkpoint", { database }), (error) => {
+      assert.equal(error.code, code === "future_error" ? "remote_error" : code);
+      assert.equal(error.operationID, undefined);
+      assert.equal(error.outcomeUnknown, false);
+      return true;
+    });
+  }
+});
+
 test("SQL and management responses retain exact untagged integer wire literals", async () => {
   const rows = String.raw`[[9223372036854775807,-9007199254740993,"9223372036854775807","quote\" slash\\ \u0039",{"bytes":[0,127,255],"nested":{"integer":-9007199254740993}},1.25,9007199254740993.0,9.007199254740993e15,true,false,null]]`;
   let calls = 0;
@@ -79,7 +196,7 @@ test("duplicate ACK keys fail closed and poison the session", async () => {
   assert.equal(requests, 2);
 });
 
-function reply(requestID, result) { return new Response(JSON.stringify({ version: 1, request_id: requestID, ok: true, result, error: null })); }
+function reply(requestID, result, error = null) { return new Response(JSON.stringify({ version: 1, request_id: requestID, ok: error === null, result, error })); }
 
 test("wire contract, management request ID, opaque sessions and integer cells", async () => {
   const paths = [];

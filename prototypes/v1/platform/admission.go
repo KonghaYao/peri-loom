@@ -32,6 +32,7 @@ type admissionPermit struct {
 	owner       bool
 	keepSession bool
 	retained    bool
+	finished    bool
 }
 
 func quotaValid(quota Quotas) bool {
@@ -132,21 +133,32 @@ func (gate *gatewayAdmission) reserveLane(project string, quota Quotas, session,
 }
 
 func (permit *admissionPermit) retain() {
-	if permit == nil || permit.retained {
+	if permit == nil {
 		return
 	}
 	permit.gate.mu.Lock()
 	defer permit.gate.mu.Unlock()
+	if permit.retained || permit.finished {
+		return
+	}
 	permit.retained = true
 	permit.gate.projects[permit.project].unknown++
 }
 
 func (permit *admissionPermit) finish() {
-	if permit == nil || permit.retained {
+	if permit == nil {
 		return
 	}
 	permit.gate.mu.Lock()
 	defer permit.gate.mu.Unlock()
+	permit.finishLocked()
+}
+
+func (permit *admissionPermit) finishLocked() {
+	if permit.retained || permit.finished {
+		return
+	}
+	permit.finished = true
 	state := permit.gate.projects[permit.project]
 	if permit.control {
 		state.control--
@@ -159,6 +171,20 @@ func (permit *admissionPermit) finish() {
 	if permit.session && !permit.keepSession {
 		state.sessions--
 	}
+}
+
+func (permit *admissionPermit) releaseRetained() {
+	if permit == nil {
+		return
+	}
+	permit.gate.mu.Lock()
+	defer permit.gate.mu.Unlock()
+	if !permit.retained {
+		return
+	}
+	permit.gate.projects[permit.project].unknown--
+	permit.retained = false
+	permit.finishLocked()
 }
 
 func (gate *gatewayAdmission) removeSession(project string) {

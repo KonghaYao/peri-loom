@@ -18,14 +18,76 @@ import (
 
 func (fixture *p6VerifyFixture) placement() controller.Placement {
 	fixture.test.Helper()
-	reply := fixture.must(fixture.credential, "/v1/databases/status", map[string]any{"database": fixture.database})
-	var status struct {
-		Placement controller.Placement `json:"placement"`
-	}
-	if json.Unmarshal(reply.Result, &status) != nil || status.Placement.Grant == nil {
+	placement := fixture.placementStatus()
+	if placement.Grant == nil {
 		fixture.test.Fatal("actual placement grant missing")
 	}
-	return status.Placement
+	return placement
+}
+
+func (fixture *p6VerifyFixture) placementStatus() controller.Placement {
+	fixture.test.Helper()
+	reply := fixture.must(fixture.credential, "/v1/databases/status", map[string]any{"database": fixture.database})
+	placement, err := p6VerifyDecodePlacementStatus(reply.Result)
+	if err != nil {
+		fixture.test.Fatalf("actual placement status invalid: %v", err)
+	}
+	return placement
+}
+
+func p6VerifyDecodePlacementStatus(payload json.RawMessage) (controller.Placement, error) {
+	var status struct {
+		Placement   *controller.Placement `json:"placement"`
+		Worker      json.RawMessage       `json:"worker"`
+		Refs        json.RawMessage       `json:"refs"`
+		Diagnostics json.RawMessage       `json:"diagnostics"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&status) != nil || decoder.Decode(new(any)) != io.EOF || status.Placement == nil {
+		return controller.Placement{}, errors.New("malformed placement status")
+	}
+	placement := *status.Placement
+	switch placement.Phase {
+	case "active":
+		if placement.Grant == nil {
+			return controller.Placement{}, errors.New("active placement grant missing")
+		}
+	case "grant_intent", "grant_pending", "acquire_pending", "renew_intent", "renew_pending", "renew_worker_pending", "migrate_drain", "suspend_drain", "revoke_pending", "suspended":
+	default:
+		return controller.Placement{}, errors.New("unknown placement phase")
+	}
+	return placement, nil
+}
+
+func TestP6VerifyPlacementStatusDecode(test *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		valid   bool
+	}{
+		{"grant intent without grant", `{"placement":{"phase":"grant_intent"},"worker":{},"refs":{},"diagnostics":{}}`, true},
+		{"grant pending without grant", `{"placement":{"phase":"grant_pending","grant":null}}`, true},
+		{"active with grant", `{"placement":{"phase":"active","grant":{"binding":{"epoch":2,"worker_id":"worker-b"}}}}`, true},
+		{"active without grant", `{"placement":{"phase":"active"}}`, false},
+		{"active null grant", `{"placement":{"phase":"active","grant":null}}`, false},
+		{"missing placement", `{}`, false},
+		{"null placement", `{"placement":null}`, false},
+		{"unknown phase", `{"placement":{"phase":"unexpected"}}`, false},
+		{"unknown result field", `{"placement":{"phase":"grant_pending"},"unexpected":true}`, false},
+		{"unknown placement field", `{"placement":{"phase":"grant_pending","unexpected":true}}`, false},
+		{"invalid grant field type", `{"placement":{"phase":"active","grant":{"binding":{"epoch":"2"}}}}`, false},
+		{"malformed response", `{"placement":`, false},
+		{"trailing response", `{"placement":{"phase":"grant_pending"}} {}`, false},
+	}
+	for _, selected := range cases {
+		test.Run(selected.name, func(test *testing.T) {
+			_, err := p6VerifyDecodePlacementStatus(json.RawMessage(selected.payload))
+			if (err == nil) != selected.valid {
+				test.Fatalf("placement decode valid=%t error=%v", selected.valid, err)
+			}
+		})
+	}
 }
 
 func (fixture *p6VerifyFixture) broker(token string, binding controller.Binding) (int, p6VerifyReply) {
@@ -108,7 +170,7 @@ func TestP6VerifyEncryptedMigrationActualKillFailover(test *testing.T) {
 	deadline := time.Now().Add(20 * time.Second)
 	var replacement controller.Placement
 	for time.Now().Before(deadline) {
-		replacement = fixture.placement()
+		replacement = fixture.placementStatus()
 		if replacement.Phase == "active" && replacement.DesiredWorker != target && replacement.Epoch > migrated.Epoch {
 			break
 		}
@@ -116,6 +178,9 @@ func TestP6VerifyEncryptedMigrationActualKillFailover(test *testing.T) {
 	}
 	if replacement.Phase != "active" || replacement.DesiredWorker == target || replacement.Epoch <= migrated.Epoch {
 		test.Fatalf("actual automatic failover phase=%s worker=%s epoch=%d", replacement.Phase, replacement.DesiredWorker, replacement.Epoch)
+	}
+	if replacement.Database != fixture.database || replacement.Grant == nil || replacement.Grant.Binding.Database != fixture.database || replacement.Grant.Binding.Epoch != replacement.Epoch || replacement.Grant.Binding.WorkerID != replacement.DesiredWorker {
+		test.Fatal("actual automatic failover grant binding mismatch")
 	}
 	fresh := fixture.open(fixture.credential, fixture.database)
 	rows = fixture.sql(fresh, "query", "SELECT id FROM proof ORDER BY id")

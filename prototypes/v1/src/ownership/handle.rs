@@ -6,7 +6,9 @@ use turso_core::Value;
 use super::types::LeaseBinding;
 use crate::resources::ResourceUsage;
 use crate::runtime::DatabaseHandle;
-use crate::session::SessionWriterState;
+use crate::session::{
+    DescribeResult, SessionWriterState, StatementColumn, StatementResult, WriteCursorPage,
+};
 
 use super::context::LeaseContext;
 use super::runtime::OwnershipRuntime;
@@ -39,6 +41,79 @@ impl OwnedHandle {
 
     pub fn query(&self, sql: &str) -> Result<Vec<Vec<Value>>> {
         self.handle.as_ref().unwrap().query(sql)
+    }
+
+    pub fn describe(&self, sql: &str) -> Result<DescribeResult> {
+        self.context.check(None)?;
+        self.handle.as_ref().unwrap().describe(sql)
+    }
+    pub fn open_read_cursor(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+    ) -> Result<Vec<StatementColumn>> {
+        self.context.check(None)?;
+        self.handle
+            .as_ref()
+            .unwrap()
+            .open_read_cursor(sql, args, named_args)
+    }
+    pub fn fetch_read_cursor(&self, page_size: usize) -> Result<(Vec<Vec<Value>>, bool)> {
+        self.context.check(None)?;
+        self.handle.as_ref().unwrap().fetch_read_cursor(page_size)
+    }
+    pub fn close_read_cursor(&self) -> Result<()> {
+        self.handle.as_ref().unwrap().close_read_cursor()
+    }
+    pub fn open_write_cursor(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+    ) -> Result<Vec<StatementColumn>> {
+        self.context.check(Some(false))?;
+        anyhow::ensure!(
+            !self.handle.as_ref().unwrap().is_readonly()?,
+            "write cursor requires writer access"
+        );
+        self.handle
+            .as_ref()
+            .unwrap()
+            .open_write_cursor(sql, args, named_args)
+    }
+    pub fn fetch_write_cursor(&self, page_size: usize) -> Result<WriteCursorPage> {
+        if let Err(error) = self.context.check(None) {
+            if self.handle.as_ref().unwrap().close_write_cursor().is_err() {
+                return Err(error.context(crate::session::UnsettledSqlOutcome));
+            }
+            return Err(error);
+        }
+        self.handle.as_ref().unwrap().fetch_write_cursor(page_size)
+    }
+    pub fn close_write_cursor(&self) -> Result<()> {
+        self.handle.as_ref().unwrap().close_write_cursor()
+    }
+    pub(crate) fn quarantine_unknown_write_result(&self) -> Result<()> {
+        self.handle
+            .as_ref()
+            .unwrap()
+            .quarantine_unknown_write_result()
+    }
+
+    pub fn statement(&self, sql: &str, args: &[Value]) -> Result<StatementResult> {
+        self.handle.as_ref().unwrap().statement(sql, args)
+    }
+    pub fn statement_with_named_args(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+    ) -> Result<StatementResult> {
+        self.handle
+            .as_ref()
+            .unwrap()
+            .statement_with_named_args(sql, args, named_args)
     }
 
     pub fn in_transaction(&self) -> Result<bool> {

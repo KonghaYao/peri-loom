@@ -152,9 +152,13 @@ func (client *Client) call(ctx context.Context, method, path, requestID string, 
 	status, responseBytes := 0, 0
 	defer func() {
 		if client.artifacts != nil {
-			_ = client.artifacts.Record(map[string]any{"type": "gateway_rpc", "request_id": requestID, "method": method, "path": path,
+			record := map[string]any{"type": "gateway_rpc", "request_id": requestID, "method": method, "path": path,
 				"started_at_observed": started.UTC().Format(time.RFC3339Nano), "finished_at_observed": time.Now().UTC().Format(time.RFC3339Nano), "elapsed_ns": time.Since(started).Nanoseconds(),
-				"http_status": status, "response_bytes": responseBytes, "envelope_ok": failure == nil, "failure": failure})
+				"http_status": status, "response_bytes": responseBytes, "envelope_ok": failure == nil, "failure": failure}
+			if binding := ctx.Value(capacityBindingKey{}); binding != nil {
+				record["capacity_binding"] = binding
+			}
+			_ = client.artifacts.Record(record)
 		}
 	}()
 	var body []byte

@@ -11,8 +11,10 @@ import (
 const nativeDiagnosticLimit = 64
 
 type nativeToolError struct {
-	stage string
-	cause error
+	stage       string
+	cause       error
+	unknown     bool
+	operationID string
 }
 
 func (failure *nativeToolError) Error() string { return failure.cause.Error() }
@@ -66,7 +68,7 @@ func (budget *nativeDiagnosticBudget) emit(record nativeDiagnosticRecord, writer
 		return
 	}
 	switch record.Stage {
-	case "authorize", "placement", "metadata", "worker_lookup", "open_session", "tool_rpc":
+	case "authorize", "placement", "metadata", "worker_lookup", "open_session", "tool_rpc", "close_session":
 	default:
 		return
 	}

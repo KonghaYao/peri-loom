@@ -27,13 +27,13 @@ impl DatabaseProvider for ContextProvider {
             .cloned()
             .context("database ownership not acquired")?;
         context.check(Some(false))?;
-        let (role, generation) = {
+        let (role, generation, binding) = {
             let state = context.lock()?;
             ensure!(
                 state.binding.epoch == epoch,
                 "local ownership epoch mismatch"
             );
-            (state.role, state.generation)
+            (state.role, state.generation, state.binding.clone())
         };
         let inner = self.remote.open_store(identifier, epoch)?;
         context.check(Some(false))?;
@@ -43,6 +43,7 @@ impl DatabaseProvider for ContextProvider {
             context,
             role,
             generation,
+            binding,
         }))
     }
 }
@@ -52,12 +53,16 @@ pub(super) struct ContextStore {
     pub context: Arc<LeaseContext>,
     pub role: AccessRole,
     pub generation: u64,
+    pub binding: super::types::LeaseBinding,
 }
 
 impl ContextStore {
     fn generation(&self) -> Result<()> {
+        let state = self.context.lock()?;
         ensure!(
-            self.context.lock()?.generation == self.generation,
+            state.generation == self.generation
+                && crate::authority_rpc::provider::same_identity(&self.binding, &state.binding)
+                && state.binding.renewal_sequence >= self.binding.renewal_sequence,
             "scoped store generation revoked"
         );
         Ok(())
@@ -68,11 +73,31 @@ impl ContextStore {
             self.role == AccessRole::Writer,
             "read-only ownership capability"
         );
-        self.validate_session()
+        self.validate_local()
     }
 }
 
 impl ObjectStore for ContextStore {
+    fn append_wal(&self, request: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
+        self.mutation()?;
+        request.validate()?;
+        {
+            let state = self.context.lock()?;
+            ensure!(
+                request.namespace == state.binding.database.namespace
+                    && request.epoch == state.binding.epoch,
+                "Fenced WAL append identity"
+            );
+        }
+        let result = self.inner.append_wal(request)?;
+        self.validate_local()?;
+        Ok(result)
+    }
+
+    fn retire_scope(&self, deadline: std::time::Instant) -> Result<()> {
+        self.inner.retire_scope(deadline)
+    }
+
     fn access_role(&self) -> AccessRole {
         self.role
     }
@@ -100,22 +125,29 @@ impl ObjectStore for ContextStore {
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
-        self.validate_session()?;
-        self.inner.get(key)
+        self.validate_local()?;
+        let object = self.inner.checked_get(key)?;
+        self.validate_local()?;
+        Ok(object)
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
         self.mutation()?;
-        self.inner.put(key, bytes, condition)
+        let etag = self.inner.checked_put(key, bytes, condition)?;
+        self.validate_local()?;
+        Ok(etag)
     }
 
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
         self.mutation()?;
-        self.inner.delete(key, expected)
+        self.inner.checked_delete(key, expected)?;
+        self.validate_local()
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
-        self.validate_session()?;
-        self.inner.list(prefix)
+        self.validate_local()?;
+        let keys = self.inner.checked_list(prefix)?;
+        self.validate_local()?;
+        Ok(keys)
     }
 }

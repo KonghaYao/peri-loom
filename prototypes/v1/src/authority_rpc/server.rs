@@ -4,14 +4,14 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 
 use crate::authority::ownership::OwnershipAuthority;
 use crate::object_store::{ObjectStore, PreconditionFailed};
-use crate::ownership::types::{validate_label, LeaseBinding};
+use crate::ownership::types::{validate_label, AccessRole, LeaseBinding};
 use crate::runtime::DatabaseId;
 
 use super::auth::{AuthConfig, Principal};
@@ -25,6 +25,7 @@ pub struct Server {
     listener: TcpListener,
     state: Arc<State>,
     startup: AuthorityStartup,
+    seal: super::seal::Seal,
 }
 
 struct State {
@@ -34,12 +35,14 @@ struct State {
     authorized: Mutex<BTreeSet<(DatabaseId, String)>>,
     stopping: AtomicBool,
     inflight: AtomicUsize,
+    cleanup: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 struct Session {
     worker_id: String,
     binding: LeaseBinding,
     store: Arc<dyn ObjectStore>,
+    scope: super::scope::Scope,
 }
 
 struct Ticket(Arc<State>);
@@ -62,9 +65,11 @@ impl Server {
         );
         let listener = TcpListener::bind(address)?;
         listener.set_nonblocking(true)?;
+        let seal = super::seal::Seal::acquire(authority.backend())?;
         Ok(Self {
             listener,
             startup,
+            seal,
             state: Arc::new(State {
                 authority,
                 auth,
@@ -72,6 +77,7 @@ impl Server {
                 authorized: Mutex::new(BTreeSet::new()),
                 stopping: AtomicBool::new(false),
                 inflight: AtomicUsize::new(0),
+                cleanup: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -115,6 +121,15 @@ impl Server {
         for worker in workers {
             let _ = worker.join();
         }
+        for cleanup in std::mem::take(
+            &mut *self
+                .state
+                .cleanup
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scope cleanup poisoned"))?,
+        ) {
+            let _ = cleanup.join();
+        }
         let sessions = std::mem::take(
             &mut *self
                 .state
@@ -124,6 +139,7 @@ impl Server {
         );
         drop(sessions);
         if result.is_ok() && self.state.authority.quiescent() {
+            self.seal.mark_clean()?;
             self.startup.mark_clean()?;
         } else {
             return Err(result.err().unwrap_or_else(|| {
@@ -170,6 +186,7 @@ impl State {
             );
             validate_label(&parsed.request_id)?;
             ensure!(!self.stopping.load(Ordering::SeqCst), "authority stopping");
+            let _reads = crate::authority::request_reads::Scope::for_rpc(&identifier);
             self.dispatch(parsed.command, &principal, &identifier)
         })();
         let response = match result {
@@ -232,9 +249,18 @@ impl State {
         match command {
             AuthorityCommand::GetMetrics => {
                 Self::control(principal)?;
-                Ok(serde_json::to_value(
-                    crate::metrics::Metrics::global().snapshot(),
-                )?)
+                let mut result =
+                    serde_json::to_value(crate::metrics::Metrics::global().snapshot())?;
+                result["capacity_trace"] = crate::capacity_trace::snapshot();
+                Ok(result)
+            }
+            AuthorityCommand::GetCapacityTrace {
+                stream_id,
+                after_sequence,
+                max_events,
+            } => {
+                Self::control(principal)?;
+                crate::capacity_trace::page(&stream_id, after_sequence, max_events)
             }
             AuthorityCommand::Challenge { intent } => {
                 Self::control(principal)?;
@@ -309,6 +335,7 @@ impl State {
                     worker_id: worker.to_owned(),
                     binding,
                     store,
+                    scope: super::scope::Scope::default(),
                 });
                 let mut sessions = self
                     .sessions
@@ -327,8 +354,8 @@ impl State {
                 let Principal::Worker(worker) = principal else {
                     anyhow::bail!("Unauthorized worker operation");
                 };
-                let removed = {
-                    let mut sessions = self
+                let selected = {
+                    let sessions = self
                         .sessions
                         .lock()
                         .map_err(|_| anyhow::anyhow!("session registry poisoned"))?;
@@ -338,10 +365,41 @@ impl State {
                             .is_some_and(|session| &session.worker_id == worker),
                         "Unauthorized session"
                     );
-                    sessions.remove(&session)
+                    sessions.get(&session).cloned().unwrap()
                 };
-                drop(removed);
-                Ok(json!({"closed": true}))
+                let deadline = Instant::now() + Duration::from_secs(5);
+                if let Err(error) = selected.scope.retire(deadline) {
+                    self.authority
+                        .quarantine_database(&selected.binding.database)?;
+                    return Err(error);
+                }
+                let removed = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("session registry poisoned"))?
+                    .remove(&session);
+                let proof = json!({"closed": true, "drained": true, "binding": selected.binding});
+                let (completed, completion) = std::sync::mpsc::channel();
+                let mut cleanup = self
+                    .cleanup
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("scope cleanup poisoned"))?;
+                cleanup.retain(|task| !task.is_finished());
+                cleanup.push(thread::Builder::new().spawn(move || {
+                    drop(removed);
+                    drop(selected);
+                    let _ = completed.send(());
+                })?);
+                drop(cleanup);
+                if completion
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .is_err()
+                {
+                    let binding: LeaseBinding = serde_json::from_value(proof["binding"].clone())?;
+                    self.authority.quarantine_database(&binding.database)?;
+                    anyhow::bail!("scope retirement deadline; namespace quarantined");
+                }
+                Ok(proof)
             }
             AuthorityCommand::Session { session, operation } => {
                 let Principal::Worker(worker) = principal else {
@@ -355,7 +413,21 @@ impl State {
                     .cloned()
                     .context("unknown authority session")?;
                 ensure!(&selected.worker_id == worker, "Unauthorized session");
+                let _dispatch = selected.scope.dispatch()?;
                 match operation {
+                    SessionOperation::AppendWal { request } => {
+                        request.validate()?;
+                        ensure!(
+                            selected.store.access_role() == AccessRole::Writer
+                                && request.namespace == selected.binding.database.namespace
+                                && request.epoch == selected.binding.epoch,
+                            "Fenced WAL append identity"
+                        );
+                        Ok(json!(selected
+                            .store
+                            .append_wal(&request)?
+                            .context("authority WAL append capability unavailable")?))
+                    }
                     SessionOperation::Validate => Ok(serde_json::to_value(
                         self.authority
                             .validate_lease(&selected.binding, selected.store.access_role())?,

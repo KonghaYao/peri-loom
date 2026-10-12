@@ -68,9 +68,16 @@ boundary. An ambiguous SQL write must never be automatically retried.
 ## Durability and availability limits
 
 One controller owns one private metadata directory under an exclusive advisory
-lock. Updates atomically replace checksummed JSON after fsync; an independently
-fsynced epoch/revision floor detects partial updates and single-file rollback.
-Uncertain metadata persistence poisons the store and refuses further allocation.
+lock. Updates first fsync a private checksummed commit intent containing the
+previous and next metadata, then replace the epoch/revision floor and metadata
+with separately fsynced atomic renames. Reopening rolls forward only the exact
+validated next revision when both files match a legal prefix of that intent;
+it never rolls the floor back or dispatches a Rust RPC during recovery. Missing,
+corrupt, stale, or mismatched intent/files still refuse startup. An interrupted
+initialization needs a complete valid initial intent, not merely a lock marker.
+Uncertain metadata persistence poisons the store and refuses further allocation
+until reopening verifies the durable state. Completed intents are removed and
+the directory fsynced before acknowledging an update.
 Do not reset/delete these files to recover a deployment. Coordinated rollback of
 all metadata/floor files is **not** prevented by a local embedded store: preserve
 the authoritative Rust epoch floor and use external monotonic consensus for HA.

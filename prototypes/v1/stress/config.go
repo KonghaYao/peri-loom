@@ -66,6 +66,10 @@ type Settings struct {
 	MaxArtifactBytes  int64           `json:"max_artifact_bytes"`
 	MaxRSSBytes       int64           `json:"max_observed_process_rss_bytes,omitempty"`
 	Cases             []string        `json:"cases"`
+	VictimEvery       int             `json:"victim_every,omitempty"`
+	OfferNumerator    int             `json:"offer_numerator,omitempty"`
+	MatrixConcurrency int             `json:"matrix_concurrency,omitempty"`
+	OfferDenominator  int             `json:"offer_denominator,omitempty"`
 }
 
 func DefaultSettings() Settings {
@@ -77,6 +81,14 @@ func DefaultSettings() Settings {
 }
 
 func (settings Settings) Validate() error {
+	if settings.VictimEvery != 0 && settings.VictimEvery != 10 {
+		return errors.New("victim demand must be equal or one in ten offers")
+	}
+	if settings.OfferNumerator != 0 || settings.OfferDenominator != 0 {
+		if settings.OfferNumerator < 1 || settings.OfferDenominator < settings.OfferNumerator || settings.OfferDenominator > 10 {
+			return errors.New("invalid bounded tenant offer fraction")
+		}
+	}
 	if settings.Rows != 1000 && settings.Rows != 10000 {
 		return errors.New("rows must be 1000 or 10000")
 	}

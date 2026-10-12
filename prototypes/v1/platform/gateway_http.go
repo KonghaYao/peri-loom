@@ -3,9 +3,11 @@ package platform
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,10 +16,38 @@ import (
 )
 
 type gatewayRequest struct {
-	Database  *controller.DatabaseID `json:"database,omitempty"`
-	Session   string                 `json:"session,omitempty"`
-	SQL       string                 `json:"sql,omitempty"`
-	RequestID string                 `json:"request_id,omitempty"`
+	Database    *controller.DatabaseID `json:"database,omitempty"`
+	Session     string                 `json:"session,omitempty"`
+	SQL         string                 `json:"sql,omitempty"`
+	MaxRows     int                    `json:"max_rows,omitempty"`
+	WriteCursor bool                   `json:"write_cursor,omitempty"`
+	Args        []sqlArgument          `json:"args,omitempty"`
+	NamedArgs   []namedSQLArgument     `json:"named_args,omitempty"`
+	RequestID   string                 `json:"request_id,omitempty"`
+}
+
+type sqlArgument struct {
+	Type   string          `json:"type"`
+	Value  json.RawMessage `json:"value,omitempty"`
+	Base64 string          `json:"base64,omitempty"`
+}
+
+func (argument sqlArgument) MarshalJSON() ([]byte, error) {
+	if argument.Type == "blob" {
+		return json.Marshal(struct {
+			Type   string `json:"type"`
+			Base64 string `json:"base64"`
+		}{Type: argument.Type, Base64: argument.Base64})
+	}
+	return json.Marshal(struct {
+		Type  string          `json:"type"`
+		Value json.RawMessage `json:"value,omitempty"`
+	}{Type: argument.Type, Value: argument.Value})
+}
+
+type namedSQLArgument struct {
+	Name  string      `json:"name"`
+	Value sqlArgument `json:"value"`
 }
 
 func gatewayAction(path string) string {
@@ -28,6 +58,16 @@ func gatewayAction(path string) string {
 		return "execute"
 	case "/v1/sql/query":
 		return "query"
+	case "/v1/sql/statement":
+		return "statement"
+	case "/v1/sql/describe":
+		return "describe"
+	case "/v1/sql/cursor/open":
+		return "cursor_open"
+	case "/v1/sql/cursor/fetch":
+		return "cursor_fetch"
+	case "/v1/sql/cursor/close":
+		return "cursor_close"
 	case "/v1/sql/close":
 		return "close"
 	default:
@@ -89,6 +129,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				result.value = nil
 				result.stream = nil
 			}
+		}
+		if result.operationPending {
+			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
 		}
 		gateway.counters.observe(action, result.code, time.Since(started))
 		gateway.writeResponse(writer, identifier, result)
@@ -162,7 +205,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		identifier = parsed.RequestID
 	}
-	if (action == "execute" || action == "query") && (len(parsed.SQL) == 0 || len(parsed.SQL) > project.Quotas.MaxSQLBytes) {
+	if (action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open") && (len(parsed.SQL) == 0 || len(parsed.SQL) > project.Quotas.MaxSQLBytes) {
 		result = gatewayFailure(413, "sql_limit")
 		return
 	}
@@ -172,7 +215,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	switch action {
 	case "open":
 		result = gateway.open(ctx, principal, *parsed.Database, identifier, permit, project.Quotas)
-	case "execute", "query", "close":
+	case "execute", "query", "statement", "describe", "close", "cursor_open", "cursor_fetch", "cursor_close":
 		result = gateway.dispatch(ctx, principal, parsed, identifier, action, project.Quotas, permit, strings.Contains(request.Header.Get("Accept"), "application/x-ndjson"))
 		if result.permit != nil {
 			permit = result.permit
@@ -201,9 +244,23 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 	switch action {
 	case "open":
 		allowed["database"] = true
-	case "execute", "query":
+	case "execute", "query", "statement", "describe", "cursor_open":
 		allowed["session"] = true
 		allowed["sql"] = true
+		if action == "statement" || action == "cursor_open" {
+			allowed["args"] = true
+			allowed["named_args"] = true
+		}
+		if action == "cursor_open" {
+			allowed["write_cursor"] = true
+		}
+	case "cursor_fetch":
+		allowed["session"] = true
+		allowed["max_rows"] = true
+		allowed["write_cursor"] = true
+	case "cursor_close":
+		allowed["session"] = true
+		allowed["write_cursor"] = true
 	case "close":
 		allowed["session"] = true
 	}
@@ -220,7 +277,60 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 	if action == "open" {
 		return request, request.Database != nil && request.Database.Validate() == nil
 	}
+	if action == "cursor_fetch" && (request.MaxRows < 1 || request.MaxRows > 256) {
+		return request, false
+	}
+	if (action == "statement" || action == "cursor_open") && (!validSQLArguments(request.Args) || len(request.NamedArgs) > 999 || len(request.Args)+len(request.NamedArgs) > 999) {
+		return request, false
+	}
+	for _, argument := range request.NamedArgs {
+		if argument.Name == "" || len(argument.Name) > 256 || !validSQLArguments([]sqlArgument{argument.Value}) {
+			return request, false
+		}
+	}
 	return request, publicSessionID(request.Session)
+}
+
+func validSQLArguments(args []sqlArgument) bool {
+	if len(args) > 999 {
+		return false
+	}
+	for _, arg := range args {
+		switch arg.Type {
+		case "null":
+			if len(arg.Value) != 0 || arg.Base64 != "" {
+				return false
+			}
+		case "integer":
+			var value string
+			if json.Unmarshal(arg.Value, &value) != nil || arg.Base64 != "" {
+				return false
+			}
+			if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+				return false
+			}
+		case "float":
+			var value float64
+			if json.Unmarshal(arg.Value, &value) != nil || arg.Base64 != "" {
+				return false
+			}
+		case "text":
+			var value string
+			if json.Unmarshal(arg.Value, &value) != nil || arg.Base64 != "" {
+				return false
+			}
+		case "blob":
+			if len(arg.Value) != 0 {
+				return false
+			}
+			if _, err := base64.StdEncoding.Strict().DecodeString(arg.Base64); err != nil {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID string, result gatewayResult) {
@@ -236,6 +346,21 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 	if result.code != "" {
 		response["result"] = nil
 		failure := map[string]any{"code": result.code}
+		if result.code == "outcome_unknown" && result.operationID != "" {
+			failure["operation_id"], failure["stage"], failure["retry_allowed"] = result.operationID, result.operationStage, false
+			failure["business_outcome"], failure["cleanup_outcome"] = "unknown", "not_applicable"
+			if result.operationStage == "close_session" {
+				failure["business_outcome"], failure["cleanup_outcome"] = "not_applicable", "unknown"
+			}
+			failure["possible_commit"], failure["execution_proven"] = true, false
+			if result.rpc != nil {
+				failure["rpc_observation"] = map[string]bool{"ambiguous": result.rpc.Ambiguous, "rejected": result.rpc.Rejected, "execution_completed": result.rpc.ExecutionCompleted}
+			}
+			if record := result.operationObservation; record != nil {
+				failure["business_outcome"], failure["cleanup_outcome"] = record.BusinessOutcome, record.CleanupOutcome
+				failure["execution_proven"], failure["possible_commit"] = record.ExecutionProven, record.MayHaveCommitted
+			}
+		}
 		if result.code == "result_limit" && result.dispatched {
 			failure["execution_completed"] = true
 		}

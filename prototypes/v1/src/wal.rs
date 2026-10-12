@@ -23,8 +23,14 @@ pub struct WalBatch {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WalOperation {
-    Write { offset: u64, bytes: Vec<u8> },
-    Truncate { size: u64 },
+    Write {
+        offset: u64,
+        #[serde(with = "crate::object_store::payload")]
+        bytes: Vec<u8>,
+    },
+    Truncate {
+        size: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +59,8 @@ pub struct WalMetadata {
     pub(crate) entries: Vec<Entry>,
     pub(crate) receipts: BTreeMap<String, u64>,
     #[serde(default)]
+    pub(crate) receipt_digests: BTreeMap<String, String>,
+    #[serde(default)]
     pub commit: Option<WalCommit>,
 }
 
@@ -64,6 +72,75 @@ pub(crate) struct Entry {
 
 pub struct RemoteWal {
     store: Arc<dyn ObjectStore>,
+}
+
+#[derive(Debug)]
+struct ChunkUploadFailure(anyhow::Error);
+
+impl std::fmt::Display for ChunkUploadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ChunkUploadFailure {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WalAppendRequest {
+    pub namespace: Namespace,
+    pub epoch: u64,
+    pub batch: WalBatch,
+    pub position: Option<WalPosition>,
+    pub append_id: String,
+    pub timestamp_millis: u64,
+}
+
+impl WalAppendRequest {
+    fn record(&self, lsn: u64) -> WalRecord {
+        WalRecord {
+            append_id: self.append_id.clone(),
+            namespace: self.namespace.clone(),
+            epoch: self.epoch,
+            lsn,
+            timestamp_millis: self.timestamp_millis,
+            batch: self.batch.clone(),
+            commit: self.position.map(|position| WalCommit { lsn, position }),
+        }
+    }
+    pub(crate) fn validate(&self) -> Result<()> {
+        Namespace::new(
+            self.namespace.tenant.clone(),
+            self.namespace.database.clone(),
+        )?;
+        ensure!(
+            self.epoch > 0
+                && self.append_id.len() <= 128
+                && !self.append_id.is_empty()
+                && self
+                    .append_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+            "invalid WAL append identity"
+        );
+        ensure!(
+            self.batch.operations.len() <= 16_384,
+            "WAL operation limit exceeded"
+        );
+        let mut bytes = 0usize;
+        for operation in &self.batch.operations {
+            if let WalOperation::Write { bytes: payload, .. } = operation {
+                bytes = bytes
+                    .checked_add(payload.len())
+                    .context("WAL payload overflow")?;
+            }
+        }
+        ensure!(
+            bytes <= crate::authority_rpc::protocol::MAX_RPC_BYTES / 2,
+            "WAL payload limit exceeded"
+        );
+        Ok(())
+    }
 }
 
 impl RemoteWal {
@@ -177,7 +254,6 @@ impl RemoteWal {
         batch: WalBatch,
         position: Option<WalPosition>,
     ) -> Result<u64> {
-        self.check_writer()?;
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let append_id = format!(
             "{}-{}-{}",
@@ -189,37 +265,78 @@ impl RemoteWal {
             .duration_since(UNIX_EPOCH)?
             .as_millis()
             .try_into()?;
+        let request = WalAppendRequest {
+            namespace: namespace.clone(),
+            epoch,
+            batch,
+            position,
+            append_id,
+            timestamp_millis,
+        };
+        if let Some(lsn) = self.store.append_wal(&request)? {
+            return Ok(lsn);
+        }
+        self.append_local(&request)
+    }
+
+    pub(crate) fn append_local(&self, request: &WalAppendRequest) -> Result<u64> {
+        self.append_using(request, |record, index, etag| {
+            self.chunk(record)
+                .map_err(|error| anyhow::Error::new(ChunkUploadFailure(error)))?;
+            self.commit(&record.namespace, index, etag)
+        })
+    }
+
+    pub(crate) fn append_using<Publish>(
+        &self,
+        request: &WalAppendRequest,
+        mut publish: Publish,
+    ) -> Result<u64>
+    where
+        Publish: FnMut(&WalRecord, &WalMetadata, Option<String>) -> Result<()>,
+    {
+        let WalAppendRequest {
+            namespace,
+            epoch,
+            append_id,
+            ..
+        } = request;
+        self.check_writer()?;
         for _ in 0..64 {
             let (mut index, etag) = self.index(namespace)?;
-            if let Some(lsn) = index.receipts.get(&append_id) {
-                return Ok(*lsn);
+            ensure!(*epoch >= index.epoch, "stale WAL epoch");
+            if let Some(lsn) = index.receipts.get(append_id) {
+                return self.verified_receipt(request, &index, *lsn);
             }
-            ensure!(epoch >= index.epoch, "stale WAL epoch");
             let lsn = index.last_lsn.checked_add(1).context("WAL LSN exhausted")?;
-            let record = WalRecord {
-                append_id: append_id.clone(),
-                namespace: namespace.clone(),
-                epoch,
-                lsn,
-                timestamp_millis,
-                batch: batch.clone(),
-                commit: position.map(|position| WalCommit { lsn, position }),
-            };
+            let record = request.record(lsn);
             let entry = Entry {
                 lsn,
-                hash: self.chunk(&record)?,
+                hash: blake3::hash(&serde_json::to_vec(&record)?)
+                    .to_hex()
+                    .to_string(),
             };
             index.entries.push(entry);
             index.receipts.insert(append_id.clone(), lsn);
+            index.receipt_digests.insert(
+                append_id.clone(),
+                blake3::hash(&serde_json::to_vec(&record)?)
+                    .to_hex()
+                    .to_string(),
+            );
             index.last_lsn = lsn;
-            index.epoch = epoch;
+            index.epoch = *epoch;
             index.commit = record.commit;
-            match self.commit(namespace, &index, etag.clone()) {
+            match publish(&record, &index, etag.clone()) {
                 Ok(()) => return Ok(lsn),
                 Err(error) => {
+                    if error.is::<ChunkUploadFailure>() {
+                        return Err(error.downcast::<ChunkUploadFailure>().unwrap().0);
+                    }
                     let (current, current_etag) = self.index(namespace)?;
-                    if let Some(lsn) = current.receipts.get(&append_id) {
-                        return Ok(*lsn);
+                    ensure!(*epoch >= current.epoch, "stale WAL epoch");
+                    if let Some(lsn) = current.receipts.get(append_id) {
+                        return self.verified_receipt(request, &current, *lsn);
                     }
                     if current_etag == etag {
                         return Err(error);
@@ -228,6 +345,47 @@ impl RemoteWal {
             }
         }
         bail!("WAL append CAS contention")
+    }
+
+    fn verified_receipt(
+        &self,
+        request: &WalAppendRequest,
+        index: &WalMetadata,
+        lsn: u64,
+    ) -> Result<u64> {
+        self.check_writer()?;
+        let expected = blake3::hash(&serde_json::to_vec(&request.record(lsn))?);
+        if let Some(digest) = index.receipt_digests.get(&request.append_id) {
+            ensure!(
+                digest == expected.to_hex().as_str(),
+                "WAL receipt request identity or content conflict"
+            );
+        }
+        let entry = index
+            .entries
+            .iter()
+            .find(|entry| entry.lsn == lsn)
+            .context("WAL receipt content unavailable; refusing replay")?;
+        let object = self
+            .store
+            .get(
+                &request
+                    .namespace
+                    .key(&format!("wal/chunks/{}", entry.hash))?,
+            )?
+            .context("WAL receipt chunk unavailable; refusing replay")?;
+        ensure!(
+            blake3::hash(&object.bytes).to_hex().as_str() == entry.hash,
+            "WAL receipt checksum mismatch"
+        );
+        let record: WalRecord = serde_json::from_slice(&object.bytes)?;
+        let persisted = blake3::hash(&serde_json::to_vec(&record)?);
+        ensure!(
+            persisted == expected,
+            "WAL receipt request identity or content conflict"
+        );
+        self.check_writer()?;
+        Ok(lsn)
     }
 }
 
@@ -348,4 +506,124 @@ pub(crate) fn apply_batch(target: &mut Vec<u8>, batch: &WalBatch) -> Result<()> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use crate::object_store::LocalObjectStore;
+
+    fn request() -> Result<WalAppendRequest> {
+        Ok(WalAppendRequest {
+            namespace: Namespace::new("receipt", "binding")?,
+            epoch: 10,
+            batch: WalBatch::default(),
+            position: None,
+            append_id: "controlled-id".into(),
+            timestamp_millis: 1,
+        })
+    }
+
+    fn change(request: &mut WalAppendRequest, field: &str) {
+        match field {
+            "payload" => request.batch.operations.push(WalOperation::Write {
+                offset: 7,
+                bytes: vec![42],
+            }),
+            "position" => request.position = Some(WalPosition::default()),
+            "epoch" => request.epoch = 11,
+            "timestamp" => request.timestamp_millis = 2,
+            "same" => {}
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn receipt_initial_and_publication_error_paths_bind_full_content() -> Result<()> {
+        for legacy in [false, true] {
+            for field in ["same", "payload", "position", "epoch", "timestamp"] {
+                let directory = tempfile::tempdir()?;
+                let store = Arc::new(LocalObjectStore::open(directory.path())?);
+                let wal = RemoteWal::new(store.clone());
+                let original = request()?;
+                assert_eq!(wal.append_local(&original)?, 1);
+                if legacy {
+                    let (mut index, etag) = wal.index(&original.namespace)?;
+                    index.receipt_digests.clear();
+                    wal.commit(&original.namespace, &index, etag)?;
+                }
+                let mut changed = original.clone();
+                change(&mut changed, field);
+                let before = store.get(&original.namespace.key("wal/index")?)?.unwrap();
+                let result = wal.append_local(&changed);
+                assert_eq!(
+                    result.is_ok(),
+                    field == "same",
+                    "initial legacy={legacy} field={field}"
+                );
+                assert_eq!(
+                    store
+                        .get(&original.namespace.key("wal/index")?)?
+                        .unwrap()
+                        .bytes,
+                    before.bytes
+                );
+                let mut stale = original.clone();
+                stale.epoch = 9;
+                assert!(wal
+                    .append_local(&stale)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("stale WAL epoch"));
+            }
+            for field in ["same", "payload", "position", "epoch", "timestamp"] {
+                let directory = tempfile::tempdir()?;
+                let store = Arc::new(LocalObjectStore::open(directory.path())?);
+                let wal = RemoteWal::new(store);
+                let original = request()?;
+                let mut competing = original.clone();
+                change(&mut competing, field);
+                let result = wal.append_using(&original, |_, _, _| {
+                    wal.append_local(&competing)?;
+                    if legacy {
+                        let (mut index, etag) = wal.index(&original.namespace)?;
+                        index.receipt_digests.clear();
+                        wal.commit(&original.namespace, &index, etag)?;
+                    }
+                    bail!("publication response lost after physical terminal")
+                });
+                assert_eq!(
+                    result.is_ok(),
+                    field == "same",
+                    "readback legacy={legacy} field={field}"
+                );
+                assert_eq!(wal.index(&original.namespace)?.0.last_lsn, 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_receipt_without_original_chunk_refuses_replay() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let request = request()?;
+        wal.append_local(&request)?;
+        let (mut index, etag) = wal.index(&request.namespace)?;
+        index.receipt_digests.clear();
+        wal.commit(&request.namespace, &index, etag)?;
+        store.delete(
+            &request
+                .namespace
+                .key(&format!("wal/chunks/{}", index.entries[0].hash))?,
+            None,
+        )?;
+        assert!(wal
+            .append_local(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable"));
+        Ok(())
+    }
 }

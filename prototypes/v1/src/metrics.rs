@@ -39,6 +39,16 @@ pub struct OperationMetrics {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+pub struct PhysicalBackendMetrics {
+    pub get_successes: u64,
+    pub put_successes: u64,
+    pub get_errors: u64,
+    pub put_errors: u64,
+    pub get_payload_bytes: u64,
+    pub put_payload_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct MetricsSnapshot {
     pub query: OperationMetrics,
     pub execute: OperationMetrics,

@@ -3,6 +3,7 @@ pub mod authority_rpc;
 pub mod cache;
 pub mod capabilities;
 pub mod capability_cli;
+pub mod capacity_trace;
 pub mod config;
 pub mod database;
 pub mod encryption;

@@ -212,14 +212,14 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 func (runner SerialRunner) clients(prefix string, ids *IDs, budget *DataBudget, scenarios []Scenario) ([]*Fixture, *Client, error) {
 	targets := []Target{runner.Config.Target}
 	for _, scenario := range scenarios {
-		if scenario.Name == "many_db" {
+		if scenario.Name == "many_db" || capacityScenario(scenario.Name) {
 			for _, database := range runner.Config.Databases {
 				target := runner.Config.Target
 				target.Database = database
 				targets = append(targets, target)
 			}
 		}
-		if scenario.Name == "noisy_tenant" && runner.Config.NoisyTenant != nil {
+		if (scenario.Name == "noisy_tenant" || capacityScenario(scenario.Name)) && runner.Config.NoisyTenant != nil {
 			targets = append(targets, *runner.Config.NoisyTenant)
 		}
 	}
@@ -305,6 +305,16 @@ func (runner SerialRunner) scenario(ctx context.Context, scenario Scenario, fixt
 		return result
 	}
 	active := []*Fixture{fixtures[0]}
+	if capacityScenario(scenario.Name) {
+		active = fixtures
+		if scenario.Name == "capacity_io_checkpoint" && management == nil {
+			result.Status, result.Reason = "SKIP", "actual checkpoint API requires private management connection"
+			return result
+		}
+		for _, fixture := range active {
+			fixture.Management = management
+		}
+	}
 	switch scenario.Name {
 	case "many_db":
 		active = nil
@@ -366,6 +376,9 @@ func (runner SerialRunner) scenario(ctx context.Context, scenario Scenario, fixt
 		if kind == "checkpoint_reopen" {
 			kind = "sustained_wal"
 		}
+		if capacityScenario(kind) {
+			kind = capacityKind(kind)
+		}
 		for _, concurrency := range runner.Settings.Concurrency {
 			if scenario.Name == "noisy_tenant" && concurrency == 1 {
 				result.Phases = append(result.Phases, PhaseResult{Scenario: scenario.Name, Concurrency: 1, Status: "SKIP", Reason: "combined interference requires at least two independent sessions"})
@@ -381,7 +394,18 @@ func (runner SerialRunner) scenario(ctx context.Context, scenario Scenario, fixt
 					fixtures []*Fixture
 				}{{"isolated_primary_", active[:1]}, {"isolated_noise_", active[1:]}, {"combined_", active}}
 			}
+			if capacityScenario(scenario.Name) {
+				sets = capacitySets(active)
+			}
 			for _, set := range sets {
+				actualSlots := concurrency
+				if capacityScenario(scenario.Name) {
+					actualSlots = capacityPhaseSlots(concurrency, set.name, runner.Config.NoisyTenant != nil)
+				}
+				if capacityScenario(scenario.Name) && actualSlots < len(set.fixtures) {
+					result.Phases = append(result.Phases, PhaseResult{Scenario: scenario.Name, Phase: set.name + "measure", Concurrency: concurrency, Status: "NOT MEASURED", Reason: "total sessions cannot independently activate every supplied database/project"})
+					continue
+				}
 				for _, phase := range []struct {
 					name     string
 					duration time.Duration
@@ -389,15 +413,24 @@ func (runner SerialRunner) scenario(ctx context.Context, scenario Scenario, fixt
 					if phase.duration == 0 {
 						continue
 					}
-					measured := runPhase(ctx, scenario.Name, kind, set.name+phase.name, concurrency, phase.duration, set.fixtures, runner.Settings, artifacts, ids)
+					phaseFixtures := set.fixtures
+					phaseSettings := runner.Settings
+					if capacityScenario(scenario.Name) {
+						phaseFixtures = capacityPhaseFixtures(set.fixtures, actualSlots)
+						phaseSettings = capacityPhaseSettings(runner.Settings, set.name, runner.Config.NoisyTenant != nil)
+						phaseSettings.MatrixConcurrency = concurrency
+					}
+					measured := runPhase(ctx, scenario.Name, kind, set.name+phase.name, actualSlots, phase.duration, phaseFixtures, phaseSettings, artifacts, ids)
 					result.Phases = append(result.Phases, measured)
 					if measured.Status != "COMPLETE" {
 						result.Status, result.Reason = measured.Status, measured.Reason
 						return result
 					}
-					if phase.name == "smoke" {
+					if phase.name == "smoke" || capacityScenario(scenario.Name) && phase.name == "measure" {
 						for _, fixture := range set.fixtures {
 							verified, failure := fixture.Verify(ctx)
+							verified.Project, verified.Phase, verified.Concurrency = fixture.Target.Project, set.name+phase.name, concurrency
+							verified.Database = &fixture.Target.Database
 							result.Correctness = append(result.Correctness, verified)
 							if failure != nil || verified.Status != "PASS" {
 								result.Status, result.Reason = "FAIL", "smoke_correctness_failed_before_measurement"

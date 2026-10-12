@@ -134,6 +134,8 @@ func (upstream *gatewayTestUpstream) Call(ctx context.Context, worker controller
 			value = map[string]bool{"closed": true}
 		case "query":
 			value = [][]any{{1, "one"}, {2, "two"}}
+		case "statement":
+			value = map[string]any{"cols": []any{map[string]any{"name": "message", "decltype": "TEXT"}}, "rows": [][]any{{"hello"}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}
 		default:
 			return errors.New("unknown fixture action")
 		}

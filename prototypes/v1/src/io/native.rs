@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,18 @@ use crate::session::AdmissionError;
 pub(super) struct NativeIoGate {
     disabled: AtomicBool,
     pub(super) calls: RwLock<()>,
+    active: AtomicUsize,
+}
+
+pub(super) struct NativeCall<'gate> {
+    gate: &'gate NativeIoGate,
+    _ticket: RwLockReadGuard<'gate, ()>,
+}
+
+impl Drop for NativeCall<'_> {
+    fn drop(&mut self) {
+        self.gate.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub(crate) struct NativeIoToken<'owner> {
@@ -20,21 +32,26 @@ pub(crate) struct NativeIoToken<'owner> {
 }
 
 impl NativeIoGate {
-    pub fn enter(&self) -> turso_core::Result<RwLockReadGuard<'_, ()>> {
+    pub fn health(&self) -> serde_json::Value {
+        serde_json::json!({"pending_native_operations": self.active.load(Ordering::Acquire), "native_dispatch_disabled": self.disabled.load(Ordering::Acquire), "callback_tracking": if cfg!(unix) { "synchronous_callbacks_included_in_operations" } else { "unavailable_async_callbacks" }})
+    }
+
+    pub fn enter(&self) -> turso_core::Result<NativeCall<'_>> {
         self.enter_checked(|| {})
     }
 
-    fn enter_checked(
-        &self,
-        mut checked: impl FnMut(),
-    ) -> turso_core::Result<RwLockReadGuard<'_, ()>> {
+    fn enter_checked(&self, mut checked: impl FnMut()) -> turso_core::Result<NativeCall<'_>> {
         loop {
             self.check_enabled()?;
             checked();
             match self.calls.try_read() {
                 Ok(ticket) => {
                     self.check_enabled()?;
-                    return Ok(ticket);
+                    self.active.fetch_add(1, Ordering::AcqRel);
+                    return Ok(NativeCall {
+                        gate: self,
+                        _ticket: ticket,
+                    });
                 }
                 Err(TryLockError::Poisoned(_)) => {
                     return Err(LimboError::InternalError(

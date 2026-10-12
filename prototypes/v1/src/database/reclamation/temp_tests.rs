@@ -22,7 +22,7 @@ fn fresh_factory_sets_memory_once_without_per_statement_temp_override() -> Resul
     let connection = session.lane.connection.lock().unwrap();
     let connection = connection.as_ref().unwrap();
     assert_eq!(connection.get_temp_store(), TempStore::Memory);
-    connection.set_temp_store(TempStore::File);
+    connection.set_temp_store(TempStore::File)?;
     crate::session::configure(connection);
     assert_eq!(connection.get_temp_store(), TempStore::File);
     Ok(())

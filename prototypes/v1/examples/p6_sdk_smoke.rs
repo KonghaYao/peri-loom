@@ -21,7 +21,7 @@ enum SmokeFailure {
     Stage(&'static str),
     Sdk {
         stage: &'static str,
-        failure: SdkError,
+        failure: Box<SdkError>,
     },
 }
 
@@ -96,7 +96,7 @@ fn smoke() -> Result<(), SmokeFailure> {
     )
     .map_err(|failure| SmokeFailure::Sdk {
         stage: "client initialization",
-        failure,
+        failure: Box::new(failure),
     })?;
     let status = client
         .management(
@@ -105,7 +105,7 @@ fn smoke() -> Result<(), SmokeFailure> {
         )
         .map_err(|failure| SmokeFailure::Sdk {
             stage: "readonly management status",
-            failure,
+            failure: Box::new(failure),
         })?;
     if !status.is_object() {
         return Err("management status shape invalid".into());
@@ -114,7 +114,7 @@ fn smoke() -> Result<(), SmokeFailure> {
         .open(&connection.database)
         .map_err(|failure| SmokeFailure::Sdk {
             stage: "session open",
-            failure,
+            failure: Box::new(failure),
         })?;
     query_then_close(
         || {
@@ -125,13 +125,13 @@ fn smoke() -> Result<(), SmokeFailure> {
                 )
                 .map_err(|failure| SmokeFailure::Sdk {
                     stage: "SELECT exact integers",
-                    failure,
+                    failure: Box::new(failure),
                 })
         },
         || {
             session.close().map_err(|failure| SmokeFailure::Sdk {
                 stage: "explicit session close",
-                failure,
+                failure: Box::new(failure),
             })
         },
     )?;
@@ -170,13 +170,23 @@ mod tests {
     fn unknown(stage: &'static str) -> SmokeFailure {
         SmokeFailure::Sdk {
             stage,
-            failure: SdkError {
+            failure: Box::new(SdkError {
                 code: "outcome_unknown",
                 request_id: "fake_request".into(),
                 outcome_unknown: true,
                 execution_completed: false,
                 may_have_committed: false,
-            },
+                operation_id: None,
+                stage: None,
+                business_outcome: None,
+                cleanup_outcome: None,
+                execution_proven: None,
+                ambiguous: None,
+                rejected: None,
+                retry_allowed: None,
+                possible_commit: None,
+                rpc_observation: None,
+            }),
         }
     }
 

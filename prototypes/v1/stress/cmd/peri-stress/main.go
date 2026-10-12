@@ -28,6 +28,7 @@ func main() {
 	flag.DurationVar(&settings.Smoke, "smoke", settings.Smoke, "smoke duration; shorter is marked gate-only")
 	flag.DurationVar(&settings.Measure, "measure", settings.Measure, "measurement duration; shorter than 30s is gate-only")
 	flag.IntVar(&settings.OfferedRate, "offered-rate", settings.OfferedRate, "global open-loop offered business operations/second, max 1000")
+	flag.IntVar(&settings.VictimEvery, "victim-every", 0, "capacity only: primary project gets one in ten combined offers; 0 means equal")
 	flag.DurationVar(&settings.RequestTimeout, "request-timeout", settings.RequestTimeout, "one request deadline; no SQL or HTTP retry")
 	flag.Int64Var(&settings.MaxGeneratedBytes, "max-generated-bytes", settings.MaxGeneratedBytes, "conservative cumulative generated request byte ceiling, max 256MiB")
 	flag.Int64Var(&settings.MaxArtifactBytes, "max-artifact-bytes", settings.MaxArtifactBytes, "raw JSONL byte ceiling, max 64MiB")

@@ -115,3 +115,31 @@ fn sleep_preserves_local_closing_context_without_native_busy_or_io_dispatch() ->
     assert!(error.downcast_ref::<turso_core::LimboError>().is_none());
     Ok(())
 }
+
+#[test]
+fn sql_progress_interrupt_preserves_duration_budget_cause() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let database = Arc::new(RemoteDatabase::open(
+        Arc::new(MemoryObjectStore::default()),
+        Namespace::new("duration_guard", "recursive")?,
+        directory.path(),
+        1,
+    )?);
+    let session = database.session()?;
+    let budget = Budget {
+        max_query_duration: Duration::from_millis(50),
+        ..Budget::default()
+    };
+    let error = session
+        .query_with_budget("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 100000000) SELECT max(n) FROM t", &budget)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<AdmissionError>(),
+        Some(&AdmissionError::Deadline)
+    );
+    assert_eq!(
+        error.root_cause().to_string(),
+        "query duration budget exceeded"
+    );
+    Ok(())
+}

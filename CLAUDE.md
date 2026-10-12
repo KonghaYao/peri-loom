@@ -1,107 +1,105 @@
 # CLAUDE.md
 
 面向在本仓库工作的 AI agent。项目介绍、目录结构、环境安装、本地启动见 `README.md`；
-架构设计与冻结决策见 `tursodb-db-platform-architecture.md`（第 15 / 18.4 章的冻结条款
-不要自行修改，需要改就先问人）。
+V1 的运行与安全边界见 `prototypes/v1/README.md` 和 `prototypes/v1/platform/README.md`。
 
-本文只写**你不会自然发现、但一定会绊倒你**的事。
+## 核心工程原则 v1.8
+
+1. **架构与领域优先**：编码前明确目标、领域边界、职责、依赖方向和数据流。复用型抽象等第二个真实用例再提取；协议隔离、依赖反转和确定的可替换边界可在首个用例建立接口，须说明当前需要。
+2. **模块封装复杂度**：接口精简、稳定，文件按职责拆分；规模限制及验证遵循 `STD-SIZE-001`。
+3. **显式表达领域语义。** 命名与类型表达职责、身份、状态和错误；所有权和副作用可见，避免字符串约定与隐式共享。
+4. **边界与数据流清晰**：协议、领域、持久化与视图模型各守边界；在边界校验和转换，避免跨层共享可变状态。
+5. **保留维护上下文**：记录决策原因、影响与风险，临时方案注明移除条件；技术债务关联任务，关键决策同步文档，不留无上下文的 `TODO`。
+6. **删除优于兼容**：内部重构删除过时实现，不新增兼容层、deprecated shim 或双写；对外兼容义务按协议评估。
+7. **业务规则单一权威**：同一领域规则只维护一份实现；允许多个存储后端和协议 adapter 封装适配差异，共用业务规则与契约。
+8. **在授权范围内主动闭环。** 依据仓库证据处理常规选择；澄清目标、权限或不可逆结果的歧义。异议须说明代价和替代方案。
+9. **快速胜利法**：
+   1. **优先广度，而非深度**：优先完成简单的，可以并发的任务或者测试，提高广度覆盖面。如果并发允许，同时研究比较难的问题，先出规划，后续看看如何执行，提升并发度。
+   2. **优先完成，而非完整**：先验证用户可观察的行为，再按风险补齐回归、失败和生命周期测试；。
+   3. **杜绝过早、过度测试与验证**
+10. **保持热点路径中对外部资源消耗的敏感性**：考虑 CPU 是否在计算中有问题，内存、数据库查询等热点场景中的性能
+11. **修复一类问题，而不是一个问题**
+12. **暴露异常优于简单掩盖**：如果没有任何说明，默认的错误处理方式都是抛出，并在日志中留下记录。
+13. **数据库表结构须经用户明确批准**：变更前说明表及结构的合理性，由用户裁决。
+14. **日志/通知信息层级化**：日志标准化层级，错误留痕
+
+## 项目质量红线
+
+1. 底层 tursodb sql 兼容性一定要保证好
+2. 平台对外接口的 turso serverless sdk 兼容一定要做好
+3. 平台自身的 serverless 能力，diskless 能力一定要保证好
+
+> 红线 2 的历史实现（Hrana v2/v3 适配层）随旧平台一起移除，当前无实现；是否在 v1 补齐、以何种协议承接，尚未决策。
 
 ## 命令
 
 ```bash
-cargo check -p <crate>                                  # 快速编译校验，先跑这个
-cargo test -p engine-adapter                            # 不依赖外部服务
-cargo test -p db-server                                 # 需要 PostgreSQL 可达
-cargo test -p db-runtime                                # 见「已知红灯」
-cargo clippy -p <crate> --all-targets -- -D warnings    # CI 门：警告即错误
+# Rust 数据面（prototypes/v1 是独立 workspace，仓库根没有 workspace）
+cargo check  --manifest-path prototypes/v1/Cargo.toml --locked
+cargo test   --manifest-path prototypes/v1/Cargo.toml --locked
+cargo fmt    --manifest-path prototypes/v1/Cargo.toml -- --check
+cargo clippy --manifest-path prototypes/v1/Cargo.toml --locked --all-targets --no-deps -- -D warnings
 
-# 端到端（需平台已启动）
-cd test && npm install && npm test                      # 真实 tursodb TS 客户端，36 条
-node scripts/hrana-v3-sdk-check.mjs                     # Hrana v3 验收，14 条
+# Go 平台（Gateway / Broker / Controller）
+cd prototypes/v1/platform && go build ./cmd/peri-platform ./cmd/peri
+PERI_RUST_BINARY=<Rust 二进制绝对路径> go test ./...                 # 需先构建 Rust
+PERI_RUST_BINARY=<Rust 二进制绝对路径> PERI_P6_VERIFY_RACE_CLI=1 go test -race ./...
+cd prototypes/v1/controller && go test ./...
+
+# 全栈本地启动（Authority + 两台加密 Worker + Controller + Gateway + Key Broker）
+python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 ```
 
 ## 环境陷阱
 
-1. **macOS 宿主编译不了 `db-worker`** —— 它用到 `libc::SYS_pidfd_open` /
-   `SYS_pidfd_send_signal`，macOS 没有。改了 db-worker 或它依赖的 crate，必须在容器里验证：
-   ```bash
-   docker compose -f docker-compose.yml -f .run/compose.dev.yml build db-worker-1
-   ```
-   `Dockerfile` 的 builder 阶段**一次构建全部二进制**（db-server / db-worker / db-runtime /
-   wal-service），所以构建任一 target 都会把全部一起编好，切换 target 基本走缓存。
+1. **仓库根没有 Rust workspace** —— 所有 cargo 命令必须带 `--manifest-path prototypes/v1/Cargo.toml`
+   （或 `prototypes/p0/Cargo.toml`）。直接跑 `cargo check` 会报 no manifest。
+2. **Turso fork 是 submodule 且未 push** —— `prototypes/p0/turso` 的提交只存在于本地（R01 未完成）。
+   首次构建前 `git submodule update --init prototypes/p0/turso`；远端 fresh clone 目前拿不到 fork 内容。
+3. **Go 测试依赖已构建的 Rust 二进制** —— 只跑 Go 侧测试要显式给 `PERI_RUST_BINARY`；
+   省略时按默认路径 `prototypes/v1/target/debug/peri-loom-v1` 查找，未构建则失败。
+4. **不要清除 ownership dirty marker 强启** —— 复用同一 run 目录可干净重启；但 dirty marker 存在时
+   服务 fail-closed 是设计行为，不是故障。只允许在独占文件锁下前滚已验证的 commit intent
+   （见 `prototypes/v1/platform/README.md`）。
 
-2. **compose 必须同时给两个 `-f`** —— `.run/compose.dev.yml` 提供本地覆盖（如 db-server 的
-   直连端口）。只给 `docker-compose.yml` 会得到一个和开发环境不一样的拓扑。
+## 架构边界
 
-3. **前端是烤进镜像的** —— `web/Dockerfile` 里跑 `vite build`，没有挂 volume。改完前端
-   必须重建镜像才生效：
-   ```bash
-   docker compose -f docker-compose.yml -f .run/compose.dev.yml build web
-   docker compose -f docker-compose.yml -f .run/compose.dev.yml up -d --no-deps web
-   ```
+1. **Go 禁止**：ReadPage、LoadSegment、AppendWalFrame、CheckpointPage、构造 manifest 内部结构、
+   操作 Turso 事务状态。Go 只持 desired state（placement / lease 策略），Rust 持 actual state。
+2. **Rust 禁止**：全局 worker 选择、scheduler policy、集群级负载均衡、tenant allocation policy。
+3. **Storage 是最终 fencing authority**：即使控制面调度错误、Worker 复活或网络分区，
+   持久层必须拒绝旧 epoch 的写入。Go 可以暂时做错调度，但不能因此导致数据损坏。
+4. **本地磁盘只做 cache**：从 P1 起 Worker 本地状态必须可丢弃；没有本地主库、没有持久本地 WAL。
+5. **单一受信任 Authority**：只有 Authority 持有 raw `ObjectStore`；SQL 引擎只能用 branch-bound
+   adapter，绝不构造替代 root。S3 凭据只注入 Authority，Worker 与 Go 平台不得接收。
 
-4. **`cargo clippy --workspace` 在宿主机会失败** —— `raft-proto` 的构建脚本与宿主 protoc
-   不兼容（既有问题，与你的改动无关）。**按 crate 跑**，不要用 workspace 全量结果判断自己
-   改坏了什么。
+## 数据与协议约定
 
-5. **容器一律用 compose 管**：重启单个服务用 `up -d --no-deps <svc>`，不要 `kill` 容器内进程
-   或手工 `docker rm` —— 后者会让 compose 的状态与实际不一致。
+1. **SQL 请求绝不自动重试**：丢失的回复可能已提交。Unknown 结果用业务幂等键 + durable 状态查询
+   处理，不能把超时 / 关闭 / 回读当作取消证明。
+2. **会话绑定 placement**：迁移会让旧 session 失效，客户端必须显式重开，不要透明重放事务。
+3. **JSON 保留原生整数字面量**：Go 侧用 `json.Number`，TS / 浏览器用 `bigint`；
+   NDJSON 是已物化行的有界流，不是增量执行 cursor。
+4. **不要禁用 TLS 验证**：外部监听必须 TLS；开发 CA 只对本地 fixture 可信。
 
-## 已知红灯（不是你弄坏的，不要顺手"修"）
+## 测试与验收口径
 
-- `cargo test -p db-runtime` 的 `host::tests::rss_is_reported_on_linux` 在 macOS 上必然失败
-  —— 没有 `/proc`。
-- `cargo test` 会往 Catalog 里插 `test-worker-*` 假 worker，之后 db-server 日志会持续刷它们的
-  心跳超时 ERROR。这是单测残留数据，不是故障。
-- 宿主机 `cargo test -p db-server` 的部分用例需要 PostgreSQL 可达；连不上时的失败先查
-  `docker compose ps postgres`，别怀疑代码。
-
-## 架构红线
-
-- **控制面不进 SQL 热路径**：Catalog（PostgreSQL）是权威事实源，但不参与查询执行。
-- **对外有两套契约，别混淆**：
-  - 平台自有 —— `/api/v1/*`（控制面）、`/data/v1/*`（数据面，NDJSON 流式）。这两个进 OpenAPI。
-  - 客户端兼容 —— `/db/{db_id}/v2/pipeline`、`/v3/pipeline`、`/v3/cursor`（Hrana over HTTP）。
-    不进 OpenAPI，权限与 `/data/v1` 同档（`db:write`）。
-- **两个 Hrana 版本都不能删**：`@libsql/client` 全程只打 v2；`@tursodatabase/serverless`
-  **自发布起（0.1.0）**就只打 v3，从不请求 v2、不探测版本、不降级。删任何一个都会直接打断
-  一整类客户端。
-- **本地协议不是 gRPC**：Server→Worker 是 gRPC/HTTP2；Worker→DB Process 是
-  **UDS + length-delimited protobuf**（`proto/platform/runtime_local.proto`）。不要给后者在
-  UDS 上再套一层 HTTP2。
-- **别为某个协议污染平台契约**：`domain::value::ResultSet` 是平台自己的结果集契约。Hrana
-  特有的字段（`last_insert_rowid` 之类）由兼容层自己携带，不要塞进去。
-- **会话不进控制面**：db-server 的会话是进程内本地状态，重启即失效（客户端收
-  `SESSION_NOT_FOUND` 后重开）。这是刻意的降级，不要把会话写进 Catalog。
+- **SQL 兼容标准**（2026-10-10 用户改定）：停止官方 SQLite 原始测试，以 TursoDB 自带测试为准
+  （`prototypes/p0/turso` 的 `sqlite-sqltests` / `turso-sqltests`，Rust 后端）。固定 64 MiB hash
+  预算、禁用快照更新；跑门禁时不要自行改预算或启用快照更新，结果不可与既有门禁数字混用。
+- **当前未修问题，不可宣称全绿**：R21（PK 与同列不同 COLLATE 的自动 UNIQUE 被合并 / 丢弃，
+  会错误允许冲突写入）、view rename（唯一 FAIL）、默认预算 12 项 plan snapshot mismatch。
+- **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
+  运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
 
 ## 代码约定
 
-- **注释用中文，讲「为什么」**，不复述「是什么」。现有代码对这条执行得很严格 —— 跟上，
-  别写「本函数用于处理请求」这种。
-- 错误统一用 `domain::error::{ErrorCode, PlatformError}`，不要自造错误类型。
-- 提交信息用中文全角冒号：`feat(hrana)：…`、`fix(compose)：…`。
+- 提交信息用中文全角冒号：`feat(v1)：…`、`fix(authority)：…`、`docs(capacity)：…`。
+- 注释讲「为什么」、不复述「是什么」；v1 现有代码几乎无注释、文档为英文，新增注释沿用所在文件风格。
+- 错误不得静默吞掉：无说明时默认抛错并留日志（原则 11）。
 
-## 协议层的坑（都真实踩过）
+## 凭据与密钥
 
-- **proto3 `optional` 不是锦上添花**：当「字段缺失」与「字段为 false/0」语义不同时**必须**
-  用 `optional`。例：`StreamEnd.is_autocommit` 缺失表示「DB Process 没上报」，与「上报了
-  false（仍在事务中）」完全是两回事 —— 裸 `bool` 会把前者读成后者，而后者会让客户端以为
-  事务还在。取值方向危险时，宁可多一层存在性。
-- **Hrana 值编码不对称**：`integer` 的 `value` 是**字符串**（JSON 数字承载不了完整 i64），
-  `float` 的 `value` 是 JSON 数字，`blob` 的字段名是 **`base64`** 而不是 `value`。
-- **Hrana 响应字段是蛇形**：客户端解码器读的是 `is_explain` / `is_readonly`，之后才在 SDK
-  内部转成驼峰。服务端写成驼峰会静默读成 `undefined`。
-- **`@tursodatabase/serverless` 用朴素字符串拼接 URL**（`${url}/v3/cursor`）：给它的地址
-  **不能带任何 query** —— `?tls=0` 会被当成路径的一部分吃掉。`?tls=0` 只对 `@libsql/client`
-  有效。
-- **步骤级失败不能升级成 HTTP 错误**：Hrana 客户端生成的批处理里，回滚靠 `error` /
-  `not(ok,…)` 条件触发；整个请求失败会让回滚步骤永远不执行，事务就留在半途。用 `step_error`
-  表达。
-- **被条件跳过的步骤不发任何条目**：`@tursodatabase/serverless` 正是靠「探测步有没有条目」
-  判断连接是否在事务中。
-
-## 凭据
-
-- `deploy/secrets/` 下的文件**不要提交、不要打印内容**。管理员密码在
-  `deploy/secrets/bootstrap_admin_password.txt`。
+- `dev.py` 产出的 `connection.json` 含私有测试 API Key 与开发 CA 路径，**不可公开**、
+  不可写入文档或日志。
 - 抓取或回显任何含 `Authorization` 的输出时，替换成 `Bearer <REDACTED>`。

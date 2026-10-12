@@ -41,8 +41,16 @@ cargo test --manifest-path prototypes/v1/Cargo.toml --locked --test minio -- --i
 
 These tests create uniquely named temporary buckets and clean only their own
 fixtures. Never point them at a production service without bucket-creation
-permission. Evidence and service-specific limitations are recorded in
-`../../docs/v1/P1-VERIFICATION.md`.
+permission. Do not count ignored service tests as passing in a local-only run.
+
+### Historical SQLite semantic comparison
+
+The 15-case `sqlite_quick_compat` differential test previously invoked the
+installed `/usr/bin/sqlite3` executable and compared typed rows with native
+Turso. Its historical source is retained, but the test is explicitly ignored
+by default because the project retired SQLite reference and differential
+workflows. Do not count this ignored test as v1 or Turso native coverage.
+Current verification uses the no-reference Turso suite and the v1 contract regressions.
 
 ## Boundaries
 
@@ -61,7 +69,7 @@ this workspace prioritizes correctness evidence over production performance.
 
 The branch-aware path uses a durable namespace root, unique immutable physical
 blob instances, and one root CAS for refs, WAL publication, commit history,
-reader pins, upload intents and GC tombstones. See `../../docs/v1/P2-DESIGN.md`.
+reader pins, upload intents and GC tombstones.
 The P1 commands remain a compatibility harness for the original physical layout;
 the branch-aware commands below use the new root domain. They do not implicitly
 import a P1 namespace. Subsequent runtime services must use the authority path.
@@ -188,4 +196,4 @@ restart; only confirmed old-backend quiescence permits explicit `--reconciled`
 startup. A Shutdown reply announces stopping; successful process exit proves the
 clean-stop marker. This stage does not claim overlapping authority HA or deadline
 cancellation of already dispatched physical requests. See
-`../../docs/v1/P4-DESIGN.md` for the exact guarantee and compatibility ledger.
+the P4 authority and platform documentation for exact compatibility boundaries.

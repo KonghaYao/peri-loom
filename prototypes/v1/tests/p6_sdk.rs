@@ -10,6 +10,242 @@ use serde_json::{json, Value};
 const CREDENTIAL: &str = "synthetic-api-credential__________________";
 const SESSION: &str = "0123456789abcdef0123456789abcdef";
 
+#[test]
+fn sdk_error_optional_text_has_bounded_result_layout() {
+    assert!(std::mem::size_of::<peri_loom_v1::sdk::SdkError>() < 128);
+}
+
+#[test]
+fn sdk_management_close_loss_retains_metadata_without_replay_or_deduplication() {
+    let mut calls = 0;
+    let (endpoint, task) = server(2, move |path, body| {
+        calls += 1;
+        assert_eq!(path, "/v1/databases/checkpoint");
+        assert_eq!(body["request_id"], "same-correlation");
+        assert!(body.get("operation_id").is_none());
+        Some(
+            json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":{
+                "code":"outcome_unknown","operation_id":format!("server-operation-{calls}"),
+                "stage":"close_session","business_outcome":"completed","cleanup_outcome":"unknown",
+                "execution_proven":true,"ambiguous":true,"rejected":false,"execution_completed":true,
+                "may_have_committed":true,"retry_allowed":false
+            }}),
+        )
+    });
+    let client = Client::new(&endpoint, CREDENTIAL.into()).unwrap();
+    for attempt in 1..=2 {
+        let error = client
+            .management(
+                "checkpoint",
+                ManagementRequest {
+                    request_id: "same-correlation".into(),
+                    ..ManagementRequest::new(database())
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "outcome_unknown");
+        assert_eq!(error.request_id, "same-correlation");
+        assert_eq!(
+            error.operation_id,
+            Some(format!("server-operation-{attempt}").into_boxed_str())
+        );
+        assert_eq!(error.stage.as_deref(), Some("close_session"));
+        assert_eq!(error.business_outcome.as_deref(), Some("completed"));
+        assert_eq!(error.cleanup_outcome.as_deref(), Some("unknown"));
+        assert_eq!(error.execution_proven, Some(true));
+        assert_eq!(error.ambiguous, Some(true));
+        assert_eq!(error.rejected, Some(false));
+        assert_eq!(error.retry_allowed, Some(false));
+        assert!(error.execution_completed && error.may_have_committed && error.outcome_unknown);
+    }
+    task.join().unwrap();
+}
+
+#[test]
+fn sdk_gateway_unknown_preserves_nested_observation_not_terminal_sql_flags() {
+    let (endpoint, task) = server(2, |path, body| {
+        if path.ends_with("/open") {
+            return Some(success(body, json!({"session":SESSION,"readonly":false})));
+        }
+        assert_eq!(body["sql"], "COMMIT");
+        Some(
+            json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":{
+                "code":"outcome_unknown","operation_id":"gateway-operation","stage":"tool_rpc",
+                "business_outcome":"unknown","cleanup_outcome":"not_applicable","execution_proven":false,
+                "retry_allowed":false,"possible_commit":true,
+                "rpc_observation":{"ambiguous":true,"rejected":true,"execution_completed":true}
+            }}),
+        )
+    });
+    let session = Client::new(&endpoint, CREDENTIAL.into())
+        .unwrap()
+        .open(&database())
+        .unwrap();
+    let error = session.execute("COMMIT", Some("commit-loss")).unwrap_err();
+    assert_eq!(error.operation_id.as_deref(), Some("gateway-operation"));
+    assert_eq!(error.possible_commit, Some(true));
+    let observation = error.rpc_observation.unwrap();
+    assert!(observation.ambiguous && observation.rejected && observation.execution_completed);
+    assert!(!error.execution_completed && !error.may_have_committed);
+    assert!(error.outcome_unknown);
+    assert_eq!(
+        session
+            .execute("COMMIT", Some("no-replay"))
+            .unwrap_err()
+            .code,
+        "session_unusable"
+    );
+    task.join().unwrap();
+}
+
+#[test]
+fn sdk_f03_malformed_metadata_fails_closed() {
+    let mut invalid = vec![
+        json!({"operation_id":42}),
+        json!({"operation_id":null}),
+        json!({"stage":"placement"}),
+        json!({"stage":null}),
+        json!({"business_outcome":"success"}),
+        json!({"business_outcome":null}),
+        json!({"cleanup_outcome":"failed"}),
+        json!({"cleanup_outcome":null}),
+        json!({"rpc_observation":null}),
+        json!({"rpc_observation":[]}),
+        json!({"rpc_observation":{"ambiguous":true,"rejected":false}}),
+        json!({"rpc_observation":{"ambiguous":true,"rejected":false,"execution_completed":"true"}}),
+        json!({"rpc_observation":{"ambiguous":true,"rejected":false,"execution_completed":true,"extra":true}}),
+        json!({"extra":true}),
+    ];
+    for field in [
+        "execution_proven",
+        "ambiguous",
+        "rejected",
+        "retry_allowed",
+        "possible_commit",
+        "execution_completed",
+        "may_have_committed",
+    ] {
+        for value in [json!("true"), Value::Null] {
+            let mut fields = serde_json::Map::new();
+            fields.insert(field.into(), value);
+            invalid.push(Value::Object(fields));
+        }
+    }
+    for fields in invalid {
+        let (endpoint, task) = server(1, move |_, body| {
+            let mut failure =
+                json!({"code":"database_isolated","operation_id":"untrusted-operation"});
+            failure
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            Some(
+                json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":failure}),
+            )
+        });
+        let error = Client::new(&endpoint, CREDENTIAL.into())
+            .unwrap()
+            .management("checkpoint", ManagementRequest::new(database()))
+            .unwrap_err();
+        assert_eq!(error.code, "outcome_unknown");
+        assert!(error.outcome_unknown);
+        assert!(error.operation_id.is_none());
+        task.join().unwrap();
+    }
+}
+
+#[test]
+fn sdk_f03_defined_management_paths_and_explicit_operation_id() {
+    let operations = [
+        "operations",
+        "operations/decision",
+        "operations/clear",
+        "operations/retire-local",
+        "diagnostics",
+    ];
+    let mut expected = operations.into_iter();
+    let (endpoint, task) = server(operations.len(), move |path, body| {
+        assert_eq!(path, format!("/v1/databases/{}", expected.next().unwrap()));
+        assert_eq!(body["request_id"], "lookup-correlation");
+        assert_eq!(body["operation_id"], "server-operation");
+        assert_eq!(body["decision"], "retain_isolation_new_database_required");
+        Some(success(body, json!({"operations":[]})))
+    });
+    let client = Client::new(&endpoint, CREDENTIAL.into()).unwrap();
+    for operation in operations {
+        client
+            .management(
+                operation,
+                ManagementRequest {
+                    request_id: "lookup-correlation".into(),
+                    operation_id: Some("server-operation".into()),
+                    decision: Some("retain_isolation_new_database_required".into()),
+                    ..ManagementRequest::new(database())
+                },
+            )
+            .unwrap();
+    }
+    task.join().unwrap();
+    for (operation_id, decision, code) in [
+        (Some("bad/id"), None, "invalid_operation_id"),
+        (None, Some("retry"), "invalid_request"),
+    ] {
+        assert_eq!(
+            client
+                .management(
+                    "operations",
+                    ManagementRequest {
+                        operation_id: operation_id.map(String::from),
+                        decision: decision.map(String::from),
+                        ..ManagementRequest::new(database())
+                    }
+                )
+                .unwrap_err()
+                .code,
+            code
+        );
+    }
+    assert_eq!(
+        client
+            .management("operations/retry", ManagementRequest::new(database()))
+            .unwrap_err()
+            .code,
+        "invalid_operation"
+    );
+}
+
+#[test]
+fn sdk_f03_safe_codes_allow_code_only_errors() {
+    for code in [
+        "database_isolated",
+        "operation_recorded",
+        "operation_registration_unavailable",
+        "session_unusable",
+        "future_error",
+    ] {
+        let (endpoint, task) = server(1, move |_, body| {
+            Some(
+                json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":{"code":code}}),
+            )
+        });
+        let error = Client::new(&endpoint, CREDENTIAL.into())
+            .unwrap()
+            .management("checkpoint", ManagementRequest::new(database()))
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            if code == "future_error" {
+                "remote_error"
+            } else {
+                code
+            }
+        );
+        assert!(!error.outcome_unknown);
+        assert!(error.operation_id.is_none());
+        task.join().unwrap();
+    }
+}
+
 fn database() -> DatabaseId {
     DatabaseId::new(Namespace::new("tenant", "database").unwrap(), "main").unwrap()
 }

@@ -17,6 +17,7 @@ pub struct LocalObjectStore {
 #[derive(Serialize, Deserialize)]
 struct Envelope {
     key: String,
+    #[serde(with = "super::payload")]
     bytes: Vec<u8>,
     etag: String,
     checksum: String,
@@ -60,6 +61,7 @@ impl LocalObjectStore {
     }
 
     fn read(&self, key: &str) -> Result<Option<StoredObject>> {
+        let started = std::time::Instant::now();
         let path = self.path(key);
         reject_symlink(&path)?;
         let encoded = match fs::read(path) {
@@ -75,6 +77,15 @@ impl LocalObjectStore {
             "local object checksum mismatch"
         );
         ensure!(!envelope.etag.is_empty(), "missing local object etag");
+        if std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1") {
+            eprintln!(
+                "NATIVE_LOCAL_READ pid={} key={key} bytes={} encoded_bytes={} elapsed_us={}",
+                std::process::id(),
+                envelope.bytes.len(),
+                encoded.len(),
+                started.elapsed().as_micros()
+            );
+        }
         Ok(Some(StoredObject {
             bytes: envelope.bytes,
             etag: envelope.etag,
@@ -100,12 +111,22 @@ impl ObjectStore for LocalObjectStore {
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        let started = std::time::Instant::now();
         validate_key(key)?;
-        let _guard = self.lock()?;
-        self.read(key)
+        let result = self.read(key);
+        if std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1") {
+            eprintln!(
+                "NATIVE_LOCAL_GET pid={} key={key} elapsed_us={} ok={}",
+                std::process::id(),
+                started.elapsed().as_micros(),
+                result.is_ok()
+            );
+        }
+        result
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        let started = std::time::Instant::now();
         validate_key(key)?;
         let _guard = self.lock()?;
         check_condition(self.read(key)?.as_ref(), &condition)?;
@@ -122,7 +143,18 @@ impl ObjectStore for LocalObjectStore {
                 .write(true)
                 .create_new(true)
                 .open(&temporary)?;
-            file.write_all(&serde_json::to_vec(&envelope)?)?;
+            let started = std::time::Instant::now();
+            let encoded = serde_json::to_vec(&envelope)?;
+            if std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1") {
+                eprintln!(
+                    "NATIVE_LOCAL_ENCODE pid={} key={key} bytes={} encoded_bytes={} elapsed_us={}",
+                    std::process::id(),
+                    bytes.len(),
+                    encoded.len(),
+                    started.elapsed().as_micros()
+                );
+            }
+            file.write_all(&encoded)?;
             file.sync_all()?;
             fs::rename(&temporary, self.path(key))?;
             File::open(&self.root)?.sync_all()?;
@@ -132,6 +164,14 @@ impl ObjectStore for LocalObjectStore {
             let _ = fs::remove_file(&temporary);
         }
         result?;
+        if std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1") {
+            eprintln!(
+                "NATIVE_LOCAL_PUT pid={} key={key} bytes={} elapsed_us={}",
+                std::process::id(),
+                bytes.len(),
+                started.elapsed().as_micros()
+            );
+        }
         Ok(etag)
     }
 

@@ -68,7 +68,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn("synthetic-not-real", (pathlib.Path(directory) / "launch.json").read_text())
             restarted = self.project(directory)
             restarted.arguments.backend = "s3"
-            restarted.prepare()
+            with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
+                restarted.prepare()
             for name in ("S3_BUCKET", "S3_ENDPOINT", "S3_REGION"):
                 with patch.dict(dev.os.environ, {name: "different"}):
                     with self.assertRaisesRegex(RuntimeError, "storage identity"):

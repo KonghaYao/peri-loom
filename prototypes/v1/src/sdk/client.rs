@@ -126,6 +126,11 @@ impl Client {
         if !matches!(
             database_operation,
             "create"
+                | "operations"
+                | "operations/decision"
+                | "operations/clear"
+                | "operations/retire-local"
+                | "diagnostics"
                 | "delete"
                 | "snapshot"
                 | "branch"
@@ -166,6 +171,24 @@ impl Client {
         }
         if request.request_id.is_empty() {
             request.request_id = random_id()?;
+        }
+        if request
+            .operation_id
+            .as_deref()
+            .is_some_and(|identifier| !label(identifier))
+        {
+            return Err(SdkError::new(
+                "invalid_operation_id",
+                &request.request_id,
+                false,
+            ));
+        }
+        if request
+            .decision
+            .as_deref()
+            .is_some_and(|decision| decision != "retain_isolation_new_database_required")
+        {
+            return Err(SdkError::new("invalid_request", &request.request_id, false));
         }
         self.call(
             &if global {
@@ -221,6 +244,9 @@ impl Client {
                 return Err(unknown());
             }
             let failure = envelope.error.ok_or_else(unknown)?;
+            if !failure.valid_metadata() {
+                return Err(unknown());
+            }
             let code = safe_code(&failure.code);
             if code == "sql_error" && (!failure.execution_completed || !failure.may_have_committed)
             {
@@ -229,6 +255,16 @@ impl Client {
             let mut failure_error = SdkError::new(code, request_id, code == "outcome_unknown");
             failure_error.execution_completed = failure.execution_completed;
             failure_error.may_have_committed = failure.may_have_committed;
+            failure_error.operation_id = failure.operation_id.map(String::into_boxed_str);
+            failure_error.stage = failure.stage.map(String::into_boxed_str);
+            failure_error.business_outcome = failure.business_outcome.map(String::into_boxed_str);
+            failure_error.cleanup_outcome = failure.cleanup_outcome.map(String::into_boxed_str);
+            failure_error.execution_proven = failure.execution_proven;
+            failure_error.ambiguous = failure.ambiguous;
+            failure_error.rejected = failure.rejected;
+            failure_error.retry_allowed = failure.retry_allowed;
+            failure_error.possible_commit = failure.possible_commit;
+            failure_error.rpc_observation = failure.rpc_observation;
             return Err(failure_error);
         }
         if !status.is_success() || envelope.error.is_some() {

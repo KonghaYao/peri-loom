@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "D05/Q02 functional capacity matrix result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "task", "status", "scope", "performance_pass", "G02", "no_starvation_guarantee", "acceptance", "coverage", "counts", "cells", "knees", "interference_comparisons", "safe_envelope", "frozen_plan", "approval_capsule_contract", "C1_boundary", "errors", "evidence_manifest", "independent_review_required", "limitations"],
+  "properties": {
+    "version": {"const": 1},
+    "task": {"const": "D05/Q02"},
+    "status": {"enum": ["READY FOR INDEPENDENT ACCEPTANCE", "FAIL", "NOT MEASURED"]},
+    "scope": {"type": "string"},
+    "performance_pass": {"const": false},
+    "G02": {"const": "NOT PASS"},
+    "no_starvation_guarantee": {"const": false},
+    "acceptance": {"type": "object"},
+    "coverage": {"type": "object", "required": ["id", "selected_status", "full_cartesian_status", "omitted_combinations"], "properties": {"full_cartesian_status": {"const": "NOT MEASURED"}}},
+    "counts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["MEASURED", "FAIL", "NOT MEASURED"],
+      "properties": {"MEASURED": {"type": "integer", "minimum": 0}, "FAIL": {"type": "integer", "minimum": 0}, "NOT MEASURED": {"type": "integer", "minimum": 0}}
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job", "topology", "workload", "phase", "concurrency", "rate", "status"],
+        "properties": {
+          "job": {"type": "string"},
+          "topology": {"enum": ["single_hot", "single_many", "equal_hot", "equal_many", "victim_hot", "victim_many"]},
+          "workload": {"enum": ["read", "short_writer", "held_writer", "io_checkpoint", "mixed"]},
+          "phase": {"enum": ["isolated_primary_measure", "isolated_noise_measure", "combined_measure"]},
+          "concurrency": {"enum": [1, 2, 4, 8]},
+          "rate": {"type": "integer", "minimum": 1, "maximum": 1000},
+          "status": {"enum": ["MEASURED", "FAIL", "NOT MEASURED"]},
+          "counters": {"$ref": "#/$defs/counters"},
+          "source": {"type": "object"},
+          "rpc_measurement": {"type": "object"}
+        }
+      }
+    },
+    "knees": {"type": "array", "items": {"type": "object", "required": ["topology", "workload", "phase", "concurrency", "status", "performance_pass"], "properties": {"status": {"enum": ["OBSERVED FUNCTIONAL KNEE", "NOT FOUND", "NOT MEASURED"]}, "performance_pass": {"const": false}}}},
+    "interference_comparisons": {"type": "array", "items": {"type": "object"}},
+    "safe_envelope": {"$ref": "#/$defs/safe_envelope"},
+    "frozen_plan": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "approval_capsule_contract": {"type": "object", "required": ["issuer", "required_fields", "rate_rule"]},
+    "C1_boundary": {"type": "object", "required": ["status", "reason", "cells"], "properties": {"status": {"const": "NOT MEASURED"}}},
+    "errors": {"type": "array", "items": {"type": "object", "required": ["job", "reason"]}},
+    "evidence_manifest": {"type": "object", "additionalProperties": {"type": "object", "required": ["sha256", "bytes"], "properties": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "bytes": {"type": "integer", "minimum": 0}}}},
+    "independent_review_required": {"const": true},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "counters": {
+      "type": "object", "additionalProperties": false,
+      "required": ["offered", "client_drop", "client_expiry", "sent", "ACK", "typed429", "other_determinate", "Unknown", "pending", "conserved"],
+      "properties": {
+        "offered": {"type": "integer"}, "client_drop": {"type": "integer"}, "client_expiry": {"type": "integer"},
+        "sent": {"type": "integer"}, "ACK": {"type": "integer"}, "typed429": {"type": "integer"},
+        "other_determinate": {"type": "integer"}, "Unknown": {"type": "integer"}, "pending": {"type": "integer"}, "conserved": {"type": "boolean"}
+      }
+    },
+    "safe_envelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "status", "image_id", "writer_admission", "source_hash", "source", "rpc_definition", "safe_rpc_per_second", "rpc_rate_safe", "business_load_definition", "qualified_business_rate_points", "points", "rpc_safety_factor", "soak_default", "d05_full_matrix_status", "d05_selected_coverage_status", "approval_required", "performance_pass", "limitations"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "status": {"enum": ["CANDIDATE FOR MAIN APPROVAL", "NOT MEASURED"]},
+        "image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "writer_admission": {"const": true},
+        "source_hash": {"type": ["string", "null"]},
+        "source": {"type": ["string", "null"], "description": "Exact source.git_hash alias for Main capsule, not an inferred image provenance proof"},
+        "rpc_definition": {"type": "string"},
+        "safe_rpc_per_second": {"type": ["number", "null"], "minimum": 0},
+        "rpc_rate_safe": {"type": ["number", "null"], "minimum": 0, "description": "Alias of safe_rpc_per_second, never business ops/s"},
+        "business_load_definition": {"type": "string"},
+        "qualified_business_rate_points": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "points": {"type": "array", "items": {"type": "object", "required": ["business_offered_rate", "phase_status", "eligible", "run_id", "rpc_measurement", "source"]}},
+        "rpc_safety_factor": {"const": 0.5},
+        "soak_default": {
+          "type": "object", "additionalProperties": false,
+          "required": ["tx_per_second", "RPC_per_tx", "observation_maintenance_RPC_per_second", "required_rpc_per_second", "extra_margin_fraction", "required_with_margin_rpc_per_second", "status"],
+          "properties": {
+            "tx_per_second": {"const": 0.2}, "RPC_per_tx": {"const": 8}, "observation_maintenance_RPC_per_second": {"const": 0.3},
+            "required_rpc_per_second": {"const": 1.9}, "extra_margin_fraction": {"const": 0.2},
+            "required_with_margin_rpc_per_second": {"type": "number", "minimum": 2.28, "maximum": 2.280000000000001},
+            "status": {"enum": ["NOT MEASURED", "MEETS FROZEN RATE MARGIN", "INSUFFICIENT"]}
+          }
+        },
+        "d05_full_matrix_status": {"const": "NOT MEASURED"},
+        "d05_selected_coverage_status": {"enum": ["READY FOR INDEPENDENT ACCEPTANCE", "FAIL", "NOT MEASURED"]},
+        "approval_required": {"const": true}, "performance_pass": {"const": false},
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

@@ -1,5 +1,86 @@
 # Native single-container deployment
 
+## Verify an existing full Linux image
+
+From the repository root, with Docker, Python 3 and OpenSSL available:
+
+```sh
+python3 prototypes/v1/deploy/verify-image.py --image peri-loom:fast-full-ea0f7bf
+IMAGE=peri-loom:fast-full-ea0f7bf python3 prototypes/v1/deploy/verify-image.py
+python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_verify_image.py'
+```
+
+Verification never builds, pulls, prunes, or touches existing deployments. It pins
+the inspected Linux image ID, requires image/runtime UID 10001, and compares the
+embedded full launcher hash with the current `platform/dev.py`. Each invocation
+creates a random ownership-labelled container and volume, publishes only an
+automatically allocated loopback port, and applies 2 GiB memory, 2 CPU, 128 PID,
+no-restart, dropped-capability and no-new-privileges constraints. Docker initializes
+the volume from the image's private `/data/peri`; no host UID-owned state mount is
+needed. Use a local Docker daemon; a remote daemon's loopback is not the client's.
+
+The launcher creates a distinct development issuer CA and server leaf. The tool
+copies the connection and public certificates into a fresh 0700 temporary directory,
+rewrites the host fixture endpoint/CA path, verifies the CA chain, server purpose
+and loopback IP with OpenSSL, then runs the existing `whole-smoke.py` exactly once
+with normal Python certificate verification. Readiness polling does not dispatch
+SQL. This uses the default full launcher, not the separate observer profile.
+
+```sh
+python3 prototypes/v1/deploy/verify-image.py --image "$IMAGE" --backend s3
+```
+
+S3 is opt-in and uses only `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`,
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and optional `S3_SESSION_TOKEN` from
+the environment. Supply an **existing independent disposable bucket**, never a
+business bucket: the full smoke changes database objects and leaves them in S3.
+The tool does not create/delete buckets or remove external objects. Values never
+appear in Docker argv or reports; Docker administrators can still inspect container
+environment. Local mode does not forward S3 environment.
+
+The final JSON prints the private result directory and cleanup status; exit 0
+requires the exact helper result schema, all 11 checks (including
+`native_encrypted_sql_ack`), its stdout acknowledgement, verified TLS, matching
+fixture database, positive authority puts, both worker metrics and no audit
+unavailability, plus shutdown proof and a successfully written/verified manifest.
+There is no invented separate SQL ACK field: the helper emits that named check.
+`smoke-process.json` retains the
+original smoke exit code and output (known fixture/S3 credentials redacted),
+`smoke.json` retains successful smoke results, and `result.json` records inspected
+image identity, resource settings, runtime UID/PID, stopped ExitCode/OOM/PID and
+the authority `clean\n` marker. `manifest.json` hashes these evidence files and
+host verification/launcher/smoke/Dockerfile sources, never connections or secrets.
+PASS requires all four evidence files (`smoke-process.json`, `smoke.json`,
+`authority.lock`, `result.json`) and all four source hashes. The published result
+starts with `pass:false`; only after manifest write/readback and evidence/source
+hash rechecks does an atomic replacement publish `pass:true`. Hash, manifest-write
+or final-publication failure returns failure without leaving a positive result.
+These host hashes do not attest the image's compiled Rust/Go source provenance.
+The existing smoke labels its successful backend `external_s3_fixture` even in
+local mode; `result.json.backend` is the selected backend.
+
+Failure is conservatively `Unknown`, without automatic SQL retry or additional
+Close. The original smoke currently masks exception details with an exception type;
+the verifier preserves that output rather than inventing a more precise outcome.
+SIGINT/SIGTERM and tool exceptions attempt only ownership-verified cleanup. Shutdown
+sends TERM and waits (default 90 seconds), never force-kills. Removal requires an
+exited container with ExitCode 0, no OOM, PID 0 and the clean authority marker;
+launcher ExitCode 0 supplies its joined platform/worker shutdown proof. If ownership,
+stop or clean proof is uncertain, container/volume and private fixture are retained
+for manual investigation, not automatically restarted or deleted. The private
+namespace is also always retained after dispatched smoke failure/timeout, even
+if the container subsequently stops with ExitCode 0 and a clean marker: process
+shutdown does not resolve an Unknown SQL outcome or establish no side effects.
+The private
+fixture contains credentials and must not be shared; it is removed after proven
+cleanup. SIGKILL/host loss cannot execute cleanup. Readiness/smoke deadlines default
+to 120/300 seconds and are configurable with `--ready-timeout`, `--smoke-timeout`
+and `--stop-timeout`. This is D04/R02 tooling, not completion of all whole7tasks
+or a live Linux/S3/restart gate.
+
+Local and RustFS whole11 runs are bounded functional checks, not HA or
+performance acceptance. Retain run outputs outside the source repository.
+
 The build context is the **full repository root**, including the locally initialized
 `prototypes/p0/turso` fork and final sibling modules `prototypes/v1/controller` and
 `prototypes/v1/platform`. Do not substitute an upstream Turso checkout: the native
@@ -9,6 +90,8 @@ Compose resolves `../../..` from `prototypes/v1/deploy` to the repository root a
 uses `prototypes/v1/deploy/Dockerfile` relative to that build context. The examples
 below run from the repository root.
 
+The runtime launcher is copied with explicit mode `0555`, so a private build
+context created with `umask 077` cannot make it unreadable by uid 10001.
 The native build copies only the pinned fork, `Cargo.toml`, `Cargo.lock`, and `src`.
 Go, tests, examples, and documentation do not invalidate the native compile layer.
 BuildKit keeps separate locked registry and target caches; the native binary is

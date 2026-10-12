@@ -48,6 +48,9 @@ impl Process {
         for (key, value) in environment {
             command.env(key, value);
         }
+        if std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1") {
+            command.env("PERI_NATIVE_GATE_TRACE", "1");
+        }
         let mut child = command.spawn()?;
         let output = child.stdout.take().context("service stdout missing")?;
         let errors = child.stderr.take().context("service stderr missing")?;

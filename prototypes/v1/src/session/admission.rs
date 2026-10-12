@@ -93,13 +93,37 @@ struct State {
     controls: Vec<Weak<SessionControl>>,
 }
 
-#[derive(Default)]
 pub(crate) struct WriterAdmission {
     state: Mutex<State>,
     changed: Condvar,
+    trace: Option<Arc<crate::capacity_trace::Trace>>,
+}
+
+impl Default for WriterAdmission {
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            changed: Condvar::default(),
+            trace: crate::capacity_trace::Trace::new(None),
+        }
+    }
 }
 
 impl WriterAdmission {
+    pub(crate) fn trace_identity(&self) -> Option<String> {
+        self.trace.as_ref().map(|trace| trace.identity())
+    }
+
+    fn observe(&self, kind: &'static str, id: u64, holder: Option<u64>) {
+        if let Some(trace) = &self.trace {
+            trace.admission(kind, id, holder);
+        }
+    }
+
+    pub(crate) fn try_quarantined(&self) -> Option<bool> {
+        self.state.try_lock().ok().map(|state| state.quarantined)
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
         self.state
             .lock()
@@ -147,6 +171,7 @@ impl WriterAdmission {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.quarantined = true;
+        self.observe("invalidation", state.owner.unwrap_or(0), state.owner);
         for control in state.controls.iter().filter_map(Weak::upgrade) {
             control.closing.store(true, Ordering::Release);
         }
@@ -159,6 +184,9 @@ impl WriterAdmission {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.queue.contains(&control.id) {
+            self.observe("cancel", control.id, state.owner);
+        }
         state.queue.retain(|queued| *queued != control.id);
         self.changed.notify_all();
     }
@@ -178,6 +206,7 @@ impl WriterAdmission {
             return Err(AdmissionError::Closing.into());
         }
         if state.owner == Some(control.id) {
+            self.observe("owner_reuse", control.id, state.owner);
             return Ok(Permit {
                 admission: self.clone(),
                 control: control.clone(),
@@ -188,7 +217,9 @@ impl WriterAdmission {
             return Err(AdmissionError::Conflict.into());
         }
         if state.owner.is_none() && state.queue.is_empty() && !state.maintenance {
+            self.observe("enqueue", control.id, state.owner);
             state.owner = Some(control.id);
+            self.observe("admit", control.id, None);
             return Ok(Permit {
                 admission: self.clone(),
                 control: control.clone(),
@@ -199,6 +230,7 @@ impl WriterAdmission {
             return Err(AdmissionError::QueueFull.into());
         }
         state.queue.push_back(control.id);
+        self.observe("enqueue", control.id, state.owner);
         drop(state);
         let mut ticket = Ticket {
             admission: self.clone(),
@@ -212,6 +244,9 @@ impl WriterAdmission {
             }
             let mut state = self.lock()?;
             if state.quarantined || control.closing.load(Ordering::Acquire) {
+                if state.queue.contains(&control.id) {
+                    self.observe("cancel", control.id, state.owner);
+                }
                 state.queue.retain(|queued| *queued != control.id);
                 self.changed.notify_all();
                 return Err(if state.quarantined {
@@ -227,6 +262,7 @@ impl WriterAdmission {
             {
                 state.queue.pop_front();
                 state.owner = Some(control.id);
+                self.observe("admit", control.id, None);
                 ticket.queued = false;
                 return Ok(Permit {
                     admission: self.clone(),
@@ -247,6 +283,9 @@ impl WriterAdmission {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.queue.contains(&id) {
+            self.observe("cancel", id, state.owner);
+        }
         state.queue.retain(|queued| *queued != id);
         self.changed.notify_all();
     }
@@ -255,12 +294,14 @@ impl WriterAdmission {
         let mut state = self.lock()?;
         if writer && state.owner != Some(control.id) {
             state.quarantined = true;
+            self.observe("invalidation", control.id, state.owner);
             self.changed.notify_all();
             return Err(AdmissionError::Quarantine.into());
         }
         control.settled(writer)?;
         if !writer && state.owner == Some(control.id) {
             state.owner = None;
+            self.observe("release", control.id, None);
         }
         self.changed.notify_all();
         Ok(())

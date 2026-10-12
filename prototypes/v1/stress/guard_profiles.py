@@ -42,6 +42,22 @@ _PROFILES = {
     },
 }
 
+CAPACITY_RATES = (5, 10, 25, 50, 100, 250, 500, 1000)
+CAPACITY_WORKLOADS = ("read", "short_writer", "held_writer", "io_checkpoint")
+for workload in (*CAPACITY_WORKLOADS, "mixed"):
+    for demand in ("equal", "victim"):
+        for rate in CAPACITY_RATES:
+            for concurrency in (1, 2, 4, 8):
+                _PROFILES[f"capacity-{workload}-{demand}-{rate}-c{concurrency}"] = {
+                    "cases": f"capacity_{workload}",
+                    "concurrency": str(concurrency),
+                    "warmup": "2s",
+                    "smoke": "10s",
+                    "measure": "30s",
+                    "offered-rate": str(rate),
+                    "victim-every": "10" if demand == "victim" else "0",
+                }
+
 
 def parameters(name="mixed"):
     if not isinstance(name, str) or name not in _PROFILES:

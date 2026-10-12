@@ -57,6 +57,11 @@ pub enum AuthorityCommand {
     },
     Shutdown,
     GetMetrics,
+    GetCapacityTrace {
+        stream_id: String,
+        after_sequence: u64,
+        max_events: usize,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,6 +85,9 @@ pub enum MaintenanceOperation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionOperation {
+    AppendWal {
+        request: crate::wal::WalAppendRequest,
+    },
     Validate,
     Get {
         key: String,

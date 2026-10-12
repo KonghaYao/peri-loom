@@ -68,6 +68,10 @@ struct Nonce {
 }
 
 impl OwnershipAuthority {
+    pub(crate) fn backend(&self) -> Arc<dyn ObjectStore> {
+        self.store.clone()
+    }
+
     pub fn new(store: Arc<dyn ObjectStore>, clock: Arc<dyn LeaseClock>) -> Arc<Self> {
         Arc::new(Self {
             store,
@@ -91,7 +95,10 @@ impl OwnershipAuthority {
                     self.store.supports_strict_fencing(),
                     "UncertainUnsupported backend may hide unsettled mutation retries"
                 );
-                let backend = backend::NamespaceBackend::new(self.store.clone());
+                let backend = backend::NamespaceBackend::scoped(
+                    self.store.clone(),
+                    identifier.namespace.clone(),
+                );
                 let authority = Authority::open(backend.clone(), identifier.namespace.clone())?;
                 backend.available()?;
                 let snapshot = authority.boot_ownership()?;
@@ -184,6 +191,11 @@ impl OwnershipAuthority {
 
     pub fn grant(&self, request: GrantRequest) -> Result<GrantReply> {
         commands::grant(self, request)
+    }
+
+    pub fn quarantine_database(&self, identifier: &DatabaseId) -> Result<()> {
+        self.service(identifier)?.block();
+        Ok(())
     }
     pub fn renew(&self, request: RenewRequest) -> Result<GrantReply> {
         commands::renew(self, request)

@@ -43,6 +43,14 @@ type Error struct {
 	OutcomeUnknown     bool
 	ExecutionCompleted bool
 	MayHaveCommitted   bool
+	OperationID        string
+	Stage              string
+	BusinessOutcome    string
+	CleanupOutcome     string
+	ExecutionProven    bool
+	Ambiguous          bool
+	Rejected           bool
+	RetryAllowed       bool
 }
 
 func (failure *Error) Error() string {
@@ -74,6 +82,8 @@ type ManagementRequest struct {
 	Subject        string          `json:"subject,omitempty"`
 	ServiceAccount bool            `json:"service_account,omitempty"`
 	ExpiresMS      int64           `json:"expires_ms,omitempty"`
+	OperationID    string          `json:"operation_id,omitempty"`
+	Decision       string          `json:"decision,omitempty"`
 	Quotas         json.RawMessage `json:"quotas,omitempty"`
 }
 
@@ -86,11 +96,27 @@ type envelope struct {
 		Code               string `json:"code"`
 		ExecutionCompleted bool   `json:"execution_completed,omitempty"`
 		MayHaveCommitted   bool   `json:"may_have_committed,omitempty"`
+		OperationID        string `json:"operation_id,omitempty"`
+		Stage              string `json:"stage,omitempty"`
+		BusinessOutcome    string `json:"business_outcome,omitempty"`
+		CleanupOutcome     string `json:"cleanup_outcome,omitempty"`
+		ExecutionProven    bool   `json:"execution_proven,omitempty"`
+		Ambiguous          bool   `json:"ambiguous,omitempty"`
+		Rejected           bool   `json:"rejected,omitempty"`
+		RetryAllowed       bool   `json:"retry_allowed,omitempty"`
+		PossibleCommit     bool   `json:"possible_commit,omitempty"`
+		RPCObservation     *struct {
+			Ambiguous          bool `json:"ambiguous"`
+			Rejected           bool `json:"rejected"`
+			ExecutionCompleted bool `json:"execution_completed"`
+		} `json:"rpc_observation,omitempty"`
 	} `json:"error"`
 }
 
 func safeCode(code string) string {
 	switch code {
+	case "database_isolated", "operation_recorded", "operation_registration_unavailable":
+		return code
 	case "sql_error":
 		return code
 	case "outcome_unknown", "session_moved", "session_unusable", "invalid_request", "invalid_session", "unauthenticated", "unauthorized", "forbidden", "quota_exceeded", "request_limit", "result_limit", "sql_limit", "session_busy", "upstream_rejected", "upstream_unavailable", "placement_unavailable", "metadata_unavailable", "audit_unavailable", "gateway_closing", "operation_incomplete", "token_binding_mismatch", "readonly_placement_required":

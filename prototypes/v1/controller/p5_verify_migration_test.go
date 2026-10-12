@@ -29,7 +29,7 @@ func TestP5VerifyGracefulMigrationCannotACKActiveTransactionThenAdvancesAfterCle
 	database := p5VerifyDatabase("graceful-active-txn")
 	placed, err := control.Place(ctx, database, "local", "writer")
 	if err != nil || placed.DesiredWorker != "verify-a" || placed.Grant == nil {
-		test.Fatalf("initial real placement failed: %v", err)
+		test.Fatalf("initial real placement failed: phase=%s worker=%s grant_present=%t err=%v", placed.Phase, placed.DesiredWorker, placed.Grant != nil, err)
 	}
 	session := cluster.open("verify-a", database)
 	cluster.execute("verify-a", session, "CREATE TABLE records(id INTEGER PRIMARY KEY); INSERT INTO records VALUES(7); BEGIN IMMEDIATE; INSERT INTO records VALUES(999)")

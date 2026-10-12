@@ -183,3 +183,41 @@ func TestSQLWriterWireVersionAndNoFallback(test *testing.T) {
 		test.Fatal("management command moved into v2")
 	}
 }
+
+func TestSQLWriterWriteCursorCommandsReachVersionedWorker(test *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		var envelope struct {
+			Version uint32 `json:"version"`
+			Command struct {
+				Command string `json:"command"`
+			} `json:"command"`
+		}
+		if json.NewDecoder(request.Body).Decode(&envelope) != nil || envelope.Version != 2 || !strings.Contains(envelope.Command.Command, "write_cursor") {
+			test.Error("write cursor did not reach native v2 worker transport")
+		}
+		writer.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+	upstream, err := NewSQLUpstream(map[string]string{"worker": strings.Repeat("t", 32)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	session := strings.Repeat("a", 64)
+	commands := []map[string]any{
+		{"command": "open_write_cursor", "session": session, "sql": "INSERT INTO records VALUES(1) RETURNING id", "args": []sqlArgument{}, "named_args": []namedSQLArgument{}},
+		{"command": "fetch_write_cursor", "session": session, "max_rows": 256},
+		{"command": "close_write_cursor", "session": session},
+	}
+	for _, command := range commands {
+		_, err := upstream.(WriterSQLUpstream).CallWriter(context.Background(), controller.Worker{ID: "worker", Address: server.URL}, "cursor", command, new(any))
+		var failure *SQLRPCError
+		if !errors.As(err, &failure) || !failure.Rejected || failure.Ambiguous {
+			test.Fatalf("cursor transport failed to report worker rejection: %v", err)
+		}
+	}
+	if calls.Load() != int32(len(commands)) {
+		test.Fatalf("write cursor command rejected before worker transport: %d", calls.Load())
+	}
+}

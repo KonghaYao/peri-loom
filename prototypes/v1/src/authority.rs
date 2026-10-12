@@ -4,6 +4,7 @@ mod codec;
 mod migration;
 pub mod ownership;
 mod ownership_view;
+pub(crate) mod request_reads;
 mod semantic;
 pub mod types;
 
@@ -155,6 +156,7 @@ impl Authority {
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
+        let _reads = request_reads::Scope::enter();
         let operation = unique_id()?;
         for _ in 0..128 {
             let current = self.snapshot()?;
@@ -207,12 +209,7 @@ impl Authority {
 
     pub fn upload(&self, bytes: &[u8]) -> Result<ObjectEntry> {
         self.check(MutationStage::Upload)?;
-        let entry = ObjectEntry {
-            blob: unique_id()?,
-            hash: blake3::hash(bytes).to_hex().to_string(),
-            etag: unique_id()?,
-            created_ms: now_ms()?,
-        };
+        let entry = Self::upload_entry(bytes)?;
         self.transact(None, |root| {
             ensure!(
                 !root.blobs.contains_key(&entry.blob) && !root.tombstones.contains_key(&entry.blob),
@@ -222,6 +219,50 @@ impl Authority {
             root.uploads.insert(entry.blob.clone(), entry.clone());
             Ok(())
         })?;
+        self.finish_upload(entry, bytes)
+    }
+
+    fn upload_entry(bytes: &[u8]) -> Result<ObjectEntry> {
+        Ok(ObjectEntry {
+            blob: unique_id()?,
+            hash: blake3::hash(bytes).to_hex().to_string(),
+            etag: unique_id()?,
+            created_ms: now_ms()?,
+        })
+    }
+
+    pub(super) fn upload_wal_pair<Verify>(
+        &self,
+        chunk_bytes: &[u8],
+        index_bytes: &[u8],
+        mut verify: Verify,
+    ) -> Result<(ObjectEntry, ObjectEntry)>
+    where
+        Verify: FnMut(&CatalogRoot) -> Result<()>,
+    {
+        self.check(MutationStage::Upload)?;
+        let chunk = Self::upload_entry(chunk_bytes)?;
+        let index = Self::upload_entry(index_bytes)?;
+        self.transact(None, |root| {
+            verify(root)?;
+            for entry in [&chunk, &index] {
+                ensure!(
+                    !root.blobs.contains_key(&entry.blob)
+                        && !root.tombstones.contains_key(&entry.blob),
+                    "physical instance collision"
+                );
+                root.blobs.insert(entry.blob.clone(), entry.clone());
+                root.uploads.insert(entry.blob.clone(), entry.clone());
+            }
+            Ok(())
+        })?;
+        Ok((
+            self.finish_upload(chunk, chunk_bytes)?,
+            self.finish_upload(index, index_bytes)?,
+        ))
+    }
+
+    fn finish_upload(&self, entry: ObjectEntry, bytes: &[u8]) -> Result<ObjectEntry> {
         let key = self.physical_key(&entry.blob)?;
         self.check(MutationStage::Upload)?;
         if let Err(error) = self.store.put(&key, bytes, PutCondition::Absent) {
@@ -235,6 +276,12 @@ impl Authority {
                 "physical upload content conflict: {error}"
             );
         }
+        request_reads::remember(
+            Arc::as_ptr(&self.store) as *const () as usize,
+            key,
+            &entry,
+            bytes,
+        );
         Ok(entry)
     }
 
@@ -250,6 +297,19 @@ impl Authority {
             "physical blob checksum mismatch"
         );
         Ok(object.bytes)
+    }
+
+    fn read_metadata_blob(&self, entry: &ObjectEntry) -> Result<Vec<u8>> {
+        self.check(MutationStage::Read)?;
+        semantic::validate_entry(entry)?;
+        let backend = Arc::as_ptr(&self.store) as *const () as usize;
+        let key = self.physical_key(&entry.blob)?;
+        if let Some(bytes) = request_reads::get(backend, &key, entry) {
+            return Ok(bytes);
+        }
+        let bytes = self.read_blob(entry)?;
+        request_reads::remember(backend, key, entry, &bytes);
+        Ok(bytes)
     }
 
     fn physical_key(&self, blob: &str) -> Result<String> {

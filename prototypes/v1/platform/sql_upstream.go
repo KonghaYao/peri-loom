@@ -88,7 +88,7 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 	}
 	switch operation {
-	case "open_session", "execute", "query", "close_session":
+	case "open_session", "execute", "query", "statement", "describe", "close_session", "open_read_cursor", "fetch_read_cursor", "close_read_cursor", "open_write_cursor", "fetch_write_cursor", "close_write_cursor":
 		if version == 2 && !writerCommandValid(operation, encoded, fields) {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}

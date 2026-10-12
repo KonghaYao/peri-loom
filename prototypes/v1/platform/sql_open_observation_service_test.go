@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -216,6 +217,42 @@ func TestServiceOpenObserverWriteFailureClosesOnlyConsumer(test *testing.T) {
 	go observation.consume(context.Background(), output)
 	if !observation.stop() || !output.closed.Load() {
 		test.Fatal("failed writer was not closed by consumer")
+	}
+}
+
+func TestServiceOpenObserverWrappedErrorFlags(test *testing.T) {
+	observation := serviceObservationFixture()
+	for flags := 0; flags < 8; flags++ {
+		requestID := fmt.Sprintf("synthetic_flags_%d", flags)
+		ctx := bindSQLOpenObservation(context.Background(), observation.observer, requestID)
+		failure := &SQLRPCError{Ambiguous: flags&1 != 0, Rejected: flags&2 != 0, ExecutionCompleted: flags&4 != 0, cause: errors.New("synthetic private cause")}
+		wrapped := fmt.Errorf("synthetic private wrapper: %w", failure)
+		if returned := observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenTransportFailure, wrapped); returned != wrapped {
+			test.Fatal("observation replaced original error")
+		}
+	}
+	output := &serviceObservationOutput{}
+	go observation.consume(context.Background(), output)
+	if !observation.stop() || !output.closed.Load() {
+		test.Fatal("consumer did not drain and close")
+	}
+	decoder := json.NewDecoder(strings.NewReader(output.String()))
+	for flags := 0; flags < 8; flags++ {
+		var record serviceSQLOpenRecord
+		if err := decoder.Decode(&record); err != nil {
+			test.Fatal(err)
+		}
+		if record.Stream != observation.stream || record.CallSequence != uint64(flags+1) || record.RequestID != fmt.Sprintf("synthetic_flags_%d", flags) || record.Stage != "upstream" || record.Reason != "transport" || record.Classification != "" || !record.RPCError || record.Ambiguous != (flags&1 != 0) || record.Rejected != (flags&2 != 0) || record.ExecutionCompleted != (flags&4 != 0) {
+			test.Errorf("wrapped error flags/correlation lost for flags=%d: %+v", flags, record)
+		}
+	}
+	var stopped serviceSQLOpenRecord
+	if err := decoder.Decode(&stopped); err != nil || stopped.Stream != observation.stream || stopped.Stage != "observer" || stopped.Reason != "bounded_stop" || stopped.Classification != "UNPROVEN" || stopped.RPCError || stopped.Ambiguous || stopped.Rejected || stopped.ExecutionCompleted {
+		test.Fatalf("stop marker gained terminal proof: %+v error=%v", stopped, err)
+	}
+	var extra serviceSQLOpenRecord
+	if err := decoder.Decode(&extra); err != io.EOF || strings.Contains(output.String(), "synthetic private") {
+		test.Fatal("extra record or private cause leaked")
 	}
 }
 

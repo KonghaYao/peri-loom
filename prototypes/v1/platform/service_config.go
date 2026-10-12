@@ -28,6 +28,7 @@ type ServiceConfig struct {
 	WorkerSQLTokens       map[string]string        `json:"worker_sql_tokens"`
 	WorkerKeyTokens       map[string]string        `json:"worker_key_tokens"`
 	WorkerAuthorityTokens map[string]string        `json:"worker_authority_tokens"`
+	OwnedStopProof        *OwnedStopProofConfig    `json:"owned_stop_proof,omitempty"`
 }
 
 func privateBytes(path string, maximum int64) ([]byte, error) {

@@ -63,7 +63,8 @@ class WriterProfileTests(unittest.TestCase):
             self.assertIs(persisted["writer_admission"], enabled)
             self.assertEqual((self.root / name).stat().st_mode & 0o777, 0o600)
         reopened = self.project(enabled)
-        reopened.prepare()
+        with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
+            reopened.prepare()
         self.assertIs(reopened.launch["writer_admission"], enabled)
         self.assertIs(reopened.config["writer_admission"], enabled)
 

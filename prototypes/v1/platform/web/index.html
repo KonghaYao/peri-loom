@@ -1,13 +1,13 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>peri-loom · 数据库控制台</title><link rel="stylesheet" href="/style.css"></head>
-<body>
-<header><span class="brand">peri-loom</span><span class="tag">diskless · segmented · fenced</span><span id="connection">未连接</span></header>
-<main>
-<section class="card auth"><h1>数据库控制台</h1><p>连接真实 Gateway、Go Controller 与 Rust 数据面。凭据只保存在当前页面内存，不写入浏览器存储。</p><label>API Key <input id="credential" type="password" autocomplete="off" placeholder="项目 API Key；全局管理 Key 不允许执行 SQL"></label><button id="connect">连接 / 刷新目录</button><label>数据库 <select id="database"><option value="">请选择</option></select></label><button id="open">打开 SQL 会话</button><button id="close">关闭会话</button><span id="session-state">无会话</span></section>
-<section class="card"><h2>SQL</h2><textarea id="sql" spellcheck="false">SELECT 1;</textarea><div class="actions"><button id="query">Query / 返回行</button><button id="execute">Execute / 显式执行</button><label><input id="stream" type="checkbox">NDJSON 输出</label></div><p class="hint">Query 也可能包含写操作。断线、迁移或未知提交结果不自动重试；请先检查业务幂等键。关闭会话会回滚未提交事务。</p><div id="rows"></div></section>
-<section class="card"><h2>DBA 与恢复</h2><div class="grid"><button data-tool="status">数据库 / WAL / generations</button><button data-tool="schema">Schema browser</button><button data-tool="refs">分支图 / 快照</button><button data-tool="gc-inspect">GC inspection</button><button data-tool="checkpoint">Checkpoint</button><button data-tool="compact">Compact WAL</button></div><div class="actions"><input id="ref-name" placeholder="快照 / 新分支名"><button data-action="snapshot">创建快照</button><button data-action="branch">创建分支</button><button data-action="clone">从快照 Clone</button><button data-action="restore">Restore 快照</button></div><div class="actions"><input id="destination" placeholder="目标 Worker ID"><button data-action="migrate">迁移</button><button data-action="suspend">Suspend</button><button data-action="resume">Resume</button></div><div class="actions"><input id="pitr-sequence" type="number" min="0" placeholder="PITR sequence"><button data-action="pitr">查找恢复点</button><button id="restore-pitr">恢复所选 PITR 点</button><button data-action="gc">GC collect</button><button data-action="delete" class="danger">删除当前分支</button></div><p class="hint">graceful migration / suspend 等待会话与事务结束。请先显式关闭 SQL 会话；恢复 / 删除使用持久化 fencing。PITR 先查找恢复点，再创建该点快照并恢复。</p></section>
-<section class="card"><h2>项目管理</h2><div class="actions"><input id="org" placeholder="Organization ID"><input id="project" placeholder="Project ID"><input id="name" placeholder="数据库 / 显示名称"><input id="region" value="local" placeholder="Region"></div><div class="actions"><button id="create-org">创建 Organization</button><button id="create-project">创建 Project</button><button id="create-db">创建加密数据库</button><button id="create-key">创建项目 API Key</button><button id="token">签发 2 分钟数据库 Token</button><button id="metrics">Gateway metrics</button></div><p class="hint">Organization / Project 创建需要全局管理 Key。新数据库默认原生页加密；KMS 元数据永久保留 namespace 身份。</p></section>
-<section class="card"><h2>真实响应</h2><pre id="output">等待操作…</pre></section>
-</main><script type="module" src="/app.js"></script>
-</body></html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>peri-loom · 数据库控制台</title>
+    <script type="module" crossorigin src="/console.js"></script>
+    <link rel="stylesheet" crossorigin href="/console.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

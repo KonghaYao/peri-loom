@@ -50,6 +50,34 @@ impl FencedStore {
 }
 
 impl ObjectStore for FencedStore {
+    fn append_wal(&self, request: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
+        request.validate()?;
+        ensure!(
+            self.role == AccessRole::Writer
+                && request.namespace == self.binding.database.namespace
+                && request.epoch == self.binding.epoch,
+            "Fenced WAL append identity"
+        );
+        let _ticket = self.service.gate.read()?;
+        self.service.check_binding(&self.binding)?;
+        let store = Arc::new(GatedWalStore {
+            service: self.service.clone(),
+            binding: self.binding.clone(),
+            inner: self.inner.as_ref().unwrap().clone(),
+        });
+        let lsn = crate::wal::RemoteWal::new(store).append_using(
+            request,
+            |record, metadata, expected| {
+                self.inner
+                    .as_ref()
+                    .unwrap()
+                    .publish_wal_append(record, metadata, expected)
+            },
+        )?;
+        self.service.live(&self.binding)?;
+        Ok(Some(lsn))
+    }
+
     fn access_role(&self) -> AccessRole {
         self.role
     }
@@ -101,7 +129,7 @@ impl ObjectStore for FencedStore {
             );
         }
         let _ticket = self.service.gate.read()?;
-        self.service.check_binding(&self.binding)?;
+        self.service.live(&self.binding)?;
         self.inner.as_ref().unwrap().put(key, bytes, condition)
     }
 
@@ -135,5 +163,40 @@ impl Drop for FencedStore {
             }
             drop(self.inner.take());
         }
+    }
+}
+
+struct GatedWalStore {
+    service: Arc<Service>,
+    binding: LeaseBinding,
+    inner: Arc<BranchStore>,
+}
+
+impl ObjectStore for GatedWalStore {
+    fn validate_session(&self) -> Result<()> {
+        self.service.live(&self.binding)?;
+        Ok(())
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.validate_session()?;
+        let result = self.inner.get(key)?;
+        self.validate_session()?;
+        Ok(result)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.validate_session()?;
+        let result = self.inner.put(key, bytes, condition)?;
+        self.validate_session()?;
+        Ok(result)
+    }
+
+    fn delete(&self, _: &str, _: Option<&str>) -> Result<()> {
+        anyhow::bail!("Unauthorized WAL append delete")
+    }
+
+    fn list(&self, _: &str) -> Result<Vec<String>> {
+        anyhow::bail!("Unauthorized WAL append list")
     }
 }

@@ -1,25 +1,15 @@
 # Rust
-/target
+target/
 **/*.rs.bk
 *.pdb
 
-# 本地运行数据 / UDS / 测试产物
-/.local
-/.run
-/data
+# 本地运行数据 / 测试产物
 *.log
-/tmp
-
-# Node / Web
-/web/node_modules
-/web/dist
-/web/.vite
-npm-debug.log*
+raw/
 
 # 环境与密钥
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 *.crt
@@ -30,13 +20,12 @@ secrets/
 .vscode/
 *.swp
 .DS_Store
+.peri/
+docs/v1/evidence/
 
 # 工作流运行时产物
 .claude/workflow-runs/
-deploy/secrets/*.txt
-deploy/secrets/*.key
-deploy/secrets/*.crt
-!deploy/secrets/*.example
+
+# Python / Node
 node_modules
 __pycache__
-raw/

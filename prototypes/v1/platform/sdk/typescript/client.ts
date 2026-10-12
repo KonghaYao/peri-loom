@@ -8,6 +8,8 @@ export interface Options { timeoutMS?: number; maxRequestBytes?: number; maxResp
 export interface ManagementRequest {
   database?: DatabaseID;
   request_id?: string;
+  operation_id?: string;
+  decision?: "retain_isolation_new_database_required";
   project?: string;
   role?: "writer" | "read_only";
   name?: string;
@@ -29,12 +31,61 @@ const label = /^[A-Za-z0-9_-]{1,64}$/;
 const component = /^[A-Za-z0-9_-]{1,128}$/;
 const codes = new Set(["outcome_unknown", "session_moved", "invalid_request", "invalid_session", "unauthenticated", "unauthorized", "forbidden", "quota_exceeded", "request_limit", "result_limit", "sql_limit", "session_busy", "upstream_rejected", "upstream_unavailable", "placement_unavailable", "metadata_unavailable", "audit_unavailable", "gateway_closing", "operation_incomplete", "token_binding_mismatch", "readonly_placement_required"]);
 const operations = new Set(["create", "delete", "snapshot", "branch", "clone", "restore", "restore-point", "pitr", "suspend", "resume", "migrate", "status", "checkpoint", "schema", "gc", "gc-inspect", "refs", "compact", "drop-snapshot", "retain-after", "rewrap"]);
+for (const code of ["session_unusable", "database_isolated", "operation_recorded", "operation_registration_unavailable"]) codes.add(code);
+for (const operation of ["operations", "operations/decision", "operations/clear", "operations/retire-local", "diagnostics"]) operations.add(operation);
 
 export class PeriError extends Error {
-  constructor(public readonly code: string, public readonly requestID: string, public readonly outcomeUnknown = false, public readonly executionCompleted = false, public readonly mayHaveCommitted = false) {
+  readonly operationID?: string;
+  readonly stage?: ErrorStage;
+  readonly businessOutcome?: BusinessOutcome;
+  readonly cleanupOutcome?: CleanupOutcome;
+  readonly executionProven?: boolean;
+  readonly ambiguous?: boolean;
+  readonly rejected?: boolean;
+  readonly retryAllowed?: boolean;
+  readonly possibleCommit?: boolean;
+  readonly rpcObservation?: RPCObservation;
+
+  constructor(public readonly code: string, public readonly requestID: string, public readonly outcomeUnknown = false, public readonly executionCompleted = false, public readonly mayHaveCommitted = false, metadata: ErrorMetadata = {}) {
     super(`peri: ${code} (request ${requestID})`);
     this.name = "PeriError";
+    Object.assign(this, metadata);
   }
+}
+
+export type ErrorStage = "open_session" | "tool_rpc" | "close_session" | "unknown";
+export type BusinessOutcome = "not_proven" | "unknown" | "completed" | "not_executed" | "not_applicable";
+export type CleanupOutcome = "not_proven" | "not_applicable" | "pending" | "unknown" | "completed";
+export interface RPCObservation { ambiguous: boolean; rejected: boolean; executionCompleted: boolean }
+export interface ErrorMetadata {
+  operationID?: string;
+  stage?: ErrorStage;
+  businessOutcome?: BusinessOutcome;
+  cleanupOutcome?: CleanupOutcome;
+  executionProven?: boolean;
+  ambiguous?: boolean;
+  rejected?: boolean;
+  retryAllowed?: boolean;
+  possibleCommit?: boolean;
+  rpcObservation?: RPCObservation;
+}
+
+const errorFields = new Set(["code", "execution_completed", "may_have_committed", "operation_id", "stage", "business_outcome", "cleanup_outcome", "execution_proven", "ambiguous", "rejected", "retry_allowed", "possible_commit", "rpc_observation"]);
+const errorEnums: Record<string, readonly string[]> = {
+  stage: ["open_session", "tool_rpc", "close_session", "unknown"],
+  business_outcome: ["not_proven", "unknown", "completed", "not_executed", "not_applicable"],
+  cleanup_outcome: ["not_proven", "not_applicable", "pending", "unknown", "completed"],
+};
+
+function validFailure(failure: Record<string, unknown>): boolean {
+  if (typeof failure.code !== "string" || Object.keys(failure).some((key) => !errorFields.has(key))) return false;
+  if (failure.operation_id !== undefined && typeof failure.operation_id !== "string") return false;
+  for (const [key, values] of Object.entries(errorEnums)) {
+    if (failure[key] !== undefined && (typeof failure[key] !== "string" || !values.includes(failure[key]))) return false;
+  }
+  if (["execution_completed", "may_have_committed", "execution_proven", "ambiguous", "rejected", "retry_allowed", "possible_commit"].some((key) => failure[key] !== undefined && typeof failure[key] !== "boolean")) return false;
+  const observation = failure.rpc_observation;
+  return observation === undefined || (object(observation) && Object.keys(observation).sort().join(",") === "ambiguous,execution_completed,rejected" && Object.values(observation).every((flag) => typeof flag === "boolean"));
 }
 
 export function randomID(): string {
@@ -113,10 +164,23 @@ export class Client {
       const reply: unknown = parseLosslessJSON(text);
       if (!object(reply) || Object.keys(reply).sort().join(",") !== "error,ok,request_id,result,version" || reply.version !== 1 || reply.request_id !== requestID || typeof reply.ok !== "boolean") throw new PeriError("outcome_unknown", requestID, true);
       if (!reply.ok) {
-        if (!object(reply.error) || typeof reply.error.code !== "string" || reply.result !== null || Object.keys(reply.error).some((key) => !["code", "execution_completed", "may_have_committed"].includes(key)) || [reply.error.execution_completed, reply.error.may_have_committed].some((flag) => flag !== undefined && typeof flag !== "boolean")) throw new PeriError("outcome_unknown", requestID, true);
+        if (!object(reply.error) || typeof reply.error.code !== "string" || !validFailure(reply.error) || reply.result !== null) throw new PeriError("outcome_unknown", requestID, true);
         const code = reply.error.code === "sql_error" || codes.has(reply.error.code) ? reply.error.code : "remote_error";
         if (code === "sql_error" && (reply.error.execution_completed !== true || reply.error.may_have_committed !== true)) throw new PeriError("outcome_unknown", requestID, true);
-        throw new PeriError(code, requestID, code === "outcome_unknown", reply.error.execution_completed === true, reply.error.may_have_committed === true);
+        const failure = reply.error;
+        const observation = failure.rpc_observation as { ambiguous: boolean; rejected: boolean; execution_completed: boolean } | undefined;
+        throw new PeriError(code, requestID, code === "outcome_unknown", failure.execution_completed === true, failure.may_have_committed === true, {
+          operationID: failure.operation_id as string | undefined,
+          stage: failure.stage as ErrorStage | undefined,
+          businessOutcome: failure.business_outcome as BusinessOutcome | undefined,
+          cleanupOutcome: failure.cleanup_outcome as CleanupOutcome | undefined,
+          executionProven: failure.execution_proven as boolean | undefined,
+          ambiguous: failure.ambiguous as boolean | undefined,
+          rejected: failure.rejected as boolean | undefined,
+          retryAllowed: failure.retry_allowed as boolean | undefined,
+          possibleCommit: failure.possible_commit as boolean | undefined,
+          rpcObservation: observation && { ambiguous: observation.ambiguous, rejected: observation.rejected, executionCompleted: observation.execution_completed },
+        });
       }
       if (!response.ok || reply.error !== null) throw new PeriError("outcome_unknown", requestID, true);
       return reply.result;
@@ -147,6 +211,8 @@ export class Client {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new PeriError("invalid_integer", "");
     }
     const requestID = request.request_id ?? randomID();
+    if (request.operation_id !== undefined && (typeof request.operation_id !== "string" || !label.test(request.operation_id))) throw new PeriError("invalid_operation_id", requestID);
+    if (request.decision !== undefined && request.decision !== "retain_isolation_new_database_required") throw new PeriError("invalid_request", requestID);
     return this.call(`/v1/${path}`, requestID, { ...request, request_id: requestID }, signal);
   }
 }

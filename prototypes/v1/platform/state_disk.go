@@ -18,14 +18,15 @@ var ErrStateClosed = errors.New("private state closed")
 var ErrStateUncertain = errors.New("private persistence uncertain; durable verification required")
 
 type durableFile struct {
-	mutex    sync.Mutex
-	path     string
-	lock     *os.File
-	payload  json.RawMessage
-	revision uint64
-	fresh    bool
-	closed   bool
-	poisoned bool
+	mutex     sync.Mutex
+	path      string
+	lock      *os.File
+	payload   json.RawMessage
+	revision  uint64
+	fresh     bool
+	closed    bool
+	poisoned  bool
+	prototype any
 }
 
 type diskEnvelope struct {
@@ -64,7 +65,7 @@ func openDurable(path string, initial any) (*durableFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	disk := &durableFile{path: absolute, lock: lock}
+	disk := &durableFile{path: absolute, lock: lock, prototype: initial}
 	ok := false
 	defer func() {
 		if !ok {
@@ -89,7 +90,7 @@ func openDurable(path string, initial any) (*durableFile, error) {
 	} else {
 		for _, entry := range entries {
 			name := entry.Name()
-			if name == filepath.Base(absolute) || name == filepath.Base(absolute)+".floor" || name == filepath.Base(absolute)+".lock" || (strings.HasPrefix(name, ".private-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular()) {
+			if name == filepath.Base(absolute) || name == filepath.Base(absolute)+".floor" || name == filepath.Base(absolute)+".lock" || name == filepath.Base(absolute)+".pending" || (strings.HasPrefix(name, ".private-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular()) {
 				continue
 			}
 			if strings.HasSuffix(filepath.Base(absolute), ".head") && name == strings.TrimSuffix(filepath.Base(absolute), ".head") {
@@ -97,8 +98,11 @@ func openDurable(path string, initial any) (*durableFile, error) {
 			}
 			return nil, errors.New("unexpected private state file")
 		}
+		if err := recoverDurableCommit(disk); err != nil {
+			return nil, err
+		}
 		var envelope diskEnvelope
-		if err := readPrivate(absolute, &envelope); err != nil {
+		if err := readDurableEnvelope(absolute, &envelope); err != nil {
 			return nil, err
 		}
 		var floor diskFloor
@@ -106,7 +110,7 @@ func openDurable(path string, initial any) (*durableFile, error) {
 			return nil, err
 		}
 		digest := digestHex(envelope.Payload)
-		if envelope.Version != 1 || floor.Version != 1 || envelope.Revision != floor.Revision || envelope.Checksum != digest || floor.Checksum != digest {
+		if !validDurableEnvelope(envelope) || floor.Version != 1 || envelope.Revision != floor.Revision || envelope.Checksum != digest || floor.Checksum != digest {
 			return nil, errors.New("state checksum/rollback/incomplete persistence")
 		}
 		disk.payload = append(json.RawMessage(nil), envelope.Payload...)
@@ -118,16 +122,30 @@ func openDurable(path string, initial any) (*durableFile, error) {
 
 func (disk *durableFile) persist(revision uint64, value any) error {
 	payload, err := json.Marshal(value)
-	if err != nil || len(payload) > 16<<20 {
+	if err != nil || len(payload) > durablePayloadBytes {
 		return errors.New("invalid or oversized private state")
 	}
 	checksum := digestHex(payload)
 	floor, _ := json.Marshal(diskFloor{Version: 1, Revision: revision, Checksum: checksum})
-	envelope, _ := json.Marshal(diskEnvelope{Version: 1, Revision: revision, Checksum: checksum, Payload: payload})
+	after := diskEnvelope{Version: 1, Revision: revision, Checksum: checksum, Payload: payload}
+	envelope, _ := json.Marshal(after)
+	intent := durableCommitIntent{Version: 1, Target: disk.path, After: after}
+	if disk.payload != nil {
+		intent.Before = &diskEnvelope{Version: 1, Revision: disk.revision, Checksum: digestHex(disk.payload), Payload: disk.payload}
+	}
+	if err := validateDurableCommit(intent, disk); err != nil {
+		return err
+	}
+	if err := writeDurableIntent(disk.path, intent); err != nil {
+		return err
+	}
 	if err := atomicPrivate(disk.path+".floor", floor); err != nil {
 		return err
 	}
 	if err := atomicPrivate(disk.path, envelope); err != nil {
+		return err
+	}
+	if err := removeDurableIntent(disk.path); err != nil {
 		return err
 	}
 	disk.revision = revision

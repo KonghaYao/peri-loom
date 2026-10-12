@@ -67,6 +67,17 @@ impl LeaseContext {
             "acquire is awaiting authoritative lease validation"
         );
         if now >= state.deadline_ms {
+            if state.mode != OwnershipMode::Revoked
+                && std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1")
+            {
+                eprintln!(
+                    "NATIVE_LEASE_EXPIRED pid={} now_ms={now} deadline_ms={} mode={:?} binding={}",
+                    std::process::id(),
+                    state.deadline_ms,
+                    state.mode,
+                    serde_json::to_string(&state.binding)?
+                );
+            }
             state.mode = OwnershipMode::Revoked;
         }
         ensure!(
@@ -95,6 +106,11 @@ impl LeaseContext {
             && now >= state.deadline_ms
             && state.mode != OwnershipMode::Detached
         {
+            if state.mode != OwnershipMode::Revoked
+                && std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1")
+            {
+                eprintln!("NATIVE_LEASE_EXPIRED observer=status pid={} now_ms={now} deadline_ms={} mode={:?} binding={}", std::process::id(), state.deadline_ms, state.mode, serde_json::to_string(&state.binding)?);
+            }
             state.mode = OwnershipMode::Revoked;
         }
         Ok(DatabaseOwnership {

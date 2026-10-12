@@ -181,14 +181,14 @@ impl BranchStore {
                 .get(relative)
                 .context("commit chunk missing from candidate catalog")?;
             semantic::registered(root, entry)?;
-            self.authority.read_blob(entry)
+            self.authority.read_metadata_blob(entry)
         })?;
         let previous = root.branches[&self.branch]
             .wal
             .as_ref()
             .map(|entry| {
                 Ok::<_, anyhow::Error>(
-                    semantic::index(&self.authority.read_blob(entry)?)?
+                    semantic::index(&self.authority.read_metadata_blob(entry)?)?
                         .commit
                         .map_or(0, |commit| commit.lsn),
                 )
@@ -223,6 +223,50 @@ impl BranchStore {
                 wal: branch.wal.clone(),
             });
         }
+        Ok(())
+    }
+
+    pub(super) fn publish_wal_append(
+        &self,
+        record: &crate::wal::WalRecord,
+        metadata: &crate::wal::WalMetadata,
+        expected: Option<String>,
+    ) -> Result<()> {
+        ensure!(
+            record.namespace == *self.authority.namespace()
+                && metadata.epoch == record.epoch
+                && metadata.last_lsn == record.lsn,
+            "WAL publication identity mismatch"
+        );
+        let chunk_bytes = serde_json::to_vec(record)?;
+        let hash = blake3::hash(&chunk_bytes).to_hex().to_string();
+        let chunk_key = format!("wal/chunks/{hash}");
+        let index_bytes = serde_json::to_vec(metadata)?;
+        let condition = expected.map_or(PutCondition::Absent, PutCondition::Match);
+        let mut view = self
+            .view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
+        let (chunk, index) =
+            self.authority
+                .upload_wal_pair(&chunk_bytes, &index_bytes, |root| {
+                    Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
+                    self.validate_publication(root, "wal/index", &index_bytes)?;
+                    ensure!(!root.objects.contains_key(&chunk_key), PreconditionFailed);
+                    Ok(())
+                })?;
+        let mut selected = None;
+        self.authority.transact(None, |root| {
+            Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
+            self.validate_publication(root, "wal/index", &index_bytes)?;
+            ensure!(!root.objects.contains_key(&chunk_key), PreconditionFailed);
+            root.objects.insert(chunk_key.clone(), chunk.clone());
+            self.commit_point(root, &index_bytes, &index)?;
+            self.extend_pin(root)?;
+            selected = Some(Self::selected(root, &self.branch)?);
+            Ok(())
+        })?;
+        Self::refresh(&mut view, selected.context("WAL publication view missing")?);
         Ok(())
     }
 }
@@ -273,7 +317,11 @@ impl ObjectStore for BranchStore {
         entry
             .map(|entry| {
                 Ok(StoredObject {
-                    bytes: self.authority.read_blob(&entry)?,
+                    bytes: if matches!(relative, "HEAD" | "wal/index") {
+                        self.authority.read_metadata_blob(&entry)?
+                    } else {
+                        self.authority.read_blob(&entry)?
+                    },
                     etag: entry.etag,
                 })
             })
@@ -287,6 +335,9 @@ impl ObjectStore for BranchStore {
             .lock()
             .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
         let snapshot = self.authority.snapshot()?;
+        if let Some(guard) = &self.authority.guard {
+            guard.validate_root(&snapshot.root, &snapshot.root)?;
+        }
         let branch = self.bound(&snapshot.root)?;
         let current = match relative {
             "HEAD" => branch.head.as_ref(),

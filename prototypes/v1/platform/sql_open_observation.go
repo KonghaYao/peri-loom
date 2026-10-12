@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 )
 
@@ -112,7 +113,8 @@ func observeSQLOpen(ctx context.Context, requestID string, stage sqlOpenObservat
 	case "outcome_unknown", "upstream_rejected", "upstream_unavailable", "sql_error":
 		record.Classification = classification
 	}
-	if failure, ok := cause.(*SQLRPCError); ok && failure != nil {
+	var failure *SQLRPCError
+	if errors.As(cause, &failure) && failure != nil {
 		record.RPCError = true
 		record.Ambiguous = failure.Ambiguous
 		record.Rejected = failure.Rejected

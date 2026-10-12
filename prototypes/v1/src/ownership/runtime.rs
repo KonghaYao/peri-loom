@@ -136,6 +136,24 @@ impl OwnershipRuntime {
         })
     }
 
+    pub fn retirement_health(&self) -> serde_json::Value {
+        self.worker.retirement_health()
+    }
+
+    pub fn capacity_trace_snapshot(&self) -> serde_json::Value {
+        self.worker.capacity_trace_snapshot()
+    }
+
+    pub fn capacity_trace_page(
+        &self,
+        stream_id: &str,
+        after_sequence: u64,
+        max_events: usize,
+    ) -> Result<serde_json::Value> {
+        self.worker
+            .capacity_trace_page(stream_id, after_sequence, max_events)
+    }
+
     pub fn open_session(self: &Arc<Self>, identifier: &DatabaseId) -> Result<OwnedHandle> {
         self.worker.ensure_instance_available(identifier)?;
         let context = self.context(identifier)?;
@@ -226,6 +244,9 @@ impl OwnershipRuntime {
             completed < deadline,
             "lease validation response arrived too late"
         );
+        if std::env::var("PERI_NATIVE_GATE_TRACE").as_deref() == Ok("1") {
+            eprintln!("NATIVE_LEASE_VALIDATED pid={} started_ms={started} completed_ms={completed} deadline_ms={deadline} authority_remaining_ms={} binding={}", std::process::id(), fresh.remaining_ttl_ms, serde_json::to_string(&fresh.binding)?);
+        }
         Ok(deadline)
     }
 

@@ -16,13 +16,20 @@ type offeredJob struct {
 func runPhase(parent context.Context, name, kind, phase string, count int, duration time.Duration, fixtures []*Fixture, settings Settings, artifacts *Artifacts, ids *IDs) PhaseResult {
 	result := PhaseResult{Scenario: name, Phase: phase, Concurrency: count, Status: "COMPLETE", ConfiguredRate: settings.OfferedRate,
 		Errors: map[string]int{}, PerProjectAcked: map[string]int{}, PerProjectOffered: map[string]int{}, ShortGate: settings.Smoke < 10*time.Second || settings.Measure < 30*time.Second}
+	if settings.MatrixConcurrency != 0 {
+		result.Concurrency = settings.MatrixConcurrency
+		result.EffectiveSlots = map[string]int{}
+		for slot := 0; slot < count; slot++ {
+			result.EffectiveSlots[fixtures[slot%len(fixtures)].Target.Project]++
+		}
+	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	dispatch := newPhaseDispatch(ctx, settings.OfferStop)
 	defer dispatch.stopOffers()
-	period := time.Second / time.Duration(settings.OfferedRate)
 	result.RequestedDurationNS = duration.Nanoseconds()
-	result.PlannedOffers = int((duration + period - 1) / period)
+	result.PlannedOffers = plannedOffers(settings, duration)
+	result.EffectiveRate = float64(time.Second) / float64(offerSchedule(settings, 1))
 	result.OperationCapReached = result.PlannedOffers > settings.MaxOperations
 	activeDatabases := map[DatabaseID]bool{}
 	sessions := make([]*Session, count)
@@ -59,6 +66,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 		go func(slot int) {
 			defer workers.Done()
 			fixture, session := fixtures[slot%len(fixtures)], sessions[slot]
+			workflowSequence := 0
 			for {
 				select {
 				case <-settings.OfferStop:
@@ -74,16 +82,38 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 						continue
 					}
 					random := rand.New(rand.NewSource(settings.Seed ^ int64(job.Sequence+1)*6364136223846793005))
-					task := fixture.Model.Task(kind, job.BusinessID, random)
+					taskKind := kind
+					if kind == "held_writer" || kind == "io_checkpoint" {
+						taskKind = "sustained_wal"
+					}
+					task := fixture.Model.Task(taskKind, job.BusinessID, random)
 					if !dispatch.admit() {
 						return
 					}
 					began := time.Now()
-					record := OperationRecord{Type: "operation", Scenario: name, Phase: phase, Sequence: job.Sequence, BusinessID: job.BusinessID,
+					record := OperationRecord{Type: "operation", Scenario: name, Phase: phase, Concurrency: result.Concurrency, Sequence: job.Sequence, BusinessID: job.BusinessID,
 						Project: fixture.Target.Project, Database: fixture.Target.Database, Slot: slot, OfferedAt: job.Offered.UTC().Format(time.RFC3339Nano),
 						StartedAt: began.UTC().Format(time.RFC3339Nano), QueueNS: dequeued.Sub(job.Offered).Nanoseconds(), PrepareNS: began.Sub(dequeued).Nanoseconds()}
-					rows, identifier, failure := phaseSQL(ctx, session, settings.RequestTimeout, task.Query, task.SQL)
-					record.RequestIDs = []string{identifier}
+					var rows [][]any
+					var identifier string
+					var failure *Failure
+					operationContext := ctx
+					if capacityScenario(name) {
+						operationContext = capacityBoundContext(ctx, record)
+					}
+					if kind == "held_writer" || kind == "io_checkpoint" {
+						rows, record.RequestIDs, task.Mutations, failure = capacityWorkflow(operationContext, session, fixture, task, kind, workflowSequence, settings.RequestTimeout)
+						if kind == "held_writer" && failure == nil {
+							record.Terminal = "COMMIT"
+							if workflowSequence%2 == 1 {
+								record.Terminal = "ROLLBACK"
+							}
+						}
+						workflowSequence++
+					} else {
+						rows, identifier, failure = phaseSQL(operationContext, session, settings.RequestTimeout, task.Query, task.SQL)
+						record.RequestIDs = []string{identifier}
+					}
 					if task.Flow == "rollback" && failure == nil {
 						rows, identifier, failure = phaseSQL(ctx, session, settings.RequestTimeout, true, "SELECT count(*) FROM "+fixture.Model.Table("probe")+" WHERE id='"+job.BusinessID+"'")
 						record.RequestIDs = append(record.RequestIDs, identifier)
@@ -126,7 +156,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			}
 		}()
 		for sequence := 0; sequence < settings.MaxOperations; sequence++ {
-			intended := started.Add(time.Duration(sequence) * period)
+			intended := started.Add(offerSchedule(settings, sequence))
 			if !intended.Before(deadline) {
 				break
 			}
@@ -146,6 +176,9 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 				break
 			}
 			slot := sequence % count
+			if capacityScenario(name) {
+				slot = capacitySlot(sequence, count, fixtures, settings.VictimEvery)
+			}
 			fixture := fixtures[slot%len(fixtures)]
 			result.Offered++
 			result.PerProjectOffered[fixture.Target.Project]++
@@ -154,7 +187,7 @@ func runPhase(parent context.Context, name, kind, phase string, count int, durat
 			case jobs[slot] <- job:
 			default:
 				result.ClientAdmissionDropped++
-				if artifacts.Record(map[string]any{"type": "client_admission_drop", "scenario": name, "phase": phase, "offered_sequence": sequence, "business_operation_id": job.BusinessID, "project": fixture.Target.Project, "observed_at": job.Offered.UTC().Format(time.RFC3339Nano)}) != nil {
+				if artifacts.Record(map[string]any{"type": "client_admission_drop", "scenario": name, "phase": phase, "concurrency": result.Concurrency, "offered_sequence": sequence, "business_operation_id": job.BusinessID, "project": fixture.Target.Project, "observed_at": job.Offered.UTC().Format(time.RFC3339Nano)}) != nil {
 					schedulerFailure <- struct{}{}
 					cancel()
 					return

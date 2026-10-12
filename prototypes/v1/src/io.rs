@@ -56,6 +56,10 @@ struct State {
 }
 
 impl RemoteIO {
+    pub(crate) fn native_health(&self) -> serde_json::Value {
+        self.native.health()
+    }
+
     pub fn open(
         store: Arc<dyn ObjectStore>,
         namespace: Namespace,
