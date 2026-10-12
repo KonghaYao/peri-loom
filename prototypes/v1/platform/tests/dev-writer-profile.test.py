@@ -35,11 +35,12 @@ class WriterProfileTests(unittest.TestCase):
         self.processes.start()
         self.addCleanup(self.processes.stop)
 
-    def project(self, enabled, backend="local", worker_max_request_bytes=512 * 1024):
+    def project(self, enabled, backend="local", worker_max_request_bytes=512 * 1024, sql_max_duration_ms=5000):
         return dev.Project(argparse.Namespace(
             run_dir=str(self.root), no_build=True, backend=backend,
             listen="127.0.0.1:19443", tls=False, writer_admission=enabled,
             worker_max_request_bytes=worker_max_request_bytes,
+            sql_max_duration_ms=sql_max_duration_ms,
         ))
 
     def parse_and_prepare(self, enabled):
@@ -80,6 +81,13 @@ class WriterProfileTests(unittest.TestCase):
         original.prepare()
         self.assertEqual(original.launch["worker_max_request_bytes"], 16 * 1024 * 1024)
         with self.assertRaisesRegex(RuntimeError, "worker request limit cannot be silently rebound"):
+            self.project(False).prepare()
+
+    def test_sql_duration_limit_persists_and_cannot_rebind(self):
+        original = self.project(False, sql_max_duration_ms=20000)
+        original.prepare()
+        self.assertEqual(original.launch["sql_max_duration_ms"], 20000)
+        with self.assertRaisesRegex(RuntimeError, "SQL duration limit cannot be silently rebound"):
             self.project(False).prepare()
 
     def test_existing_run_directory_rejects_profile_rebind(self):

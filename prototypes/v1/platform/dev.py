@@ -197,6 +197,9 @@ class Project:
         worker_request_bytes = getattr(self.arguments, "worker_max_request_bytes", 512 * 1024)
         if not 1 <= worker_request_bytes <= 32 * 1024 * 1024:
             raise RuntimeError("worker request limit must be between 1 and 33554432 bytes")
+        sql_duration_ms = getattr(self.arguments, "sql_max_duration_ms", 5000)
+        if not 1 <= sql_duration_ms < 30000:
+            raise RuntimeError("SQL duration limit must be between 1 and 29999 milliseconds")
         if observer and (pathlib.Path(self.arguments.run_dir).is_symlink() or self.directory.is_symlink() or self.directory.exists() and (not self.directory.is_dir() or any(self.directory.iterdir()))):
             raise RuntimeError("SQL open observer requires a fresh empty runtime")
         private_directory(self.directory)
@@ -222,6 +225,8 @@ class Project:
                 raise RuntimeError("existing writer admission profile cannot be silently rebound")
             if self.launch.get("worker_max_request_bytes", 512 * 1024) != worker_request_bytes:
                 raise RuntimeError("existing worker request limit cannot be silently rebound")
+            if self.launch.get("sql_max_duration_ms", 5000) != sql_duration_ms:
+                raise RuntimeError("existing SQL duration limit cannot be silently rebound")
             if self.arguments.backend == "s3" and self.launch.get("storage_identity") != storage_identity("s3"):
                 raise RuntimeError("existing S3 storage identity cannot be silently rebound")
             self.config = json.loads((self.directory / "platform.json").read_text())
@@ -236,6 +241,7 @@ class Project:
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
         self.launch["writer_admission"] = self.arguments.writer_admission
         self.launch["worker_max_request_bytes"] = worker_request_bytes
+        self.launch["sql_max_duration_ms"] = sql_duration_ms
         self.launch["sql_open_observer"] = observer
         worker_auth = {}
         worker_config = []
@@ -400,6 +406,7 @@ class Project:
             environment.update({"PERI_WORKER_AUTHORITY_TOKEN": worker["authority_token"], "PERI_WORKER_CONTROL_TOKEN": worker["control_token"], "PERI_WORKER_SQL_TOKEN": worker["sql_token"], "PERI_WORKER_KEY_TOKEN": worker["key_token"], "PERI_KMS_ENDPOINT": "http://" + self.config["broker_listen"]})
             environment["PERI_WORKER_WRITER_PROFILE"] = "1" if self.arguments.writer_admission else "0"
             environment["PERI_WORKER_MAX_REQUEST_BYTES"] = str(self.launch["worker_max_request_bytes"])
+            environment["PERI_SQL_MAX_DURATION_MS"] = str(self.launch["sql_max_duration_ms"])
             self.start(identity, [str(self.rust), "owned-worker", "http://" + self.launch["authority"], worker["cache"], identity, worker["address"]], environment)
         self.start_maintenance()
         scheme = "https://" if self.arguments.tls else "http://"
@@ -502,6 +509,7 @@ def main():
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--writer-admission", action="store_true")
     parser.add_argument("--worker-max-request-bytes", type=int, default=512 * 1024)
+    parser.add_argument("--sql-max-duration-ms", type=int, default=5000)
     parser.add_argument("--sql-open-observer", action="store_true")
     parser.add_argument("--stop-worker", choices=("worker-a", "worker-b"))
     arguments = parser.parse_args()
