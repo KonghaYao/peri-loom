@@ -199,6 +199,35 @@ impl RemoteStore {
 }
 
 impl ObjectStore for RemoteStore {
+    fn upload_segments(&self, segments: &[Vec<u8>]) -> Result<Vec<crate::authority::ObjectEntry>> {
+        super::protocol::validate_segment_batch(segments)?;
+        ensure!(self.role == AccessRole::Writer, "ReadOnly");
+        let entries: Vec<crate::authority::ObjectEntry> =
+            serde_json::from_value(self.call(SessionOperation::UploadSegments {
+                segments: segments.to_vec(),
+            })?)?;
+        ensure!(
+            entries.len() == segments.len()
+                && entries.iter().zip(segments).all(|(entry, bytes)| {
+                    entry.hash == crate::manifest::digest(bytes)
+                        && crate::manifest::valid_hash(&entry.blob)
+                        && crate::manifest::valid_hash(&entry.etag)
+                }),
+            "invalid segment upload response"
+        );
+        Ok(entries)
+    }
+
+    fn register_segments(&self, entries: &[crate::authority::ObjectEntry]) -> Result<()> {
+        super::protocol::validate_registration_batch(entries)?;
+        ensure!(self.role == AccessRole::Writer, "ReadOnly");
+        let reply = self.call(SessionOperation::RegisterSegments {
+            entries: entries.to_vec(),
+        })?;
+        ensure!(reply.is_null(), "invalid segment registration response");
+        Ok(())
+    }
+
     fn append_wal(&self, request: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
         request.validate()?;
         ensure!(

@@ -21,6 +21,10 @@ use super::protocol::{
 };
 use super::startup::AuthorityStartup;
 
+#[cfg(test)]
+#[path = "batch_tests.rs"]
+mod batch_tests;
+
 pub struct Server {
     listener: TcpListener,
     state: Arc<State>,
@@ -415,6 +419,25 @@ impl State {
                 ensure!(&selected.worker_id == worker, "Unauthorized session");
                 let _dispatch = selected.scope.dispatch()?;
                 match operation {
+                    SessionOperation::UploadSegments { segments } => {
+                        super::protocol::validate_segment_batch(&segments)?;
+                        ensure!(
+                            selected.store.access_role() == AccessRole::Writer,
+                            "ReadOnly"
+                        );
+                        Ok(serde_json::to_value(
+                            selected.store.upload_segments(&segments)?,
+                        )?)
+                    }
+                    SessionOperation::RegisterSegments { entries } => {
+                        super::protocol::validate_registration_batch(&entries)?;
+                        ensure!(
+                            selected.store.access_role() == AccessRole::Writer,
+                            "ReadOnly"
+                        );
+                        selected.store.register_segments(&entries)?;
+                        Ok(Value::Null)
+                    }
                     SessionOperation::AppendWal { request } => {
                         request.validate()?;
                         ensure!(

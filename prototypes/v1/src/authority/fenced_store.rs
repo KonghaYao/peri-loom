@@ -50,6 +50,26 @@ impl FencedStore {
 }
 
 impl ObjectStore for FencedStore {
+    fn upload_segments(&self, segments: &[Vec<u8>]) -> Result<Vec<crate::authority::ObjectEntry>> {
+        crate::authority_rpc::protocol::validate_segment_batch(segments)?;
+        ensure!(self.role == AccessRole::Writer, "ReadOnly");
+        let _ticket = self.service.gate.read()?;
+        self.service.check_binding(&self.binding)?;
+        self.service
+            .scoped(super::Permission::Session(self.binding.clone(), self.role))
+            .upload_segments(segments)
+    }
+
+    fn register_segments(&self, entries: &[crate::authority::ObjectEntry]) -> Result<()> {
+        crate::authority_rpc::protocol::validate_registration_batch(entries)?;
+        ensure!(self.role == AccessRole::Writer, "ReadOnly");
+        let _ticket = self.service.gate.read()?;
+        self.service.check_binding(&self.binding)?;
+        self.service
+            .scoped(super::Permission::Session(self.binding.clone(), self.role))
+            .register_segments(entries)
+    }
+
     fn append_wal(&self, request: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
         request.validate()?;
         ensure!(

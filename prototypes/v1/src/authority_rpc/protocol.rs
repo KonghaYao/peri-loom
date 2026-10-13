@@ -8,6 +8,29 @@ use crate::runtime::DatabaseId;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_RPC_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_SEGMENT_BATCH: usize = 16;
+
+pub fn validate_segment_batch(segments: &[Vec<u8>]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !segments.is_empty()
+            && segments.len() <= MAX_SEGMENT_BATCH
+            && segments
+                .iter()
+                .all(|segment| segment.len() == crate::manifest::SEGMENT_SIZE),
+        "invalid segment upload batch"
+    );
+    Ok(())
+}
+
+pub fn validate_registration_batch(
+    entries: &[crate::authority::ObjectEntry],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !entries.is_empty() && entries.len() <= MAX_SEGMENT_BATCH,
+        "invalid segment registration batch"
+    );
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +108,12 @@ pub enum MaintenanceOperation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionOperation {
+    UploadSegments {
+        segments: Vec<Vec<u8>>,
+    },
+    RegisterSegments {
+        entries: Vec<crate::authority::ObjectEntry>,
+    },
     AppendWal {
         request: crate::wal::WalAppendRequest,
     },

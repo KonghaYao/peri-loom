@@ -48,6 +48,14 @@ impl std::fmt::Display for PreconditionFailed {
 impl std::error::Error for PreconditionFailed {}
 
 pub trait ObjectStore: Send + Sync {
+    fn upload_segments(&self, _: &[Vec<u8>]) -> Result<Vec<crate::authority::ObjectEntry>> {
+        anyhow::bail!("batched segment upload unavailable")
+    }
+
+    fn register_segments(&self, _: &[crate::authority::ObjectEntry]) -> Result<()> {
+        anyhow::bail!("batched segment registration unavailable")
+    }
+
     fn append_wal(&self, _: &crate::wal::WalAppendRequest) -> Result<Option<u64>> {
         Ok(None)
     }
