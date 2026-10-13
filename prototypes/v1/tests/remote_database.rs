@@ -1,15 +1,58 @@
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use peri_loom_v1::database::RemoteDatabase;
+use peri_loom_v1::manifest::{digest, Manifest, SEGMENT_SIZE};
 use peri_loom_v1::namespace::Namespace;
 use peri_loom_v1::object_store::{
     LocalObjectStore, ObjectStore, PreconditionFailed, PutCondition, StoredObject,
 };
 use peri_loom_v1::wal::{DurableWal, RemoteWal, WalBatch, WalOperation};
 use turso_core::Value;
+
+fn seed_rollback_image(store: &dyn ObjectStore, directory: &Path) -> Result<()> {
+    let source = directory.join("imported.db");
+    let output = Command::new("sqlite3")
+        .arg("-cmd")
+        .arg(".filectrl reserve_bytes 48")
+        .arg(&source)
+        .arg("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO items VALUES(1, 'imported');")
+        .output()?;
+    ensure!(output.status.success(), "SQLite fixture creation failed");
+    let bytes = std::fs::read(&source)?;
+    ensure!(bytes[18..21] == [1, 1, 48], "invalid SQLite fixture header");
+    let mut manifest = Manifest {
+        logical_db_size: bytes.len() as u64,
+        ..Manifest::default()
+    };
+    for (index, segment) in bytes.chunks(SEGMENT_SIZE).enumerate() {
+        let mut payload = vec![0; SEGMENT_SIZE];
+        payload[..segment.len()].copy_from_slice(segment);
+        let hash = digest(&payload);
+        store.put(
+            &namespace().key(&format!("segments/{hash}"))?,
+            &payload,
+            PutCondition::Absent,
+        )?;
+        manifest.segments.insert(index as u64, hash);
+    }
+    let serialized = serde_json::to_vec(&manifest)?;
+    let identifier = digest(&serialized);
+    store.put(
+        &namespace().key(&format!("manifests/{identifier}"))?,
+        &serialized,
+        PutCondition::Absent,
+    )?;
+    store.put(
+        &namespace().key("HEAD")?,
+        &serde_json::to_vec(&serde_json::json!({"manifest":identifier}))?,
+        PutCondition::Absent,
+    )?;
+    Ok(())
+}
 
 fn namespace() -> Namespace {
     Namespace::new("tenant", "database").unwrap()
@@ -25,6 +68,48 @@ fn count(database: &RemoteDatabase) -> Result<i64> {
         Value::Numeric(turso_core::Numeric::Integer(value)) => Ok(*value),
         other => bail!("unexpected count {other:?}"),
     }
+}
+
+#[test]
+fn imported_rollback_image_accepts_a_write_and_survives_cold_reopen() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let source = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(LocalObjectStore::open(objects.path())?);
+    seed_rollback_image(store.as_ref(), source.path())?;
+    let database = open(store.clone(), cache.path())?;
+    assert_eq!(count(&database)?, 1);
+    database.execute("INSERT INTO items VALUES(2, 'written')")?;
+    assert_eq!(count(&database)?, 2);
+    drop(database);
+    cache.close()?;
+    let fresh = tempfile::tempdir()?;
+    assert_eq!(count(&open(store, fresh.path())?)?, 2);
+    Ok(())
+}
+
+#[test]
+fn imported_header_publication_failure_does_not_expose_an_unpublished_write() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let source = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(FaultStore {
+        inner: LocalObjectStore::open(objects.path())?,
+        mode: AtomicU8::new(0),
+    });
+    seed_rollback_image(store.as_ref(), source.path())?;
+    let head = store.get(&namespace().key("HEAD")?)?.unwrap().bytes;
+    store.mode.store(4, Ordering::SeqCst);
+    assert!(open(store.clone(), cache.path()).is_err());
+    assert_eq!(store.get(&namespace().key("HEAD")?)?.unwrap().bytes, head);
+    cache.close()?;
+    store.mode.store(0, Ordering::SeqCst);
+    let fresh = tempfile::tempdir()?;
+    let database = open(store.clone(), fresh.path())?;
+    assert_eq!(count(&database)?, 1);
+    database.execute("INSERT INTO items VALUES(2, 'written')")?;
+    assert_eq!(count(&database)?, 2);
+    Ok(())
 }
 
 #[test]
@@ -73,6 +158,9 @@ impl ObjectStore for FaultStore {
     }
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
         let mode = self.mode.load(Ordering::SeqCst);
+        if key.ends_with("HEAD") && mode == 4 {
+            bail!("injected bootstrap HEAD publication failure");
+        }
         if key.ends_with("wal/index") && mode == 1 {
             bail!(PreconditionFailed);
         }

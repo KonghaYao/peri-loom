@@ -139,6 +139,9 @@ impl Diagnostics {
             cause_class: classify(error),
             execution_completed: super::outcome::execution_completed(error),
             native_cause_class: match action {
+                Action::Execute | Action::Query if !super::outcome::execution_completed(error) => {
+                    Some(classify_source(error))
+                }
                 Action::Execute | Action::Query => None,
                 Action::Checkpoint | Action::Compact => Some(
                     if error.root_cause().to_string()
@@ -303,9 +306,10 @@ mod tests {
             .record(Action::Execute, "same-request", &error)
             .unwrap();
         let value: Value = serde_json::from_slice(&record)?;
-        assert_eq!(value.as_object().unwrap().len(), 5);
+        assert_eq!(value.as_object().unwrap().len(), 6);
         assert_eq!(value["event"], "native_sql_unsettled_outcome");
         assert_eq!(value["cause_class"], "outcome_unsettled");
+        assert_eq!(value["native_cause_class"], "busy");
         assert_eq!(value["execution_completed"], false);
         assert!(!String::from_utf8(record)?.contains("private SQL"));
         Ok(())

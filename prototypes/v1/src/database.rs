@@ -131,7 +131,7 @@ impl RemoteDatabase {
         let admission = Arc::new(WriterAdmission::default());
         let lane = Arc::new(SessionLane::new(connection, &admission)?);
         let lanes = Mutex::new(vec![Arc::downgrade(&lane)]);
-        Ok(Self {
+        let database = Self {
             key,
             lane,
             lanes,
@@ -142,7 +142,12 @@ impl RemoteDatabase {
             operations: RwLock::new(()),
             io,
             admission,
-        })
+        };
+        if !readonly {
+            database.query("SELECT name FROM sqlite_master LIMIT 1")?;
+            database.io.publish_open_header()?;
+        }
+        Ok(database)
     }
 
     fn connect(

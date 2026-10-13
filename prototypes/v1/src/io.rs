@@ -163,6 +163,25 @@ impl RemoteIO {
         self.shared.check_writer()
     }
 
+    pub(crate) fn publish_open_header(&self) -> Result<()> {
+        let mut state = self.shared.lock()?;
+        if !state.dirty {
+            return Ok(());
+        }
+        ensure!(
+            !state.publication_failed
+                && !state.wal_failed
+                && state.position.is_none()
+                && state.batch.operations.is_empty()
+                && state.bytes.len() <= 32
+                && state.lsn == self.shared.storage.manifest().applied_lsn,
+            "database open has uncommitted WAL or an unsettled publication"
+        );
+        self.shared
+            .publish(&mut state)
+            .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))
+    }
+
     pub(crate) fn check_compaction(&self) -> Result<()> {
         let state = self.shared.lock()?;
         ensure!(
