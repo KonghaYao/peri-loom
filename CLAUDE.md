@@ -29,7 +29,7 @@ V1 的运行与安全边界见 `prototypes/v1/README.md` 和 `prototypes/v1/plat
 2. 平台对外接口的 turso serverless sdk 兼容一定要做好
 3. 平台自身的 serverless 能力，diskless 能力一定要保证好
 
-> 红线 2 的历史实现（Hrana v2/v3 适配层）随旧平台一起移除，当前无实现；是否在 v1 补齐、以何种协议承接，尚未决策。
+> v1 已包含默认关闭的实验性 Hrana HTTP/WS 适配；已测试的 SDK/协议范围及未证实的边界见 `prototypes/v1/platform/README.md`，不要宣称完整 Hrana 兼容。
 
 ## 命令
 
@@ -54,12 +54,12 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 
 1. **仓库根没有 Rust workspace** —— 所有 cargo 命令必须带 `--manifest-path prototypes/v1/Cargo.toml`
    （或 `prototypes/p0/Cargo.toml`）。直接跑 `cargo check` 会报 no manifest。
-2. **Turso fork 是 submodule 且未 push** —— `prototypes/p0/turso` 的提交只存在于本地（R01 未完成）。
-   首次构建前 `git submodule update --init prototypes/p0/turso`；远端 fresh clone 目前拿不到 fork 内容。
+2. **Turso fork 是固定 submodule** —— 当前 gitlink 为 `d0c23d6a16f457d382059a84f84f9c4463c85a84`，远端已可获取。
+   首次构建前 `git submodule update --init prototypes/p0/turso`，不要自行移动 gitlink。
 3. **Go 测试依赖已构建的 Rust 二进制** —— 只跑 Go 侧测试要显式给 `PERI_RUST_BINARY`；
    省略时按默认路径 `prototypes/v1/target/debug/peri-loom-v1` 查找，未构建则失败。
-4. **不要清除 ownership dirty marker 强启** —— 复用同一 run 目录可干净重启；但 dirty marker 存在时
-   服务 fail-closed 是设计行为，不是故障。只允许在独占文件锁下前滚已验证的 commit intent
+4. **不要清除 ownership dirty marker 强启** —— 当前 launcher 即使 stop proof 完整也拒绝复用旧 run 目录；
+   dirty marker 存在时服务 fail-closed 是设计行为，不是故障。只允许在独占文件锁下前滚已验证的 commit intent
    （见 `prototypes/v1/platform/README.md`）。
 
 ## 架构边界
@@ -87,8 +87,12 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 - **SQL 兼容标准**（2026-10-10 用户改定）：停止官方 SQLite 原始测试，以 TursoDB 自带测试为准
   （`prototypes/p0/turso` 的 `sqlite-sqltests` / `turso-sqltests`，Rust 后端）。固定 64 MiB hash
   预算、禁用快照更新；跑门禁时不要自行改预算或启用快照更新，结果不可与既有门禁数字混用。
-- **当前未修问题，不可宣称全绿**：R21（PK 与同列不同 COLLATE 的自动 UNIQUE 被合并 / 丢弃，
-  会错误允许冲突写入）、view rename（唯一 FAIL）、默认预算 12 项 plan snapshot mismatch。
+- **SQL 门禁不可宣称全绿**：R21 与 view rename 已有修复代码和回归用例，仍须按固定 64 MiB
+  hash 预算重测；分别记录 SQL 结果、约束与 plan snapshot 差异，不自行更新快照。
+- **当前交付缺口**：同一持久卷正常重启仍被 launcher 拒绝；审计文件超过 64 MiB 仍需安全容量治理；
+  原数据库在 Unknown 后仍需有证明条件的恢复路径。本轮已修复可信 SQL 回执被审计失败改写为 Unknown，
+  但不等于审计容量已解决。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestGatewayAudit|TestGatewayRealAuditFailure' -count=1`。
+  下一项：正常重启的锁、clean proof 与持久身份轮换。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
 

@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -205,7 +206,7 @@ func TestGatewayDBTokenPlacementIncarnationCheckClosesStateUpdateWindow(test *te
 	}
 }
 
-func TestGatewayAuditAfterCommitFailurePoisonsAndRedacts(test *testing.T) {
+func TestGatewayAuditAfterCommitFailurePreservesKnownExecutionAndRedacts(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
 	fixture.audit.mu.Lock()
@@ -213,8 +214,24 @@ func TestGatewayAuditAfterCommitFailurePoisonsAndRedacts(test *testing.T) {
 	fixture.audit.mu.Unlock()
 	privateSQL := "COMMIT; private SQL marker"
 	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/execute", map[string]any{"session": session, "sql": privateSQL, "request_id": "audit-commit"})
-	if gatewayCode(test, response) != "outcome_unknown" || fixture.upstream.count("execute") != 1 {
-		test.Fatal("audit error pretended SQL rolled back")
+	if response.Code != 503 || gatewayCode(test, response) != "audit_unavailable" || fixture.upstream.count("execute") != 1 {
+		test.Fatal("audit error lost the known SQL result")
+	}
+	if !strings.Contains(response.Body.String(), `"execution_completed":true`) || !strings.Contains(response.Body.String(), `"retry_allowed":false`) {
+		test.Fatal("client did not receive the known execution outcome")
+	}
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	var completed bool
+	for _, record := range state.Operations {
+		if record.RequestID == "audit-commit" {
+			completed = record.State == "terminal" && record.BusinessOutcome == "completed" && record.ExecutionProven
+		}
+	}
+	if !completed {
+		test.Fatal("audit failure quarantined a proven completion")
 	}
 	fixture.audit.mu.Lock()
 	encoded, _ := json.Marshal(fixture.audit.events)
@@ -222,7 +239,42 @@ func TestGatewayAuditAfterCommitFailurePoisonsAndRedacts(test *testing.T) {
 	if strings.Contains(string(encoded), privateSQL) || strings.Contains(string(encoded), fixture.tokenA) || strings.Contains(response.Body.String(), fixture.tokenA) {
 		test.Fatal("audit or response leaked SQL/credential")
 	}
-	if fixture.gateway.Metrics()["unknown_held_permits"] != 1 {
-		test.Fatal("audit unknown permit released")
+	if fixture.gateway.Metrics()["unknown_held_permits"] != 0 {
+		test.Fatal("audit failure retained a known-result permit")
+	}
+	fixture.audit.mu.Lock()
+	fixture.audit.failAction = ""
+	fixture.audit.mu.Unlock()
+	if next := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"}); next.Code != 200 {
+		test.Fatal("audit failure poisoned a healthy session")
+	}
+}
+
+func TestGatewayAuditFailureDoesNotClearUnknownExecution(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	fixture.upstream.mu.Lock()
+	fixture.upstream.hook = func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "execute" {
+			return nil, errors.New("ambiguous transport")
+		}
+		return nil, nil
+	}
+	fixture.upstream.mu.Unlock()
+	fixture.audit.mu.Lock()
+	fixture.audit.failAction = "execute"
+	fixture.audit.mu.Unlock()
+	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/execute", map[string]any{"session": session, "sql": "INSERT INTO t VALUES (1)"})
+	if gatewayCode(test, response) != "outcome_unknown" || fixture.gateway.Metrics()["unknown_held_permits"] != 1 {
+		test.Fatal("audit failure erased an actual ambiguous execution")
+	}
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, record := range state.Operations {
+		if record.Action == "execute" && record.State != "quarantined" {
+			test.Fatal("ambiguous execution was not isolated")
+		}
 	}
 }

@@ -163,12 +163,12 @@ func TestGatewayRealAuditFailureStillFailClosed(test *testing.T) {
 				return
 			}
 			response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/execute", map[string]any{"session": session, "sql": "COMMIT"})
-			if response.Code != 502 || gatewayCode(test, response) != "outcome_unknown" || fixture.upstream.count("execute") != 1 || fixture.gateway.Metrics()["unknown_held_permits"] != 1 {
-				test.Fatal("real post-SQL audit failure lost conservative unknown outcome")
+			if response.Code != 503 || gatewayCode(test, response) != "audit_unavailable" || fixture.upstream.count("execute") != 1 || fixture.gateway.Metrics()["unknown_held_permits"] != 0 {
+				test.Fatal("real post-SQL audit failure lost known execution outcome")
 			}
 			response = gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
-			if response.Code == 200 || fixture.upstream.count("query") != 0 {
-				test.Fatal("actual audit failure did not poison session")
+			if response.Code != 503 || gatewayCode(test, response) != "audit_unavailable" || fixture.upstream.count("query") != 1 {
+				test.Fatal("audit outage confused session health with audit availability")
 			}
 		})
 	}

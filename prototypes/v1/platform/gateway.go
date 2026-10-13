@@ -41,20 +41,21 @@ type gatewaySession struct {
 }
 
 type gatewayResult struct {
-	status               int
-	code                 string
-	value                any
-	dispatched           bool
-	session              *gatewaySession
-	finish               func()
-	stream               []byte
-	permit               *admissionPermit
-	rpc                  *SQLRPCError
-	operationID          string
-	operationStage       string
-	operationDatabase    controller.DatabaseID
-	operationPending     bool
-	operationObservation *OperationStatus
+	status                  int
+	code                    string
+	value                   any
+	dispatched              bool
+	session                 *gatewaySession
+	finish                  func()
+	stream                  []byte
+	permit                  *admissionPermit
+	rpc                     *SQLRPCError
+	operationID             string
+	operationStage          string
+	operationDatabase       controller.DatabaseID
+	operationPending        bool
+	operationObservation    *OperationStatus
+	auditExecutionCompleted bool
 }
 
 func NewGateway(config GatewayConfig) (*Gateway, error) {

@@ -106,6 +106,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		if permit != nil {
 			defer permit.finish()
 		}
+		if result.operationPending {
+			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
+		}
 		outcome := result.code
 		if outcome == "" {
 			outcome = "ok"
@@ -118,24 +121,13 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			event.Database = result.session.database.Key()
 		}
 		if auditErr := gateway.config.Audit.Record(event); auditErr != nil {
-			if result.dispatched && action != "close" {
-				result.code = "outcome_unknown"
-				result.status = 502
-				result.value = nil
-				result.stream = nil
-				if result.session != nil {
-					result.session.poisoned = true
-				}
-				permit.retain()
-			} else {
+			if result.code != "outcome_unknown" {
+				result.auditExecutionCompleted = result.dispatched && (result.code == "" || result.code == "sql_error" || result.code == "result_limit")
 				result.code = "audit_unavailable"
 				result.status = 503
 				result.value = nil
 				result.stream = nil
 			}
-		}
-		if result.operationPending {
-			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
 		}
 		gateway.counters.observe(action, result.code, time.Since(started))
 		gateway.writeResponse(writer, identifier, result)
@@ -367,6 +359,11 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 		}
 		if result.code == "result_limit" && result.dispatched {
 			failure["execution_completed"] = true
+		}
+		if result.code == "audit_unavailable" && result.auditExecutionCompleted {
+			failure["execution_completed"] = true
+			failure["operation_id"] = result.operationID
+			failure["retry_allowed"] = false
 		}
 		if result.code == "sql_error" && result.dispatched {
 			failure["execution_completed"] = true

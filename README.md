@@ -16,7 +16,7 @@
 - **Go Controller**：placement、lease 签发续期、failure detection、failover / migration 编排。
 - **Go Gateway**：`/v1/sql/*`、`/v1/databases/*`、多租户与配额、内嵌管理控制台。
 - **Key Broker**：native 页加密 / KMS；只有 Authority 接收 S3 凭据。
-- **引擎**：Turso OSS fork（`prototypes/p0/turso` submodule，未 push 到远端）。
+- **引擎**：Turso OSS fork（`prototypes/p0/turso` submodule，固定 gitlink `d0c23d6a16f457d382059a84f84f9c4463c85a84`）。
 
 ## 本地启动
 
