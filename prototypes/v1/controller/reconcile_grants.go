@@ -127,14 +127,14 @@ func (controller *Controller) mutateAuthority(ctx context.Context, placement *Pl
 	}
 	var grant Grant
 	if err := controller.transport.Authority(ctx, placement.PendingID, placement.PendingCommand, &grant); err != nil {
-		if placement.Phase == "renew_pending" {
+		if placement.Phase == "renew_pending" || placement.Phase == "grant_pending" {
 			return controller.recoverExpiredRenewal(ctx, placement, err)
 		}
 		return err
 	}
 	if grant.RemainingTTLMS == 0 || grant.RemainingTTLMS > 60000 {
 		err := errors.New("authority grant is expired or invalid")
-		if placement.Phase == "renew_pending" && grant.RemainingTTLMS == 0 {
+		if (placement.Phase == "renew_pending" || placement.Phase == "grant_pending") && grant.RemainingTTLMS == 0 {
 			return controller.recoverExpiredRenewal(ctx, placement, err)
 		}
 		return err
@@ -172,7 +172,19 @@ func (controller *Controller) recoverExpiredRenewal(ctx context.Context, placeme
 	if err != nil {
 		return errors.Join(pendingErr, err)
 	}
-	if actual.Mode != "revoked" || actual.Binding != nil || actual.RemainingTTLMS != 0 || actual.Epoch < placement.Epoch {
+	if actual.Mode != "revoked" || actual.Binding != nil || actual.RemainingTTLMS != 0 {
+		return pendingErr
+	}
+	if placement.Phase == "grant_pending" {
+		var command authorityAction
+		if json.Unmarshal(placement.PendingCommand, &command) != nil || command.Command != "grant" || command.Request == nil {
+			return pendingErr
+		}
+		var intent grantIntent
+		if json.Unmarshal(command.Request.Intent, &intent) != nil || intent.Database != placement.Database || actual.Epoch < intent.ExpectedEpoch {
+			return pendingErr
+		}
+	} else if actual.Epoch < placement.Epoch {
 		return pendingErr
 	}
 	return controller.planGrant(ctx, placement)

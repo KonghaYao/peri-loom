@@ -305,6 +305,39 @@ func TestReconcileExpiredPendingRenewalPlansFreshGrant(test *testing.T) {
 	}
 }
 
+func TestReconcileExpiredPendingGrantRequiresProvenRevocation(test *testing.T) {
+	for _, mode := range []string{"revoked", "unknown"} {
+		test.Run(mode, func(test *testing.T) {
+			fixture := newReconcileFixture(test)
+			database := reconcileDatabase("expired-grant-" + mode)
+			fixture.fake.lost["grant"] = 1
+			if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err == nil {
+				test.Fatal("lost grant acknowledgment ignored")
+			}
+			pending, err := fixture.controller.Status(database)
+			if err != nil || pending.Phase != "grant_pending" {
+				test.Fatalf("grant intent was not durable: %+v %v", pending, err)
+			}
+			grant := fixture.fake.receipts[pending.PendingID]
+			grant.RemainingTTLMS = 0
+			fixture.fake.receipts[pending.PendingID] = grant
+			fixture.fake.authority[database.Key()] = Actual{Database: database, Mode: mode, Epoch: pending.Epoch}
+			fixture.restart(test)
+			err = fixture.controller.Reconcile(context.Background())
+			result, statusErr := fixture.controller.Status(database)
+			if mode == "unknown" {
+				if err == nil || statusErr != nil || result.Phase != "grant_pending" || result.PendingID != pending.PendingID || result.Epoch != pending.Epoch {
+					test.Fatalf("unproven grant expiry progressed: %+v %v", result, err)
+				}
+				return
+			}
+			if err != nil || statusErr != nil || result.Phase != "active" || result.Epoch <= pending.Epoch || result.PendingID != "" {
+				test.Fatalf("expired grant did not recover: %+v %v", result, err)
+			}
+		})
+	}
+}
+
 func TestReconcilePendingRenewalUnknownStateNeverGrants(test *testing.T) {
 	for _, mode := range []string{"unknown", "state-error", "live"} {
 		test.Run(mode, func(test *testing.T) {
