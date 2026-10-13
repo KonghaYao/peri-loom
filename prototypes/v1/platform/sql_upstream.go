@@ -32,11 +32,19 @@ func (failure *SQLRPCError) Error() string { return "SQL upstream request failed
 func (failure *SQLRPCError) Unwrap() error { return failure.cause }
 
 type sqlHTTPUpstream struct {
-	tokens map[string]string
-	client *http.Client
+	tokens  map[string]string
+	client  *http.Client
+	timeout time.Duration
 }
 
 func NewSQLUpstream(workerSQLTokens map[string]string) (SQLUpstream, error) {
+	return NewSQLUpstreamWithTimeout(workerSQLTokens, 30*time.Second)
+}
+
+func NewSQLUpstreamWithTimeout(workerSQLTokens map[string]string, timeout time.Duration) (SQLUpstream, error) {
+	if timeout < 30*time.Second || timeout > 5*time.Minute {
+		return nil, &SQLRPCError{}
+	}
 	tokens := make(map[string]string, len(workerSQLTokens))
 	seen := make(map[string]bool)
 	for worker, token := range workerSQLTokens {
@@ -46,9 +54,9 @@ func NewSQLUpstream(workerSQLTokens map[string]string) (SQLUpstream, error) {
 		seen[token] = true
 		tokens[worker] = token
 	}
-	return &sqlHTTPUpstream{tokens: tokens, client: &http.Client{
-		Timeout:       30 * time.Second,
-		Transport:     &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, DisableKeepAlives: true, ResponseHeaderTimeout: 10 * time.Second, MaxResponseHeaderBytes: 16384},
+	return &sqlHTTPUpstream{tokens: tokens, timeout: timeout, client: &http.Client{
+		Timeout:       timeout,
+		Transport:     &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, DisableKeepAlives: true, ResponseHeaderTimeout: timeout, MaxResponseHeaderBytes: 16384},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
 }
@@ -104,7 +112,7 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 	default:
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, upstream.timeout)
 	defer cancel()
 	if ctx.Err() != nil {
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{cause: ctx.Err()})

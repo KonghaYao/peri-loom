@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,6 +41,14 @@ func RunServiceWithWorkerStopVerifier(parent context.Context, config ServiceConf
 }
 
 func runService(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) error {
+	requestTimeout := 30 * time.Second
+	if setting := os.Getenv("PERI_DEV_SQL_TIMEOUT_SECONDS"); setting != "" {
+		seconds, err := strconv.Atoi(setting)
+		if err != nil || seconds < 30 || seconds > 300 || !config.InsecureLoopback {
+			return errors.New("invalid local SQL timeout")
+		}
+		requestTimeout = time.Duration(seconds) * time.Second
+	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	state, err := OpenStateStore(config.StateDirectory)
@@ -126,7 +135,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
-	upstream, err := NewSQLUpstream(config.WorkerSQLTokens)
+	upstream, err := NewSQLUpstreamWithTimeout(config.WorkerSQLTokens, requestTimeout)
 	if err != nil {
 		return err
 	}
@@ -134,7 +143,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if observation != nil {
 		observer = observation.observer
 	}
-	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission, OpenObserver: observer})
+	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission, OpenObserver: observer, RequestTimeout: requestTimeout})
 	if err != nil {
 		return err
 	}
@@ -163,6 +172,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	defer publicListener.Close()
 	publicMux := newPublicMux(gateway, management)
 	publicServer := hardenedServer(publicMux)
+	publicServer.WriteTimeout = requestTimeout + 5*time.Second
 	publicServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
 	brokerServer := hardenedServer(broker)
 	finished := make(chan error, 3)

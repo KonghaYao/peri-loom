@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	controller "peri-loom/controller"
 )
@@ -157,4 +158,5 @@ type GatewayConfig struct {
 	Audit           Audit
 	WriterAdmission bool
 	OpenObserver    *SQLOpenObserver
+	RequestTimeout  time.Duration
 }

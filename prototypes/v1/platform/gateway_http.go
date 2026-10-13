@@ -83,10 +83,14 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, "request unavailable", 503)
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
+	timeout := gateway.config.RequestTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), timeout)
 	defer cancel()
 	_ = http.NewResponseController(writer).SetReadDeadline(time.Now().Add(10 * time.Second))
-	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(30 * time.Second))
+	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal
 	var permit *admissionPermit
 	result := gatewayFailure(400, "invalid_request")

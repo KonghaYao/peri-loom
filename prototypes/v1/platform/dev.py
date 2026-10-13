@@ -197,9 +197,12 @@ class Project:
         worker_request_bytes = getattr(self.arguments, "worker_max_request_bytes", 512 * 1024)
         if not 1 <= worker_request_bytes <= 32 * 1024 * 1024:
             raise RuntimeError("worker request limit must be between 1 and 33554432 bytes")
+        request_timeout_seconds = getattr(self.arguments, "dev_sql_timeout_seconds", 30)
+        if not 30 <= request_timeout_seconds <= 300 or request_timeout_seconds != 30 and self.arguments.tls:
+            raise RuntimeError("extended local SQL timeout requires loopback without TLS")
         sql_duration_ms = getattr(self.arguments, "sql_max_duration_ms", 5000)
-        if not 1 <= sql_duration_ms < 30000:
-            raise RuntimeError("SQL duration limit must be between 1 and 29999 milliseconds")
+        if not 1 <= sql_duration_ms <= (request_timeout_seconds - 10) * 1000:
+            raise RuntimeError("SQL duration limit must leave ten seconds for gateway response")
         if observer and (pathlib.Path(self.arguments.run_dir).is_symlink() or self.directory.is_symlink() or self.directory.exists() and (not self.directory.is_dir() or any(self.directory.iterdir()))):
             raise RuntimeError("SQL open observer requires a fresh empty runtime")
         private_directory(self.directory)
@@ -225,6 +228,8 @@ class Project:
                 raise RuntimeError("existing writer admission profile cannot be silently rebound")
             if self.launch.get("worker_max_request_bytes", 512 * 1024) != worker_request_bytes:
                 raise RuntimeError("existing worker request limit cannot be silently rebound")
+            if self.launch.get("dev_sql_timeout_seconds", 30) != request_timeout_seconds:
+                raise RuntimeError("existing local SQL timeout cannot be silently rebound")
             if self.launch.get("sql_max_duration_ms", 5000) != sql_duration_ms:
                 raise RuntimeError("existing SQL duration limit cannot be silently rebound")
             if self.arguments.backend == "s3" and self.launch.get("storage_identity") != storage_identity("s3"):
@@ -241,6 +246,7 @@ class Project:
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
         self.launch["writer_admission"] = self.arguments.writer_admission
         self.launch["worker_max_request_bytes"] = worker_request_bytes
+        self.launch["dev_sql_timeout_seconds"] = request_timeout_seconds
         self.launch["sql_max_duration_ms"] = sql_duration_ms
         self.launch["sql_open_observer"] = observer
         worker_auth = {}
@@ -398,6 +404,8 @@ class Project:
             authority_environment.update({name: value for name, value in os.environ.items() if name.startswith("S3_")})
         self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
         platform_environment = safe_environment()
+        if self.launch["dev_sql_timeout_seconds"] != 30:
+            platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"
         platform_environment["PERI_HRANA_EXPERIMENTAL"] = "1" if os.environ.get("PERI_HRANA_EXPERIMENTAL") == "1" else "0"
         self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], platform_environment)
@@ -510,6 +518,7 @@ def main():
     parser.add_argument("--writer-admission", action="store_true")
     parser.add_argument("--worker-max-request-bytes", type=int, default=512 * 1024)
     parser.add_argument("--sql-max-duration-ms", type=int, default=5000)
+    parser.add_argument("--dev-sql-timeout-seconds", type=int, default=30)
     parser.add_argument("--sql-open-observer", action="store_true")
     parser.add_argument("--stop-worker", choices=("worker-a", "worker-b"))
     arguments = parser.parse_args()

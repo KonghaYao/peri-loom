@@ -35,12 +35,13 @@ class WriterProfileTests(unittest.TestCase):
         self.processes.start()
         self.addCleanup(self.processes.stop)
 
-    def project(self, enabled, backend="local", worker_max_request_bytes=512 * 1024, sql_max_duration_ms=5000):
+    def project(self, enabled, backend="local", worker_max_request_bytes=512 * 1024, sql_max_duration_ms=5000, dev_sql_timeout_seconds=30):
         return dev.Project(argparse.Namespace(
             run_dir=str(self.root), no_build=True, backend=backend,
             listen="127.0.0.1:19443", tls=False, writer_admission=enabled,
             worker_max_request_bytes=worker_max_request_bytes,
             sql_max_duration_ms=sql_max_duration_ms,
+            dev_sql_timeout_seconds=dev_sql_timeout_seconds,
         ))
 
     def parse_and_prepare(self, enabled):
@@ -89,6 +90,17 @@ class WriterProfileTests(unittest.TestCase):
         self.assertEqual(original.launch["sql_max_duration_ms"], 20000)
         with self.assertRaisesRegex(RuntimeError, "SQL duration limit cannot be silently rebound"):
             self.project(False).prepare()
+
+    def test_extended_timeout_requires_loopback_and_cannot_rebind(self):
+        original = self.project(False, sql_max_duration_ms=120000, dev_sql_timeout_seconds=150)
+        original.prepare()
+        self.assertEqual(original.launch["dev_sql_timeout_seconds"], 150)
+        with self.assertRaisesRegex(RuntimeError, "existing local SQL timeout cannot be silently rebound"):
+            self.project(False).prepare()
+        with self.assertRaisesRegex(RuntimeError, "requires loopback without TLS"):
+            project = self.project(False, dev_sql_timeout_seconds=150)
+            project.arguments.tls = True
+            project.prepare()
 
     def test_existing_run_directory_rejects_profile_rebind(self):
         original = self.project(False)
