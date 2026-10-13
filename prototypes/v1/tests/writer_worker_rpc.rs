@@ -469,6 +469,40 @@ fn disabled_profile_rejects_v2_without_breaking_legacy_shape() -> Result<()> {
 }
 
 #[test]
+fn readonly_describe_issues_fresh_writer_state_before_and_after_native_changes() -> Result<()> {
+    let worker = Worker::new(true)?;
+    let (session, opened) = worker.open(2)?;
+    let mut previous = opened["session_state"]["sequence"].as_u64().unwrap();
+    for _ in 0..2 {
+        let (status, described) = worker.call(
+            WorkerCommand::Describe {
+                session: session.clone(),
+                sql: "SELECT 1".into(),
+            },
+            2,
+            false,
+        )?;
+        assert_eq!(status, 200);
+        assert_eq!(described["ok"], true);
+        assert_eq!(described["result"]["is_readonly"], true);
+        previous = assert_state(&described, &session, false, previous);
+    }
+    let executed = worker.execute(&session, "CREATE TABLE described(id INTEGER)")?;
+    assert_eq!(executed["ok"], true);
+    previous = assert_state(&executed, &session, false, previous);
+    let (_, closed) = worker.call(
+        WorkerCommand::CloseSession {
+            session: session.clone(),
+        },
+        2,
+        false,
+    )?;
+    assert_eq!(closed["ok"], true);
+    assert_state(&closed, &session, false, previous);
+    Ok(())
+}
+
+#[test]
 fn native_owner_constraint_commit_and_close_have_fresh_bound_state() -> Result<()> {
     let worker = Worker::new(true)?;
     let (session, opened) = worker.open(2)?;

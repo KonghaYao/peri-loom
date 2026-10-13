@@ -26,7 +26,6 @@ pub(super) struct SessionCall {
     entry: Arc<Entry>,
     handle: Option<Arc<OwnedHandle>>,
     identifier: String,
-    started_sequence: u64,
     pub owner: bool,
 }
 
@@ -83,11 +82,9 @@ impl Entry {
             entry: self.clone(),
             handle: Some(handle),
             identifier: identifier.to_owned(),
-            started_sequence: 0,
             owner: false,
         };
         let native = call.handle().writer_state()?;
-        call.started_sequence = native.sequence;
         call.owner = native.owner;
         Ok(call)
     }
@@ -131,15 +128,18 @@ impl Entry {
         let native = handle.writer_state()?;
         ensure!(!native.owner, "worker close did not release native writer");
         let terminal = if version == 2 {
-            let terminal = snapshot(identifier, &handle)?;
-            let state = self
+            let mut terminal = snapshot(identifier, &handle)?;
+            let mut state = self
                 .state
                 .lock()
                 .map_err(|_| anyhow::anyhow!("worker session state poisoned"))?;
-            ensure!(
-                terminal.sequence > state.sequence,
-                "worker close did not settle a fresh terminal state"
+            terminal.sequence = terminal.sequence.max(
+                state
+                    .sequence
+                    .checked_add(1)
+                    .context("worker session sequence exhausted")?,
             );
+            state.sequence = terminal.sequence;
             Some(terminal)
         } else {
             None
@@ -162,15 +162,18 @@ impl SessionCall {
     }
 
     pub fn terminal_state(&self) -> Result<Option<SessionState>> {
-        let terminal = snapshot(&self.identifier, self.handle())?;
+        let mut terminal = snapshot(&self.identifier, self.handle())?;
         let mut state = self
             .entry
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("worker session state poisoned"))?;
-        if terminal.sequence <= self.started_sequence || terminal.sequence <= state.sequence {
-            return Ok(None);
-        }
+        terminal.sequence = terminal.sequence.max(
+            state
+                .sequence
+                .checked_add(1)
+                .context("worker session sequence exhausted")?,
+        );
         state.sequence = terminal.sequence;
         Ok(Some(terminal))
     }
