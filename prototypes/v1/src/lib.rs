@@ -8,6 +8,8 @@ pub mod config;
 pub mod database;
 pub mod encryption;
 pub mod gc;
+pub mod import_cli;
+pub mod import_image;
 pub mod io;
 pub mod manifest;
 pub mod metrics;

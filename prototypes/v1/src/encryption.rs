@@ -28,6 +28,16 @@ pub struct ResolvedDatabaseKey {
 }
 
 impl ResolvedDatabaseKey {
+    pub(crate) fn validate_binding(&self, binding: &LeaseBinding, role: AccessRole) -> Result<()> {
+        anyhow::ensure!(
+            crate::authority_rpc::provider::same_identity(&self.binding, binding)
+                && self.binding.renewal_sequence >= binding.renewal_sequence
+                && self.access_role == role,
+            "stage-image key binding mismatch"
+        );
+        Ok(())
+    }
+
     pub fn descriptor_id(&self) -> &str {
         &self.descriptor_id
     }
