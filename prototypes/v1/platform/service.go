@@ -123,7 +123,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 		return err
 	}
 	transport = &isolatedControlTransport{ControlTransport: transport, store: state}
-	control, err := controller.NewController(metadata, transport, controller.ReconcileConfig{LeaseTTL: 30 * time.Second, HeartbeatTimeout: 5 * time.Second, Interval: time.Second})
+	control, err := controller.NewController(metadata, transport, controller.ReconcileConfig{LeaseTTL: localLeaseTTL(requestTimeout), HeartbeatTimeout: 5 * time.Second, Interval: time.Second})
 	if err != nil {
 		return err
 	}
@@ -254,6 +254,13 @@ func newPublicMux(gateway *Gateway, management http.Handler) *http.ServeMux {
 
 func hardenedServer(handler http.Handler) *http.Server {
 	return &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 * 1024}
+}
+
+func localLeaseTTL(requestTimeout time.Duration) time.Duration {
+	if requestTimeout > 30*time.Second {
+		return 60 * time.Second
+	}
+	return 30 * time.Second
 }
 
 type serviceSQLOpenObservation struct {

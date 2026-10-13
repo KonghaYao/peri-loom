@@ -83,6 +83,12 @@ fn classify_source(error: &Error) -> &'static str {
                 | LimboError::Raise(..) => "constraint",
                 LimboError::Interrupt => "interrupt",
                 LimboError::ReadOnly => "readonly",
+                LimboError::CacheError(_) => "cache",
+                LimboError::DatabaseFull => "database_full",
+                LimboError::Corrupt(_) | LimboError::NotADB => "corrupt",
+                LimboError::TooBig => "too_big",
+                LimboError::TxError(_) => "transaction",
+                LimboError::LockingError(_) => "locking",
                 LimboError::IoBackendUnavailable(_) => "io",
                 LimboError::CompletionError(completion) => match completion {
                     CompletionError::IOError(..)
@@ -93,7 +99,9 @@ fn classify_source(error: &Error) -> &'static str {
                     CompletionError::RustixIOError(_) => "io",
                     _ => "other_native",
                 },
-                LimboError::InternalError(message) => policy(message).unwrap_or("other_native"),
+                LimboError::InternalError(message) => policy(message)
+                    .or_else(|| message.starts_with("remote IO: ").then_some("remote_io"))
+                    .unwrap_or("other_native"),
                 _ => "other_native",
             };
         }
@@ -179,6 +187,27 @@ mod tests {
             .context("step bounded remote SQL")
             .context("privateSecret SQL SELECT credential FROM secrets")
             .unwrap_err()
+    }
+
+    #[test]
+    fn checkpoint_diagnostics_classify_native_failures_without_payload() -> Result<()> {
+        for (native, expected) in [
+            (LimboError::DatabaseFull, "database_full"),
+            (LimboError::TxError("privateSecret".into()), "transaction"),
+            (
+                LimboError::InternalError("remote IO: privateSecret".into()),
+                "remote_io",
+            ),
+        ] {
+            let error = with_context(native).context(crate::session::UnsettledSqlOutcome);
+            let bytes = Diagnostics::default()
+                .record(Action::Checkpoint, "safe-request", &error)
+                .unwrap();
+            let value: Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(value["native_cause_class"], expected);
+            assert!(!std::str::from_utf8(&bytes)?.contains("privateSecret"));
+        }
+        Ok(())
     }
 
     #[test]
