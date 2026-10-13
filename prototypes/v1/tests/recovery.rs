@@ -1,15 +1,25 @@
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use peri_loom_v1::authority::Authority;
+use peri_loom_v1::authority::{ownership::OwnershipAuthority, Authority};
+use peri_loom_v1::capabilities::Capabilities;
 use peri_loom_v1::database::RemoteDatabase;
+use peri_loom_v1::gc::GarbageCollector;
 use peri_loom_v1::manifest::WalPosition;
 use peri_loom_v1::namespace::Namespace;
 use peri_loom_v1::object_store::{LocalObjectStore, ObjectStore, PutCondition, StoredObject};
-use peri_loom_v1::recovery::{committed_position, validate_index_commit};
+use peri_loom_v1::ownership::types::{
+    AccessRole, GrantIntent, GrantRequest, LeaseClock, LeaseIntent,
+};
+use peri_loom_v1::recovery::{
+    committed_position, validate_index_append, validate_index_commit, validate_index_state,
+};
+use peri_loom_v1::runtime::DatabaseId;
 use peri_loom_v1::wal::{
-    DurableWal, RemoteWal, WalBatch, WalCommit, WalMetadata, WalOperation, WalRecord,
+    DurableWal, RemoteWal, WalAppendRequest, WalBatch, WalCommit, WalMetadata, WalOperation,
+    WalRecord,
 };
 use turso_core::storage::sqlite3_ondisk::{checksum_wal, WalHeader};
 use turso_core::Value;
@@ -318,6 +328,380 @@ fn validator_rejects_forged_lsn_namespace_hash_and_replay_position() -> Result<(
         Some(bad_position),
     )?;
     assert!(validate(store.as_ref(), &index(store.as_ref())?).is_err());
+    Ok(())
+}
+
+#[test]
+fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(LocalObjectStore::open(directory.path())?);
+    let wal = RemoteWal::new(store.clone());
+    wal.append(&namespace(), 1, batch(wal_image(false, &[1])))?;
+    let original = index(store.as_ref())?;
+    let validated = validate_index_state(&original, &namespace(), |key| {
+        Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+    })?;
+    wal.append(&namespace(), 1, WalBatch::default())?;
+    let next = index(store.as_ref())?;
+    let mut loaded = Vec::new();
+    let incremented = validate_index_append(&validated, &next, &namespace(), |key| {
+        loaded.push(key.to_owned());
+        Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+    })?;
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(incremented.commit(), validate(store.as_ref(), &next)?);
+
+    for field in ["hash", "lsn"] {
+        let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
+        forged["entries"][0][field] = if field == "hash" {
+            serde_json::json!("wrong-history")
+        } else {
+            serde_json::json!(99)
+        };
+        assert!(validate_index_append(
+            &validated,
+            &serde_json::to_vec(&forged)?,
+            &namespace(),
+            |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+        )
+        .is_err());
+    }
+    for field in ["receipts", "receipt_digests"] {
+        let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
+        let key = forged[field]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        forged[field].as_object_mut().unwrap().remove(&key);
+        assert!(validate_index_append(
+            &validated,
+            &serde_json::to_vec(&forged)?,
+            &namespace(),
+            |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+        )
+        .is_err());
+    }
+    let new_id = wal.read(&namespace(), 2)?[0].append_id.clone();
+    let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
+    forged["receipt_digests"][&new_id] = serde_json::json!("wrong-digest");
+    assert!(validate_index_append(
+        &validated,
+        &serde_json::to_vec(&forged)?,
+        &namespace(),
+        |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+    )
+    .is_err());
+    let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
+    forged["commit"] =
+        serde_json::json!({"lsn": 2, "position": {"salts": [17, 23], "frame_count": 1}});
+    assert!(validate_index_append(
+        &validated,
+        &serde_json::to_vec(&forged)?,
+        &namespace(),
+        |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+    )
+    .is_err());
+
+    assert!(validate_index_state(&next, &namespace(), |key| {
+        let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
+        if key == loaded[0] {
+            bytes[0] ^= 1;
+        }
+        Ok(bytes)
+    })
+    .is_err());
+    assert!(
+        validate_index_append(&validated, &next, &namespace(), |key| {
+            let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
+            bytes[0] ^= 1;
+            Ok(bytes)
+        })
+        .is_err()
+    );
+    Ok(())
+}
+
+struct FrozenClock;
+
+impl LeaseClock for FrozenClock {
+    fn now_ms(&self) -> Result<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
+struct TrackedAuthorityBackend {
+    inner: peri_loom_v1::object_store::MemoryObjectStore,
+    watched: Mutex<Option<String>>,
+    reads: AtomicUsize,
+    fail_changed_wal: Mutex<Option<String>>,
+}
+
+impl ObjectStore for TrackedAuthorityBackend {
+    fn supports_strict_fencing(&self) -> bool {
+        true
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        if self.watched.lock().unwrap().as_deref() == Some(key) {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if key.ends_with("authority/root") {
+            let mut old_hash = self.fail_changed_wal.lock().unwrap();
+            if let Some(previous) = old_hash.as_ref() {
+                let value: serde_json::Value = serde_json::from_slice(bytes)?;
+                if value["root"]["branches"]["main"]["wal"]["hash"]
+                    .as_str()
+                    .is_some_and(|hash| hash != previous)
+                {
+                    old_hash.take();
+                    return Err(peri_loom_v1::object_store::PreconditionFailed.into());
+                }
+            }
+        }
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+#[test]
+fn authority_append_replays_on_cas_conflict_and_cold_session() -> Result<()> {
+    let namespace = Namespace::new("recovery", "authority-append")?;
+    let database = DatabaseId::new(namespace.clone(), "main")?;
+    let backend = Arc::new(TrackedAuthorityBackend::default());
+    let authority = OwnershipAuthority::new(backend.clone(), Arc::new(FrozenClock));
+    let intent = GrantIntent {
+        database,
+        worker_id: "worker".into(),
+        epoch: 1,
+        expected_epoch: 0,
+        lease_id: "lease".into(),
+        ttl_ms: 10000,
+        role: AccessRole::Writer,
+    };
+    let nonce = authority
+        .challenge(LeaseIntent::Grant(intent.clone()))?
+        .nonce;
+    let grant = authority.grant(GrantRequest {
+        request_id: "grant".into(),
+        nonce,
+        intent,
+    })?;
+    let session = authority.open_session(&grant.binding, AccessRole::Writer)?;
+    let root = Authority::open(backend.clone(), namespace.clone())?;
+    let pin_len = |root: &Authority| -> Result<usize> {
+        Ok(root
+            .snapshot()?
+            .root
+            .pins
+            .values()
+            .next()
+            .context("missing session pin")?
+            .len())
+    };
+    let initial_pin = pin_len(&root)?;
+    let request = |id: &str| WalAppendRequest {
+        namespace: namespace.clone(),
+        epoch: 1,
+        append_id: id.into(),
+        batch: WalBatch::default(),
+        position: None,
+        timestamp_millis: 1,
+    };
+    assert_eq!(session.append_wal(&request("first"))?, Some(1));
+    assert_eq!(pin_len(&root)?, initial_pin + 2);
+    let snapshot = root.snapshot()?;
+    let first_chunk = snapshot
+        .root
+        .objects
+        .iter()
+        .find(|(key, _)| key.starts_with("wal/chunks/"))
+        .context("first WAL chunk missing")?
+        .1;
+    let first_key = namespace.key(&format!("authority/blobs/{}", first_chunk.blob))?;
+    *backend.watched.lock().unwrap() = Some(first_key.clone());
+
+    assert_eq!(session.append_wal(&request("second"))?, Some(2));
+    assert_eq!(pin_len(&root)?, initial_pin + 4);
+    assert_eq!(backend.reads.load(Ordering::SeqCst), 0);
+
+    let previous = root.snapshot()?.root.branches["main"].wal.clone().unwrap();
+    *backend.fail_changed_wal.lock().unwrap() = Some(previous.hash);
+    assert_eq!(session.append_wal(&request("third"))?, Some(3));
+    assert_eq!(pin_len(&root)?, initial_pin + 6);
+    assert!(backend.fail_changed_wal.lock().unwrap().is_none());
+    assert!(backend.reads.load(Ordering::SeqCst) > 0);
+
+    backend.reads.store(0, Ordering::SeqCst);
+    let cold = authority.open_session(&grant.binding, AccessRole::Writer)?;
+    assert_eq!(cold.append_wal(&request("fourth"))?, Some(4));
+    assert!(backend.reads.load(Ordering::SeqCst) > 0);
+
+    backend
+        .inner
+        .put(&first_key, b"corrupted old chunk", PutCondition::Any)?;
+    let fresh = authority.open_session(&grant.binding, AccessRole::Writer)?;
+    let before = root.snapshot()?.root.branches["main"].wal.clone();
+    assert!(fresh.append_wal(&request("fifth")).is_err());
+    assert_eq!(root.snapshot()?.root.branches["main"].wal, before);
+    Ok(())
+}
+
+#[test]
+fn pinned_recovery_dependencies_survive_gc_without_pinning_unrelated_objects() -> Result<()> {
+    let backend = Arc::new(peri_loom_v1::object_store::MemoryObjectStore::default());
+    let authority = Authority::open(backend, namespace())?;
+    let capabilities = Capabilities::new(authority.clone());
+    let writer = authority.branch_store("main")?;
+    let wal = RemoteWal::new(writer.clone());
+    wal.append(&namespace(), 1, WalBatch::default())?;
+    let reader = authority.branch_store("main")?;
+    let old_index = reader
+        .get(&namespace().key("wal/index")?)?
+        .context("old index missing")?
+        .bytes;
+    let first_chunk = serde_json::from_slice::<serde_json::Value>(&old_index)?["entries"][0]
+        ["hash"]
+        .as_str()
+        .context("first chunk hash missing")?
+        .to_owned();
+    let first_key = namespace().key(&format!("wal/chunks/{first_chunk}"))?;
+    let first_bytes = reader
+        .get(&first_key)?
+        .context("first chunk missing")?
+        .bytes;
+    let first_blob = authority.snapshot()?.root.objects[&format!("wal/chunks/{first_chunk}")]
+        .blob
+        .clone();
+
+    let segment = vec![7; peri_loom_v1::manifest::SEGMENT_SIZE];
+    let unrelated = format!("segments/{}", blake3::hash(&segment).to_hex());
+    writer.put(
+        &namespace().key(&unrelated)?,
+        &segment,
+        PutCondition::Absent,
+    )?;
+    let snapshot = authority.snapshot()?;
+    let unrelated_blob = &snapshot.root.objects[&unrelated].blob;
+    assert!(snapshot.root.pins.values().any(|pin| {
+        pin.len() == 2
+            && pin.iter().any(|entry| entry.blob == first_blob)
+            && pin.iter().all(|entry| &entry.blob != unrelated_blob)
+    }));
+
+    capabilities.snapshot("main", "early")?;
+    wal.append(&namespace(), 1, WalBatch::default())?;
+    capabilities.branch("main", "restored")?;
+    capabilities.restore("restored", "early")?;
+    capabilities.delete_branch("restored")?;
+    capabilities.delete_snapshot("early")?;
+    writer.delete(&namespace().key("wal/index")?, None)?;
+    drop(wal);
+    drop(writer);
+
+    let gc = GarbageCollector::new(authority.clone(), Duration::ZERO);
+    assert!(gc.mark()? > 0);
+    let root = authority.snapshot()?;
+    assert!(root.root.blobs.contains_key(&first_blob));
+    assert!(!root.root.objects.contains_key(&unrelated));
+    assert_eq!(
+        reader
+            .get(&first_key)?
+            .context("pinned chunk missing")?
+            .bytes,
+        first_bytes
+    );
+    assert_eq!(
+        reader
+            .get(&namespace().key("wal/index")?)?
+            .context("pinned index missing")?
+            .bytes,
+        old_index
+    );
+    drop(reader);
+    assert!(gc.mark()? > 0);
+    assert!(!authority
+        .snapshot()?
+        .root
+        .objects
+        .contains_key(&format!("wal/chunks/{first_chunk}")));
+    Ok(())
+}
+
+#[test]
+fn externally_discovered_manifest_and_listing_pin_dependencies_before_gc() -> Result<()> {
+    let authority = Authority::open(
+        Arc::new(peri_loom_v1::object_store::MemoryObjectStore::default()),
+        namespace(),
+    )?;
+    let reader = authority.branch_store("main")?;
+    let writer = authority.branch_store("main")?;
+    let segment = vec![9; peri_loom_v1::manifest::SEGMENT_SIZE];
+    let hash = blake3::hash(&segment).to_hex().to_string();
+    let segment_key = namespace().key(&format!("segments/{hash}"))?;
+    writer.put(&segment_key, &segment, PutCondition::Absent)?;
+    let mut manifest = peri_loom_v1::manifest::Manifest::default();
+    manifest.logical_db_size = segment.len() as u64;
+    manifest.segments.insert(0, hash);
+    let bytes = serde_json::to_vec(&manifest)?;
+    let manifest_key = namespace().key(&format!("manifests/{}", blake3::hash(&bytes).to_hex()))?;
+    writer.put(&manifest_key, &bytes, PutCondition::Absent)?;
+    assert_eq!(
+        reader
+            .get(&manifest_key)?
+            .context("external manifest missing")?
+            .bytes,
+        bytes
+    );
+
+    let listed_segment = vec![3; peri_loom_v1::manifest::SEGMENT_SIZE];
+    let listed_key = namespace().key(&format!(
+        "segments/{}",
+        blake3::hash(&listed_segment).to_hex()
+    ))?;
+    writer.put(&listed_key, &listed_segment, PutCondition::Absent)?;
+    assert!(reader
+        .list(&format!("{}segments/", namespace().prefix()))?
+        .contains(&listed_key));
+    drop(writer);
+
+    let gc = GarbageCollector::new(authority.clone(), Duration::ZERO);
+    gc.mark()?;
+    assert_eq!(
+        reader
+            .get(&segment_key)?
+            .context("manifest dependency collected")?
+            .bytes,
+        segment
+    );
+    assert_eq!(
+        reader
+            .get(&listed_key)?
+            .context("listed segment collected")?
+            .bytes,
+        listed_segment
+    );
+    drop(reader);
+    assert!(gc.mark()? > 0);
+    assert!(!authority
+        .snapshot()?
+        .root
+        .objects
+        .contains_key(&format!("segments/{}", blake3::hash(&segment).to_hex())));
     Ok(())
 }
 

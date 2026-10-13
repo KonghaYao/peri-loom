@@ -55,10 +55,97 @@ pub fn committed_position(bytes: &[u8]) -> Result<Option<WalPosition>> {
 pub fn validate_index_commit(
     index_bytes: &[u8],
     namespace: &Namespace,
-    mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
+    load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<Option<WalCommit>> {
+    Ok(validate_index_state(index_bytes, namespace, load_chunk)?.commit())
+}
+
+pub struct ValidatedWal {
+    index: WalMetadata,
+    bytes: Vec<u8>,
+}
+
+impl ValidatedWal {
+    pub fn commit(&self) -> Option<WalCommit> {
+        self.index.commit
+    }
+}
+
+pub fn validate_index_state(
+    index_bytes: &[u8],
+    namespace: &Namespace,
+    mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<ValidatedWal> {
     namespace.key("wal/index")?;
     let index: WalMetadata = serde_json::from_slice(index_bytes)?;
+    validate_layout(&index)?;
+    let mut bytes = Vec::new();
+    let mut last_record_commit = None;
+    for entry_index in 0..index.entries.len() {
+        last_record_commit = validate_record(
+            &index,
+            namespace,
+            entry_index,
+            &mut bytes,
+            &mut load_chunk,
+            false,
+        )?;
+    }
+    ensure!(
+        last_record_commit == index.commit,
+        "index and final record commit disagree"
+    );
+    Ok(ValidatedWal { index, bytes })
+}
+
+pub fn validate_index_append(
+    previous: &ValidatedWal,
+    index_bytes: &[u8],
+    namespace: &Namespace,
+    mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<ValidatedWal> {
+    namespace.key("wal/index")?;
+    let index: WalMetadata = serde_json::from_slice(index_bytes)?;
+    validate_layout(&index)?;
+    let old = &previous.index;
+    ensure!(
+        index.epoch >= old.epoch
+            && index.last_lsn == old.last_lsn.checked_add(1).context("WAL LSN exhausted")?
+            && index.replay_baseline_lsn == old.replay_baseline_lsn
+            && index.entries.len() == old.entries.len() + 1
+            && index.entries[..old.entries.len()]
+                .iter()
+                .zip(&old.entries)
+                .all(|(next, previous)| next.lsn == previous.lsn && next.hash == previous.hash)
+            && index.receipts.len() == old.receipts.len() + 1
+            && old
+                .receipts
+                .iter()
+                .all(|(id, lsn)| index.receipts.get(id) == Some(lsn))
+            && index.receipt_digests.len() == old.receipt_digests.len() + 1
+            && old
+                .receipt_digests
+                .iter()
+                .all(|(id, digest)| index.receipt_digests.get(id) == Some(digest)),
+        "WAL append changed validated index prefix or receipts"
+    );
+    let mut bytes = previous.bytes.clone();
+    let commit = validate_record(
+        &index,
+        namespace,
+        old.entries.len(),
+        &mut bytes,
+        &mut load_chunk,
+        true,
+    )?;
+    ensure!(
+        commit == index.commit,
+        "index and final record commit disagree"
+    );
+    Ok(ValidatedWal { index, bytes })
+}
+
+fn validate_layout(index: &WalMetadata) -> Result<()> {
     ensure!(
         index.entries.last().map_or(0, |entry| entry.lsn) == index.last_lsn,
         "incomplete WAL index"
@@ -94,67 +181,74 @@ pub fn validate_index_commit(
             "index commit must describe the final LSN"
         );
     }
-    let mut bytes = Vec::new();
-    let mut last_record_commit = None;
-    for (entry_index, entry) in index.entries.iter().enumerate() {
-        let chunk = load_chunk(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?;
-        ensure!(
-            blake3::hash(&chunk).to_hex().as_str() == entry.hash,
-            "WAL chunk checksum mismatch"
-        );
-        let record: WalRecord = serde_json::from_slice(&chunk)?;
-        ensure!(
-            record.namespace == *namespace
-                && record.lsn == entry.lsn
-                && record.epoch <= index.epoch,
-            "WAL record identity mismatch"
-        );
-        let baseline = entry_index == 0 && index.replay_baseline_lsn > 0;
-        if baseline {
-            ensure!(
-                matches!(
-                    record.batch.operations.first(),
-                    Some(WalOperation::Truncate { size: 0 })
-                ),
-                "WAL baseline must reset the replay image"
-            );
-        } else {
-            ensure!(
-                index.receipts.get(&record.append_id) == Some(&record.lsn),
-                "missing WAL append receipt"
-            );
-            if let Some(digest) = index.receipt_digests.get(&record.append_id) {
-                ensure!(
-                    digest
-                        == blake3::hash(&serde_json::to_vec(&record)?)
-                            .to_hex()
-                            .as_str(),
-                    "WAL receipt request digest mismatch"
-                );
-            }
-        }
-        apply_batch(&mut bytes, &record.batch)?;
-        if let Some(commit) = record.commit {
-            ensure!(
-                commit.lsn == record.lsn && commit.position.frame_count > 0,
-                "invalid record commit LSN"
-            );
-            ensure!(
-                committed_position(&bytes)? == Some(commit.position),
-                "commit does not match replayed WAL boundary"
-            );
-            ensure!(
-                batch_covers_position(&record.batch, &bytes, commit.position)?,
-                "commit frame was not written by this record"
-            );
-        }
-        last_record_commit = record.commit;
-    }
+    Ok(())
+}
+
+fn validate_record(
+    index: &WalMetadata,
+    namespace: &Namespace,
+    entry_index: usize,
+    bytes: &mut Vec<u8>,
+    load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
+    require_digest: bool,
+) -> Result<Option<WalCommit>> {
+    let entry = &index.entries[entry_index];
+    let chunk = load_chunk(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?;
     ensure!(
-        last_record_commit == index.commit,
-        "index and final record commit disagree"
+        blake3::hash(&chunk).to_hex().as_str() == entry.hash,
+        "WAL chunk checksum mismatch"
     );
-    Ok(index.commit)
+    let record: WalRecord = serde_json::from_slice(&chunk)?;
+    ensure!(
+        record.namespace == *namespace && record.lsn == entry.lsn && record.epoch <= index.epoch,
+        "WAL record identity mismatch"
+    );
+    let baseline = entry_index == 0 && index.replay_baseline_lsn > 0;
+    if baseline {
+        ensure!(
+            matches!(
+                record.batch.operations.first(),
+                Some(WalOperation::Truncate { size: 0 })
+            ),
+            "WAL baseline must reset the replay image"
+        );
+    } else {
+        ensure!(
+            index.receipts.get(&record.append_id) == Some(&record.lsn),
+            "missing WAL append receipt"
+        );
+        if require_digest {
+            ensure!(
+                index.receipt_digests.contains_key(&record.append_id),
+                "missing new WAL append digest"
+            );
+        }
+        if let Some(digest) = index.receipt_digests.get(&record.append_id) {
+            ensure!(
+                digest
+                    == blake3::hash(&serde_json::to_vec(&record)?)
+                        .to_hex()
+                        .as_str(),
+                "WAL receipt request digest mismatch"
+            );
+        }
+    }
+    apply_batch(bytes, &record.batch)?;
+    if let Some(commit) = record.commit {
+        ensure!(
+            commit.lsn == record.lsn && commit.position.frame_count > 0,
+            "invalid record commit LSN"
+        );
+        ensure!(
+            committed_position(bytes)? == Some(commit.position),
+            "commit does not match replayed WAL boundary"
+        );
+        ensure!(
+            batch_covers_position(&record.batch, bytes, commit.position)?,
+            "commit frame was not written by this record"
+        );
+    }
+    Ok(record.commit)
 }
 
 pub(crate) fn batch_covers_position(

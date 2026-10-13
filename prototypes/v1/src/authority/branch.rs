@@ -5,22 +5,26 @@ use super::{
     now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint,
 };
 use crate::{
+    manifest::{Head, Manifest},
     object_store::{ObjectStore, PreconditionFailed, PutCondition, StoredObject},
-    recovery::validate_index_commit,
+    recovery::{validate_index_append, validate_index_state, ValidatedWal},
 };
 use anyhow::{ensure, Context, Result};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
 };
 
-#[derive(Clone)]
 struct View {
-    reference: BranchRef,
+    incarnation: u64,
+    head: Option<ObjectEntry>,
+    wal: Option<ObjectEntry>,
     objects: BTreeMap<String, ObjectEntry>,
+    pinned: BTreeSet<String>,
+    validated_wal: Option<(ObjectEntry, ValidatedWal)>,
 }
 
 pub struct BranchStore {
@@ -38,11 +42,24 @@ impl Authority {
         let pin = unique_id()?;
         let mut selected = None;
         self.transact(None, |root| {
-            let reference = root.branches.get(branch).context("branch missing")?.clone();
-            root.pins.insert(pin.clone(), entries(root));
+            let reference = root.branches.get(branch).context("branch missing")?;
+            let incarnation = reference.incarnation;
+            let head = reference.head.clone();
+            let wal = reference.wal.clone();
+            let entries = referenced(self, root, head.as_ref(), wal.as_ref())?;
+            let pinned = entries.values().map(|entry| entry.blob.clone()).collect();
+            root.pins
+                .insert(pin.clone(), entries.values().cloned().collect());
             selected = Some(View {
-                reference,
-                objects: root.objects.clone(),
+                incarnation,
+                head,
+                wal,
+                objects: entries
+                    .into_iter()
+                    .filter(|(key, _)| !matches!(key.as_str(), "HEAD" | "wal/index"))
+                    .collect(),
+                pinned,
+                validated_wal: None,
             });
             Ok(())
         })?;
@@ -50,7 +67,7 @@ impl Authority {
         Ok(Arc::new(BranchStore {
             authority: self.clone(),
             branch: branch.to_owned(),
-            incarnation: view.reference.incarnation,
+            incarnation: view.incarnation,
             pin,
             view: Mutex::new(view),
             drop_cleanup: AtomicBool::new(true),
@@ -58,28 +75,71 @@ impl Authority {
     }
 }
 
-fn entries(root: &CatalogRoot) -> Vec<ObjectEntry> {
-    let mut entries: BTreeMap<String, ObjectEntry> = root
-        .objects
-        .values()
-        .map(|entry| (entry.blob.clone(), entry.clone()))
-        .collect();
-    for branch in root.branches.values() {
-        for entry in branch.head.iter().chain(branch.wal.iter()) {
-            entries.insert(entry.blob.clone(), entry.clone());
-        }
-        for point in &branch.history {
-            for entry in point.head.iter().chain(point.wal.iter()) {
-                entries.insert(entry.blob.clone(), entry.clone());
-            }
-        }
+fn referenced(
+    authority: &Authority,
+    root: &CatalogRoot,
+    head: Option<&ObjectEntry>,
+    wal: Option<&ObjectEntry>,
+) -> Result<BTreeMap<String, ObjectEntry>> {
+    let mut entries = BTreeMap::new();
+    if let Some(head) = head {
+        semantic::registered(root, head)?;
+        let metadata: Head = serde_json::from_slice(&authority.read_metadata_blob(head)?)?;
+        let key = format!("manifests/{}", metadata.manifest);
+        manifest_dependencies(authority, root, &key, &mut entries)?;
+        entries.insert("HEAD".into(), head.clone());
     }
-    for point in root.snapshots.values() {
-        for entry in point.head.iter().chain(point.wal.iter()) {
-            entries.insert(entry.blob.clone(), entry.clone());
+    if let Some(wal) = wal {
+        semantic::registered(root, wal)?;
+        let index = semantic::index(&authority.read_metadata_blob(wal)?)?;
+        for chunk in index.entries {
+            let key = format!("wal/chunks/{}", chunk.hash);
+            let entry = root.objects.get(&key).context("WAL chunk missing")?;
+            semantic::registered(root, entry)?;
+            entries.insert(key, entry.clone());
         }
+        entries.insert("wal/index".into(), wal.clone());
     }
-    entries.into_values().collect()
+    Ok(entries)
+}
+
+fn manifest_dependencies(
+    authority: &Authority,
+    root: &CatalogRoot,
+    key: &str,
+    entries: &mut BTreeMap<String, ObjectEntry>,
+) -> Result<()> {
+    let entry = root.objects.get(key).context("manifest missing")?;
+    semantic::registered(root, entry)?;
+    let manifest: Manifest = serde_json::from_slice(&authority.read_metadata_blob(entry)?)?;
+    manifest.validate()?;
+    entries.insert(key.to_owned(), entry.clone());
+    for hash in manifest.segments.values() {
+        let key = format!("segments/{hash}");
+        let entry = root.objects.get(&key).context("manifest segment missing")?;
+        semantic::registered(root, entry)?;
+        entries.insert(key, entry.clone());
+    }
+    Ok(())
+}
+
+fn accessible(
+    authority: &Authority,
+    root: &CatalogRoot,
+    key: &str,
+    entry: &ObjectEntry,
+) -> Result<BTreeMap<String, ObjectEntry>> {
+    let mut entries = match key {
+        "HEAD" => referenced(authority, root, Some(entry), None)?,
+        "wal/index" => referenced(authority, root, None, Some(entry))?,
+        _ => BTreeMap::new(),
+    };
+    if key.starts_with("manifests/") {
+        manifest_dependencies(authority, root, key, &mut entries)?;
+    }
+    semantic::registered(root, entry)?;
+    entries.insert(key.to_owned(), entry.clone());
+    Ok(entries)
 }
 
 impl BranchStore {
@@ -120,40 +180,59 @@ impl BranchStore {
         Ok(branch)
     }
 
-    fn extend_pin(&self, root: &mut CatalogRoot) -> Result<()> {
-        let current = entries(root);
+    fn extend_pin(
+        &self,
+        root: &mut CatalogRoot,
+        view: &View,
+        entries: BTreeMap<String, ObjectEntry>,
+    ) -> Result<BTreeMap<String, ObjectEntry>> {
         let pin = root
             .pins
             .get_mut(&self.pin)
             .context("reader pin disappeared")?;
-        let mut merged: BTreeMap<_, _> = pin
-            .iter()
-            .cloned()
-            .map(|entry| (entry.blob.clone(), entry))
-            .collect();
-        for entry in current {
-            merged.insert(entry.blob.clone(), entry);
+        let mut added = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        for (key, entry) in entries {
+            if !view.pinned.contains(&entry.blob) && seen.insert(entry.blob.clone()) {
+                pin.push(entry.clone());
+            }
+            added.insert(key, entry);
         }
-        *pin = merged.into_values().collect();
-        Ok(())
+        Ok(added)
     }
 
     fn selected(root: &CatalogRoot, branch: &str) -> Result<View> {
+        let reference = root.branches.get(branch).context("branch missing")?;
         Ok(View {
-            reference: root.branches.get(branch).context("branch missing")?.clone(),
-            objects: root.objects.clone(),
+            incarnation: reference.incarnation,
+            head: reference.head.clone(),
+            wal: reference.wal.clone(),
+            objects: BTreeMap::new(),
+            pinned: BTreeSet::new(),
+            validated_wal: None,
         })
     }
 
-    fn refresh(view: &mut View, selected: View) {
-        view.reference = selected.reference;
-        view.objects.extend(selected.objects);
+    fn refresh(view: &mut View, selected: View, added: BTreeMap<String, ObjectEntry>) {
+        if view.validated_wal.as_ref().map(|(entry, _)| entry) != selected.wal.as_ref() {
+            view.validated_wal = None;
+        }
+        view.incarnation = selected.incarnation;
+        view.head = selected.head;
+        view.wal = selected.wal;
+        view.pinned
+            .extend(added.values().map(|entry| entry.blob.clone()));
+        view.objects.extend(
+            added
+                .into_iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "HEAD" | "wal/index")),
+        );
     }
 
     fn get_entry(&self, key: &str, view: &View) -> Option<ObjectEntry> {
         match key {
-            "HEAD" => view.reference.head.clone(),
-            "wal/index" => view.reference.wal.clone(),
+            "HEAD" => view.head.clone(),
+            "wal/index" => view.wal.clone(),
             _ => view.objects.get(key).cloned(),
         }
     }
@@ -173,8 +252,9 @@ impl BranchStore {
         root: &mut CatalogRoot,
         bytes: &[u8],
         entry: &ObjectEntry,
-    ) -> Result<()> {
-        let commit = validate_index_commit(bytes, self.authority.namespace(), |key| {
+        previous: Option<&ValidatedWal>,
+    ) -> Result<ValidatedWal> {
+        let load_chunk = |key: &str| {
             let relative = self.relative(key)?;
             let entry = root
                 .objects
@@ -182,7 +262,14 @@ impl BranchStore {
                 .context("commit chunk missing from candidate catalog")?;
             semantic::registered(root, entry)?;
             self.authority.read_metadata_blob(entry)
-        })?;
+        };
+        let validated = match previous {
+            Some(previous) => {
+                validate_index_append(previous, bytes, self.authority.namespace(), load_chunk)?
+            }
+            None => validate_index_state(bytes, self.authority.namespace(), load_chunk)?,
+        };
+        let commit = validated.commit();
         let previous = root.branches[&self.branch]
             .wal
             .as_ref()
@@ -223,7 +310,7 @@ impl BranchStore {
                 wal: branch.wal.clone(),
             });
         }
-        Ok(())
+        Ok(validated)
     }
 
     pub(super) fn publish_wal_append(
@@ -256,17 +343,48 @@ impl BranchStore {
                     Ok(())
                 })?;
         let mut selected = None;
-        self.authority.transact(None, |root| {
+        let mut added = BTreeMap::new();
+        let mut validated = None;
+        let mut attempt = 0;
+        let published = self.authority.transact(None, |root| {
+            attempt += 1;
             Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
             self.validate_publication(root, "wal/index", &index_bytes)?;
             ensure!(!root.objects.contains_key(&chunk_key), PreconditionFailed);
             root.objects.insert(chunk_key.clone(), chunk.clone());
-            self.commit_point(root, &index_bytes, &index)?;
-            self.extend_pin(root)?;
+            let previous = if attempt == 1 {
+                view.validated_wal.as_ref().and_then(|(entry, state)| {
+                    (self.bound(root).ok()?.wal.as_ref() == Some(entry)).then_some(state)
+                })
+            } else {
+                None
+            };
+            validated = Some(self.commit_point(root, &index_bytes, &index, previous)?);
+            added = self.extend_pin(
+                root,
+                &view,
+                BTreeMap::from([
+                    (chunk_key.clone(), chunk.clone()),
+                    ("wal/index".into(), index.clone()),
+                ]),
+            )?;
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
-        Self::refresh(&mut view, selected.context("WAL publication view missing")?);
+        Self::refresh(
+            &mut view,
+            selected.context("WAL publication view missing")?,
+            added,
+        );
+        if published
+            .root
+            .branches
+            .get(&self.branch)
+            .and_then(|branch| branch.wal.as_ref())
+            == Some(&index)
+        {
+            view.validated_wal = Some((index, validated.context("WAL validation missing")?));
+        }
         Ok(())
     }
 }
@@ -298,20 +416,19 @@ impl ObjectStore for BranchStore {
                 return Ok(None);
             }
             let mut selected = None;
+            let mut added = BTreeMap::new();
             self.authority.transact(None, |root| {
                 self.bound(root)?;
                 selected = root.objects.get(relative).cloned();
                 if let Some(entry) = &selected {
-                    root.pins
-                        .get_mut(&self.pin)
-                        .context("reader pin missing")?
-                        .push(entry.clone());
+                    let entries = accessible(&self.authority, root, relative, entry)?;
+                    added = self.extend_pin(root, &view, entries)?;
                 }
                 Ok(())
             })?;
-            if let Some(entry) = &selected {
-                view.objects.insert(relative.to_owned(), entry.clone());
-            }
+            view.pinned
+                .extend(added.values().map(|entry| entry.blob.clone()));
+            view.objects.extend(added);
             selected
         };
         entry
@@ -348,6 +465,7 @@ impl ObjectStore for BranchStore {
         self.validate_publication(&snapshot.root, relative, bytes)?;
         let entry = self.authority.upload(bytes)?;
         let mut selected = None;
+        let mut added = BTreeMap::new();
         self.authority.transact(None, |root| {
             let branch = self.bound(root)?;
             let current = match relative {
@@ -364,18 +482,22 @@ impl ObjectStore for BranchStore {
                         .context("branch missing")?
                         .head = Some(entry.clone())
                 }
-                "wal/index" => self.commit_point(root, bytes, &entry)?,
+                "wal/index" => {
+                    self.commit_point(root, bytes, &entry, None)?;
+                }
                 _ => {
                     root.objects.insert(relative.to_owned(), entry.clone());
                 }
             }
-            self.extend_pin(root)?;
+            let entries = accessible(&self.authority, root, relative, &entry)?;
+            added = self.extend_pin(root, &view, entries)?;
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
         Self::refresh(
             &mut view,
             selected.context("branch publication view missing")?,
+            added,
         );
         Ok(entry.etag)
     }
@@ -414,11 +536,14 @@ impl ObjectStore for BranchStore {
                     root.objects.remove(relative);
                 }
             }
-            self.extend_pin(root)?;
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
-        Self::refresh(&mut view, selected.context("branch deletion view missing")?);
+        Self::refresh(
+            &mut view,
+            selected.context("branch deletion view missing")?,
+            BTreeMap::new(),
+        );
         Ok(())
     }
 
@@ -432,20 +557,48 @@ impl ObjectStore for BranchStore {
                 .namespace
                 .key(relative.strip_suffix('/').unwrap_or(relative))?;
         }
-        let view = self
+        let mut view = self
             .view
             .lock()
             .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
+        let snapshot = self.authority.snapshot()?;
+        self.bound(&snapshot.root)?;
+        if snapshot
+            .root
+            .objects
+            .keys()
+            .any(|key| key.starts_with(relative) && !view.objects.contains_key(key))
+        {
+            let mut added = BTreeMap::new();
+            self.authority.transact(None, |root| {
+                self.bound(root)?;
+                let mut candidates = BTreeMap::new();
+                for (key, entry) in root
+                    .objects
+                    .iter()
+                    .filter(|(key, _)| key.starts_with(relative))
+                {
+                    if !view.objects.contains_key(key) {
+                        candidates.extend(accessible(&self.authority, root, key, entry)?);
+                    }
+                }
+                added = self.extend_pin(root, &view, candidates)?;
+                Ok(())
+            })?;
+            view.pinned
+                .extend(added.values().map(|entry| entry.blob.clone()));
+            view.objects.extend(added);
+        }
         let mut keys: Vec<String> = view
             .objects
             .keys()
             .filter(|key| key.starts_with(relative))
             .map(|key| format!("{namespace}{key}"))
             .collect();
-        if view.reference.head.is_some() && "HEAD".starts_with(relative) {
+        if view.head.is_some() && "HEAD".starts_with(relative) {
             keys.push(format!("{namespace}HEAD"));
         }
-        if view.reference.wal.is_some() && "wal/index".starts_with(relative) {
+        if view.wal.is_some() && "wal/index".starts_with(relative) {
             keys.push(format!("{namespace}wal/index"));
         }
         keys.sort();
