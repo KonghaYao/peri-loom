@@ -3,7 +3,8 @@ mod support;
 
 use anyhow::{ensure, Result};
 use peri_loom_v1::manifest::{digest, Manifest, SEGMENT_SIZE};
-use peri_loom_v1::object_store::ObjectStore;
+use peri_loom_v1::object_store::{ObjectStore, PutCondition};
+use peri_loom_v1::runtime::DatabaseProvider;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -166,5 +167,100 @@ fn unsafe_fixture_is_rejected_before_credentials_are_used() -> Result<()> {
     let output = invoke(&fixture)?;
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
+    Ok(())
+}
+
+#[test]
+fn encrypted_image_publishes_through_fenced_batch_session() -> Result<()> {
+    let service = Harness::new()?;
+    let database = identifier("import-publish")?;
+    let lease = service.grant(database.clone(), "worker-a", 1, 0)?;
+    let remote = peri_loom_v1::authority_rpc::RemoteAuthorityProvider::new(
+        service.worker.clone(),
+        "worker-a".into(),
+    )?;
+    remote.install_lease(
+        lease.clone(),
+        peri_loom_v1::ownership::types::AccessRole::ReadOnly,
+    )?;
+    let broker = Broker::new(&service, remote.clone())?;
+    let private = private_directory()?;
+    let image = synthetic_image(private.path())?;
+    let destination = private.path().join("staged");
+    let fixture = private.path().join("fixture.json");
+    private_fixture(
+        &fixture,
+        &json!({
+            "authority_endpoint": service.endpoint,
+            "authority_token": service.worker_token,
+            "broker_endpoint": broker.endpoint,
+            "broker_token": broker.token,
+            "binding": lease.binding,
+            "epoch": lease.binding.epoch,
+            "source": image,
+            "destination": destination,
+        }),
+    )?;
+    assert!(invoke(&fixture)?.status.success());
+    remote.install_lease(
+        lease.clone(),
+        peri_loom_v1::ownership::types::AccessRole::Writer,
+    )?;
+    let initial = remote.open_store(&database, lease.binding.epoch)?;
+    let empty_bytes = serde_json::to_vec(&Manifest::default())?;
+    let empty_id = digest(&empty_bytes);
+    initial.put(
+        &database.namespace.key(&format!("manifests/{empty_id}"))?,
+        &empty_bytes,
+        PutCondition::Absent,
+    )?;
+    initial.put(
+        &database.namespace.key("HEAD")?,
+        &serde_json::to_vec(&json!({"manifest": empty_id}))?,
+        PutCondition::Absent,
+    )?;
+    drop(initial);
+    let published = Command::new(env!("CARGO_BIN_EXE_peri-loom-v1"))
+        .arg("publish-image")
+        .arg(&fixture)
+        .output()?;
+    assert!(
+        published.status.success(),
+        "publish-image failed: {}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let reply: Value = serde_json::from_slice(&published.stdout)?;
+    assert_eq!(reply["ok"], true);
+    assert!(reply["segments"].as_u64().unwrap() > 1);
+
+    let store = remote.open_store(&database, lease.binding.epoch)?;
+    let namespace = &database.namespace;
+    let head = store.get(&namespace.key("HEAD")?)?.unwrap();
+    let head: Value = serde_json::from_slice(&head.bytes)?;
+    let published_manifest = store
+        .get(&namespace.key(&format!(
+            "manifests/{}",
+            reply["manifest_id"].as_str().unwrap()
+        ))?)?
+        .unwrap();
+    assert_eq!(head["manifest"], reply["manifest_id"]);
+    let manifest: Manifest = serde_json::from_slice(&published_manifest.bytes)?;
+    assert_eq!(manifest.generation, 1);
+    assert_eq!(manifest.parent.as_deref(), Some(empty_id.as_str()));
+    let first = manifest.segments.get(&0).unwrap();
+    let segment = store
+        .get(&namespace.key(&format!("segments/{first}"))?)?
+        .unwrap();
+    assert_eq!(digest(&segment.bytes), *first);
+    assert_eq!(manifest.logical_db_size, fs::metadata(image)?.len());
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_peri-loom-v1"))
+            .arg("publish-image")
+            .arg(&fixture)
+            .output()?
+            .status
+            .success()
+            == false
+    );
     Ok(())
 }

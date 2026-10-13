@@ -79,8 +79,21 @@ pub fn stage_encrypted_image(
     }
     #[cfg(not(unix))]
     DirBuilder::new().create(destination)?;
-    fs::create_dir(destination.join("segments"))?;
-    fs::create_dir(destination.join("manifests"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        DirBuilder::new()
+            .mode(0o700)
+            .create(destination.join("segments"))?;
+        DirBuilder::new()
+            .mode(0o700)
+            .create(destination.join("manifests"))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir(destination.join("segments"))?;
+        fs::create_dir(destination.join("manifests"))?;
+    }
 
     let mut manifest = Manifest {
         logical_db_size: original.len(),
@@ -139,7 +152,14 @@ pub fn stage_encrypted_image(
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())

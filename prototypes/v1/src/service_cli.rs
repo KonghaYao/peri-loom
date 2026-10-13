@@ -17,14 +17,17 @@ use crate::runtime::WorkerLimits;
 use crate::worker_rpc::server::WorkerServer;
 
 pub fn handles(command: &str) -> bool {
-    matches!(command, "authority" | "owned-worker" | "stage-image")
+    matches!(
+        command,
+        "authority" | "owned-worker" | "stage-image" | "publish-image"
+    )
 }
 
 pub fn run(arguments: &[String]) -> Result<()> {
     match arguments.first().map(String::as_str) {
         Some("authority") => authority(arguments),
         Some("owned-worker") => worker(arguments),
-        Some("stage-image") => crate::import_cli::run(arguments),
+        Some("stage-image" | "publish-image") => crate::import_cli::run(arguments),
         _ => anyhow::bail!("unknown service command"),
     }
 }
