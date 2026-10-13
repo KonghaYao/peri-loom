@@ -182,7 +182,7 @@ func (fake *reconcileFake) Worker(ctx context.Context, worker Worker, identifier
 	if fake.workers[worker.ID] == nil {
 		fake.workers[worker.ID] = make(map[string]Actual)
 	}
-	if action.Command == "get_worker_state" {
+	if action.Command == "get_worker_state" || action.Command == "get_worker_heartbeat" {
 		report := workerReport{WorkerID: worker.ID}
 		for _, actual := range fake.workers[worker.ID] {
 			report.Databases = append(report.Databases, actual)

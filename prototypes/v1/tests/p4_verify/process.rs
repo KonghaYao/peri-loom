@@ -43,6 +43,21 @@ fn actual_two_workers_fence_cached_sql_commit_head_and_worker_maintenance() -> R
         },
     )?;
     let session = opened["session"].as_str().unwrap().to_owned();
+    let heartbeat = first.worker(
+        true,
+        WorkerCommand::Ownership {
+            action: OwnershipCommand::GetWorkerHeartbeat,
+        },
+    )?;
+    assert_eq!(heartbeat["resources"]["loaded_databases"], 1);
+    assert!(heartbeat["resources"]["databases"][0]["resources"].is_null());
+    let full = first.worker(
+        true,
+        WorkerCommand::Ownership {
+            action: OwnershipCommand::GetWorkerState,
+        },
+    )?;
+    assert!(full["resources"]["databases"][0]["resources"].is_object());
     first.worker(
         false,
         WorkerCommand::Execute {

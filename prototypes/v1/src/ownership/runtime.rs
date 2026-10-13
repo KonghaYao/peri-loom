@@ -110,10 +110,21 @@ impl OwnershipRuntime {
                 Ok(serde_json::to_value(self.database_state(&database)?)?)
             }
             OwnershipCommand::GetWorkerState => Ok(serde_json::to_value(self.status()?)?),
+            OwnershipCommand::GetWorkerHeartbeat => {
+                Ok(serde_json::to_value(self.heartbeat_state()?)?)
+            }
         }
     }
 
     pub fn status(&self) -> Result<OwnershipWorkerState> {
+        self.report(true)
+    }
+
+    fn heartbeat_state(&self) -> Result<OwnershipWorkerState> {
+        self.report(false)
+    }
+
+    fn report(&self, include_resources: bool) -> Result<OwnershipWorkerState> {
         let contexts: Vec<_> = self
             .contexts
             .lock()
@@ -132,7 +143,11 @@ impl OwnershipRuntime {
         Ok(OwnershipWorkerState {
             worker_id: self.worker_id.clone(),
             databases,
-            resources: self.worker.status()?,
+            resources: if include_resources {
+                self.worker.status()?
+            } else {
+                self.worker.status_for_control()?
+            },
         })
     }
 

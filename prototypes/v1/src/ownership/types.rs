@@ -194,6 +194,7 @@ pub enum OwnershipCommand {
         database: DatabaseId,
     },
     GetWorkerState,
+    GetWorkerHeartbeat,
 }
 
 #[derive(Clone, Debug, Serialize)]

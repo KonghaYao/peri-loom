@@ -7,6 +7,25 @@ import (
 	"time"
 )
 
+func TestPollWorkersUsesNonSamplingHeartbeat(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	if err := fixture.controller.pollWorkers(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if fixture.fake.calls["get_worker_heartbeat"] != 2 || fixture.fake.calls["get_worker_state"] != 0 {
+		test.Fatalf("controller sampled expensive worker status for heartbeat: %+v", fixture.fake.calls)
+	}
+	metadata, err := fixture.store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, worker := range metadata.Workers {
+		if !worker.Healthy {
+			test.Fatal("heartbeat incorrectly marked worker unhealthy")
+		}
+	}
+}
+
 func TestReconcileLostGrantACKReplaysExactDurableReceiptAfterRestart(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	database := reconcileDatabase("grant-ack")

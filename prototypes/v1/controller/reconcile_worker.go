@@ -60,7 +60,7 @@ func (controller *Controller) pollWorkers(ctx context.Context) error {
 			return err
 		}
 		var report workerReport
-		rpcErr := controller.transport.Worker(ctx, worker, requestID, workerAction{Command: "get_worker_state"}, &report)
+		rpcErr := controller.transport.Worker(ctx, worker, requestID, workerAction{Command: "get_worker_heartbeat"}, &report)
 		valid := rpcErr == nil && report.WorkerID == identifier && report.Resources.LoadedDatabases >= 0 && report.Resources.LoadingDatabases >= 0
 		load := report.Resources.LoadedDatabases + report.Resources.LoadingDatabases
 		if load < 0 {

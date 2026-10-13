@@ -305,6 +305,14 @@ impl WorkerRuntime {
     }
 
     pub fn status(&self) -> Result<WorkerStatus> {
+        self.status_with_resources(true)
+    }
+
+    pub(crate) fn status_for_control(&self) -> Result<WorkerStatus> {
+        self.status_with_resources(false)
+    }
+
+    fn status_with_resources(&self, include_resources: bool) -> Result<WorkerStatus> {
         let mut registry = self.lock()?;
         registry.observe_all_quarantines();
         let mut status = WorkerStatus {
@@ -363,10 +371,12 @@ impl WorkerRuntime {
         }
         drop(registry);
         for (mut information, database) in databases {
-            information.resources = database
-                .map(|database| database.resources())
-                .transpose()?
-                .flatten();
+            if include_resources {
+                information.resources = database
+                    .map(|database| database.resources())
+                    .transpose()?
+                    .flatten();
+            }
             status.databases.push(information);
         }
         Ok(status)
