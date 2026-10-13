@@ -240,6 +240,153 @@ func TestReconcileRenewalReplaysAuthorityAndObservesWorkerBeforeDuplicateSequenc
 	}
 }
 
+type renewalStateFailure struct {
+	ControlTransport
+}
+
+func (transport renewalStateFailure) Authority(ctx context.Context, identifier string, input, output any) error {
+	var action authorityAction
+	if err := reconcileDecode(input, &action); err != nil {
+		return err
+	}
+	if action.Command == "get_database_state" {
+		return errors.New("authority state unavailable")
+	}
+	return transport.ControlTransport.Authority(ctx, identifier, input, output)
+}
+
+func TestReconcileExpiredPendingRenewalPlansFreshGrant(test *testing.T) {
+	for _, receipt := range []bool{false, true} {
+		name := "rejected"
+		if receipt {
+			name = "expired-receipt"
+		}
+		test.Run(name, func(test *testing.T) {
+			fixture := newReconcileFixture(test)
+			database := reconcileDatabase(name)
+			before, err := fixture.controller.Place(context.Background(), database, "local", "writer")
+			if err != nil {
+				test.Fatal(err)
+			}
+			actual := fixture.fake.authority[database.Key()]
+			actual.RemainingTTLMS = 400
+			fixture.fake.authority[database.Key()] = actual
+			fixture.fake.lost["renew"] = 1
+			if err := fixture.controller.Reconcile(context.Background()); err == nil {
+				test.Fatal("renewal ACK loss ignored")
+			}
+			pending, err := fixture.controller.Status(database)
+			if err != nil || pending.Phase != "renew_pending" {
+				test.Fatalf("renewal not durable: %+v %v", pending, err)
+			}
+			if receipt {
+				grant := fixture.fake.receipts[pending.PendingID]
+				grant.RemainingTTLMS = 0
+				fixture.fake.receipts[pending.PendingID] = grant
+			} else {
+				delete(fixture.fake.receipts, pending.PendingID)
+				delete(fixture.fake.payloads, pending.PendingID)
+			}
+			fixture.fake.authority[database.Key()] = Actual{Database: database, Mode: "revoked", Epoch: before.Epoch}
+			fixture.restart(test)
+			fixture.fake.trace = nil
+			if err := fixture.controller.Reconcile(context.Background()); err != nil {
+				test.Fatal(err)
+			}
+			after, err := fixture.controller.Status(database)
+			if err != nil || after.Phase != "active" || after.Epoch <= before.Epoch || after.LeaseID == before.LeaseID || after.Grant.Binding.GrantID == pending.PendingID {
+				test.Fatalf("fresh grant not confirmed: %+v %v", after, err)
+			}
+			trace := fixture.fake.trace
+			if len(trace) < 5 || trace[2] != "renew" || trace[3] != "get_database_state" || trace[4] != "get_database_state" {
+				test.Fatalf("pending replay and verified state must precede replanning: %v", fixture.fake.trace)
+			}
+		})
+	}
+}
+
+func TestReconcilePendingRenewalUnknownStateNeverGrants(test *testing.T) {
+	for _, mode := range []string{"unknown", "state-error", "live"} {
+		test.Run(mode, func(test *testing.T) {
+			fixture := newReconcileFixture(test)
+			database := reconcileDatabase(mode)
+			_, err := fixture.controller.Place(context.Background(), database, "local", "writer")
+			if err != nil {
+				test.Fatal(err)
+			}
+			actual := fixture.fake.authority[database.Key()]
+			actual.RemainingTTLMS = 400
+			fixture.fake.authority[database.Key()] = actual
+			fixture.fake.lost["renew"] = 1
+			if err := fixture.controller.Reconcile(context.Background()); err == nil {
+				test.Fatal("renewal ACK loss ignored")
+			}
+			pending, _ := fixture.controller.Status(database)
+			delete(fixture.fake.receipts, pending.PendingID)
+			delete(fixture.fake.payloads, pending.PendingID)
+			actual.Binding = nil
+			actual.RemainingTTLMS = 0
+			actual.Mode = mode
+			if mode == "live" {
+				actual.Mode = "writer"
+				binding := pending.Grant.Binding
+				binding.RenewalSequence++
+				actual.Binding = &binding
+				actual.RemainingTTLMS = 400
+			}
+			fixture.fake.authority[database.Key()] = actual
+			fixture.restart(test)
+			if mode == "state-error" {
+				fixture.controller.transport = renewalStateFailure{fixture.fake}
+			}
+			if err := fixture.controller.Reconcile(context.Background()); err == nil {
+				test.Fatal("unproven expiry allowed renewal to progress")
+			}
+			after, err := fixture.controller.Status(database)
+			if err != nil || after.Phase != "renew_pending" || after.Epoch != pending.Epoch || after.PendingID != pending.PendingID || string(after.PendingCommand) != string(pending.PendingCommand) || fixture.fake.calls["grant"] != 1 {
+				test.Fatalf("unknown authority outcome changed pending renewal: %+v %v", after, err)
+			}
+		})
+	}
+}
+
+func TestReconcileExpiredPendingRenewalKeepsFencedGrantPending(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	database := reconcileDatabase("renew-fenced-grant")
+	before, err := fixture.controller.Place(context.Background(), database, "local", "writer")
+	if err != nil {
+		test.Fatal(err)
+	}
+	actual := fixture.fake.authority[database.Key()]
+	actual.RemainingTTLMS = 400
+	fixture.fake.authority[database.Key()] = actual
+	fixture.fake.lost["renew"] = 1
+	if err := fixture.controller.Reconcile(context.Background()); err == nil {
+		test.Fatal("renewal ACK loss ignored")
+	}
+	pending, _ := fixture.controller.Status(database)
+	delete(fixture.fake.receipts, pending.PendingID)
+	delete(fixture.fake.payloads, pending.PendingID)
+	fixture.fake.authority[database.Key()] = Actual{Database: database, Mode: "revoked", Epoch: before.Epoch}
+	fixture.fake.rejectGrant = true
+	if err := fixture.controller.Reconcile(context.Background()); err == nil {
+		test.Fatal("grant CAS rejection ignored")
+	}
+	after, err := fixture.controller.Status(database)
+	if err != nil || after.Phase != "grant_pending" || after.Epoch <= before.Epoch || after.PendingID == pending.PendingID || fixture.fake.calls["acquire_database"] != 1 {
+		test.Fatalf("rejected new grant bypassed fencing: %+v %v", after, err)
+	}
+	fixture.restart(test)
+	fixture.fake.rejectGrant = false
+	if err := fixture.controller.Reconcile(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	settled, err := fixture.controller.Status(database)
+	if err != nil || settled.Phase != "active" || settled.Epoch != after.Epoch || settled.PendingID != "" {
+		test.Fatalf("durable grant did not recover: %+v %v", settled, err)
+	}
+}
+
 func TestReconcileRestartDoesNotTrustPersistedLeaseTTL(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	database := reconcileDatabase("expired")
