@@ -34,6 +34,66 @@ pub struct Authority {
     guard: Option<Arc<dyn MutationGuard>>,
 }
 
+#[cfg(test)]
+mod upload_batch_tests {
+    use super::*;
+    use crate::object_store::LocalObjectStore;
+
+    #[test]
+    fn segment_batch_reserves_intents_once_and_verifies_physical_bytes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let authority = Authority::open(store, Namespace::new("bulk", "segments")?)?;
+        let segments = vec![
+            vec![0x11; crate::manifest::SEGMENT_SIZE],
+            vec![0x22; crate::manifest::SEGMENT_SIZE],
+        ];
+        let before = authority.snapshot()?.root.revision;
+        let entries = authority.upload_segments(&segments)?;
+        assert_eq!(authority.snapshot()?.root.revision, before + 1);
+        for (entry, expected) in entries.iter().zip(&segments) {
+            assert_eq!(authority.read_blob(entry)?, *expected);
+            assert_eq!(
+                authority.snapshot()?.root.uploads.get(&entry.blob),
+                Some(entry)
+            );
+        }
+        authority.register_segments(&entries)?;
+        for entry in &entries {
+            let key = format!("segments/{}", entry.hash);
+            assert_eq!(authority.snapshot()?.root.objects.get(&key), Some(entry));
+        }
+        let before = authority.snapshot()?.root.revision;
+        assert!(authority.upload_segments(&[]).is_err());
+        assert!(authority.upload_segments(&[vec![0; 1]]).is_err());
+        assert_eq!(authority.snapshot()?.root.revision, before);
+        Ok(())
+    }
+
+    #[test]
+    fn full_segment_batch_uses_two_catalog_publications() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let authority = Authority::open(
+            Arc::new(LocalObjectStore::open(directory.path())?),
+            Namespace::new("bulk", "full")?,
+        )?;
+        let segments = (0..128)
+            .map(|index| {
+                let mut bytes = vec![0; crate::manifest::SEGMENT_SIZE];
+                bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                bytes
+            })
+            .collect::<Vec<_>>();
+        let before = authority.snapshot()?.root.revision;
+        let entries = authority.upload_segments(&segments)?;
+        authority.register_segments(&entries)?;
+        let after = authority.snapshot()?.root;
+        assert_eq!(after.revision, before + 2);
+        assert_eq!(after.objects.len(), segments.len());
+        Ok(())
+    }
+}
+
 pub(super) fn now_ms() -> Result<u64> {
     Ok(u64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
@@ -220,6 +280,69 @@ impl Authority {
             Ok(())
         })?;
         self.finish_upload(entry, bytes)
+    }
+
+    pub(crate) fn upload_segments(&self, segments: &[Vec<u8>]) -> Result<Vec<ObjectEntry>> {
+        ensure!(
+            !segments.is_empty() && segments.len() <= 128,
+            "invalid segment upload batch"
+        );
+        self.check(MutationStage::Upload)?;
+        let entries = segments
+            .iter()
+            .map(|segment| {
+                ensure!(
+                    segment.len() == crate::manifest::SEGMENT_SIZE,
+                    "invalid segment upload size"
+                );
+                Self::upload_entry(segment)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.transact(None, |root| {
+            for entry in &entries {
+                ensure!(
+                    !root.blobs.contains_key(&entry.blob)
+                        && !root.tombstones.contains_key(&entry.blob),
+                    "physical instance collision"
+                );
+                root.blobs.insert(entry.blob.clone(), entry.clone());
+                root.uploads.insert(entry.blob.clone(), entry.clone());
+            }
+            Ok(())
+        })?;
+        entries
+            .into_iter()
+            .zip(segments)
+            .map(|(entry, bytes)| self.finish_upload(entry, bytes))
+            .collect()
+    }
+
+    pub(crate) fn register_segments(&self, entries: &[ObjectEntry]) -> Result<()> {
+        ensure!(
+            !entries.is_empty() && entries.len() <= 128,
+            "invalid segment registration batch"
+        );
+        for entry in entries {
+            ensure!(
+                self.read_blob(entry)?.len() == crate::manifest::SEGMENT_SIZE,
+                "invalid staged segment size"
+            );
+        }
+        self.transact(None, |root| {
+            for entry in entries {
+                semantic::registered(root, entry)?;
+                let key = format!("segments/{}", entry.hash);
+                ensure!(
+                    root.objects
+                        .get(&key)
+                        .is_none_or(|current| current == entry),
+                    "segment logical identity conflict"
+                );
+                root.objects.insert(key, entry.clone());
+            }
+            Ok(())
+        })?;
+        Ok(())
     }
 
     fn upload_entry(bytes: &[u8]) -> Result<ObjectEntry> {
