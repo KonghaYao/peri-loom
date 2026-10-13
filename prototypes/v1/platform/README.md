@@ -135,13 +135,17 @@ Admission and rate limits are per gateway process/project. Native SQL has
 cooperative VM/time/row/result budgets. Result accounting is not an RSS cap;
 a large native scalar can allocate before a result check, and cooperative
 timeouts cannot preempt a blocked storage operation or a single native function.
-Audit storage has an explicit 64 MiB cap and requires an operator archival plan.
+Audit storage rotates at 64 MiB per segment, retaining older segments on the
+same volume. Startup verifies the full sequence and hash chain, including
+archived segments, and resumes only validated interrupted rotations. Disk space
+remains finite: there is no safe pre-dispatch audit-capacity reservation or
+operator retention/backup policy yet, so disk exhaustion still fails closed.
 After a trusted native SQL completion, an audit append failure returns
 `audit_unavailable` without reclassifying the durable operation as Unknown or
 poisoning its session. The reply includes `execution_completed` and forbids
 retries; the audit outage itself remains a fail-closed service error. A genuinely
-ambiguous native outcome remains quarantined. This does not solve the audit
-capacity limit or prove that the client received an earlier reply.
+ambiguous native outcome remains quarantined. This does not solve disk-space
+exhaustion or prove that the client received an earlier reply.
 
 ## Build, test, and SDKs
 

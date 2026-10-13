@@ -96,6 +96,9 @@ func openDurable(path string, initial any) (*durableFile, error) {
 			if strings.HasSuffix(filepath.Base(absolute), ".head") && name == strings.TrimSuffix(filepath.Base(absolute), ".head") {
 				continue
 			}
+			if _, isAudit := disk.prototype.(auditHead); isAudit && allowedAuditSidecar(strings.TrimSuffix(filepath.Base(absolute), ".head"), entry) {
+				continue
+			}
 			return nil, errors.New("unexpected private state file")
 		}
 		if err := recoverDurableCommit(disk); err != nil {

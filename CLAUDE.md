@@ -89,9 +89,10 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
   预算、禁用快照更新；跑门禁时不要自行改预算或启用快照更新，结果不可与既有门禁数字混用。
 - **SQL 门禁不可宣称全绿**：R21 与 view rename 已有修复代码和回归用例，仍须按固定 64 MiB
   hash 预算重测；分别记录 SQL 结果、约束与 plan snapshot 差异，不自行更新快照。
-- **当前交付缺口**：同一持久卷正常重启仍被 launcher 拒绝；审计文件超过 64 MiB 仍需安全容量治理；
-  原数据库在 Unknown 后仍需有证明条件的恢复路径。本轮已修复可信 SQL 回执被审计失败改写为 Unknown，
-  但不等于审计容量已解决。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestGatewayAudit|TestGatewayRealAuditFailure' -count=1`。
+- **当前交付缺口**：同一持久卷正常重启仍被 launcher 拒绝；审计已经按 64 MiB 分段并验证连续 hash chain，
+  但磁盘空间耗尽前的并发安全准入预留仍未实现；原数据库在 Unknown 后仍需有证明条件的恢复路径。
+  可信 SQL 回执不再被审计失败改写为 Unknown。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestAudit|TestDurableRecovery|TestGatewayRealAudit' -count=1`。
+  最小 SQL／官方 JS SDK CI 见 `.github/workflows/v1-baseline.yml`；尚未运行远端 CI 或完整支持矩阵。
   下一项：正常重启的 clean proof、lease fencing 与持久身份轮换；launcher 并发锁已有针对性回归。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
