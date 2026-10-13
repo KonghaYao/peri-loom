@@ -135,7 +135,7 @@ impl OwnershipRuntime {
         let mut databases = Vec::new();
         for context in contexts {
             let description = context.description()?;
-            if description.mode == OwnershipMode::Revoked {
+            if include_resources && description.mode == OwnershipMode::Revoked {
                 self.finish_detach(&context)?;
             }
             databases.push(description);

@@ -9,6 +9,23 @@ use peri_loom_v1::ownership::types::{AccessRole, OwnershipCommand, OwnershipMode
 use super::remote::Fixture;
 
 #[test]
+fn heartbeat_reports_expired_database_without_admitting_new_sessions() -> Result<()> {
+    let fixture = Fixture::new(AccessRole::Writer, 1000)?;
+    fixture.acquire(AccessRole::Writer)?;
+    let handle = fixture.runtime.open_session(&fixture.identifier)?;
+    handle.execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")?;
+    fixture.worker_clock.0.store(1000, Ordering::SeqCst);
+    let response = fixture
+        .runtime
+        .command(OwnershipCommand::GetWorkerHeartbeat)?;
+    assert_eq!(response["databases"][0]["mode"], "revoked");
+    assert!(response["resources"]["databases"][0]["resources"].is_null());
+    assert!(fixture.runtime.open_session(&fixture.identifier).is_err());
+    drop(handle);
+    Ok(())
+}
+
+#[test]
 fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()> {
     let fixture = Fixture::new_with_grant_observer(AccessRole::Writer, 1000)
         .context("watchdog race: fixture")?;
