@@ -1,0 +1,111 @@
+name: v1 SQL and SDK baseline
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Record source revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Platform SHA: $(git rev-parse HEAD)"
+          for path in prototypes/p0/turso third_party/sqlite; do
+            expected="$(git ls-tree HEAD "$path" | awk '{print $3}')"
+            actual="$(git -C "$path" rev-parse HEAD)"
+            echo "$path gitlink: $expected"
+            test -n "$expected" && test "$actual" = "$expected"
+          done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            prototypes/v1/platform/frontend/package-lock.json
+            prototypes/v1/platform/tests/hrana-sdk/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: prototypes/v1/platform/go.mod
+          cache-dependency-path: prototypes/v1/platform/go.sum
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup toolchain install 1.88 --profile minimal
+      - name: Build console before Go embed
+        working-directory: prototypes/v1/platform/frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Go unit smoke (controller registry/reconcile; platform gateway/audit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd prototypes/v1/controller && go test . -count=1 -run '^(TestRegistryRequiresHeartbeatAndPreservesRestartState|TestReconcileLostGrantACKReplaysExactDurableReceiptAfterRestart)$')
+          (cd prototypes/v1/platform && go test . -count=1 -run '^(TestGatewayTenantProjectSubjectAndOpaqueIsolation|TestGatewayAuditAfterCommitFailurePreservesKnownExecutionAndRedacts|TestGatewayAuditFailureDoesNotClearUnknownExecution)$')
+          (cd prototypes/v1/platform && go build -o "$GITHUB_WORKSPACE/peri-platform" ./cmd/peri-platform)
+      - name: Native service and SDK dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path prototypes/v1/Cargo.toml --locked
+          (cd prototypes/v1/platform/tests/hrana-sdk && npm ci)
+      - name: Pinned Turso SQL smoke (native Rust backend)
+        working-directory: prototypes/p0/turso
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --manifest-path testing/sqltest/Cargo.toml --bin sqltest -- run \
+            sqlite/conformance/sqlite-sqltests/transactions.sqltest \
+            sqlite/conformance/sqlite-sqltests/constraint-error-message-suffix.sqltest \
+            sqlite/conformance/sqlite-sqltests/view-rowid.sqltest \
+            --backend rust --skip-matrix --snapshot-mode=no \
+            --hash-join-memory-budget 67108864 --jobs 2
+          cargo run --locked --manifest-path testing/sqltest/Cargo.toml --bin sqltest -- run \
+            sqlite/conformance/sqlite-sqltests/returning.sqltest \
+            --filter insert-returning-single-column \
+            --backend rust --skip-matrix --snapshot-mode=no \
+            --hash-join-memory-budget 67108864 --jobs 2
+      - name: Official JS SDK loopback smoke
+        shell: bash
+        env:
+          PERI_HRANA_EXPERIMENTAL: '1'
+          PERI_PLATFORM_BINARY: ${{ github.workspace }}/peri-platform
+          PERI_RUST_BINARY: ${{ github.workspace }}/prototypes/v1/target/debug/peri-loom-v1
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp -d)"
+          port="$(python3 - <<'PY'
+          import socket
+          with socket.socket() as listener:
+              listener.bind(('127.0.0.1', 0))
+              print(listener.getsockname()[1])
+          PY
+          )"
+          python3 prototypes/v1/platform/dev.py --tls --no-build \
+            --listen "127.0.0.1:$port" --run-dir "$fixture" > "$fixture/launcher.log" 2>&1 &
+          launcher=$!
+          trap 'kill "$launcher" 2>/dev/null || true; wait "$launcher" 2>/dev/null || true; rm -rf "$fixture"' EXIT
+          for attempt in {1..120}; do
+            if test -f "$fixture/connection.json"; then break; fi
+            if ! kill -0 "$launcher" 2>/dev/null; then
+              echo 'Local launcher stopped before readiness' >&2
+              exit 1
+            fi
+            sleep 0.25
+          done
+          test -f "$fixture/connection.json" || { echo 'Local launcher readiness timed out' >&2; exit 1; }
+          export NODE_EXTRA_CA_CERTS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ca_file"])' "$fixture/connection.json")"
+          node prototypes/v1/platform/tests/hrana-sdk/read-only-live.mjs "$fixture/connection.json"
+          node prototypes/v1/platform/tests/hrana-sdk/live.mjs "$fixture/connection.json"
