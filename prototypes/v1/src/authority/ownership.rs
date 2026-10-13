@@ -84,7 +84,7 @@ impl OwnershipAuthority {
             "invalid import segment batch"
         );
         let service = self.service(database)?;
-        let _transition = service.gate.write()?;
+        let _transition = service.gate.write_for_import()?;
         service.available()?;
         let scoped = service.scoped(Permission::Control { expires: None });
         let check_empty = || -> Result<_> {
