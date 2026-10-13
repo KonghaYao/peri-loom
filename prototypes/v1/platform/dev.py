@@ -1,4 +1,6 @@
 import argparse
+import errno
+import fcntl
 import hashlib
 import hmac
 import json
@@ -191,6 +193,35 @@ class Project:
         self.stop = threading.Event()
         self.owned_identities = {}
         self.maintenance = None
+        self.run_lock = None
+
+    def acquire_run_lock(self):
+        if self.run_lock is not None:
+            raise RuntimeError("launcher run lock already held")
+        if pathlib.Path(self.arguments.run_dir).is_symlink():
+            raise RuntimeError("runtime directory must not be a symlink")
+        private_directory(self.directory)
+        path = self.directory / "launcher.lock"
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_nlink != 1:
+                raise RuntimeError("launcher run lock must be a private regular file")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    raise RuntimeError("runtime directory already has an active launcher") from error
+                raise
+            self.run_lock = descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def release_run_lock(self):
+        if self.run_lock is not None:
+            os.close(self.run_lock)
+            self.run_lock = None
 
     def prepare(self):
         observer = getattr(self.arguments, "sql_open_observer", False)
@@ -203,7 +234,7 @@ class Project:
         sql_duration_ms = getattr(self.arguments, "sql_max_duration_ms", 5000)
         if not 1 <= sql_duration_ms <= (request_timeout_seconds - 10) * 1000:
             raise RuntimeError("SQL duration limit must leave ten seconds for gateway response")
-        if observer and (pathlib.Path(self.arguments.run_dir).is_symlink() or self.directory.is_symlink() or self.directory.exists() and (not self.directory.is_dir() or any(self.directory.iterdir()))):
+        if observer and (pathlib.Path(self.arguments.run_dir).is_symlink() or self.directory.is_symlink() or self.directory.exists() and (not self.directory.is_dir() or any(entry.name != "launcher.lock" for entry in self.directory.iterdir()))):
             raise RuntimeError("SQL open observer requires a fresh empty runtime")
         private_directory(self.directory)
         for name in ("logs", "keys", "keys/kms", "authority", "controller", "platform", "cache-a", "cache-b"):
@@ -392,6 +423,7 @@ class Project:
         threading.Thread(target=serve, daemon=True).start()
 
     def run(self):
+        self.acquire_run_lock()
         self.prepare()
         authority_environment = safe_environment(capacity_trace=True)
         authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
@@ -543,6 +575,8 @@ def main():
             project.cleanup()
         except Exception as error:
             failure = error
+        finally:
+            project.release_run_lock()
     if failure:
         print("project stopped: " + str(failure), file=sys.stderr)
         return 1

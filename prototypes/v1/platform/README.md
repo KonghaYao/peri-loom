@@ -41,8 +41,10 @@ reuse any existing runtime, including one with no proofs or fully verified
 proofs. The standalone proof verifier checks both workers' signed incarnation
 and joined-exit records for Local and S3; it does not authorize restart. The
 proofs do not currently attest the shutdown RPC acknowledgement or establish
-old-process quiescence. In-place restart also still needs exclusive launcher
-locking, Authority clean-marker verification, lease fencing, old-cache lifecycle
+old-process quiescence. The launcher holds a private, nonblocking exclusive
+run-directory lock across startup and joined shutdown; this prevents competing
+launchers, but does not authorize reuse. In-place restart still needs Authority
+clean-marker verification, lease fencing, old-cache lifecycle
 handling, and crash-atomic generation/configuration rotation. Use a new fixture;
 never erase proof records or ownership dirty markers to force a restart.
 

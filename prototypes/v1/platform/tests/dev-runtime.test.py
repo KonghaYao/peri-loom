@@ -59,6 +59,40 @@ class RuntimeTests(unittest.TestCase):
             project.cleanup()
             process.wait.assert_called_once_with(timeout=15)
 
+    def test_launcher_lock_excludes_concurrent_start_and_releases_after_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix="peri-test-launcher-") as directory:
+            first, second = self.project(directory), self.project(directory)
+            first.acquire_run_lock()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "active launcher"):
+                    second.acquire_run_lock()
+                first.prepare()
+                with self.assertRaisesRegex(RuntimeError, "active launcher"):
+                    second.acquire_run_lock()
+            finally:
+                first.cleanup()
+                first.release_run_lock()
+            second.acquire_run_lock()
+            second.release_run_lock()
+
+    def test_launcher_lock_rejects_symlink_and_unsafe_file(self):
+        with tempfile.TemporaryDirectory(prefix="peri-test-launcher-") as directory:
+            target = pathlib.Path(directory) / "target"
+            target.mkdir(mode=0o700)
+            shortcut = pathlib.Path(directory) / "shortcut"
+            shortcut.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "symlink"):
+                self.project(str(shortcut)).acquire_run_lock()
+            lock = target / "launcher.lock"
+            lock.symlink_to(pathlib.Path(directory) / "missing")
+            with self.assertRaises(OSError):
+                self.project(str(target)).acquire_run_lock()
+            lock.unlink()
+            lock.write_text("unsafe")
+            lock.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, "private regular file"):
+                self.project(str(target)).acquire_run_lock()
+
     def test_s3_storage_identity_binds_endpoint_bucket_region_not_secrets(self):
         synthetic = {"S3_ENDPOINT": "http://127.0.0.1:9000", "S3_BUCKET": "peri-test-synthetic-original", "S3_REGION": "us-east-1", "S3_SECRET_ACCESS_KEY": "synthetic-not-real"}
         with tempfile.TemporaryDirectory(prefix="peri-test-launcher-") as directory, patch.dict(dev.os.environ, synthetic):

@@ -92,7 +92,7 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 - **当前交付缺口**：同一持久卷正常重启仍被 launcher 拒绝；审计文件超过 64 MiB 仍需安全容量治理；
   原数据库在 Unknown 后仍需有证明条件的恢复路径。本轮已修复可信 SQL 回执被审计失败改写为 Unknown，
   但不等于审计容量已解决。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestGatewayAudit|TestGatewayRealAuditFailure' -count=1`。
-  下一项：正常重启的锁、clean proof 与持久身份轮换。
+  下一项：正常重启的 clean proof、lease fencing 与持久身份轮换；launcher 并发锁已有针对性回归。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
 
