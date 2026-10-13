@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
+use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::authority::ownership::OwnershipAuthority;
@@ -24,6 +25,9 @@ use super::startup::AuthorityStartup;
 #[cfg(test)]
 #[path = "batch_tests.rs"]
 mod batch_tests;
+#[cfg(test)]
+#[path = "import_segment_tests.rs"]
+mod import_segment_tests;
 
 pub struct Server {
     listener: TcpListener,
@@ -311,6 +315,43 @@ impl State {
                 ensure!(request_id == identifier, "command identity mismatch");
                 self.authority
                     .maintenance(&database, &request_id, operation)
+            }
+            AuthorityCommand::ImportSegments {
+                database,
+                expected_head,
+                segments,
+            } => {
+                Self::control(principal)?;
+                ensure!(
+                    !segments.is_empty()
+                        && segments.len() <= super::protocol::MAX_IMPORT_SEGMENT_BATCH,
+                    "invalid import segment batch"
+                );
+                ensure!(
+                    crate::manifest::valid_hash(&expected_head),
+                    "invalid expected HEAD"
+                );
+                let encoded_size = crate::manifest::SEGMENT_SIZE.div_ceil(3) * 4;
+                let mut seen = BTreeSet::new();
+                let mut decoded = Vec::with_capacity(segments.len());
+                for segment in segments {
+                    ensure!(
+                        crate::manifest::valid_hash(&segment.hash)
+                            && seen.insert(segment.hash.clone())
+                            && segment.data_base64.len() == encoded_size,
+                        "invalid import segment"
+                    );
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(&segment.data_base64)
+                        .context("invalid import segment encoding")?;
+                    crate::manifest::verify_segment(&segment.hash, &bytes)?;
+                    decoded.push(bytes);
+                }
+                Ok(serde_json::to_value(self.authority.import_segments(
+                    &database,
+                    &expected_head,
+                    &decoded,
+                )?)?)
             }
             AuthorityCommand::GetDatabaseState { database } => {
                 if let Principal::Worker(worker) = principal {

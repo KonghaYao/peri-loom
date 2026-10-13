@@ -9,6 +9,7 @@ pub mod database;
 pub mod encryption;
 pub mod gc;
 pub mod import_cli;
+pub mod import_control_cli;
 pub mod import_image;
 pub mod io;
 pub mod manifest;

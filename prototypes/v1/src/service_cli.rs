@@ -19,7 +19,7 @@ use crate::worker_rpc::server::WorkerServer;
 pub fn handles(command: &str) -> bool {
     matches!(
         command,
-        "authority" | "owned-worker" | "stage-image" | "publish-image"
+        "authority" | "owned-worker" | "stage-image" | "publish-image" | "import-control"
     )
 }
 
@@ -28,6 +28,7 @@ pub fn run(arguments: &[String]) -> Result<()> {
         Some("authority") => authority(arguments),
         Some("owned-worker") => worker(arguments),
         Some("stage-image" | "publish-image") => crate::import_cli::run(arguments),
+        Some("import-control") => crate::import_control_cli::run(arguments),
         _ => anyhow::bail!("unknown service command"),
     }
 }

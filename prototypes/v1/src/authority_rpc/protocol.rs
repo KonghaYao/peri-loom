@@ -9,6 +9,14 @@ use crate::runtime::DatabaseId;
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_RPC_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_SEGMENT_BATCH: usize = 16;
+pub const MAX_IMPORT_SEGMENT_BATCH: usize = 64;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportSegment {
+    pub hash: String,
+    pub data_base64: String,
+}
 
 pub fn validate_segment_batch(segments: &[Vec<u8>]) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -62,6 +70,11 @@ pub enum AuthorityCommand {
         request_id: String,
         database: DatabaseId,
         operation: MaintenanceOperation,
+    },
+    ImportSegments {
+        database: DatabaseId,
+        expected_head: String,
+        segments: Vec<ImportSegment>,
     },
     ValidateLease {
         binding: LeaseBinding,

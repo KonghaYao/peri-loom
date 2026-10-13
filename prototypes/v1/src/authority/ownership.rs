@@ -14,7 +14,7 @@ mod fenced;
 mod maintenance;
 
 use self::admission::{Guard, Permission};
-use super::{unique_id, Authority, CatalogRoot};
+use super::{unique_id, Authority, CatalogRoot, ObjectEntry};
 use crate::{
     authority_rpc::protocol::MaintenanceOperation, namespace::Namespace, object_store::ObjectStore,
     ownership::types::*, runtime::DatabaseId,
@@ -68,6 +68,81 @@ struct Nonce {
 }
 
 impl OwnershipAuthority {
+    pub(crate) fn import_segments(
+        &self,
+        database: &DatabaseId,
+        expected_head: &str,
+        segments: &[Vec<u8>],
+    ) -> Result<Vec<ObjectEntry>> {
+        use crate::manifest::{digest, valid_hash, Head, Manifest, WalPosition, SEGMENT_SIZE};
+
+        ensure!(valid_hash(expected_head), "invalid expected HEAD");
+        ensure!(
+            !segments.is_empty()
+                && segments.len() <= crate::authority_rpc::protocol::MAX_IMPORT_SEGMENT_BATCH
+                && segments.iter().all(|segment| segment.len() == SEGMENT_SIZE),
+            "invalid import segment batch"
+        );
+        let service = self.service(database)?;
+        let _transition = service.gate.write()?;
+        service.available()?;
+        let scoped = service.scoped(Permission::Control { expires: None });
+        let check_empty = || -> Result<_> {
+            let root = scoped.snapshot()?.root;
+            let branch = root
+                .branches
+                .get(&database.branch)
+                .context("branch missing")?;
+            ensure!(
+                branch.wal.is_none()
+                    && branch.sequence == 0
+                    && branch.current_sequence == 0
+                    && branch.history.is_empty(),
+                "import target is not fresh and WAL-free"
+            );
+            let head_entry = branch.head.as_ref().context("import target HEAD missing")?;
+            let head: Head = serde_json::from_slice(&scoped.read_blob(head_entry)?)?;
+            ensure!(head.manifest == expected_head, "import target HEAD changed");
+            let manifest_entry = root
+                .objects
+                .get(&format!("manifests/{expected_head}"))
+                .context("import target manifest missing")?;
+            ensure!(
+                manifest_entry.hash == expected_head,
+                "import target manifest mismatch"
+            );
+            let bytes = scoped.read_blob(manifest_entry)?;
+            ensure!(
+                digest(&bytes) == expected_head,
+                "import target manifest changed"
+            );
+            let manifest: Manifest = serde_json::from_slice(&bytes)?;
+            manifest.validate()?;
+            ensure!(
+                manifest.generation == 0
+                    && manifest.logical_db_size == 0
+                    && manifest.segments.is_empty()
+                    && manifest.parent.is_none()
+                    && manifest.applied_lsn == 0
+                    && manifest.applied_wal_position == WalPosition::default(),
+                "import target manifest is not initial and empty"
+            );
+            Ok(branch.clone())
+        };
+        let original = check_empty()?;
+        let entries = scoped.upload_segments(segments)?;
+        ensure!(
+            check_empty()? == original,
+            "import target changed during upload"
+        );
+        scoped.register_segments(&entries)?;
+        ensure!(
+            check_empty()? == original,
+            "import target changed during registration"
+        );
+        Ok(entries)
+    }
+
     pub(crate) fn backend(&self) -> Arc<dyn ObjectStore> {
         self.store.clone()
     }
