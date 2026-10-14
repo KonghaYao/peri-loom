@@ -1,5 +1,29 @@
 # Native single-container deployment
 
+## CI and image releases
+
+`.github/workflows/v1-image.yml` builds the full image on relevant branch pushes,
+pull requests, and manual runs. It uses `verify-image.py` to test the actual
+container over TLS, including SQL, encrypted native storage, and clean shutdown.
+A tag matching `v<prototypes/v1/Cargo.toml version>` rebuilds and verifies the
+image before publishing `ghcr.io/<owner>/<repo>:<tag>` and a **pre-release** GitHub
+Release. Only Linux amd64 is tested; no `latest` image is published. GHCR access
+depends on the package's visibility and the registry credentials of the client.
+
+To start a published image using your own TLS files and a persistent Compose
+volume, set `PERI_IMAGE=ghcr.io/<owner>/<repo>:<tag>` and `PERI_TLS_DIR` (see
+below), then run:
+
+```sh
+docker compose -f prototypes/v1/deploy/compose.yaml up -d --no-build --pull always
+```
+
+This is a development deployment, not a production upgrade procedure. A normal
+restart using an existing persistent state volume is not yet verified and may be
+rejected by the launcher. Do not remove the volume or reset the ownership marker
+to get past that rejection. The CI image test uses a fresh volume and local
+storage; it does not test S3, existing-volume restarts, or high availability.
+
 ## Verify an existing full Linux image
 
 From the repository root, with Docker, Python 3 and OpenSSL available:

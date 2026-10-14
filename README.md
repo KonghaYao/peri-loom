@@ -46,6 +46,7 @@ third_party/sqlite/       SQLite 官方源码 submodule（测试语料，不链�
 
 - 本地平台运行、连接与安全边界：[`prototypes/v1/platform/README.md`](prototypes/v1/platform/README.md)
 - V1 构建与各阶段命令：[`prototypes/v1/README.md`](prototypes/v1/README.md)
+- Docker / Compose 部署及镜像验收：[`prototypes/v1/deploy/README.md`](prototypes/v1/deploy/README.md)
 - P0 内核与 Turso 分支：[`prototypes/p0/README.md`](prototypes/p0/README.md)
 
 ## 本地构建

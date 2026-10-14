@@ -1,6 +1,6 @@
 services:
   app:
-    image: peri-loom:local
+    image: ${PERI_IMAGE:-peri-loom:local}
     build:
       context: ../../..
       dockerfile: prototypes/v1/deploy/Dockerfile
