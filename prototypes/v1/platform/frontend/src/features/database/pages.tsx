@@ -38,11 +38,13 @@ function DataPage({ database, call, sqlCall, setSQLCredential }: PageProps) {
   const [rows, setRows] = useState<unknown[][]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
   const [blocked, setBlocked] = useState(false);
   const restoredTable = useRef('');
   useEffect(() => { if (!database) return; let active = true; call<unknown[][]>('/v1/databases/schema', { database: database.id }).then(result => { if (active) setTables(parseSchemaTables(result).map(item => item.name)); }).catch(failure => { if (active) setError(failureText(failure)); }); return () => { active = false; }; }, [call, database]);
   const preview = async (selected: string) => {
-    if (!database || !sqlCall || blocked) return;
+    if (!database || !sqlCall || blocked || loadingRef.current) return;
+    loadingRef.current = true;
     setTable(selected); setLoading(true); setError(''); setRows([]); setColumns([]);
     const params = new URLSearchParams(location.hash.split('?')[1] ?? '');
     const selectedView = params.get('table') === selected ? params.get('view') ?? view : view;
@@ -57,7 +59,7 @@ function DataPage({ database, call, sqlCall, setSQLCredential }: PageProps) {
       const result = await sqlCall<unknown[][]>('/v1/sql/query', { session, sql: tablePreviewSQL(selected) });
       setColumns(cols); setRows(result); setSchemaRows(schema);
     } catch (failure) { setError(failureText(failure)); if (failure instanceof APIError && failure.uncertain) { uncertain = true; setBlocked(true); } }
-    finally { if (session && !uncertain) try { await sqlCall('/v1/sql/close', { session }); } catch { setError('数据已读取，会话关闭待确认；请检查服务端会话。'); setBlocked(true); } setLoading(false); }
+    finally { if (session && !uncertain) try { await sqlCall('/v1/sql/close', { session }); } catch { setError('数据已读取，会话关闭待确认；请检查服务端会话。'); setBlocked(true); } loadingRef.current = false; setLoading(false); }
   };
   useEffect(() => {
     const params = new URLSearchParams(location.hash.split('?')[1] ?? '');
@@ -68,7 +70,7 @@ function DataPage({ database, call, sqlCall, setSQLCredential }: PageProps) {
     void preview(selected);
   }, [tables, sqlCall]);
   return <div className="data-layout">
-    <aside className="table-tree"><Input aria-label="搜索表" placeholder="搜索表" value={search} onChange={event => setSearch(event.target.value)} />{tables.filter(item => item.toLowerCase().includes(search.toLowerCase())).map(item => <button key={item} className={item === table ? 'selected' : ''} onClick={() => void preview(item)}>{item}</button>)}{!tables.length && <p className="muted">暂无表或正在加载</p>}</aside>
+    <aside className="table-tree"><Input aria-label="搜索表" placeholder="搜索表" value={search} onChange={event => setSearch(event.target.value)} />{tables.filter(item => item.toLowerCase().includes(search.toLowerCase())).map(item => <button key={item} disabled={loading || blocked} className={item === table ? 'selected' : ''} onClick={() => void preview(item)}>{item}</button>)}{!tables.length && <p className="muted">暂无表或正在加载</p>}</aside>
     <section className="data-panel"><div className="section-heading"><h2>{table || '选择表'}</h2>{table && <Button variant="secondary" onClick={() => navigate(databasePath(database!.project, database!.id.namespace.database, database!.id.branch, 'sql'))}>在 SQL 中打开</Button>}</div>
       {table && <Tabs tabs={[{ value: 'rows', label: '数据' }, { value: 'schema', label: '结构' }]} value={view} onValueChange={setView} />}
       <ErrorNotice error={error} />{!sqlCall ? <SQLAccess setSQLCredential={setSQLCredential} /> : loading ? <p role="status">加载中…</p> : table ? view === 'rows' ? <><Grid columns={columns} rows={rows} /><p className="muted">{rows.length} 行 · 最多 25 行 · 未排序</p></> : <Grid columns={['字段', '类型', '可空', '默认值', '主键']} rows={schemaRows.map(row => [row[1], row[2], row[3] === 1 ? '否' : '是', row[4] ?? '—', row[5] ? '是' : '否'])} /> : <p className="empty">选择表查看数据和结构</p>}

@@ -6,6 +6,7 @@ test('database workspace routes preserve project, database and branch identities
   const route = parseRoute(`#${databasePath('team-a', 'orders', 'main', 'sql')}`);
   assert.deepEqual(route, { kind: 'sql', project: 'team-a', database: 'orders', branch: 'main' });
   assert.deepEqual(parseRoute(`#${branchesPath('team-a', 'orders')}`), { kind: 'branches', project: 'team-a', database: 'orders' });
+  assert.deepEqual(parseRoute(`#${branchesPath('team-a', 'orders')}?source=reader`), { kind: 'branches', project: 'team-a', database: 'orders', branch: 'reader' });
 });
 
 test('project routes and table query parameters remain independently addressable', () => {

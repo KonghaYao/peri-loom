@@ -20,7 +20,10 @@ export function parseRoute(hash: string): Route {
     if (!parts[3]) return { kind: 'databases', project };
     const database = decodeURIComponent(parts[3]);
     if (parts[4] !== 'branches') return { kind: 'databases', project };
-    if (!parts[5]) return { kind: 'branches', project, database };
+    if (!parts[5]) {
+      const source = new URLSearchParams(hash.split('?')[1] ?? '').get('source');
+      return { kind: 'branches', project, database, ...(source ? { branch: source } : {}) };
+    }
     return { kind: ['data', 'sql', 'recovery', 'activity', 'settings'].includes(parts[6]) ? parts[6] : 'data', project, database, branch: decodeURIComponent(parts[5]) };
   } catch { return { kind: 'connect' }; }
 }

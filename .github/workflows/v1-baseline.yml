@@ -33,8 +33,10 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: |
-            prototypes/v1/platform/frontend/package-lock.json
             prototypes/v1/platform/tests/hrana-sdk/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
       - uses: actions/setup-go@v5
         with:
           go-version-file: prototypes/v1/platform/go.mod
@@ -46,14 +48,16 @@ jobs:
       - name: Build console before Go embed
         working-directory: prototypes/v1/platform/frontend
         run: |
-          npm ci
-          npm run build
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test
+          bun run build
       - name: Go unit smoke (controller registry/reconcile; platform gateway/audit)
         shell: bash
         run: |
           set -euo pipefail
           (cd prototypes/v1/controller && go test . -count=1 -run '^(TestRegistryRequiresHeartbeatAndPreservesRestartState|TestReconcileLostGrantACKReplaysExactDurableReceiptAfterRestart)$')
-          (cd prototypes/v1/platform && go test . -count=1 -run '^(TestGatewayTenantProjectSubjectAndOpaqueIsolation|TestGatewayAuditAfterCommitFailurePreservesKnownExecutionAndRedacts|TestGatewayAuditFailureDoesNotClearUnknownExecution)$')
+          (cd prototypes/v1/platform && go test . -count=1 -run '^(TestAdminHandlerServesBuiltConsole|TestGatewayTenantProjectSubjectAndOpaqueIsolation|TestGatewayAuditAfterCommitFailurePreservesKnownExecutionAndRedacts|TestGatewayAuditFailureDoesNotClearUnknownExecution)$')
           (cd prototypes/v1/platform && go build -o "$GITHUB_WORKSPACE/peri-platform" ./cmd/peri-platform)
       - name: Native service and SDK dependencies
         shell: bash

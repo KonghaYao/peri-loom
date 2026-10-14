@@ -37,6 +37,7 @@ p { line-height: 1.5; }
 .section + .section { margin-top: 8px; }
 .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; border: 1px solid #e7e8ea; border-radius: 8px; }
 .table-wrap table { width: 100%; }
+.pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 16px 0; }
 .table-wrap td, .table-wrap th { white-space: nowrap; }
 .cell { display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .empty { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; min-height: 180px; color: #737980; padding: 30px; }

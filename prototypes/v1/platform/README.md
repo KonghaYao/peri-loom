@@ -151,16 +151,16 @@ exhaustion or prove that the client received an earlier reply.
 
 ```sh
 cd prototypes/v1/platform/frontend
-npm ci
-npm run build
+bun install --frozen-lockfile
+bun run build
 cd ..
 go build ./cmd/peri-platform ./cmd/peri
 PERI_RUST_BINARY=/absolute/path/to/peri-loom-v1 go test ./...
 PERI_RUST_BINARY=/absolute/path/to/peri-loom-v1 PERI_P6_VERIFY_RACE_CLI=1 go test -race ./...
 node --test tests/ui-json.test.mjs
 cd sdk/typescript
-npm run build
-npm test
+PATH="../../frontend/node_modules/.bin:$PATH" bun run build
+bun run test
 ```
 
 The TypeScript build expects `tsc` on PATH; generated `dist/` is not committed.
