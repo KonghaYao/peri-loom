@@ -77,7 +77,8 @@ func (identity *identity) Authorize(principal Principal, database controller.Dat
 		return errors.New("identity unavailable")
 	}
 	key, ok := state.APIKeys[principal.KeyID]
-	if !ok || key.Revoked || key.Subject != principal.Subject || key.Project != principal.Project {
+	globalSQL := key.Project == "*" && key.Role == "admin" && principal.Role == "admin" && principal.Database == nil && action == "sql"
+	if !ok || key.Revoked || key.Subject != principal.Subject || key.Project != principal.Project && !globalSQL {
 		return errManagementForbidden
 	}
 	if principal.Database != nil {
@@ -88,8 +89,15 @@ func (identity *identity) Authorize(principal Principal, database controller.Dat
 		return errManagementForbidden
 	}
 	if key.Project == "*" {
-		if key.Role == "admin" && principal.Database == nil && (action == "manage" || action == "view" || action == "keys") {
+		if key.Role == "admin" && principal.Database == nil && (action == "manage" || action == "view" || action == "keys") && principal.Project == "*" {
 			return nil
+		}
+		if globalSQL && database.Validate() == nil {
+			descriptor, exists := state.Databases[database.Key()]
+			project, found := state.Projects[descriptor.Project]
+			if exists && found && descriptor.ID == database && project.Tenant == database.Namespace.Tenant && descriptor.Project == principal.Project {
+				return nil
+			}
 		}
 		return errManagementForbidden
 	}

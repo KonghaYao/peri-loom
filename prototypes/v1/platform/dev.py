@@ -146,6 +146,15 @@ def safe_environment(capacity_trace=False):
     return environment
 
 
+def bootstrap_credential():
+    credential = os.environ.get("PERI_BOOTSTRAP_KEY")
+    if credential is None:
+        return secrets.token_hex(32)
+    if not 32 <= len(credential) <= 256 or any(ord(character) < 33 or ord(character) > 126 for character in credential):
+        raise RuntimeError("invalid injected bootstrap credential")
+    return credential
+
+
 def request(endpoint, credential, path, body, certificate=None):
     payload = dict(body)
     if "request_id" not in payload:
@@ -303,7 +312,7 @@ class Project:
             "controller": {"authority_url": "http://" + authority, "authority_token": secrets.token_hex(32), "api_token": secrets.token_hex(32), "workers": worker_config},
             "metadata_directory": str(self.directory / "controller"), "state_directory": str(self.directory / "platform"),
             "audit_path": str(self.directory / "audit/events.json"), "kms_keyring": str(self.directory / "keys/kms/keyring.json"), "signing_key_file": str(signing),
-            "bootstrap_key": secrets.token_hex(32), "gateway_listen": self.arguments.listen, "broker_listen": broker,
+            "bootstrap_key": bootstrap_credential(), "gateway_listen": self.arguments.listen, "broker_listen": broker,
             "worker_sql_tokens": sql_tokens, "worker_key_tokens": key_tokens, "worker_authority_tokens": worker_auth,
             "insecure_loopback": not self.arguments.tls,
             "writer_admission": self.arguments.writer_admission,

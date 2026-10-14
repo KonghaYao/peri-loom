@@ -37,6 +37,7 @@ func TestBootstrapAndAPIKeysAreHashedAndNeverReset(test *testing.T) {
 	if err := BootstrapAPIKey(store, strings.Repeat("replacement-test", 3)); err == nil {
 		test.Fatal("bootstrap reset")
 	}
+	activeSecurityDatabase(test, store, securityKMS(test))
 	identity, err := NewIdentity(store, bytes.Repeat([]byte{1}, 32))
 	if err != nil {
 		test.Fatal(err)
@@ -49,7 +50,12 @@ func TestBootstrapAndAPIKeysAreHashedAndNeverReset(test *testing.T) {
 		test.Fatal("bootstrap cannot manage")
 	}
 	if identity.Authorize(principal, securityDatabase(), "sql") == nil {
-		test.Fatal("bootstrap automatically gained SQL")
+		test.Fatal("global SQL requires a project-scoped gateway principal")
+	}
+	projectPrincipal := principal
+	projectPrincipal.Project = "alpha"
+	if identity.Authorize(projectPrincipal, securityDatabase(), "sql") != nil || identity.Authorize(projectPrincipal, securityDatabase(), "manage") == nil {
+		test.Fatal("global admin SQL scope must be authorized without granting project-scoped management")
 	}
 	bytes, err := os.ReadFile(store.(*stateStore).disk.path)
 	if err != nil || strings.Contains(string(bytes), credential) {

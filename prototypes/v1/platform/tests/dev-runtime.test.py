@@ -15,6 +15,14 @@ spec.loader.exec_module(dev)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_bootstrap_credential_can_be_reused_only_when_explicitly_injected(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"PERI_BOOTSTRAP_KEY": "x" * 64}):
+            self.assertEqual(dev.bootstrap_credential(), "x" * 64)
+        with patch.dict(os.environ, {"PERI_BOOTSTRAP_KEY": "short"}):
+            with self.assertRaisesRegex(RuntimeError, "invalid injected bootstrap credential"):
+                dev.bootstrap_credential()
+
     def project(self, directory):
         return dev.Project(argparse.Namespace(run_dir=directory, no_build=True, backend="local", listen="127.0.0.1:19443", tls=False, writer_admission=False))
 

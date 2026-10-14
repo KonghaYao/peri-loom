@@ -31,6 +31,7 @@ type gatewaySession struct {
 	database       controller.DatabaseID
 	project        string
 	subject        string
+	keyID          string
 	poisoned       bool
 	moved          bool
 	closed         bool

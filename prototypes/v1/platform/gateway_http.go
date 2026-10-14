@@ -152,6 +152,37 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(503, "metadata_unavailable")
 		return
 	}
+	var parsed gatewayRequest
+	var earlyBody []byte
+	if principal.Project == "*" && principal.Role == "admin" && principal.Database == nil {
+		earlyBody, err = io.ReadAll(http.MaxBytesReader(writer, request.Body, sqlWireLimit))
+		if err != nil {
+			result = gatewayFailure(413, "request_limit")
+			return
+		}
+		var valid bool
+		parsed, valid = decodeGatewayRequest(ctx, earlyBody, action)
+		if !valid {
+			return
+		}
+		if action == "open" {
+			descriptor, exists := state.Databases[parsed.Database.Key()]
+			if !exists || descriptor.ID != *parsed.Database {
+				result = gatewayFailure(403, "forbidden")
+				return
+			}
+			principal.Project = descriptor.Project
+		} else {
+			gateway.mu.Lock()
+			session := gateway.sessions[parsed.Session]
+			gateway.mu.Unlock()
+			if session == nil || session.subject != principal.Subject || session.keyID != principal.KeyID {
+				result = gatewayFailure(403, "invalid_session")
+				return
+			}
+			principal.Project = session.project
+		}
+	}
 	project, found := state.Projects[principal.Project]
 	if !found || !quotaValid(project.Quotas) {
 		result = gatewayFailure(403, "forbidden")
@@ -186,14 +217,22 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	if project.Quotas.MaxSQLBytes <= (sqlWireLimit-8192)/6 {
 		limit = project.Quotas.MaxSQLBytes*6 + 8192
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, int64(limit)))
-	if err != nil {
-		result = gatewayFailure(413, "request_limit")
-		return
-	}
-	parsed, valid := decodeGatewayRequest(ctx, body, action)
-	if !valid {
-		return
+	if earlyBody != nil {
+		if len(earlyBody) > limit {
+			result = gatewayFailure(413, "request_limit")
+			return
+		}
+	} else {
+		body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, int64(limit)))
+		if err != nil {
+			result = gatewayFailure(413, "request_limit")
+			return
+		}
+		var valid bool
+		parsed, valid = decodeGatewayRequest(ctx, body, action)
+		if !valid {
+			return
+		}
 	}
 	if parsed.RequestID != "" {
 		if !sqlLabel(parsed.RequestID) || len(correlationValues) == 1 && parsed.RequestID != identifier {

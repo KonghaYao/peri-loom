@@ -44,6 +44,71 @@ func TestGatewayTenantProjectSubjectAndOpaqueIsolation(test *testing.T) {
 	}
 }
 
+func TestGatewayGlobalAdminSQLUsesDatabaseProjectAndReauthorizes(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	credential := strings.Repeat("global-admin-test-key-", 3)
+	if err := fixture.state.Update(func(state *State) error {
+		state.APIKeys["global-admin"] = APIKey{ID: "global-admin", Subject: "global-admin", Project: "*", Role: "admin", Digest: digestHex([]byte(credential))}
+		return nil
+	}); err != nil {
+		test.Fatal(err)
+	}
+	first := gatewayOpen(test, fixture, credential, fixture.first)
+	second := gatewayOpen(test, fixture, credential, fixture.second)
+	if first == second {
+		test.Fatal("global sessions must be distinct")
+	}
+	for _, session := range []string{first, second} {
+		response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
+		if response.Code != 200 {
+			test.Fatalf("global admin query rejected: %d %s", response.Code, response.Body.String())
+		}
+	}
+	if response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/execute", map[string]any{"session": first, "sql": "INSERT INTO demo VALUES (1)"}); response.Code != 200 {
+		test.Fatalf("global admin write rejected: %d %s", response.Code, response.Body.String())
+	}
+	if response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": first, "sql": "SELECT 1"}); gatewayCode(test, response) != "invalid_session" {
+		test.Fatal("project key stole global admin session")
+	}
+	_, sameSubject, err := NewAPIKey(fixture.state, "global-admin", "project-a", "sql", false)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if response := gatewayHTTP(test, fixture.gateway, sameSubject, "/v1/sql/query", map[string]any{"session": first, "sql": "SELECT 1"}); gatewayCode(test, response) != "invalid_session" {
+		test.Fatal("same-subject project key stole global admin session")
+	}
+	if response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.second}); response.Code == 200 {
+		test.Fatal("project key gained cross-project SQL access")
+	}
+	gatewayQuota(test, fixture, "project-b", func(quota *Quotas) { quota.MaxSQLBytes = 8 })
+	if response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/query", map[string]any{"session": second, "sql": "SELECT 123456789"}); gatewayCode(test, response) != "sql_limit" {
+		test.Fatal("global SQL bypassed target project quota")
+	}
+	if response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/query", map[string]any{"session": first, "sql": "SELECT 1"}); response.Code != 200 {
+		test.Fatal("other project quota blocked independent global session")
+	}
+	if response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/open", map[string]any{"database": controller.DatabaseID{Namespace: controller.Namespace{Tenant: "tenant-b", Database: "unknown"}, Branch: "main"}}); response.Code == 200 {
+		test.Fatal("global admin opened nonexistent database")
+	}
+	fixture.audit.mu.Lock()
+	projects := map[string]bool{}
+	for _, event := range fixture.audit.events {
+		if event.Action == "query" && event.Outcome == "ok" {
+			projects[event.Project] = true
+		}
+	}
+	fixture.audit.mu.Unlock()
+	if !projects["project-a"] || !projects["project-b"] || projects["*"] {
+		test.Fatal("global SQL audit lost target project attribution")
+	}
+	if err := RevokeAPIKey(fixture.state, "global-admin"); err != nil {
+		test.Fatal(err)
+	}
+	if response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/query", map[string]any{"session": first, "sql": "SELECT 1"}); response.Code != 401 {
+		test.Fatal("revoked global key reused session")
+	}
+}
+
 func TestGatewayReauthRevocationAndExpiryEveryDispatch(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	principal, err := fixture.identity.Authenticate(fixture.tokenA)
