@@ -54,7 +54,7 @@ func (handler *hranaHTTP) expireStreamLocked(baton string, stream *hranaStream) 
 }
 
 func (handler *hranaHTTP) cleanupRetiredSession(session string, attempt int) {
-	cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	cleanup, cancel := context.WithTimeout(context.Background(), hranaCleanupTimeout(handler.gateway.config.RequestTimeout))
 	defer cancel()
 	if err := handler.gateway.expireHranaSession(cleanup, session); err != nil {
 		log.Printf("Hrana session cleanup not proven: %v", err)
@@ -70,4 +70,11 @@ func (handler *hranaHTTP) cleanupRetiredSession(session string, attempt int) {
 			time.AfterFunc(delay, func() { handler.cleanupRetiredSession(session, attempt+1) })
 		}
 	}
+}
+
+func hranaCleanupTimeout(requestTimeout time.Duration) time.Duration {
+	if requestTimeout < 20*time.Second {
+		return 20 * time.Second
+	}
+	return requestTimeout
 }
