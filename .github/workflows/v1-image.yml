@@ -2,6 +2,8 @@ name: v1 service image
 
 on:
   push:
+    branches:
+      - '**'
     paths:
       - prototypes/v1/**
       - prototypes/p0/turso
