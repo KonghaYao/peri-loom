@@ -1,0 +1,64 @@
+package platform
+
+import (
+	"context"
+	"errors"
+
+	controller "peri-loom/controller"
+)
+
+func (session *gatewaySession) acceptWriterState(state *SessionWriterState, binding controller.Binding) bool {
+	if state == nil || state.Session != session.upstream || state.Binding.WorkerID != session.worker.ID || !sameGatewayBinding(state.Binding, binding) || session.writerKnown && state.Sequence <= session.writerSequence {
+		return false
+	}
+	session.writerKnown = true
+	session.writerOwner = state.Owner
+	session.writerSequence = state.Sequence
+	return true
+}
+
+func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewaySession, action string) gatewayResult {
+	if gateway.authorize(principal, session.database) != nil {
+		return gatewayFailure(403, "forbidden")
+	}
+	if session.closed {
+		return gatewayFailure(403, "invalid_session")
+	}
+	if session.poisoned {
+		return gateway.isolatedSessionFailure(session.database)
+	}
+	if action != "close" && !session.writerProtocol {
+		return gatewayFailure(503, "writer_profile_unavailable")
+	}
+	if action == "close" && principal.Database == nil {
+		return gatewayResult{}
+	}
+	worker, binding, err := gateway.route(session.database)
+	if err != nil {
+		return gatewayFailure(409, "placement_unavailable")
+	}
+	if !principalBindingValid(principal, binding) {
+		return gatewayFailure(403, "token_binding_mismatch")
+	}
+	if action != "close" && (session.moved || !sameGatewayBinding(session.binding, binding) || session.worker.Address != worker.Address) {
+		session.moved = true
+		return gatewayFailure(409, "session_moved")
+	}
+	return gatewayResult{}
+}
+
+func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command map[string]any, output any) error {
+	if !session.writerProtocol {
+		return gateway.config.Upstream.Call(ctx, session.worker, requestID, command, output)
+	}
+	state, err := gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, session.worker, requestID, command, output)
+	var failure *SQLRPCError
+	settled := err == nil || errors.As(err, &failure) && failure.ExecutionCompleted && !failure.Ambiguous
+	if !settled {
+		return err
+	}
+	if !session.acceptWriterState(state, binding) || command["command"] == "close_session" && state.Owner {
+		return &SQLRPCError{Ambiguous: true}
+	}
+	return err
+}

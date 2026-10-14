@@ -1,0 +1,26 @@
+services:
+  app:
+    image: ${PERI_IMAGE:-peri-loom:local}
+    build:
+      context: ../../..
+      dockerfile: prototypes/v1/deploy/Dockerfile
+    init: true
+    ports:
+      - "${PERI_BIND_IP:-127.0.0.1}:${PERI_GATEWAY_PORT:-9443}:9443"
+    environment:
+      PERI_TLS_CERT: /run/tls/tls.crt
+      PERI_TLS_KEY: /run/tls/tls.key
+      PERI_TLS_CA: /run/tls/ca.crt
+    volumes:
+      - state:/data/peri
+      - type: bind
+        source: ${PERI_TLS_DIR:?set a directory containing tls.crt tls.key and ca.crt readable by uid 10001}
+        target: /run/tls
+        read_only: true
+    stop_grace_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  state:

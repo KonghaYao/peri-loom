@@ -1,0 +1,28 @@
+[package]
+name = "peri-loom-v1"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+
+[workspace]
+
+[dependencies]
+turso_core = { path = "../p0/turso/core", default-features = false, features = ["fs", "uuid", "json", "encryption"] }
+zeroize = { version = "1", features = ["serde"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+blake3 = "1"
+sha2 = "0.10"
+hmac = "0.12"
+libc = "0.2"
+base64 = "0.22"
+chrono = "0.4"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+debug = 1

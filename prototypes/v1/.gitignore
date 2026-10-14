@@ -1,0 +1,8 @@
+/target/
+/data/
+/platform/sdk/typescript/dist/
+/platform/peri-platform
+/platform/peri
+/stress/peri-stress
+/stress/.gocache/
+/stress/.test-tmp/

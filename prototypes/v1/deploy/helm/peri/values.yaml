@@ -1,0 +1,23 @@
+image:
+  repository: peri-loom
+  tag: local
+  pullPolicy: IfNotPresent
+backend: local
+tlsSecret: ""
+persistence:
+  size: 10Gi
+  storageClass: ""
+service:
+  type: ClusterIP
+  port: 9443
+s3:
+  endpoint: ""
+  bucket: ""
+  region: us-east-1
+  credentialSecret: ""
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

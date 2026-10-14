@@ -1,0 +1,12 @@
+[package]
+name = "turso-rust-readonly-probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+reqwest = "=0.13.5"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+turso_serverless = "=0.1.3"

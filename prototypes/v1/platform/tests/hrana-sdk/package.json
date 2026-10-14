@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:live": "node live.mjs"
+  },
+  "dependencies": {
+    "@libsql/client": "0.15.15"
+  }
+}

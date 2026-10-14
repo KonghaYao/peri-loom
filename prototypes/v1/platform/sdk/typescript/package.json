@@ -1,0 +1,13 @@
+{
+  "name": "@peri-loom/sdk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./dist/client.js",
+  "types": "./dist/client.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test *.test.mjs"
+  }
+}
