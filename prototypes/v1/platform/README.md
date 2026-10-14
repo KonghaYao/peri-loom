@@ -28,7 +28,7 @@ page memory only; if a user explicitly opts in, the console verifies the
 global management API key and saves it in this browser's localStorage until
 cleared. Such a key is readable by same-origin scripts/extensions and anyone
 using the browser profile; do not enable this on shared devices. The global
-key cannot open SQL sessions: table-row previews need a project API key.
+key can open project-scoped native SQL sessions and preview rows; project keys remain available for application access.
 
 The listener defaults to `127.0.0.1:9443`. `--listen` changes the endpoint;
 `--tls` generates a disposable local certificate unless an existing private
@@ -47,6 +47,8 @@ launchers, but does not authorize reuse. In-place restart still needs Authority
 clean-marker verification, lease fencing, old-cache lifecycle
 handling, and crash-atomic generation/configuration rotation. Use a new fixture;
 never erase proof records or ownership dirty markers to force a restart.
+For a fresh fixture only, `PERI_BOOTSTRAP_KEY` can reuse a previously protected global key;
+other fixture credentials and database contents are new. Never put the key in a command argument or log.
 
 Private state, KMS, and audit heads use a bounded complete commit intent before
 the floor/payload renames. Under the exclusive file lock, restart only rolls
@@ -73,7 +75,7 @@ source, argv, run configuration, or diagnostic logs.
 - Query may execute SQL writes: native read-only mode, not SQL text filtering, enforces reader roles.
 - `/v1/databases/*` exposes provisioning, lifecycle, refs, snapshots, clone, restore, PITR, checkpoint, and GC.
 - `/v1/organizations/create` and `/v1/projects/create` require the global management key.
-- Project keys manage only their project; global management keys cannot open SQL sessions or mint database tokens.
+- Project keys manage only their project; the global management key may execute native SQL against any existing database using that database's project quotas, but cannot mint database tokens.
 - `/v1/tokens` issues bounded-lifetime tokens tied to issuer, project, root, branch incarnation, and encryption domain.
 - `/v1/keys/revoke` invalidates issuing keys and their database tokens.
 - `/v1/metrics` requires a global management key and combines gateway and actual native process observations.

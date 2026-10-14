@@ -1,6 +1,23 @@
 export type SchemaTable = { name: string; sql: string | null };
 
+export function isIsolatedSchema(result: unknown): boolean {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return false;
+  const response = result as Record<string, unknown>;
+  return response.status === 'isolated' && response.operation !== null && typeof response.operation === 'object' && !Array.isArray(response.operation);
+}
+
+export function isPendingSchema(result: unknown): boolean {
+  return isIsolatedSchema(result) && (result as { operation: { state?: unknown } }).operation.state === 'in_flight';
+}
+
 export const previewLimit = 25;
+
+export function schemaRetryDelay(failure: unknown, attempt: number): number | null {
+  const response = failure as { code?: unknown; uncertain?: unknown } | null;
+  return failure instanceof Error && response?.code === 'operation_incomplete' && response.uncertain === false
+    ? [400, 800, 1600][attempt] ?? null
+    : null;
+}
 
 export function quoteSQLiteIdentifier(name: string): string {
   if (!name || name.includes('\0')) throw new Error('Invalid SQLite table name');

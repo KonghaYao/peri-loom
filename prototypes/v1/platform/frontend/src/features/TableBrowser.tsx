@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '@cloudflare/kumo/components/button';
+import { Table } from '@cloudflare/kumo/components/table';
+import { Banner } from '@cloudflare/kumo/components/banner';
+import { Badge } from '@cloudflare/kumo/components/badge';
 import { APIError, type DatabaseID, createAPI } from '../api';
 import { formatPreviewCell, parseSchemaTables, parseTableColumns, previewLimit, tableColumnsSQL, tablePreviewSQL, type SchemaTable } from './table-browser';
 
@@ -67,7 +71,7 @@ export default function TableBrowser({ database, databaseKey, call }: Props) {
       nextPreview = { table, columns, rows };
     } catch (failure) {
       failureMessage = failure instanceof APIError && failure.code === 'forbidden'
-        ? 'SQL access denied. A global management master key cannot preview rows; connect with a project API key.'
+        ? 'SQL access denied. Check the credential permissions and database scope.'
         : String(failure);
       sessionUnusable = failure instanceof Error && 'uncertain' in failure && failure.uncertain === true;
     } finally {
@@ -102,17 +106,17 @@ export default function TableBrowser({ database, databaseKey, call }: Props) {
   return <section className="table-browser" aria-label="Database tables">
     <div className="table-browser-list" aria-label="User tables">
       <h2>Tables</h2>
-      <button disabled={previewBusy || !!visibleLoading} onClick={() => setReload(previous => previous + 1)}>Refresh tables</button>
-      {visibleTables?.map(table => <button key={table.name} disabled={previewBusy} aria-pressed={visibleSelected === table.name} aria-current={visibleSelected === table.name ? 'true' : undefined} onClick={() => void loadPreview(table.name)}>{table.name}</button>)}
+      <Button type="button" variant="secondary" disabled={previewBusy || !!visibleLoading} onClick={() => setReload(previous => previous + 1)}>Refresh tables</Button>
+      {visibleTables?.map(table => <Button type="button" variant={visibleSelected === table.name ? 'secondary' : 'ghost'} key={table.name} disabled={previewBusy} aria-pressed={visibleSelected === table.name} aria-current={visibleSelected === table.name ? 'true' : undefined} onClick={() => void loadPreview(table.name)}>{table.name}</Button>)}
       {visibleTables?.length === 0 && <p className="table-browser-empty">No user tables found in this database.</p>}
       {visibleTables === null && !visibleLoading && !visibleError && <p className="table-browser-empty">Loading table catalog…</p>}
     </div>
     <div className="table-browser-preview">
-      <div className="table-browser-toolbar"><strong>{visiblePreview?.table ?? (visibleSelected || 'Data preview')}</strong><span>Read-only · up to {previewLimit} rows · no guaranteed order</span></div>
+      <div className="table-browser-toolbar"><strong>{visiblePreview?.table ?? (visibleSelected || 'Data preview')}</strong><Badge variant="neutral">Read-only · up to {previewLimit} rows · no guaranteed order</Badge></div>
       {visibleLoading && <p role="status">{visibleLoading}</p>}
-      {visibleError && <p className="table-browser-error" role="alert">{visibleError}</p>}
-      {visibleWarning && <p className="table-browser-error" role="alert">{visibleWarning}</p>}
-      {visiblePreview ? <><p>{visiblePreview.rows.length} rows shown · limit {previewLimit} · unordered · read-only query</p><div className="table-browser-table"><table className="data-table"><caption>Preview of {visiblePreview.table}</caption><thead><tr>{visiblePreview.columns.map((column, index) => <th key={index} scope="col">{column}</th>)}</tr></thead><tbody>{visiblePreview.rows.map((row, rowIndex) => <tr key={rowIndex}>{visiblePreview.columns.map((_, index) => <td key={index}>{formatPreviewCell(row[index] ?? null)}</td>)}</tr>)}</tbody></table></div>{visiblePreview.rows.length === 0 && <p className="table-browser-empty">This table has no preview rows.</p>}</> : <p className="table-browser-empty">Select a table to preview its columns and first {previewLimit} rows.</p>}
+      {visibleError && <Banner variant="error" role="alert" description={visibleError} />}
+      {visibleWarning && <Banner variant="alert" role="alert" description={visibleWarning} />}
+      {visiblePreview ? <><p>{visiblePreview.rows.length} rows shown · limit {previewLimit} · unordered · read-only query</p><div className="table-browser-table"><Table><caption>Preview of {visiblePreview.table}</caption><Table.Header><Table.Row>{visiblePreview.columns.map((column, index) => <Table.Head key={index}>{column}</Table.Head>)}</Table.Row></Table.Header><Table.Body>{visiblePreview.rows.map((row, rowIndex) => <Table.Row key={rowIndex}>{visiblePreview.columns.map((_, index) => <Table.Cell key={index}>{formatPreviewCell(row[index] ?? null)}</Table.Cell>)}</Table.Row>)}</Table.Body></Table></div>{visiblePreview.rows.length === 0 && <p className="table-browser-empty">This table has no preview rows.</p>}</> : <p className="table-browser-empty">Select a table to preview its columns and first {previewLimit} rows.</p>}
     </div>
   </section>;
 }

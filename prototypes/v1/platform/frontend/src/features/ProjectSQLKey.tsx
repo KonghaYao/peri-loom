@@ -1,5 +1,11 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
+import { Button } from '@cloudflare/kumo/components/button';
+import { Input } from '@cloudflare/kumo/components/input';
+import { SensitiveInput } from '@cloudflare/kumo/components/sensitive-input';
+import { Badge } from '@cloudflare/kumo/components/badge';
+import { Banner } from '@cloudflare/kumo/components/banner';
 import { type DatabaseID, createAPI } from '../api';
+import { Modal } from '../app/ui';
 
 type IssuedKey = { key: string; credential: string; project: string; role: string; shown_once: boolean };
 type Props = {
@@ -24,22 +30,21 @@ export default function ProjectSQLKey({ project, database, call, canActivate, on
   const [issued, setIssued] = useState<IssuedKey | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [revealed, setRevealed] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const issue = async (event: FormEvent) => {
-    event.preventDefault();
+  const issue = async () => {
     if (busy || issued || !/^[A-Za-z0-9_.@:-]{1,128}$/.test(subject)) return;
-    if (!window.confirm(`Create a new SQL API key for project ${project}? This key can execute SQL (including writes), is shown once, and must be revoked when no longer needed.`)) return;
+    setConfirmOpen(false);
     setBusy(true);
     setError('');
     setNotice('');
     try {
       const reply = await call('/v1/keys/create', { project, subject, role: 'sql', service_account: false });
-      if (!isIssuedProjectSQLKey(reply, project)) throw new Error('Key issuance reply could not be verified; inspect the project before trying again.');
+      if (!isIssuedProjectSQLKey(reply, project)) throw new Error('无法确认凭证创建结果，请先检查项目凭证，不要重复创建。');
       setIssued(reply);
-      setNotice('Project SQL key issued. Copy it or activate it now; it will not be shown again.');
+      setNotice('项目 SQL 凭证已创建。仅显示这一次，请保存后启用。');
     } catch (failure) {
-      setError(`${failure instanceof Error ? failure.message : 'Key issuance outcome unknown'}. Do not automatically retry key creation.`);
+      setError(`${failure instanceof Error ? failure.message : '凭证创建结果未知'}。请勿自动重试创建。`);
     } finally {
       setBusy(false);
     }
@@ -49,29 +54,32 @@ export default function ProjectSQLKey({ project, database, call, canActivate, on
     if (!issued) return;
     try {
       await navigator.clipboard.writeText(issued.credential);
-      setNotice('Copied. Store this project key securely; clipboard contents may be visible to other applications.');
+      setNotice('已复制。请安全保存项目凭证，剪贴板内容可能被其他应用读取。');
     } catch {
-      setError('Clipboard unavailable. Reveal the key and copy it manually.');
+      setError('无法使用剪贴板，请手动复制凭证。');
     }
   };
 
-  return <div className="project-key-request" data-testid="project-sql-key">
-    <p>Table names and rows require a project SQL key in this view. Your global management master key can create one for <strong>{project}</strong> to preview <strong>{database.namespace.database} / {database.branch}</strong>.</p>
-    {!issued ? <form className="form-row" onSubmit={event => void issue(event)}>
-      <label className="field">Key subject<input className="input" value={subject} onChange={event => setSubject(event.target.value)} required maxLength={128} pattern="[A-Za-z0-9_.@:-]+" /></label>
-      <button type="submit" className="button button-primary" disabled={busy || !project || !/^[A-Za-z0-9_.@:-]{1,128}$/.test(subject)}>{busy ? 'Creating key…' : 'Create project SQL API key'}</button>
-    </form> : <div className="project-key-issued">
-      <p><strong>Shown once · SQL role · project {issued.project}</strong></p>
-      <label className="field">New project API key<input data-testid="issued-project-key" className="input" readOnly type={revealed ? 'text' : 'password'} value={issued.credential} /></label>
-      <div className="action-row">
-        <button type="button" className="button" onClick={() => setRevealed(value => !value)}>{revealed ? 'Hide key' : 'Reveal key'}</button>
-        <button type="button" className="button" onClick={() => void copy()}>Copy key</button>
-        <button type="button" className="button button-primary" disabled={!canActivate} onClick={() => { onActivate(issued.credential); setIssued(null); setRevealed(false); }}>Use key for table preview</button>
+  return <div className="stack" data-testid="project-sql-key">
+    <p className="muted">平台管理员可为项目 {project} 创建 SQL 凭证，查看 {database.namespace.database} / {database.branch} 的数据。</p>
+    {!issued ? <form className="actions" onSubmit={event => { event.preventDefault(); setConfirmOpen(true); }}>
+      <label>凭证名称<Input value={subject} onChange={event => setSubject(event.target.value)} required maxLength={128} pattern="[A-Za-z0-9_.@:-]+" /></label>
+      <Button type="submit" variant="secondary" disabled={busy || !project || !/^[A-Za-z0-9_.@:-]{1,128}$/.test(subject)}>{busy ? '创建中…' : '创建项目 SQL 凭证'}</Button>
+    </form> : <div className="stack">
+      <p><Badge variant="orange">仅显示一次 · SQL 读写权限</Badge> · 项目 {issued.project}</p>
+      <SensitiveInput label="新项目 SQL 凭证" data-testid="issued-project-key" readOnly value={issued.credential} />
+      <div className="actions">
+        <Button type="button" variant="secondary" onClick={() => void copy()}>复制凭证</Button>
+        <Button type="button" variant="primary" disabled={!canActivate} onClick={() => { onActivate(issued.credential); setIssued(null); }}>使用凭证查看数据</Button>
       </div>
-      {!canActivate && <p>Close the current SQL session before switching credentials.</p>}
-      <p>This project key remains in page memory only. Save it in a secure credential manager if needed later; revoke unused keys in Access.</p>
+      {!canActivate && <p>请先结束当前 SQL 会话再切换凭证。</p>}
+      <p className="muted">凭证仅保留在当前页面内存中；请妥善保存，不再需要时可在“访问凭证”中撤销。</p>
     </div>}
     {notice && <p role="status">{notice}</p>}
-    {error && <p className="table-browser-error" role="alert">{error}</p>}
+    {error && <Banner variant="error" role="alert" description={error} />}
+    <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="创建项目 SQL 凭证" danger>
+      <Banner variant="alert" description={`确认为项目 ${project} 创建新凭证？它拥有 SQL 读写权限，仅显示一次；不用时请撤销。`} />
+      <Button type="button" variant="primary" disabled={busy} onClick={() => void issue()}>确认创建</Button>
+    </Modal>
   </div>;
 }
