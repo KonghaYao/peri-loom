@@ -1,7 +1,7 @@
 import { encodeLosslessJSON, parseLosslessJSON } from './features/lossless';
 
 export type DatabaseID = { namespace: { tenant: string; database: string }; branch: string };
-export type Database = { id: DatabaseID; project: string; state: string; role?: string };
+export type Database = { id: DatabaseID; project: string; state: string; role?: string; root_incarnation?: string; branch_incarnation?: number | bigint };
 export type Project = { id: string; organization: string; tenant: string; region: string; quotas?: Record<string, number> };
 export type Catalog = { revision: number | bigint; projects: Record<string, Project>; databases: Record<string, Database> };
 
@@ -20,12 +20,13 @@ export function createAPI(getCredential: () => string) {
   const sessions = new Map<string, { busy: boolean; unusable: boolean }>();
   let opening = false;
   let uncertainOpen = false;
+  let uncertainClose = false;
   return async function call<T = unknown>(path: string, body?: Record<string, unknown>, stream = false): Promise<T> {
-    const action = /^\/v1\/sql\/(open|query|execute|close)$/.exec(path)?.[1];
+    const action = /^\/v1\/sql\/(open|query|execute|close|statement|describe|cursor\/open|cursor\/fetch|cursor\/close)$/.exec(path)?.[1];
     const id = body ? crypto.randomUUID().replaceAll('-', '') : '';
     if (!getCredential().trim()) throw new APIError('credential_required', id, false);
     let session: { busy: boolean; unusable: boolean } | undefined;
-    if (action === 'open' && (opening || uncertainOpen)) throw new APIError('session_unusable', id, uncertainOpen);
+    if (action === 'open' && (opening || uncertainOpen || uncertainClose)) throw new APIError('session_unusable', id, uncertainOpen || uncertainClose);
     if (action && action !== 'open') {
       if (!sessionID(body?.session)) throw new APIError('invalid_session', id, false);
       session = sessions.get(body.session);
@@ -118,6 +119,7 @@ export function createAPI(getCredential: () => string) {
       if (error.uncertain || error.code === 'session_moved') {
         if (session) session.unusable = true;
         if (action === 'open') uncertainOpen = true;
+        if (action === 'close') uncertainClose = true;
       }
       throw error;
     } finally {
