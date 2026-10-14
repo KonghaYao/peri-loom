@@ -1,5 +1,73 @@
 # Native single-container deployment
 
+## Production Compose configuration
+
+The repository-root `compose.yaml` describes the intended single-host S3 deployment:
+one prebuilt, immutable application image, an existing dedicated S3-compatible bucket,
+host-provided TLS, and repository-relative bind mounts. **It is not yet safe to put into
+production**: `platform/dev.py` currently rejects any second launch against the same
+`launch.json`, even after a clean stop. Clean restart, disaster recovery, S3 durability,
+and HA have not been validated. Do not delete `deploy/state`, reset the ownership
+marker, or reuse the S3 bucket with a fresh state directory to bypass that guard.
+
+Prerequisites on a Linux Docker host:
+
+- Docker Engine with the Compose plugin; access to a reviewed Linux amd64 image
+  identified by digest (`PERI_IMAGE`). Published tags here are preview releases,
+  not production-certified images. Local builds additionally require the Turso
+  submodule and the Rust/Go dependencies described below.
+- An already-created, dedicated S3-compatible bucket with an endpoint reachable
+  **from the container**, region, and scoped read/write credentials. Provide
+  `S3_SESSION_TOKEN` if temporary credentials are used. The application does not
+  create the bucket or provide S3/MinIO in the root production Compose file.
+- A trusted server certificate chain `deploy/tls/tls.crt`, its matching private
+  key `deploy/tls/tls.key`, and the issuer CA bundle `deploy/tls/ca.crt`. The leaf
+  must have a SAN for the public gateway hostname and `IP:127.0.0.1` (internal
+  seed requests). Keep the CA signing key elsewhere. Do not use the disposable
+  development certificate below for a public endpoint.
+- A private persistent `deploy/state` directory on a backed-up disk; the container
+  runs as uid 10001 and requires ownership of this directory and read access to
+  `deploy/tls`. Use a local Docker daemon: relative bind paths are on the daemon
+  host, not on a remote CLI client. Restrict port access and arrange TLS trust for
+  connecting clients.
+
+From the repository root on the Docker host, after placing the three TLS files:
+
+```sh
+cp production.env.example deploy/production.env
+# Edit deploy/production.env: set PERI_IMAGE to a reviewed digest, PERI_BIND_IP / PERI_GATEWAY_PORT,
+# and all S3_* values. Do not use the example placeholders.
+chmod 600 deploy/production.env
+sudo install -d -m 0700 -o 10001 -g 10001 deploy/state
+sudo install -d -m 0700 -o 10001 -g 10001 deploy/tls
+sudo chown 10001:10001 deploy/tls/tls.crt deploy/tls/tls.key deploy/tls/ca.crt
+sudo chmod 0600 deploy/tls/tls.crt deploy/tls/tls.key deploy/tls/ca.crt
+docker compose --env-file deploy/production.env config --quiet
+docker compose --env-file deploy/production.env up -d --no-build --pull always
+docker compose --env-file deploy/production.env logs app
+```
+
+All host bind paths are relative to the repository root; keep that directory at a
+stable path. `deploy/state` contains keys and private API credentials: protect
+and back up both it and the external S3 objects; consistent recovery has not
+been validated. Avoid `docker compose down --volumes` and never share
+`deploy/state` between projects. The default
+`PERI_BIND_IP=127.0.0.1` limits access to localhost; choose a public bind address
+only with a matching certificate and appropriate firewall policy. The gateway is
+HTTPS on host port `PERI_GATEWAY_PORT` (container port 9443). `S3_*` credentials
+from `deploy/production.env` are passed to the launcher, which forwards them only
+to the Authority; Docker administrators can inspect container environments. Do
+not print `docker compose config` without `--quiet`, or commit
+`deploy/production.env`/TLS keys. No separate
+database/queue/MinIO container is required: Authority, workers, controller,
+gateway, and key broker run in the one application container.
+
+The Compose file sets `--backend s3` and TLS explicitly; changing backend, S3
+identity, bind address or security parameters for an existing state directory
+is not supported. No automatic restart policy is configured because restarting
+currently fails safely. Operators must not mistake an initial successful start
+for production readiness.
+
 ## CI and image releases
 
 `.github/workflows/v1-image.yml` builds the full image on relevant branch pushes,
@@ -10,18 +78,19 @@ image before publishing `ghcr.io/<owner>/<repo>:<tag>` and a **pre-release** Git
 Release. Only Linux amd64 is tested; no `latest` image is published. GHCR access
 depends on the package's visibility and the registry credentials of the client.
 
-To start a published image using your own TLS files and a persistent Compose
-volume, set `PERI_IMAGE=ghcr.io/<owner>/<repo>:<tag>` and `PERI_TLS_DIR` (see
-below), then run:
+For a disposable local deployment using a published preview image, set
+`PERI_IMAGE=ghcr.io/<owner>/<repo>:<tag>`, prepare `deploy/dev-tls` with
+`tls.crt`, `tls.key`, and `ca.crt` readable by uid 10001, and create
+`deploy/dev-state` (uid 10001, mode 0700), then run:
 
 ```sh
 docker compose -f prototypes/v1/deploy/compose.yaml up -d --no-build --pull always
 ```
 
 This is a development deployment, not a production upgrade procedure. A normal
-restart using an existing persistent state volume is not yet verified and may be
-rejected by the launcher. Do not remove the volume or reset the ownership marker
-to get past that rejection. The CI image test uses a fresh volume and local
+restart using an existing persistent state directory is rejected by the launcher.
+Do not remove the directory or reset the ownership marker to get past that rejection.
+The CI image test uses a fresh volume and local
 storage; it does not test S3, existing-volume restarts, or high availability.
 
 ## Verify an existing full Linux image
@@ -151,8 +220,8 @@ supported topology. Only the gateway's HTTPS port 9443 is exposed.
 
 ## TLS and local object storage
 
-Provide **three files**, `tls.crt`, `tls.key`, and `ca.crt`, in a private directory via
-`PERI_TLS_DIR`. `tls.crt` is the server leaf (plus any intermediate chain), `tls.key`
+Provide **three files**, `tls.crt`, `tls.key`, and `ca.crt`, in a private
+`deploy/dev-tls` directory. `tls.crt` is the server leaf (plus any intermediate chain), `tls.key`
 is its private key, and `ca.crt` is the actual trusted issuer/root CA bundle. Compose
 and Helm set `PERI_TLS_CA=/run/tls/ca.crt`; a leaf or incomplete server chain must not
 be assumed to provide the trust root. The key
@@ -178,9 +247,11 @@ printf '%s\n' 'basicConstraints=critical,CA:FALSE' \
 openssl x509 -req -in /tmp/peri-dev-tls/tls.csr \
   -CA /tmp/peri-dev-tls/ca.crt -CAkey /tmp/peri-dev-tls/ca.key -CAcreateserial \
   -days 7 -sha256 -extfile /tmp/peri-dev-tls/tls.ext -out /tmp/peri-dev-tls/tls.crt
-mkdir -p /tmp/peri-dev-tls-mount
+sudo install -d -m 0700 -o 10001 -g 10001 deploy/dev-tls
 cp /tmp/peri-dev-tls/tls.crt /tmp/peri-dev-tls/tls.key /tmp/peri-dev-tls/ca.crt \
-  /tmp/peri-dev-tls-mount/
+  deploy/dev-tls/
+sudo chown 10001:10001 deploy/dev-tls/tls.crt deploy/dev-tls/tls.key deploy/dev-tls/ca.crt
+sudo chmod 0600 deploy/dev-tls/tls.crt deploy/dev-tls/tls.key deploy/dev-tls/ca.crt
 ```
 
 Keep the CA signing key outside the mount; it is not needed by the application.
@@ -190,7 +261,7 @@ before mounting; do not make them public.
 The disposable certificate is not a production certificate. From the repository root:
 
 ```sh
-export PERI_TLS_DIR=/tmp/peri-dev-tls-mount
+sudo install -d -m 0700 -o 10001 -g 10001 deploy/dev-state
 docker compose -f prototypes/v1/deploy/compose.yaml up --build -d
 docker compose -f prototypes/v1/deploy/compose.yaml logs app
 docker compose -f prototypes/v1/deploy/compose.yaml stop
@@ -220,6 +291,8 @@ private environment injector. The bucket must already exist. Do not paste real
 credentials into YAML, argv, source control, or logs:
 
 ```sh
+sudo install -d -m 0700 -o 10001 -g 10001 deploy/s3-dev-state
+export PERI_DEV_STATE_DIR=../../../deploy/s3-dev-state
 docker compose -f prototypes/v1/deploy/compose.yaml \
   -f prototypes/v1/deploy/compose.s3.yaml up --build -d
 ```
@@ -229,14 +302,16 @@ clears them from workers and Go services. It writes no real S3 secrets to run fi
 Container administrators can inspect injected environment variables; this deployment
 is not a hostile-container isolation boundary. Avoid printing expanded Compose
 configuration, since it includes injected secrets. Check syntax with `config --quiet`.
-Backend mode and listener are persistent identity: use a separate state volume rather
+Backend mode and listener are persistent identity: use a separate state directory rather
 than silently rebinding an existing local deployment to a different backend.
 
 ## Isolated MinIO development profile
 
 Use a separate Compose project, new `PERI_TEST_BUCKET`, reviewed pinned image digests
 in `MINIO_IMAGE`/`MINIO_MC_IMAGE`, and synthetic URL-safe test credentials in
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`. This profile starts its own MinIO volume,
+`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`. First create `deploy/minio-state` with
+permissions suitable for the pinned MinIO image, and `deploy/minio-app-state`
+owned by uid 10001 with mode 0700. This profile uses these separate directories,
 does not expose MinIO host ports, and never changes an existing RustFS instance:
 
 ```sh

@@ -29,6 +29,18 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 `connection.json` 包含私有测试 API Key 与开发 CA 路径，**不可公开**；访问其中的
 Gateway 地址即可打开内嵌管理控制台。真实 S3 仅由 Authority 接收凭据。
 
+### Docker Compose（生产部署配置）
+
+仓库根目录的 `compose.yaml` 使用固定镜像、外部 S3 和项目内的 `deploy/state`、
+`deploy/tls` 绑定目录，不使用 Docker 命名卷。先按
+[`prototypes/v1/deploy/README.md`](prototypes/v1/deploy/README.md) 的「Production Compose configuration」
+准备证书、目录、S3 和私有 `deploy/production.env`，再运行
+`docker compose --env-file deploy/production.env up -d --no-build --pull always`。
+
+**当前仍不能用于实际生产上线**：启动器会拒绝复用已有状态目录，重启/故障恢复尚未完成验收。
+请勿删除持久化数据以绕过保护。需要本地构建体验时，使用上面的 Python 启动方式或
+`prototypes/v1/deploy/compose.yaml` 开发配置。
+
 ## 目录结构
 
 ```text

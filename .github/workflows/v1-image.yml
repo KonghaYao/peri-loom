@@ -5,6 +5,9 @@ on:
     branches:
       - '**'
     paths:
+      - compose.yaml
+      - production.env.example
+      - README.md
       - prototypes/v1/**
       - prototypes/p0/turso
       - .github/workflows/v1-image.yml
@@ -12,6 +15,9 @@ on:
       - 'v*'
   pull_request:
     paths:
+      - compose.yaml
+      - production.env.example
+      - README.md
       - prototypes/v1/**
       - prototypes/p0/turso
       - .github/workflows/v1-image.yml
@@ -31,9 +37,17 @@ jobs:
           persist-credentials: false
       - name: Check deployment configuration and image verifier
         env:
-          PERI_TLS_DIR: /tmp
+          PERI_IMAGE: peri-loom:ci
+          S3_ENDPOINT: https://s3.example.com
+          S3_BUCKET: disposable-ci-bucket
+          S3_REGION: us-east-1
+          S3_ACCESS_KEY_ID: test-access-key
+          S3_SECRET_ACCESS_KEY: test-secret-key
         run: |
+          docker compose config --quiet
           docker compose -f prototypes/v1/deploy/compose.yaml config --quiet
+          MINIO_IMAGE=minio:ci MINIO_MC_IMAGE=minio-mc:ci PERI_TEST_BUCKET=disposable-ci-bucket MINIO_ROOT_USER=testuser MINIO_ROOT_PASSWORD=testpassword docker compose -f prototypes/v1/deploy/compose.yaml -f prototypes/v1/deploy/compose.minio.yaml --profile minio config --quiet
+          python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_compose.py'
           python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_verify_image.py'
       - name: Build service image
         run: docker build -f prototypes/v1/deploy/Dockerfile -t peri-loom:ci .
@@ -84,5 +98,5 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
-          printf 'Verified Linux service image: `%s`\n\nThis is a preview: clean restart with a persistent state volume is not yet verified. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and `PERI_TLS_DIR` before running Compose.\n' "$image" "$image" > "$RUNNER_TEMP/notes.md"
+          printf 'Verified Linux service image: `%s`\n\nThis is a preview: clean restart with a persistent state directory is rejected. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" > "$RUNNER_TEMP/notes.md"
           gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"

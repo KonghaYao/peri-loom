@@ -14,6 +14,14 @@ raw/
 *.key
 *.crt
 secrets/
+/deploy/state/
+/deploy/dev-state/
+/deploy/s3-dev-state/
+/deploy/minio-state/
+/deploy/minio-app-state/
+/deploy/tls/
+/deploy/dev-tls/
+/deploy/production.env
 
 # 编辑器
 .idea/
@@ -29,3 +37,6 @@ docs/v1/evidence/
 # Python / Node
 node_modules
 __pycache__
+
+# 独立试炼场：独立 Git 仓库、数据库及运行证据
+/trial-ground/

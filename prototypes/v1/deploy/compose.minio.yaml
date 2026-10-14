@@ -1,5 +1,11 @@
 services:
   app:
+    volumes:
+      - type: bind
+        source: ../../../deploy/minio-app-state
+        target: /data/peri
+        bind:
+          create_host_path: false
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -18,7 +24,11 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set private test credentials}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set private test credentials}
     volumes:
-      - minio-state:/data
+      - type: bind
+        source: ../../../deploy/minio-state
+        target: /data
+        bind:
+          create_host_path: false
   minio-init:
     image: ${MINIO_MC_IMAGE:?set a reviewed pinned MinIO client image digest}
     profiles: [minio]
@@ -30,5 +40,3 @@ services:
     entrypoint: [/bin/sh, -ec]
     command:
       - 'export MC_HOST_isolated="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@minio:9000"; attempt=0; until mc ready isolated >/dev/null 2>&1; do attempt=$$((attempt+1)); test "$$attempt" -lt 60 || exit 1; sleep 2; done; mc mb --ignore-existing "isolated/$$PERI_TEST_BUCKET" >/dev/null'
-volumes:
-  minio-state:
