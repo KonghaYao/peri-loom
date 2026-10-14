@@ -76,6 +76,13 @@ class VerificationTests(unittest.TestCase):
         self.verification.copy = Mock(side_effect=copy)
         self.verification.remove_volume = Mock()
 
+    def test_failed_preparation_reports_stage_without_private_error(self):
+        self.verification.prepare = Mock(side_effect=RuntimeError("private details"))
+        self.assertFalse(self.verification.run())
+        self.assertEqual(self.verification.report["stage"], "prepare")
+        self.assertEqual(self.verification.report["failure_type"], "RuntimeError")
+        self.assertNotIn("private details", json.dumps(self.verification.report))
+
     def test_random_private_directories_and_names(self):
         other = verify.Verification(self.arguments)
         self.addCleanup(shutil.rmtree, other.directory, True)

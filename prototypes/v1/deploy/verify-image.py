@@ -266,8 +266,11 @@ class Verification:
 
     def run(self):
         try:
+            self.report["stage"] = "prepare"
             self.prepare()
+            self.report["stage"] = "ready"
             self.ready()
+            self.report["stage"] = "smoke"
             self.smoke()
             self.report["status"] = "smoke_passed"
         except BaseException as error:
@@ -337,7 +340,8 @@ def main():
     verification = Verification(arguments)
     signal.signal(signal.SIGTERM, interrupted)
     passed = verification.run()
-    print(json.dumps({"pass": passed, "results": str(verification.directory), "cleanup": verification.report["cleanup"]}))
+    print(json.dumps({"pass": passed, "results": str(verification.directory), "cleanup": verification.report["cleanup"],
+                      "stage": verification.report.get("stage"), "failure_type": verification.report.get("failure_type")}))
     return 0 if passed else 1
 
 
