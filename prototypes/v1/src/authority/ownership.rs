@@ -232,7 +232,7 @@ impl OwnershipAuthority {
             .get(&identifier.branch)
             .cloned();
         let now = service.now()?;
-        let expires = match now.checked_add(5000) {
+        let expires = match now.checked_add(30_000) {
             Some(expires) => expires,
             None => {
                 service.block();
@@ -260,7 +260,7 @@ impl OwnershipAuthority {
         );
         Ok(NonceReply {
             nonce,
-            expires_in_ms: 5000,
+            expires_in_ms: 30_000,
         })
     }
 

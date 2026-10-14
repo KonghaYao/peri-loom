@@ -41,12 +41,15 @@ fn nonce_is_single_use_bounded_and_intent_bound() -> Result<()> {
     reused.request_id = "second".into();
     assert!(authority.grant(reused).is_err());
     let late = grant_request(&authority, "main", 11, 10, "late", 10000)?;
-    clock.set(5100);
-    assert!(authority.grant(late).is_err());
+    clock.set(6000);
+    authority.grant(late)?;
+    let expired = grant_request(&authority, "main", 12, 11, "expired", 60000)?;
+    clock.set(36000);
+    assert!(authority.grant(expired).is_err());
     for ttl in [0, 99, 60001, u64::MAX] {
-        assert!(grant_request(&authority, "main", 11, 10, "bad", ttl).is_err());
+        assert!(grant_request(&authority, "main", 12, 11, "bad", ttl).is_err());
     }
-    assert_eq!(authority.state(&identifier("main"))?.epoch, 10);
+    assert_eq!(authority.state(&identifier("main"))?.epoch, 11);
     Ok(())
 }
 
