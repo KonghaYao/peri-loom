@@ -17,7 +17,7 @@ S3_NAMES = ("S3_ENDPOINT", "S3_BUCKET", "S3_REGION", "S3_ACCESS_KEY_ID", "S3_SEC
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 SMOKE = ROOT / "prototypes/v1/platform/tests/whole-smoke.py"
 CHECKS = ["native_encrypted_sql_ack", "exact_int64", "explicit_rollback", "integrity", "checkpoint",
-          "snapshot_restore", "stale_token_denial", "native_readonly_clone", "migration_epoch",
+          "snapshot_restore", "stale_token_denial", "native_readonly_clone", "native_readonly_write_denial", "migration_epoch",
           "suspend_status_resume", "actual_native_metrics"]
 REQUIRED_EVIDENCE = ("smoke-process.json", "smoke.json", "authority.lock", "result.json")
 

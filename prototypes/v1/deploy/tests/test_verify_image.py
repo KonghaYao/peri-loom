@@ -1,4 +1,5 @@
 import argparse
+import ast
 import copy
 import importlib.util
 import json
@@ -16,6 +17,14 @@ spec.loader.exec_module(verify)
 
 
 class VerificationTests(unittest.TestCase):
+    def test_verifier_requires_every_whole_smoke_check(self):
+        source = ast.parse(verify.SMOKE.read_text())
+        check_lists = [value for node in ast.walk(source) if isinstance(node, ast.Dict)
+                       for key, value in zip(node.keys, node.values)
+                       if isinstance(key, ast.Constant) and key.value == "checks" and isinstance(value, ast.List)]
+        self.assertEqual(len(check_lists), 1)
+        self.assertEqual(ast.literal_eval(check_lists[0]), verify.CHECKS)
+
     def setUp(self):
         self.arguments = argparse.Namespace(image="peri-loom:test", backend="local", ready_timeout=1, smoke_timeout=1, stop_timeout=1)
         self.verification = verify.Verification(self.arguments)

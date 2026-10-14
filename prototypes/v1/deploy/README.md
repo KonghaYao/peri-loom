@@ -63,7 +63,7 @@ appear in Docker argv or reports; Docker administrators can still inspect contai
 environment. Local mode does not forward S3 environment.
 
 The final JSON prints the private result directory and cleanup status; exit 0
-requires the exact helper result schema, all 11 checks (including
+requires the exact helper result schema, all 12 checks (including
 `native_encrypted_sql_ack`), its stdout acknowledgement, verified TLS, matching
 fixture database, positive authority puts, both worker metrics and no audit
 unavailability, plus shutdown proof and a successfully written/verified manifest.
