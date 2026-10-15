@@ -1,8 +1,10 @@
 package stress
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,61 @@ import (
 func testConfig() ConnectionConfig {
 	return ConnectionConfig{Target: Target{Endpoint: "http://127.0.0.1:1", Project: "project_unit", APIKey: testKey,
 		Database: DatabaseID{Namespace: Namespace{Tenant: "tenant_unit", Database: "stress_unit"}, Branch: "main"}}, FixtureOnly: true, SourceRoot: "/isolated/source"}
+}
+
+func TestSerialRunnerRejectsDirtySourceBeforeGateAndOutput(t *testing.T) {
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "source")
+	if err := os.Mkdir(sourceRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", sourceRoot}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	git("init", "-q")
+	tracked := filepath.Join(sourceRoot, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("clean"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "tracked.txt")
+	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
+
+	config := testConfig()
+	config.SourceRoot = sourceRoot
+	output := filepath.Join(root, "output")
+	runner := SerialRunner{Config: config, Settings: DefaultSettings(), OutputDir: output, GatePath: filepath.Join(root, "missing-gate.json")}
+	checkNoOutput := func() {
+		t.Helper()
+		if _, err := os.Lstat(output); !os.IsNotExist(err) {
+			t.Fatalf("output directory or lock created: %v", err)
+		}
+	}
+	checkNoOutput()
+	if path, err := runner.Run(context.Background()); path != "" || err == nil || err.Error() != "main joint PASS evidence file required" {
+		t.Fatalf("clean source did not reach joint gate: path=%q err=%v", path, err)
+	}
+	checkNoOutput()
+	if err := os.WriteFile(tracked, []byte("dirty"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := runner.Run(context.Background()); path != "" || err == nil || err.Error() != "load prohibited: source working tree is dirty" {
+		t.Fatalf("dirty source did not stop before joint gate: path=%q err=%v", path, err)
+	}
+	checkNoOutput()
+	if err := os.WriteFile(tracked, []byte("clean"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "untracked.txt"), []byte("untracked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := runner.Run(context.Background()); path != "" || err == nil || err.Error() != "load prohibited: source working tree is dirty" {
+		t.Fatalf("untracked source did not stop before joint gate: path=%q err=%v", path, err)
+	}
+	checkNoOutput()
 }
 
 func TestPrivateConnectionFileAndFixtureBounds(t *testing.T) {

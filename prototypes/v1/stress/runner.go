@@ -59,6 +59,9 @@ func (runner SerialRunner) Run(parent context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if source.Dirty {
+		return "", errors.New("load prohibited: source working tree is dirty")
+	}
 	gate, err := ReadGate(runner.GatePath, source.GitHash)
 	if err != nil {
 		return "", err
