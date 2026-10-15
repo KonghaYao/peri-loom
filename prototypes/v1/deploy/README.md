@@ -7,8 +7,9 @@ one prebuilt, immutable application image, an existing dedicated S3-compatible b
 host-provided TLS, and repository-relative bind mounts. **It is not yet safe to put into
 production**: the source launcher now admits a second launch only after a joined clean
 stop, matching worker proofs, a clean Authority marker, and no unresolved platform
-operations. The published `v1.0.0` image predates this fix. Dirty restart, disaster
-recovery, and HA have not been validated for production. Do not delete `deploy/state`, reset the ownership
+operations. The `v1.0.1` preview image includes this fix; `v1.0.0` predates it.
+Dirty restart, disaster recovery, and HA have not been validated for production.
+Do not delete `deploy/state`, reset the ownership
 marker, or reuse the S3 bucket with a fresh state directory to bypass that guard.
 
 Prerequisites on a Linux Docker host:

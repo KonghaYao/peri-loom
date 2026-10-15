@@ -37,8 +37,8 @@ Gateway 地址即可打开内嵌管理控制台。真实 S3 仅由 Authority 接
 准备证书、目录、S3 和私有 `deploy/production.env`，再运行
 `docker compose --env-file deploy/production.env up -d --no-build --pull always`。
 
-**当前仍不能用于实际生产上线**：源码中的干净停止后同状态目录重启已通过本地和独立 S3
-候选镜像测试，但已发布的 `v1.0.0` 镜像不包含该修复；异常中断后的恢复、灾难恢复与高可用
+**当前仍不能用于实际生产上线**：`v1.0.1` 镜像的干净停止后同状态目录重启已通过 Linux CI
+和独立 S3 测试，`v1.0.0` 镜像不包含该修复；异常中断后的恢复、灾难恢复与高可用
 仍未完成验收。请勿删除持久化数据以绕过保护。需要本地构建体验时，使用上面的 Python 启动方式或
 `prototypes/v1/deploy/compose.yaml` 开发配置。
 
