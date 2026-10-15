@@ -84,6 +84,10 @@ func (probe *narrowAuthProbe) authorizationState(keyID, projectID string, databa
 	return probe.StateStore.(*stateStore).authorizationState(keyID, projectID, database)
 }
 
+func (probe *narrowAuthProbe) gatewayRequestState(projectID string, database *controller.DatabaseID) (State, error) {
+	return probe.StateStore.(*stateStore).gatewayRequestState(projectID, database)
+}
+
 func TestStateStoreNarrowAuthSeesCommittedRevocationWithoutFullSnapshot(test *testing.T) {
 	store, _, key, credential := identityFixture(test, "sql")
 	probe := &narrowAuthProbe{StateStore: store}
@@ -104,6 +108,33 @@ func TestStateStoreNarrowAuthSeesCommittedRevocationWithoutFullSnapshot(test *te
 	}
 	if _, err := identity.Authenticate(credential); err == nil || identity.Authorize(principal, securityDatabase(), "sql") == nil || probe.snapshots != 0 {
 		test.Fatal("revocation was stale or authentication fell back to full snapshot")
+	}
+}
+
+func TestGatewayRequestUsesNarrowProjectRead(test *testing.T) {
+	store, identity, _, credential := identityFixture(test, "sql")
+	if err := store.Update(func(state *State) error {
+		project := state.Projects["alpha"]
+		project.Quotas = Quotas{MaxDatabases: 8, MaxSessions: 8, MaxConcurrent: 2, RequestsPerSecond: 1000, MaxSQLBytes: 4096, MaxResultBytes: 4096}
+		state.Projects["alpha"] = project
+		return nil
+	}); err != nil {
+		test.Fatal(err)
+	}
+	gateway, err := NewGateway(GatewayConfig{State: store, Placements: &gatewayTestPlacements{}, Identity: identity, Upstream: &gatewayTestUpstream{}, Audit: &gatewayTestAudit{}})
+	if err != nil {
+		test.Fatal(err)
+	}
+	probe := &narrowAuthProbe{StateStore: store}
+	gateway.config.State = probe
+	response := gatewayHTTP(test, gateway, credential, "/v1/sql/execute", map[string]any{"session": "00000000000000000000000000000000", "sql": "SELECT 1"})
+	if response.Code != 403 || gatewayCode(test, response) != "invalid_session" || probe.snapshots != 0 {
+		test.Fatalf("gateway cloned the full registry or rejected narrow project read: %d %s", response.Code, response.Body.String())
+	}
+	database := securityDatabase()
+	view, err := readGatewayRequestState(probe, "", &database)
+	if err != nil || view.Databases[securityDatabase().Key()].Project != "alpha" || view.Projects["alpha"].ID != "alpha" || probe.snapshots != 0 {
+		test.Fatal("administrator database lookup did not read its project narrowly")
 	}
 }
 

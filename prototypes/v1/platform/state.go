@@ -143,6 +143,34 @@ func readAuthorizationState(store StateStore, keyID, projectID string, database 
 	return store.Snapshot()
 }
 
+func (store *stateStore) gatewayRequestState(projectID string, database *controller.DatabaseID) (State, error) {
+	store.disk.mutex.Lock()
+	defer store.disk.mutex.Unlock()
+	if err := store.disk.available(); err != nil {
+		return State{}, err
+	}
+	view := State{Projects: map[string]Project{}, Databases: map[string]Database{}}
+	if database != nil {
+		if record, found := store.state.Databases[database.Key()]; found {
+			view.Databases[database.Key()] = record
+			projectID = record.Project
+		}
+	}
+	if project, found := store.state.Projects[projectID]; found {
+		view.Projects[projectID] = project
+	}
+	return view, nil
+}
+
+func readGatewayRequestState(store StateStore, projectID string, database *controller.DatabaseID) (State, error) {
+	if narrow, ok := store.(interface {
+		gatewayRequestState(string, *controller.DatabaseID) (State, error)
+	}); ok {
+		return narrow.gatewayRequestState(projectID, database)
+	}
+	return store.Snapshot()
+}
+
 func (store *stateStore) Update(mutation func(*State) error) error {
 	store.disk.mutex.Lock()
 	defer store.disk.mutex.Unlock()

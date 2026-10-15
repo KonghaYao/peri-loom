@@ -147,13 +147,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(401, "unauthenticated")
 		return
 	}
-	state, err := gateway.config.State.Snapshot()
-	if err != nil {
-		result = gatewayFailure(503, "metadata_unavailable")
-		return
-	}
 	var parsed gatewayRequest
 	var earlyBody []byte
+	var database *controller.DatabaseID
 	if principal.Project == "*" && principal.Role == "admin" && principal.Database == nil {
 		earlyBody, err = io.ReadAll(http.MaxBytesReader(writer, request.Body, sqlWireLimit))
 		if err != nil {
@@ -166,12 +162,11 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			return
 		}
 		if action == "open" {
-			descriptor, exists := state.Databases[parsed.Database.Key()]
-			if !exists || descriptor.ID != *parsed.Database {
+			if parsed.Database == nil {
 				result = gatewayFailure(403, "forbidden")
 				return
 			}
-			principal.Project = descriptor.Project
+			database = parsed.Database
 		} else {
 			gateway.mu.Lock()
 			session := gateway.sessions[parsed.Session]
@@ -182,6 +177,19 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			}
 			principal.Project = session.project
 		}
+	}
+	state, err := readGatewayRequestState(gateway.config.State, principal.Project, database)
+	if err != nil {
+		result = gatewayFailure(503, "metadata_unavailable")
+		return
+	}
+	if database != nil {
+		descriptor, exists := state.Databases[database.Key()]
+		if !exists || descriptor.ID != *database {
+			result = gatewayFailure(403, "forbidden")
+			return
+		}
+		principal.Project = descriptor.Project
 	}
 	project, found := state.Projects[principal.Project]
 	if !found || !quotaValid(project.Quotas) {
