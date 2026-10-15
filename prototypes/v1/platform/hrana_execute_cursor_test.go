@@ -25,6 +25,7 @@ func TestHranaHighLevelExecutePagesOnlyProvenReadonlyResult(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			fixture := newGatewayFixture(t)
+			gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 64 * 1024 })
 			next := 0
 			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 				switch command["command"] {

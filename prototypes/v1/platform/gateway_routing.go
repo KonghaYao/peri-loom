@@ -7,30 +7,38 @@ import (
 )
 
 func (gateway *Gateway) authorize(principal Principal, database controller.DatabaseID) error {
+	_, err := gateway.authorizeQuota(principal, database)
+	return err
+}
+
+func (gateway *Gateway) authorizeQuota(principal Principal, database controller.DatabaseID) (Quotas, error) {
 	if database.Validate() != nil {
-		return errors.New("invalid database")
+		return Quotas{}, errors.New("invalid database")
 	}
 	switch principal.Role {
 	case "admin", "developer", "sql", "writer", "read_only":
 	default:
-		return errors.New("SQL role required")
+		return Quotas{}, errors.New("SQL role required")
 	}
 	if principal.Database != nil && *principal.Database != database {
-		return errors.New("database scope mismatch")
+		return Quotas{}, errors.New("database scope mismatch")
 	}
 	state, err := gateway.config.State.Snapshot()
 	if err != nil {
-		return errors.New("state unavailable")
+		return Quotas{}, errors.New("state unavailable")
 	}
 	project, found := state.Projects[principal.Project]
 	if !found || project.Tenant != database.Namespace.Tenant {
-		return errors.New("project tenant mismatch")
+		return Quotas{}, errors.New("project tenant mismatch")
 	}
 	descriptor, found := state.Databases[database.Key()]
 	if !found || descriptor.Project != principal.Project || descriptor.ID != database || (descriptor.State != "ready" && descriptor.State != "active") {
-		return errors.New("database unavailable")
+		return Quotas{}, errors.New("database unavailable")
 	}
-	return gateway.config.Identity.Authorize(principal, database, "sql")
+	if err := gateway.config.Identity.Authorize(principal, database, "sql"); err != nil {
+		return Quotas{}, err
+	}
+	return project.Quotas, nil
 }
 
 func (gateway *Gateway) route(database controller.DatabaseID) (controller.Worker, controller.Binding, error) {

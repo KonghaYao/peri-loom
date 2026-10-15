@@ -116,8 +116,19 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	}
 	credential := strings.TrimPrefix(values[0], "Bearer ")
 	principal, err := handler.gateway.config.Identity.Authenticate(credential)
-	if err != nil || principal.Subject == "" || principal.Project == "" || handler.gateway.authorize(principal, database) != nil {
+	if err != nil || principal.Subject == "" || principal.Project == "" {
 		http.Error(writer, "forbidden", 403)
+		return
+	}
+	quota, err := handler.gateway.authorizeQuota(principal, database)
+	if err != nil {
+		http.Error(writer, "forbidden", 403)
+		return
+	}
+	resultLimit := min(maxHranaPipelineResultBytes, quota.MaxResultBytes)
+	resultReserve := min(maxHranaPipelineSteps*1024, max(128, resultLimit/8))
+	if resultLimit <= resultReserve {
+		http.Error(writer, "invalid result budget", 503)
 		return
 	}
 	if request.Header.Get("Content-Type") != "application/json" {
@@ -388,7 +399,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					continue
 				}
 				encoded, err := json.Marshal(value)
-				if err != nil || len(encoded) > maxHranaPipelineResultBytes-resultBytes-batchResultBytes-maxHranaPipelineSteps*1024 {
+				if err != nil || len(encoded) > resultLimit-resultBytes-batchResultBytes-resultReserve {
 					limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
 					return
 				}
@@ -399,7 +410,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 		if len(response.Results) > previousResults {
 			encoded, err := json.Marshal(response.Results[len(response.Results)-1])
-			if err != nil || len(encoded) > maxHranaPipelineResultBytes-resultBytes-maxHranaPipelineSteps*1024 {
+			if err != nil || len(encoded) > resultLimit-resultBytes-resultReserve {
 				limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
 				return
 			}
@@ -433,7 +444,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 	}
 	encoded, err := json.Marshal(response)
-	if err != nil || len(encoded) > maxHranaPipelineResultBytes {
+	if err != nil || len(encoded) > resultLimit {
 		limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
 		return
 	}

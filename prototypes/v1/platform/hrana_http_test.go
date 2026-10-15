@@ -159,7 +159,7 @@ func TestHranaPipelineTotalStepsRejectsBeforeOpeningSQL(t *testing.T) {
 
 func TestHranaPipelineResultBudgetStopsAfterExecutedStep(t *testing.T) {
 	fixture := newGatewayFixture(t)
-	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 6 * 1024 * 1024 })
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 12 * 1024 * 1024 })
 	value := strings.Repeat("x", 5*1024*1024)
 	fixture.upstream.hook = func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		if command["command"] == "statement" {
@@ -192,6 +192,27 @@ func TestHranaPipelineResultBudgetStopsAfterExecutedStep(t *testing.T) {
 	handler.mu.Unlock()
 	if retained != 0 {
 		t.Fatal("new stream was retained without returning a baton")
+	}
+}
+
+func TestHranaPipelineUsesTenantResultBudget(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 1024 * 1024 })
+	value := strings.Repeat("x", 700*1024)
+	fixture.upstream.hook = func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "statement" {
+			return map[string]any{"cols": []any{map[string]any{"name": "payload", "decltype": "TEXT"}}, "rows": [][]any{{value}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
+		}
+		return nil, nil
+	}
+	body := `{"requests":[{"type":"batch","batch":{"steps":[{"stmt":{"sql":"SELECT 'a'","want_rows":true}},{"stmt":{"sql":"SELECT 'b'","want_rows":true}}]}}]}`
+	request := httptest.NewRequest(http.MethodPost, "/db/tenant-a/db-a/main/v2/pipeline", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newHranaHTTP(fixture.gateway).ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge || fixture.upstream.count("statement") != 2 || !strings.Contains(response.Body.String(), `"code":"pipeline_result_limit"`) {
+		t.Fatalf("tenant aggregate output budget was not enforced: status=%d statements=%d body=%s", response.Code, fixture.upstream.count("statement"), response.Body.String())
 	}
 }
 
