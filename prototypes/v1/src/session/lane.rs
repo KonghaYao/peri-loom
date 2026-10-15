@@ -303,8 +303,15 @@ impl SessionLane {
             .read_cursor
             .lock()
             .map_err(|_| AdmissionError::Quarantine)?
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("read cursor not open"))?;
+            .take();
+        // A drained read releases its slot when the read finishes, so a close
+        // after `done` and a repeated close both have nothing left to release.
+        // Treating them as success keeps the documented open/fetch/close cycle
+        // usable; the postcondition of close is already satisfied.
+        let Some(cursor) = cursor else {
+            drop(connection);
+            return self.finish_call(database, Ok(()));
+        };
         let result = execution::cancel_read_cursor(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -433,8 +440,14 @@ impl SessionLane {
             .write_cursor
             .lock()
             .map_err(|_| AdmissionError::Quarantine)?
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("write cursor not open"))?;
+            .take();
+        // Closing a write cursor that already finished (or was already closed)
+        // only has to reach the same postcondition: the slot is free, and the
+        // write outcome was already reported by the fetch that finished it.
+        let Some(cursor) = cursor else {
+            drop(connection);
+            return self.finish_call(database, Ok(()));
+        };
         let result = execution::cancel_write_cursor(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
