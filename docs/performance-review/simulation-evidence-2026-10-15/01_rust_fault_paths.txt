@@ -1,0 +1,212 @@
+
+running 13 tests
+.............
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+
+running 7 tests
+.......
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 11 tests
+...........
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+
+
+running 26 tests
+..........................
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.41s
+
+
+running 14 tests
+..............
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.27s
+
+
+running 15 tests
+
+running 1 test
+test cache_directory_lock_is_cross_process_even_without_native_locks ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+
+...............
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+warning: unused import: `log_write`
+   --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/mvcc/persistent_storage/logical_log.rs:262:29
+    |
+262 | pub(crate) use serializer::{log_write, LogBufferWrite, LogChunkStream, LogSerializer};
+    |                             ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `translate_expr`
+  --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/translate/emitter/mod.rs:11:51
+   |
+11 |         bind_and_rewrite_expr, emit_table_column, translate_expr, translate_expr_no_constant_opt,
+   |                                                   ^^^^^^^^^^^^^^
+
+warning: methods `move_to_root` and `indexbtree_move_to_unpacked` are never used
+    --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/storage/btree.rs:1861:8
+     |
+1201 | impl BTreeCursor {
+     | ---------------- methods in this implementation
+...
+1861 |     fn move_to_root(&mut self) -> Result<Option<Completion>> {
+     |        ^^^^^^^^^^^^
+...
+2151 |     fn indexbtree_move_to_unpacked(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/types.rs:830:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+830 |     pub step_fn: StepFunction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+    = note: `#[warn(unpredictable_function_pointer_comparisons)]` on by default
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/types.rs:831:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+831 |     pub finalize_fn: FinalizeFunction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/types.rs:832:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+832 |     pub aggregate_destructor: Option<ContextDestructor>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/types.rs:833:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+833 |     pub value_destructor: Option<ValueDestructor>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/vector/operations/text.rs:69:56
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector> {
+   |                                                        ^^^^            ^^^^^^ the same lifetime is hidden here
+   |                                                        |
+   |                                                        the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector<'_>> {
+   |                                                                              ++++
+
+warning: specialization is experimental
+  --> /Users/konghayao/code/ai/peri-loom/prototypes/p0/turso/core/alloc/collections/iterator.rs:43:5
+   |
+43 |     default fn try_from_result_iter(iter: I) -> Result<Self, TryReserveError> {
+   |     ^^^^^^^
+   |
+   = note: see issue #31844 <https://github.com/rust-lang/rust/issues/31844> for more information
+   = warning: unstable syntax can change at any point in the future, causing a hard error!
+   = note: for more information, see issue #154045 <https://github.com/rust-lang/rust/issues/154045>
+
+warning: constant `PAGE_BYTES` is never used
+  --> src/authority/paged_index.rs:10:7
+   |
+10 | const PAGE_BYTES: usize = 16 * 1024;
+   |       ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `HASH_NIBBLES` is never used
+  --> src/authority/paged_index.rs:11:7
+   |
+11 | const HASH_NIBBLES: u8 = 64;
+   |       ^^^^^^^^^^^^
+
+warning: enum `Page` is never used
+  --> src/authority/paged_index.rs:15:6
+   |
+15 | enum Page {
+   |      ^^^^
+
+warning: struct `PagedIndex` is never constructed
+  --> src/authority/paged_index.rs:28:19
+   |
+28 | pub(crate) struct PagedIndex<'a> {
+   |                   ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src/authority/paged_index.rs:34:19
+    |
+ 33 | impl<'a> PagedIndex<'a> {
+    | ----------------------- associated items in this implementation
+ 34 |     pub(crate) fn new(store: &'a dyn ObjectStore, namespace: &'a Namespace) -> Self {
+    |                   ^^^
+...
+ 38 |     pub(crate) fn get(&self, root: Option<&str>, key: &str) -> Result<Option<Value>> {
+    |                   ^^^
+...
+ 55 |     pub(crate) fn insert_once(
+    |                   ^^^^^^^^^^^
+...
+ 65 |     fn insert_at(
+    |        ^^^^^^^^^
+...
+106 |     fn leaf_or_branch(&self, entries: BTreeMap<String, Value>, depth: u8) -> Result<String> {
+    |        ^^^^^^^^^^^^^^
+...
+137 |     fn read(&self, hash: &str, depth: u8, prefix: &[u8]) -> Result<Page> {
+    |        ^^^^
+...
+198 |     fn write(&self, page: &Page) -> Result<String> {
+    |        ^^^^^
+
+warning: function `validate_key` is never used
+   --> src/authority/paged_index.rs:216:4
+    |
+216 | fn validate_key(key: &str) -> Result<()> {
+    |    ^^^^^^^^^^^^
+
+warning: function `validate_hash` is never used
+   --> src/authority/paged_index.rs:228:4
+    |
+228 | fn validate_hash(hash: &str) -> Result<()> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `nibble` is never used
+   --> src/authority/paged_index.rs:239:4
+    |
+239 | fn nibble(key: &str, depth: u8) -> Result<u8> {
+    |    ^^^^^^
+

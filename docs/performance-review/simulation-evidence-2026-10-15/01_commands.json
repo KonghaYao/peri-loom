@@ -1,0 +1,114 @@
+[
+  {
+    "name": "compose_root",
+    "argv": [
+      "docker",
+      "compose",
+      "config",
+      "--quiet"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 0.08,
+    "log": "01_compose_root.txt"
+  },
+  {
+    "name": "compose_deploy",
+    "argv": [
+      "docker",
+      "compose",
+      "-f",
+      "prototypes/v1/deploy/compose.yaml",
+      "config",
+      "--quiet"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 0.075,
+    "log": "01_compose_deploy.txt"
+  },
+  {
+    "name": "compose_minio",
+    "argv": [
+      "docker",
+      "compose",
+      "-f",
+      "prototypes/v1/deploy/compose.yaml",
+      "-f",
+      "prototypes/v1/deploy/compose.minio.yaml",
+      "--profile",
+      "minio",
+      "config",
+      "--quiet"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 0.082,
+    "log": "01_compose_minio.txt"
+  },
+  {
+    "name": "compose_unit",
+    "argv": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "prototypes/v1/deploy/tests",
+      "-p",
+      "test_compose.py"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 0.249,
+    "log": "01_compose_unit.txt"
+  },
+  {
+    "name": "image_verifier_unit",
+    "argv": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "prototypes/v1/deploy/tests",
+      "-p",
+      "test_verify_image.py"
+    ],
+    "exit_code": 0,
+    "elapsed_s": 0.233,
+    "log": "01_image_verifier_unit.txt"
+  },
+  {
+    "name": "rust_fault_paths",
+    "argv": [
+      "cargo",
+      "test",
+      "--test",
+      "authority",
+      "--test",
+      "ownership_view",
+      "--test",
+      "recovery",
+      "--test",
+      "p4_remote",
+      "--test",
+      "p4_runtime",
+      "--test",
+      "remote_database",
+      "--quiet"
+    ],
+    "cwd": "prototypes/v1",
+    "exit_code": 0,
+    "elapsed_s": 32.947,
+    "log": "01_rust_fault_paths.txt",
+    "source_sha256_before": {
+      "prototypes/v1/src/authority.rs": "58483f51c33592653e32a0795a3fa9b8a273d43ec3a1c7c5afea7e53f45319b7",
+      "prototypes/v1/src/authority/paged_index.rs": "2064d75e20cd7b1357fb882fa069836e39f1927f84b9d636a48ab8376a6bc0c5",
+      "prototypes/v1/src/recovery.rs": "b561c348fea617841ef4f47c705f2fc1b62937d9874cd073d1cff4f4d3d74f03",
+      "prototypes/v1/src/authority/ownership.rs": "06869bf8cd2eedc6433b43bc2aa9d68e948b038f17ba01a4ae9149301da2bf11"
+    },
+    "source_sha256_after": {
+      "prototypes/v1/src/authority.rs": "58483f51c33592653e32a0795a3fa9b8a273d43ec3a1c7c5afea7e53f45319b7",
+      "prototypes/v1/src/authority/paged_index.rs": "2064d75e20cd7b1357fb882fa069836e39f1927f84b9d636a48ab8376a6bc0c5",
+      "prototypes/v1/src/recovery.rs": "b561c348fea617841ef4f47c705f2fc1b62937d9874cd073d1cff4f4d3d74f03",
+      "prototypes/v1/src/authority/ownership.rs": "06869bf8cd2eedc6433b43bc2aa9d68e948b038f17ba01a4ae9149301da2bf11"
+    }
+  }
+]
