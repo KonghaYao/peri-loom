@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use anyhow::{ensure, Context, Result};
@@ -23,8 +23,28 @@ struct Registry {
 pub(super) struct Sessions {
     runtime: Arc<OwnershipRuntime>,
     registry: Mutex<Registry>,
-    image_refresh: Mutex<()>,
+    image_refresh: RefreshLocks,
     max_sessions: usize,
+}
+
+#[derive(Default)]
+struct RefreshLocks(Mutex<BTreeMap<DatabaseId, Weak<Mutex<()>>>>);
+
+impl RefreshLocks {
+    fn for_database(&self, database: &DatabaseId) -> Result<Arc<Mutex<()>>> {
+        let mut locks = self
+            .0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh registry poisoned"))?;
+        if let Some(lock) = locks.get(database).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        // An active caller owns the Arc, so a concurrent caller cannot get a new lock.
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(database.clone(), Arc::downgrade(&lock));
+        Ok(lock)
+    }
 }
 
 struct Opening<'sessions>(&'sessions Sessions);
@@ -46,7 +66,7 @@ impl Sessions {
         Self {
             runtime,
             registry: Mutex::new(Registry::default()),
-            image_refresh: Mutex::new(()),
+            image_refresh: RefreshLocks::default(),
             max_sessions,
         }
     }
@@ -69,8 +89,8 @@ impl Sessions {
             registry.opening += 1;
         }
         let _opening = Opening(self);
-        let _refresh = self
-            .image_refresh
+        let refresh = self.image_refresh.for_database(database)?;
+        let _refresh = refresh
             .lock()
             .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
         self.refresh_initial_image(database)?;
@@ -122,18 +142,18 @@ impl Sessions {
     }
 
     pub fn begin(&self, identifier: &str) -> Result<SessionCall> {
-        let _refresh = self
-            .image_refresh
+        let database = self.entry(identifier)?.database.clone();
+        let refresh = self.image_refresh.for_database(&database)?;
+        let _refresh = refresh
             .lock()
             .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
-        let entry = self.entry(identifier)?;
-        self.refresh_initial_image(&entry.database)?;
+        self.refresh_initial_image(&database)?;
         self.entry(identifier)?.begin(identifier)
     }
 
     fn refresh_initial_image(&self, database: &DatabaseId) -> Result<()> {
         if self.runtime.initial_image_replaced(database)? {
-            let previous = {
+            let entries = {
                 let registry = self
                     .registry
                     .lock()
@@ -142,12 +162,14 @@ impl Sessions {
                     .sessions
                     .iter()
                     .filter(|(_, entry)| entry.database == *database)
-                    .map(|(identifier, entry)| {
-                        Ok((identifier.clone(), entry.rebindable_sequence()?))
-                    })
-                    .collect::<Result<Vec<_>>>()?
+                    .map(|(identifier, entry)| (identifier.clone(), entry.clone()))
+                    .collect::<Vec<_>>()
             };
-            self.clear_database(database)?;
+            let previous = entries
+                .into_iter()
+                .map(|(identifier, entry)| Ok((identifier, entry.rebindable_sequence()?)))
+                .collect::<Result<Vec<_>>>()?;
+            self.clear_matching(|entry| entry.database == *database)?;
             self.runtime.unload_replaced_image(database)?;
             for (identifier, sequence) in previous {
                 let handle = Arc::new(self.runtime.open_session(database)?);
@@ -170,8 +192,9 @@ impl Sessions {
     }
 
     pub fn close(&self, identifier: &str, version: u32) -> Result<Option<SessionState>> {
-        let _refresh = self
-            .image_refresh
+        let database = self.entry(identifier)?.database.clone();
+        let refresh = self.image_refresh.for_database(&database)?;
+        let _refresh = refresh
             .lock()
             .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
         let deadline = Instant::now() + Budget::trusted_default().max_query_duration;
@@ -205,6 +228,10 @@ impl Sessions {
     }
 
     pub fn clear_database(&self, database: &DatabaseId) -> Result<()> {
+        let refresh = self.image_refresh.for_database(database)?;
+        let _refresh = refresh
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
         self.clear_matching(|entry| entry.database == *database)
     }
 
@@ -236,6 +263,35 @@ impl Sessions {
             .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?
             .sessions
             .len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RefreshLocks;
+    use crate::namespace::Namespace;
+    use crate::runtime::DatabaseId;
+    use std::sync::Arc;
+
+    #[test]
+    fn image_refresh_blocks_only_the_same_database_and_reclaims_idle_locks() -> anyhow::Result<()> {
+        let locks = RefreshLocks::default();
+        let a = DatabaseId::new(Namespace::new("tenant", "a")?, "main")?;
+        let b = DatabaseId::new(Namespace::new("tenant", "b")?, "main")?;
+        let a_lock = locks.for_database(&a)?;
+        let a_second = locks.for_database(&a)?;
+        assert!(Arc::ptr_eq(&a_lock, &a_second));
+        let held = a_lock.lock().unwrap();
+        assert!(a_second.try_lock().is_err());
+        let b_lock = locks.for_database(&b)?;
+        let _b_held = b_lock.try_lock().expect("unrelated database must proceed");
+        drop(held);
+        drop(a_second);
+        drop(a_lock);
+        let replacement = locks.for_database(&a)?;
+        assert_eq!(locks.0.lock().unwrap().len(), 2);
+        assert!(replacement.try_lock().is_ok());
+        Ok(())
     }
 }
 
