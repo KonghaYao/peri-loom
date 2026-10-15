@@ -1,0 +1,165 @@
+{
+  "bucket": "peri-clone-03971fdb3d590d76e5d19ce6ee6f2931",
+  "clone_config_checks": {
+    "a": {
+      "distinct_volume": true,
+      "same_image": true,
+      "same_s3_endpoint_bucket_credentials": true
+    },
+    "b": {
+      "distinct_volume": true,
+      "same_image": true,
+      "same_s3_endpoint_bucket_credentials": true
+    }
+  },
+  "containers": {
+    "a": {
+      "exit_code": 0,
+      "id": "8814e22f502aa437a5de0f4452c8f1ee713d80bb693ad2191ec12d40abd991ea",
+      "image_id": "sha256:81ef392b7097d0474b5e1e19014b977a7b752f5e5cb86727f362127baf086102",
+      "loopback_publish": true,
+      "mounts": [
+        "peri-s3-clone-03971fdb3d590d76e5d19ce6ee6f2931-app-a"
+      ],
+      "state": "exited"
+    },
+    "b": {
+      "exit_code": 1,
+      "id": "56370cb371f16bf102400bc0c2c9fddb38fe590c3ad38df1d51c45380c300322",
+      "image_id": "sha256:81ef392b7097d0474b5e1e19014b977a7b752f5e5cb86727f362127baf086102",
+      "loopback_publish": true,
+      "mounts": [
+        "peri-s3-clone-03971fdb3d590d76e5d19ce6ee6f2931-app-b"
+      ],
+      "state": "exited"
+    },
+    "s3-service": {
+      "exit_code": 0,
+      "id": "3186cb5b443a37ca11148f37df111440374bbfe9178b5e15b6d2cff613559d86",
+      "image_id": "sha256:6024cc1b5bb731a1d1dbd80e85b271917eac6766554605e565bfb6e25e583f2e",
+      "loopback_publish": true,
+      "mounts": [
+        "peri-s3-clone-03971fdb3d590d76e5d19ce6ee6f2931-s3-data"
+      ],
+      "state": "exited"
+    },
+    "source": {
+      "exit_code": 0,
+      "id": "3fd50ca87b19330ea91e255fa8031d8de869c79cdb8c6a698acc5e5ec6e8081f",
+      "image_id": "sha256:81ef392b7097d0474b5e1e19014b977a7b752f5e5cb86727f362127baf086102",
+      "loopback_publish": true,
+      "mounts": [
+        "peri-s3-clone-03971fdb3d590d76e5d19ce6ee6f2931-app-source"
+      ],
+      "state": "exited"
+    }
+  },
+  "events": [
+    {
+      "monotonic_ns": 367475414141083,
+      "stage": "source_ready",
+      "utc": "2026-10-15T06:12:08.342083+00:00"
+    },
+    {
+      "monotonic_ns": 367476045475458,
+      "response": {
+        "executed": true
+      },
+      "stage": "write_response",
+      "suffix": "source",
+      "utc": "2026-10-15T06:12:08.973457+00:00"
+    },
+    {
+      "match": true,
+      "monotonic_ns": 367476260280000,
+      "stage": "read",
+      "suffix": "source",
+      "table_owner": "source",
+      "utc": "2026-10-15T06:12:09.188264+00:00"
+    },
+    {
+      "monotonic_ns": 367476680843166,
+      "stage": "source_clean_exit",
+      "utc": "2026-10-15T06:12:09.608794+00:00"
+    },
+    {
+      "archive_sha256": "b65ba7a0274fe1d10470162503ac60a0d0a3ceb33acf192520ff9e2384eb8012",
+      "monotonic_ns": 367476942621958,
+      "stage": "cold_clean_proof",
+      "utc": "2026-10-15T06:12:09.870599+00:00",
+      "valid": true
+    },
+    {
+      "monotonic_ns": 367477064069708,
+      "object_count": 13,
+      "stage": "source_s3_objects",
+      "utc": "2026-10-15T06:12:09.991991+00:00"
+    },
+    {
+      "archive_sha256": "b65ba7a0274fe1d10470162503ac60a0d0a3ceb33acf192520ff9e2384eb8012",
+      "monotonic_ns": 367477672877083,
+      "stage": "two_fresh_volumes_restored",
+      "utc": "2026-10-15T06:12:10.600843+00:00"
+    },
+    {
+      "monotonic_ns": 367479655421875,
+      "stage": "clone_ready",
+      "suffix": "a",
+      "utc": "2026-10-15T06:12:12.583388+00:00"
+    },
+    {
+      "error_type": "RuntimeError",
+      "monotonic_ns": 367493783153083,
+      "stage": "clone_not_ready",
+      "suffix": "b",
+      "utc": "2026-10-15T06:12:26.711198+00:00"
+    },
+    {
+      "monotonic_ns": 367493852020416,
+      "ready": {
+        "a": true,
+        "b": false
+      },
+      "stage": "concurrent_start_result",
+      "utc": "2026-10-15T06:12:26.780071+00:00"
+    },
+    {
+      "database_equal": true,
+      "monotonic_ns": 367493913703958,
+      "project_key_equal": true,
+      "s3_endpoint_bucket_credentials_equal": true,
+      "stage": "clone_identity",
+      "suffix": "a",
+      "utc": "2026-10-15T06:12:26.841759+00:00"
+    },
+    {
+      "match": true,
+      "monotonic_ns": 367494142740250,
+      "stage": "read",
+      "suffix": "a",
+      "table_owner": "source",
+      "utc": "2026-10-15T06:12:27.070830+00:00"
+    },
+    {
+      "monotonic_ns": 367494309993583,
+      "object_count": 13,
+      "stage": "final_observation",
+      "utc": "2026-10-15T06:12:27.238081+00:00"
+    },
+    {
+      "monotonic_ns": 367494852398708,
+      "stage": "final_clean_stop",
+      "suffix": "a",
+      "utc": "2026-10-15T06:12:27.780455+00:00"
+    },
+    {
+      "monotonic_ns": 367495218441708,
+      "stage": "final_clean_stop",
+      "suffix": "s3-service",
+      "utc": "2026-10-15T06:12:28.146499+00:00"
+    }
+  ],
+  "label": "peri.dr.owner",
+  "owner": "03971fdb3d590d76e5d19ce6ee6f2931",
+  "status": "OBSERVED"
+}
