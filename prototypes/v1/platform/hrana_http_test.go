@@ -157,6 +157,83 @@ func TestHranaPipelineTotalStepsRejectsBeforeOpeningSQL(t *testing.T) {
 	}
 }
 
+func TestHranaPipelineResultBudgetStopsAfterExecutedStep(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 6 * 1024 * 1024 })
+	value := strings.Repeat("x", 5*1024*1024)
+	fixture.upstream.hook = func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "statement" {
+			return map[string]any{"cols": []any{map[string]any{"name": "payload", "decltype": "TEXT"}}, "rows": [][]any{{value}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
+		}
+		return nil, nil
+	}
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	body := `{"requests":[{"type":"batch","batch":{"steps":[{"stmt":{"sql":"SELECT 'a'","want_rows":true}},{"stmt":{"sql":"SELECT 'b'","want_rows":true}},{"stmt":{"sql":"SELECT 'c'","want_rows":true}}]}}]}`
+	request := httptest.NewRequest(http.MethodPost, "/db/tenant-a/db-a/main/v2/pipeline", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge || fixture.upstream.count("statement") != 2 {
+		t.Fatalf("pipeline result budget did not stop after second completed step: status=%d statements=%d body=%s", response.Code, fixture.upstream.count("statement"), response.Body.String())
+	}
+	var limited struct {
+		Error struct {
+			Code                     string `json:"code"`
+			PartialExecutionPossible bool   `json:"partial_execution_possible"`
+			Retryable                bool   `json:"retryable"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(response.Body.Bytes(), &limited) != nil || limited.Error.Code != "pipeline_result_limit" || !limited.Error.PartialExecutionPossible || limited.Error.Retryable {
+		t.Fatalf("result limit hid partial execution: %s", response.Body.String())
+	}
+	handler.mu.Lock()
+	retained := len(handler.streams)
+	handler.mu.Unlock()
+	if retained != 0 {
+		t.Fatal("new stream was retained without returning a baton")
+	}
+}
+
+func TestHranaPipelineDeadlineReportsUnknownInFlightStep(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	statements := 0
+	fixture.upstream.hook = func(ctx context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] != "statement" {
+			return nil, nil
+		}
+		statements++
+		if statements == 1 {
+			time.Sleep(100 * time.Millisecond)
+			return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": 1, "last_insert_rowid": nil, "autocommit": true}, nil
+		}
+		<-ctx.Done()
+		return nil, &SQLRPCError{Ambiguous: true}
+	}
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	handler.timeout = 500 * time.Millisecond
+	body := `{"requests":[{"type":"batch","batch":{"steps":[{"stmt":{"sql":"INSERT INTO proof VALUES(1)"}},{"stmt":{"sql":"INSERT INTO proof VALUES(2)"}},{"stmt":{"sql":"INSERT INTO proof VALUES(3)"}}]}}]}`
+	request := httptest.NewRequest(http.MethodPost, "/db/tenant-a/db-a/main/v2/pipeline", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusGatewayTimeout || statements != 2 {
+		t.Fatalf("pipeline deadline did not stop the in-flight step: status=%d statements=%d body=%s", response.Code, statements, response.Body.String())
+	}
+	var limited struct {
+		Error struct {
+			Code                     string `json:"code"`
+			PartialExecutionPossible bool   `json:"partial_execution_possible"`
+			OutcomeUnknown           bool   `json:"outcome_unknown"`
+			Retryable                bool   `json:"retryable"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(response.Body.Bytes(), &limited) != nil || limited.Error.Code != "pipeline_timeout" || !limited.Error.PartialExecutionPossible || !limited.Error.OutcomeUnknown || limited.Error.Retryable {
+		t.Fatalf("deadline hid unknown SQL outcome: %s", response.Body.String())
+	}
+}
+
 func TestHranaRouteRequiresExplicitExperimentalOptIn(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	path := "/db/tenant-a/db-a/main/v2/pipeline"

@@ -2,6 +2,7 @@ package platform
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 
 type hranaHTTP struct {
 	gateway  *Gateway
+	timeout  time.Duration
 	mu       sync.Mutex
 	streams  map[string]*hranaStream
 	reserved int
@@ -29,6 +31,8 @@ type hranaHTTP struct {
 
 const maxHranaStreams = 256
 const maxHranaPipelineSteps = 64
+const maxHranaPipelineResultBytes = 8 * 1024 * 1024
+const hranaPipelineTimeout = 30 * time.Second
 const hranaIdleTimeout = 5 * time.Minute
 
 type hranaStream struct {
@@ -80,7 +84,7 @@ type hranaResponse struct {
 }
 
 func newHranaHTTP(gateway *Gateway) http.Handler {
-	return &hranaHTTP{gateway: gateway, streams: make(map[string]*hranaStream), wsConns: make(map[*websocket.Conn]struct{})}
+	return &hranaHTTP{gateway: gateway, timeout: hranaPipelineTimeout, streams: make(map[string]*hranaStream), wsConns: make(map[*websocket.Conn]struct{})}
 }
 
 func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -133,6 +137,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	}
 	digest := sha256.Sum256([]byte(credential))
 	stream := &hranaStream{database: database, credential: digest}
+	newStream := pipeline.Baton == ""
 	if pipeline.Baton != "" {
 		var found bool
 		handler.mu.Lock()
@@ -204,7 +209,38 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 		}
 	}
+	ctx, cancel := context.WithTimeout(request.Context(), handler.timeout)
+	defer cancel()
+	request = request.WithContext(ctx)
+	resultBytes := 0
+	dispatched := false
+	limitFailure := func(status int, code string) {
+		if newStream && stream.session != "" {
+			if pipeline.Baton != "" {
+				handler.mu.Lock()
+				delete(handler.streams, pipeline.Baton)
+				handler.mu.Unlock()
+				if stream.timer != nil {
+					stream.timer.Stop()
+				}
+			}
+			go handler.cleanupRetiredSession(stream.session, 0)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(status)
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"error": map[string]any{
+				"code": code, "partial_execution_possible": dispatched,
+				"outcome_unknown": code == "pipeline_timeout", "retryable": false,
+			},
+		})
+	}
 	for _, entry := range pipeline.Requests {
+		if ctx.Err() != nil {
+			limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+			return
+		}
+		previousResults := len(response.Results)
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
 			code, result, failure := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
 			if code != 200 || failure != "" {
@@ -259,7 +295,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": "invalid_arguments"}})
 				continue
 			}
+			dispatched = true
 			code, _, failure := handler.call(request, credential, "/v1/sql/execute", map[string]any{"session": stream.session, "sql": entry.SQL})
+			if ctx.Err() != nil {
+				limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+				return
+			}
 			if code >= 500 || failure == "outcome_unknown" {
 				http.Error(writer, "SQL outcome unknown: "+failure, 502)
 				return
@@ -293,7 +334,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			if entry.Stmt.SQL == "" {
 				entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
 			}
+			dispatched = true
 			value, failure, unknown := handler.execute(request, credential, stream.session, entry.Stmt)
+			if ctx.Err() != nil {
+				limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+				return
+			}
 			if unknown {
 				http.Error(writer, "SQL outcome unknown: "+failure, 502)
 				return
@@ -306,7 +352,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		case "batch":
 			results := make([]any, len(entry.Batch.Steps))
 			errors := make([]any, len(entry.Batch.Steps))
+			batchResultBytes := 0
 			for index, step := range entry.Batch.Steps {
+				if ctx.Err() != nil {
+					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+					return
+				}
 				isAutocommit := false
 				if hranaConditionNeedsAutocommit(step.Condition) {
 					var failure string
@@ -322,7 +373,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				if step.Stmt.SQL == "" {
 					step.Stmt.SQL = stream.storedSQL[step.Stmt.SQLID]
 				}
+				dispatched = true
 				value, failure, unknown := handler.execute(request, credential, stream.session, step.Stmt)
+				if ctx.Err() != nil {
+					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+					return
+				}
 				if unknown {
 					http.Error(writer, "SQL outcome unknown: "+failure, 502)
 					return
@@ -331,10 +387,28 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					errors[index] = map[string]any{"message": failure, "code": failure}
 					continue
 				}
+				encoded, err := json.Marshal(value)
+				if err != nil || len(encoded) > maxHranaPipelineResultBytes-resultBytes-batchResultBytes-maxHranaPipelineSteps*1024 {
+					limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+					return
+				}
+				batchResultBytes += len(encoded)
 				results[index] = value
 			}
 			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "batch", "result": map[string]any{"step_results": results, "step_errors": errors}}})
 		}
+		if len(response.Results) > previousResults {
+			encoded, err := json.Marshal(response.Results[len(response.Results)-1])
+			if err != nil || len(encoded) > maxHranaPipelineResultBytes-resultBytes-maxHranaPipelineSteps*1024 {
+				limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+				return
+			}
+			resultBytes += len(encoded)
+		}
+	}
+	if ctx.Err() != nil {
+		limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+		return
 	}
 	if stream.session != "" {
 		if pipeline.Baton == "" {
@@ -358,8 +432,14 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			stream.timer.Stop()
 		}
 	}
+	encoded, err := json.Marshal(response)
+	if err != nil || len(encoded) > maxHranaPipelineResultBytes {
+		limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(response)
+	_, _ = writer.Write(encoded)
+	_, _ = writer.Write([]byte("\n"))
 }
 
 func hranaValidCondition(raw json.RawMessage, step int) bool {
