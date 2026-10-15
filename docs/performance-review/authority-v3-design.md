@@ -31,4 +31,4 @@ WAL index 也必须改为分段、持久树或等价有界结构：只迁移 roo
 3. 引入分段 WAL index 与增量验证；清理热路径对 `CatalogRoot` 和完整 `WalMetadata` 的依赖。启动/后台完整审计应有可观察进度和资源预算。
 4. 跑 T05 的 100/1k/10k/100k 递增历史、F02 的 30 天续租和 1/8/32 分支竞争。记录每请求 GET/PUT 数与字节、root 大小、CAS 重试、CPU、分配、峰值内存和 p95/p99。达到停止阈值时留存现场，不以未完成大规模负载声称通过。
 
-目前 F01 未完成，F02 仅泛用回执局部完成；`implementation-status.md` 记录可验证的实际范围。Rust 全套本轮仍在 `runtime_resources::compacted_cold_open_is_lazy_and_old_immutable_recovery_remains_valid` 因默认 5 秒查询预算失败，不能称完整回归通过。
+目前 F01 的 Walker 已不再保留所有历史 index 原始字节，已验证身份缓存上限为 128；热路径仍完整遍历累计历史。F02 仅泛用回执局部完成；`implementation-status.md` 记录可验证的实际范围。修订后的 Rust 全套 `cargo test --locked --quiet -- --test-threads=2` 退出 0，47 条测试摘要合计 539 次 passed 计数、13 次 ignored 计数（包含嵌套重复汇总，不是独立测试数）。忽略的外部服务场景与 T01–T12 均未据此通过。

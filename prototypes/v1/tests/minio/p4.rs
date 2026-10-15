@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc, thread};
 
 use anyhow::{ensure, Result};
 use peri_loom_v1::{
-    authority::ownership::OwnershipAuthority,
+    authority::{ownership::OwnershipAuthority, Authority},
     authority_rpc::{
         auth::AuthConfig,
         protocol::{AuthorityCommand, MaintenanceOperation},
@@ -20,6 +20,40 @@ use peri_loom_v1::{
     },
     runtime::{DatabaseId, DatabaseProvider},
 };
+
+#[test]
+#[ignore = "requires explicit PERI_S3_TEST=1 and an isolated S3 test bucket"]
+fn network_legacy_receipts_migrate_to_bounded_root() -> Result<()> {
+    ensure!(enabled(), "real S3 tests require explicit opt-in");
+    let bucket = TestBucket::new()?;
+    let mut strict_config = bucket.config.clone();
+    strict_config.retries = 0;
+    let raw: Arc<dyn ObjectStore> = Arc::new(S3ObjectStore::new(strict_config)?);
+    let namespace = Namespace::new("tenant", "receipt-migration")?;
+    let database = DatabaseId::new(namespace.clone(), "main")?;
+    let authority = Authority::open(raw.clone(), namespace.clone())?;
+    for _ in 0..100 {
+        authority.transact(None, |_| Ok(()))?;
+    }
+    let before = authority.snapshot()?.root;
+    let root_key = namespace.key("authority/root")?;
+    let old_size = raw.get(&root_key)?.unwrap().bytes.len();
+    OwnershipAuthority::new(raw.clone(), Arc::new(SystemLeaseClock)).state(&database)?;
+    let after = authority.snapshot()?.root;
+    ensure!(
+        after.version == 4
+            && after.receipts.len() == 1
+            && raw.get(&root_key)?.unwrap().bytes.len() < old_size / 2,
+        "S3 receipt migration did not bound the online root"
+    );
+    for (id, revision) in before.receipts {
+        ensure!(
+            authority.receipt(&id)? == Some(revision),
+            "S3 receipt lost during migration"
+        );
+    }
+    Ok(())
+}
 
 fn grant(
     client: &AuthorityClient,

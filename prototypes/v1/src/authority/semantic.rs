@@ -4,7 +4,7 @@ use crate::{
     wal::{WalCommit, WalMetadata},
 };
 use anyhow::{ensure, Context, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, VecDeque};
 
 pub(super) fn validate_entry(entry: &ObjectEntry) -> Result<()> {
     ensure!(
@@ -160,7 +160,7 @@ impl Authority {
             ensure!(blob == &entry.blob, "upload intent key mismatch");
             registered(root, entry)?;
         }
-        let mut walker = Walker::new(self, root);
+        let mut walker = Walker::new(self, root, false);
         for (key, entry) in &root.objects {
             self.namespace.key(key)?;
             ensure!(
@@ -218,7 +218,7 @@ impl Authority {
     }
 
     pub(super) fn mark(&self, root: &CatalogRoot) -> Result<BTreeSet<String>> {
-        let mut walker = Walker::new(self, root);
+        let mut walker = Walker::new(self, root, true);
         for branch in root.branches.values() {
             walker.refs(branch.head.as_ref(), branch.wal.as_ref())?;
             for point in &branch.history {
@@ -238,35 +238,52 @@ impl Authority {
 struct Walker<'a> {
     authority: &'a Authority,
     root: &'a CatalogRoot,
-    bytes: BTreeMap<String, Vec<u8>>,
+    verified: BTreeSet<String>,
+    verified_order: VecDeque<String>,
+    collect_reachable: bool,
     reachable: BTreeSet<String>,
 }
 
+const VERIFIED_METADATA_IDENTITIES: usize = 128;
+
 impl<'a> Walker<'a> {
-    fn new(authority: &'a Authority, root: &'a CatalogRoot) -> Self {
+    fn new(authority: &'a Authority, root: &'a CatalogRoot, collect_reachable: bool) -> Self {
         Self {
             authority,
             root,
-            bytes: BTreeMap::new(),
+            verified: BTreeSet::new(),
+            verified_order: VecDeque::new(),
+            collect_reachable,
             reachable: BTreeSet::new(),
         }
     }
 
     fn direct(&mut self, entry: &ObjectEntry) -> Result<()> {
         registered(self.root, entry)?;
-        self.reachable.insert(entry.blob.clone());
+        if self.collect_reachable {
+            self.reachable.insert(entry.blob.clone());
+        }
         Ok(())
     }
 
     fn bytes(&mut self, entry: &ObjectEntry) -> Result<Vec<u8>> {
         self.direct(entry)?;
-        if !self.bytes.contains_key(&entry.blob) {
-            self.bytes.insert(
-                entry.blob.clone(),
-                self.authority.read_metadata_blob(entry)?,
-            );
+        self.authority.read_metadata_blob(entry)
+    }
+
+    fn was_verified(&mut self, kind: char, entry: &ObjectEntry) -> bool {
+        self.verified.contains(&format!("{kind}:{}", entry.blob))
+    }
+
+    fn remember_verified(&mut self, kind: char, entry: &ObjectEntry) {
+        let key = format!("{kind}:{}", entry.blob);
+        if self.verified.insert(key.clone()) {
+            self.verified_order.push_back(key);
+            if self.verified_order.len() > VERIFIED_METADATA_IDENTITIES {
+                self.verified
+                    .remove(&self.verified_order.pop_front().unwrap());
+            }
         }
-        Ok(self.bytes[&entry.blob].clone())
     }
 
     fn lookup(&self, key: &str) -> Result<ObjectEntry> {
@@ -278,6 +295,10 @@ impl<'a> Walker<'a> {
     }
 
     fn manifest(&mut self, entry: &ObjectEntry) -> Result<()> {
+        self.direct(entry)?;
+        if self.was_verified('m', entry) {
+            return Ok(());
+        }
         let manifest: Manifest = serde_json::from_slice(&self.bytes(entry)?)?;
         manifest.validate()?;
         for hash in manifest.segments.values() {
@@ -285,30 +306,42 @@ impl<'a> Walker<'a> {
             ensure!(segment.hash == *hash, "segment logical digest mismatch");
             self.direct(&segment)?;
         }
+        self.remember_verified('m', entry);
         Ok(())
     }
 
     fn refs(&mut self, head: Option<&ObjectEntry>, wal: Option<&ObjectEntry>) -> Result<()> {
         if let Some(head) = head {
-            let head: Head = serde_json::from_slice(&self.bytes(head)?)?;
-            ensure!(valid_hash(&head.manifest), "invalid HEAD manifest digest");
-            let manifest = self.lookup(&format!("manifests/{}", head.manifest))?;
-            ensure!(
-                manifest.hash == head.manifest,
-                "HEAD manifest digest mismatch"
-            );
-            self.manifest(&manifest)?;
+            self.direct(head)?;
+            if !self.was_verified('h', head) {
+                let decoded: Head = serde_json::from_slice(&self.bytes(head)?)?;
+                ensure!(
+                    valid_hash(&decoded.manifest),
+                    "invalid HEAD manifest digest"
+                );
+                let manifest = self.lookup(&format!("manifests/{}", decoded.manifest))?;
+                ensure!(
+                    manifest.hash == decoded.manifest,
+                    "HEAD manifest digest mismatch"
+                );
+                self.manifest(&manifest)?;
+                self.remember_verified('h', head);
+            }
         }
         if let Some(wal) = wal {
-            let index = index(&self.bytes(wal)?)?;
-            for chunk in index.entries {
-                ensure!(valid_hash(&chunk.hash), "invalid WAL chunk digest");
-                let entry = self.lookup(&format!("wal/chunks/{}", chunk.hash))?;
-                ensure!(
-                    entry.hash == chunk.hash,
-                    "WAL chunk logical digest mismatch"
-                );
-                self.direct(&entry)?;
+            self.direct(wal)?;
+            if !self.was_verified('w', wal) {
+                let index = index(&self.bytes(wal)?)?;
+                for chunk in index.entries {
+                    ensure!(valid_hash(&chunk.hash), "invalid WAL chunk digest");
+                    let entry = self.lookup(&format!("wal/chunks/{}", chunk.hash))?;
+                    ensure!(
+                        entry.hash == chunk.hash,
+                        "WAL chunk logical digest mismatch"
+                    );
+                    self.direct(&entry)?;
+                }
+                self.remember_verified('w', wal);
             }
         }
         Ok(())
