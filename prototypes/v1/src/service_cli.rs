@@ -111,6 +111,7 @@ fn worker(arguments: &[String]) -> Result<()> {
         max_sql_bytes: setting("PERI_SQL_MAX_BYTES", 64 * 1024)?,
         max_rows: setting("PERI_SQL_MAX_ROWS", 10_000)?,
         max_result_bytes: setting("PERI_SQL_MAX_RESULT_BYTES", 4 * 1024 * 1024)?,
+        max_value_bytes: setting("PERI_SQL_MAX_VALUE_BYTES", 8 * 1024 * 1024)?,
         max_vm_steps: setting("PERI_SQL_MAX_VM_STEPS", 10_000_000)?,
         max_query_duration: std::time::Duration::from_millis(setting(
             "PERI_SQL_MAX_DURATION_MS",

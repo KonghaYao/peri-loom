@@ -94,6 +94,24 @@ fn result_caps_before_collection_and_reuse() -> Result<()> {
     assert_eq!(session.query("SELECT 1")?.len(), 1);
     assert!(session.query("SELECT zeroblob(1000000001)").is_err());
     assert!(session.query("SELECT randomblob(1000000001)").is_err());
+    assert!(session.query("SELECT randomblob(8388609)").is_err());
+    let budget = Budget {
+        max_value_bytes: 1024,
+        ..Budget::default()
+    };
+    assert!(session
+        .query_with_budget("SELECT randomblob(1025)", &budget)
+        .is_err());
+    assert!(session
+        .execute_with_budget(
+            "CREATE TABLE small(value BLOB); INSERT INTO small VALUES(zeroblob(1025))",
+            &budget
+        )
+        .is_err());
+    assert_eq!(
+        session.query("SELECT length(randomblob(1025))")?[0][0].to_string(),
+        "1025"
+    );
     assert_eq!(session.query("SELECT 3")?[0][0].to_string(), "3");
     Ok(())
 }
@@ -164,6 +182,7 @@ fn default_budget_is_explicit_and_attachment_remains_disabled() -> Result<()> {
     assert_eq!(budget.max_sql_bytes, 65_536);
     assert_eq!(budget.max_rows, 10_000);
     assert_eq!(budget.max_result_bytes, 4 * 1024 * 1024);
+    assert_eq!(budget.max_value_bytes, 8 * 1024 * 1024);
     assert_eq!(budget.max_vm_steps, 10_000_000);
     assert_eq!(budget.max_query_duration, Duration::from_secs(5));
     let (_objects, _cache, database) = open()?;

@@ -13,6 +13,7 @@ pub struct Budget {
     pub max_sql_bytes: usize,
     pub max_rows: usize,
     pub max_result_bytes: usize,
+    pub max_value_bytes: usize,
     pub max_vm_steps: u64,
     pub max_query_duration: Duration,
 }
@@ -23,6 +24,7 @@ impl Default for Budget {
             max_sql_bytes: 64 * 1024,
             max_rows: 10_000,
             max_result_bytes: 4 * 1024 * 1024,
+            max_value_bytes: 8 * 1024 * 1024,
             max_vm_steps: 10_000_000,
             max_query_duration: Duration::from_secs(5),
         }
@@ -38,6 +40,7 @@ impl Budget {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(self.max_sql_bytes > 0, "SQL budget must be positive");
+        ensure!(self.max_value_bytes > 0, "value budget must be positive");
         ensure!(self.max_vm_steps > 0, "VM budget must be positive");
         ensure!(
             !self.max_query_duration.is_zero(),
@@ -109,6 +112,7 @@ pub(super) struct ExecutionBudget<'a> {
     rows: usize,
     bytes: usize,
     control: Arc<SessionControl>,
+    previous_max_blob_bytes: usize,
 }
 
 impl<'a> ExecutionBudget<'a> {
@@ -143,6 +147,8 @@ impl<'a> ExecutionBudget<'a> {
                     || progress_control.closing.load(Ordering::Acquire)
             })),
         );
+        let previous_max_blob_bytes = connection.max_blob_bytes();
+        connection.set_max_blob_bytes(budget.max_value_bytes);
         Ok(Self {
             connection,
             budget,
@@ -151,6 +157,7 @@ impl<'a> ExecutionBudget<'a> {
             rows: 0,
             bytes: 0,
             control,
+            previous_max_blob_bytes,
         })
     }
 
@@ -220,5 +227,7 @@ impl<'a> ExecutionBudget<'a> {
 impl Drop for ExecutionBudget<'_> {
     fn drop(&mut self) {
         self.connection.set_progress_handler(0, None);
+        self.connection
+            .set_max_blob_bytes(self.previous_max_blob_bytes);
     }
 }
