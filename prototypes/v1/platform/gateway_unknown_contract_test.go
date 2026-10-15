@@ -436,3 +436,59 @@ func TestGatewayUnknownContractCompletedWithoutWriterProof(test *testing.T) {
 		})
 	}
 }
+
+// A terminal SQL failure on an action that cannot commit must report
+// may_have_committed=false: the client uses that flag to decide whether it has
+// to reconcile durable state, and describe plus read cursors are refused by the
+// worker before any write can land.
+func TestGatewayNonCommittingFailureReportsNoCommit(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, fields map[string]any) (any, error) {
+		if fields["command"] == "open_session" {
+			return nil, nil
+		}
+		return nil, &SQLRPCError{ExecutionCompleted: true}
+	})
+	for _, scenario := range []struct {
+		name       string
+		path       string
+		body       map[string]any
+		committing bool
+	}{
+		{"describe", "/v1/sql/describe", map[string]any{"session": session, "sql": "SELECT 1"}, false},
+		{"read_cursor_open", "/v1/sql/cursor/open", map[string]any{"session": session, "sql": "SELECT 1", "args": []any{}, "named_args": []any{}}, false},
+		{"read_cursor_fetch", "/v1/sql/cursor/fetch", map[string]any{"session": session, "max_rows": 1}, false},
+		{"read_cursor_close", "/v1/sql/cursor/close", map[string]any{"session": session}, false},
+		{"execute", "/v1/sql/execute", map[string]any{"session": session, "sql": "SELECT 1"}, true},
+	} {
+		test.Run(scenario.name, func(test *testing.T) {
+			requestID := "contract_noncommitting_" + scenario.name
+			body := map[string]any{}
+			for field, value := range scenario.body {
+				body[field] = value
+			}
+			body["request_id"] = requestID
+			response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, scenario.path, body)
+			if response.Code != 400 {
+				test.Fatalf("terminal failure status=%d body=%s", response.Code, response.Body.String())
+			}
+			var reply struct {
+				Error struct {
+					Code               string `json:"code"`
+					ExecutionCompleted *bool  `json:"execution_completed"`
+					MayHaveCommitted   *bool  `json:"may_have_committed"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(response.Body.Bytes(), &reply) != nil || reply.Error.Code != "sql_error" {
+				test.Fatalf("incorrect terminal failure: %s", response.Body.String())
+			}
+			if reply.Error.ExecutionCompleted == nil || !*reply.Error.ExecutionCompleted {
+				test.Fatalf("terminal SQL failure lost completion proof: %s", response.Body.String())
+			}
+			if reply.Error.MayHaveCommitted == nil || *reply.Error.MayHaveCommitted != scenario.committing {
+				test.Fatalf("may_have_committed want=%t: %s", scenario.committing, response.Body.String())
+			}
+		})
+	}
+}

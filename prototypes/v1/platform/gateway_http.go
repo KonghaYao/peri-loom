@@ -93,6 +93,8 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal
 	var permit *admissionPermit
+	// Conservative default: only a decoded request may lower it.
+	committing := true
 	result := gatewayFailure(400, "invalid_request")
 	correlationValues := request.Header.Values("X-Request-ID")
 	correlationValid := len(correlationValues) == 0 || len(correlationValues) == 1 && sqlLabel(correlationValues[0])
@@ -137,6 +139,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			}
 		}
 		gateway.counters.observe(action, result.code, time.Since(started))
+		result.committing = committing
 		gateway.writeResponse(writer, identifier, result)
 	}()
 	if !correlationValid || request.Method != "POST" || action == "invalid" || request.URL.RawQuery != "" {
@@ -259,6 +262,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(413, "sql_limit")
 		return
 	}
+	// A describe or a cursor bound to a read cannot commit, so a SQL error on
+	// those must not claim the database may have changed.
+	committing = !nonCommittingOperation(action, parsed.WriteCursor)
 	if releaseClassification != nil {
 		releaseClassification()
 	}
@@ -421,7 +427,7 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 		}
 		if result.code == "sql_error" && result.dispatched {
 			failure["execution_completed"] = true
-			failure["may_have_committed"] = true
+			failure["may_have_committed"] = result.committing
 		}
 		response["error"] = failure
 	}

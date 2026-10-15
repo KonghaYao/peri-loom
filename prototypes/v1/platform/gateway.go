@@ -60,6 +60,7 @@ type gatewayResult struct {
 	operationDeferred       *pendingOperation
 	operationObservation    *OperationStatus
 	auditExecutionCompleted bool
+	committing              bool
 }
 
 // pendingOperation carries everything the single terminal record of an
