@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError, Weak};
+use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value as JsonValue};
@@ -9,7 +9,7 @@ use turso_core::{Numeric, Value};
 
 use crate::ownership::OwnershipRuntime;
 use crate::runtime::DatabaseId;
-use crate::session::Budget;
+use crate::session::{AdmissionError, Budget};
 
 use super::protocol::SessionState;
 use super::session_entry::{Entry, SessionCall};
@@ -45,6 +45,25 @@ impl RefreshLocks {
         locks.insert(database.clone(), Arc::downgrade(&lock));
         Ok(lock)
     }
+
+    fn lock_until(lock: &Mutex<()>, deadline: Instant) -> Result<MutexGuard<'_, ()>> {
+        loop {
+            ensure!(Instant::now() < deadline, AdmissionError::Deadline);
+            match lock.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(TryLockError::Poisoned(_)) => {
+                    anyhow::bail!("image refresh mutex poisoned")
+                }
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(2)),
+                    );
+                }
+            }
+        }
+    }
 }
 
 struct Opening<'sessions>(&'sessions Sessions);
@@ -75,6 +94,7 @@ impl Sessions {
         &self,
         database: &DatabaseId,
         version: u32,
+        deadline: Instant,
     ) -> Result<(JsonValue, Option<SessionState>)> {
         database.validate()?;
         {
@@ -90,10 +110,9 @@ impl Sessions {
         }
         let _opening = Opening(self);
         let refresh = self.image_refresh.for_database(database)?;
-        let _refresh = refresh
-            .lock()
-            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
         self.refresh_initial_image(database)?;
+        ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         let handle = Arc::new(self.runtime.open_session(database)?);
         let readonly = handle.is_readonly()?;
         let mut random = [0u8; 32];
@@ -141,13 +160,12 @@ impl Sessions {
             .context("unknown worker session")
     }
 
-    pub fn begin(&self, identifier: &str) -> Result<SessionCall> {
+    pub fn begin(&self, identifier: &str, deadline: Instant) -> Result<SessionCall> {
         let database = self.entry(identifier)?.database.clone();
         let refresh = self.image_refresh.for_database(&database)?;
-        let _refresh = refresh
-            .lock()
-            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
         self.refresh_initial_image(&database)?;
+        ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         self.entry(identifier)?.begin(identifier)
     }
 
@@ -191,13 +209,15 @@ impl Sessions {
             .unwrap_or(false)
     }
 
-    pub fn close(&self, identifier: &str, version: u32) -> Result<Option<SessionState>> {
+    pub fn close(
+        &self,
+        identifier: &str,
+        version: u32,
+        deadline: Instant,
+    ) -> Result<Option<SessionState>> {
         let database = self.entry(identifier)?.database.clone();
         let refresh = self.image_refresh.for_database(&database)?;
-        let _refresh = refresh
-            .lock()
-            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
-        let deadline = Instant::now() + Budget::trusted_default().max_query_duration;
+        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
         let entry = self.entry(identifier)?;
         let terminal = entry.close(identifier, deadline, version)?;
         self.remove(identifier, &entry)?;
@@ -271,7 +291,9 @@ mod tests {
     use super::RefreshLocks;
     use crate::namespace::Namespace;
     use crate::runtime::DatabaseId;
-    use std::sync::Arc;
+    use crate::session::AdmissionError;
+    use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn image_refresh_blocks_only_the_same_database_and_reclaims_idle_locks() -> anyhow::Result<()> {
@@ -291,6 +313,33 @@ mod tests {
         let replacement = locks.for_database(&a)?;
         assert_eq!(locks.0.lock().unwrap().len(), 2);
         assert!(replacement.try_lock().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn slow_database_refresh_does_not_block_another_database_or_wait_past_deadline(
+    ) -> anyhow::Result<()> {
+        let locks = RefreshLocks::default();
+        let a = DatabaseId::new(Namespace::new("tenant", "slow")?, "main")?;
+        let b = DatabaseId::new(Namespace::new("tenant", "healthy")?, "main")?;
+        let a_lock = locks.for_database(&a)?;
+        let b_lock = locks.for_database(&b)?;
+        let (ready, started) = mpsc::channel();
+        let slow = std::thread::spawn(move || {
+            let _guard = a_lock.lock().unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        started.recv()?;
+        let first = Instant::now();
+        let _healthy = RefreshLocks::lock_until(&b_lock, first + Duration::from_millis(250))?;
+        let waiting_a = locks.for_database(&a)?;
+        let failure =
+            RefreshLocks::lock_until(&waiting_a, Instant::now() + Duration::from_millis(30))
+                .unwrap_err();
+        assert!(failure.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline));
+        assert!(first.elapsed() < Duration::from_millis(250));
+        slow.join().expect("slow refresh thread panicked");
         Ok(())
     }
 }

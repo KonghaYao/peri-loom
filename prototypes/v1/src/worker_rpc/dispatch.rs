@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
@@ -25,6 +26,7 @@ impl State {
         version: u32,
         call: Option<&SessionCall>,
         terminal: &mut Option<SessionState>,
+        deadline: Instant,
     ) -> Result<Value> {
         match command {
             WorkerCommand::GetCapacityTrace {
@@ -83,12 +85,12 @@ impl State {
             }
             _ if control => bail!("SQL authorization required"),
             WorkerCommand::OpenSession { database } => {
-                let (result, snapshot) = self.sessions.open(&database, version)?;
+                let (result, snapshot) = self.sessions.open(&database, version, deadline)?;
                 *terminal = snapshot;
                 Ok(result)
             }
             WorkerCommand::CloseSession { session } => {
-                *terminal = self.sessions.close(&session, version)?;
+                *terminal = self.sessions.close(&session, version, deadline)?;
                 Ok(json!({"closed": true}))
             }
             WorkerCommand::Execute { sql, .. } => {

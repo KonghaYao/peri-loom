@@ -2,14 +2,14 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Result};
 
 use crate::authority_rpc::http;
 use crate::ownership::types::{validate_label, OwnershipMode};
 use crate::ownership::OwnershipRuntime;
-use crate::session::Budget;
+use crate::session::{AdmissionError, Budget};
 
 use super::admission::{Admission, Lane};
 use super::diagnostics::Diagnostics;
@@ -202,9 +202,10 @@ impl WorkerServer {
                 self.state.inflight.fetch_add(1, Ordering::SeqCst);
                 let state = self.state.clone();
                 let ticket = Ticket(state.clone());
+                let accepted = Instant::now();
                 match thread::Builder::new().spawn(move || {
                     let _ticket = ticket;
-                    let _ = state.serve(&mut connection);
+                    let _ = state.serve(&mut connection, accepted);
                 }) {
                     Ok(worker) => workers.push(worker),
                     Err(error) => return Err(error.into()),
@@ -219,7 +220,7 @@ impl WorkerServer {
 }
 
 impl State {
-    fn serve(&self, stream: &mut TcpStream) -> Result<()> {
+    fn serve(&self, stream: &mut TcpStream, accepted: Instant) -> Result<()> {
         let request = match read_request(stream, self.limits.max_request_bytes) {
             Ok(request) => request,
             Err(_) => return http::reply(stream, 400, b"{\"error\":\"invalid HTTP request\"}"),
@@ -236,6 +237,7 @@ impl State {
         };
         let version = parsed.version;
         let identifier = parsed.request_id.clone();
+        let deadline = accepted + Budget::trusted_default().max_query_duration;
         let write_cursor_request = matches!(
             &parsed.command,
             WorkerCommand::OpenWriteCursor { .. } | WorkerCommand::FetchWriteCursor { .. }
@@ -296,7 +298,7 @@ impl State {
                         sql.len() <= Budget::trusted_default().max_sql_bytes,
                         "SQL byte budget exceeded"
                     );
-                    call = Some(self.sessions.begin(session)?);
+                    call = Some(self.sessions.begin(session, deadline)?);
                 }
                 WorkerCommand::Checkpoint { session }
                 | WorkerCommand::Compact { session }
@@ -305,7 +307,7 @@ impl State {
                 | WorkerCommand::CloseReadCursor { session }
                 | WorkerCommand::FetchWriteCursor { session, .. }
                 | WorkerCommand::CloseWriteCursor { session } => {
-                    call = Some(self.sessions.begin(session)?);
+                    call = Some(self.sessions.begin(session, deadline)?);
                 }
                 _ => {}
             }
@@ -377,6 +379,10 @@ impl State {
             None
         };
         let result = prepared.and_then(|()| {
+            ensure!(
+                !stateful || Instant::now() < deadline,
+                AdmissionError::Deadline
+            );
             self.dispatch(
                 parsed.command,
                 control,
@@ -384,6 +390,7 @@ impl State {
                 version,
                 call.as_ref(),
                 &mut terminal,
+                deadline,
             )
         });
         let result = if version == 2 && stateful && terminal.is_none() && result.is_ok() {
