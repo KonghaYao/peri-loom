@@ -95,6 +95,11 @@ fn result_caps_before_collection_and_reuse() -> Result<()> {
     assert!(session.query("SELECT zeroblob(1000000001)").is_err());
     assert!(session.query("SELECT randomblob(1000000001)").is_err());
     assert!(session.query("SELECT randomblob(8388609)").is_err());
+    session.execute("PRAGMA cache_size=100000")?;
+    let pages = session.query("PRAGMA cache_size")?[0][0]
+        .to_string()
+        .parse::<usize>()?;
+    assert!(pages <= 4096, "SQL raised the connection page-cache budget");
     let budget = Budget {
         max_value_bytes: 1024,
         ..Budget::default()

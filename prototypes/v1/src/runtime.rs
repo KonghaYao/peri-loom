@@ -1,6 +1,7 @@
 mod capacity;
 mod handle;
 mod health;
+mod memory;
 mod quarantine;
 mod registry;
 pub mod types;
@@ -24,6 +25,7 @@ pub struct WorkerRuntime {
     provider: Arc<dyn DatabaseProvider>,
     cache_root: PathBuf,
     limits: WorkerLimits,
+    memory_reservation_budget: Option<usize>,
     registry: Mutex<Registry>,
     native_instances: Mutex<Vec<(DatabaseId, std::sync::Weak<RemoteDatabase>)>>,
 }
@@ -63,6 +65,7 @@ impl WorkerRuntime {
             provider,
             cache_root: cache_root.as_ref().to_path_buf(),
             limits,
+            memory_reservation_budget: memory::cgroup_reservation_budget(),
             registry: Mutex::new(Registry::default()),
             native_instances: Mutex::new(Vec::new()),
         }))
@@ -94,6 +97,7 @@ impl WorkerRuntime {
                             registry.sessions < self.limits.max_total_sessions,
                             "worker session capacity exceeded"
                         );
+                        self.check_memory_reservation(&registry, 0)?;
                         let database = loaded.database.clone();
                         let Entry::Loaded(loaded) = registry.entries.get_mut(&identifier).unwrap()
                         else {
@@ -112,6 +116,7 @@ impl WorkerRuntime {
                 registry.sessions < self.limits.max_total_sessions,
                 "worker session capacity exceeded"
             );
+            self.check_memory_reservation(&registry, 1)?;
             let loading = Loading::new(epoch);
             let completion = loading.completion.clone();
             registry
@@ -162,6 +167,25 @@ impl WorkerRuntime {
                 }
             }
         }
+    }
+
+    fn check_memory_reservation(
+        &self,
+        registry: &Registry,
+        additional_databases: usize,
+    ) -> Result<()> {
+        if let Some(budget) = self.memory_reservation_budget {
+            ensure!(
+                memory::fits_reservation(
+                    registry.entries.len().saturating_add(additional_databases),
+                    registry.sessions.saturating_add(1),
+                    self.limits.segment_ram_bytes,
+                    budget,
+                ),
+                "worker memory reservation capacity exceeded"
+            );
+        }
+        Ok(())
     }
 
     fn load(&self, identifier: &DatabaseId, epoch: u64) -> Result<Arc<RemoteDatabase>> {

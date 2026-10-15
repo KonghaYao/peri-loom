@@ -159,6 +159,7 @@ impl RemoteDatabase {
             None => engine.connect()?,
         };
         connection.set_temp_store(turso_core::TempStore::Memory)?;
+        connection.set_page_cache_budget_bytes(16 * 1024 * 1024)?;
         connection.set_max_blob_bytes(8 * 1024 * 1024);
         Ok(connection)
     }

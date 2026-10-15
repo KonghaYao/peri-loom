@@ -859,6 +859,10 @@ fn native_65536_page_wal_header_uses_full_size_not_sqlite_db_header_encoding() -
         database.query("PRAGMA page_size")?,
         vec![vec![Value::from_i64(65536)]]
     );
+    assert_eq!(
+        database.query("PRAGMA cache_size")?,
+        vec![vec![Value::from_i64(256)]]
+    );
     let mut header = None;
     for record in RemoteWal::new(store.clone()).read(&namespace(), 0)? {
         for operation in record.batch.operations {
