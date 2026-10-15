@@ -44,7 +44,7 @@ func (handler *hranaHTTP) readCursorCondition(request *http.Request, credential,
 }
 
 func (handler *hranaHTTP) cursorStatementReadonly(request *http.Request, credential, session, sql string) (bool, string, bool) {
-	code, result, failure := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": sql})
+	code, result, failure := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": sql})
 	if failure != "" {
 		return false, failure, code >= 500 || failure == "outcome_unknown"
 	}

@@ -58,45 +58,13 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
 	result.operationID, result.operationStage = operationID, stage
-	change := func(record *OperationRecord) {
-		if result.session != nil {
-			record.Session = result.session.upstream
-		}
-		if result.rpc != nil {
-			record.Ambiguous, record.Rejected, record.ExecutionCompleted = result.rpc.Ambiguous, result.rpc.Rejected, result.rpc.ExecutionCompleted
-		}
-		if result.code == "outcome_unknown" {
-			record.State, record.MayHaveCommitted = "quarantined", true
-			if stage == "close_session" {
-				record.BusinessOutcome, record.CleanupOutcome = "not_applicable", "unknown"
-			} else {
-				record.BusinessOutcome = "unknown"
-			}
-			return
-		}
-		record.State = "terminal"
-		record.BusinessOutcome = "not_executed"
-		if result.code == "" || result.code == "sql_error" || result.code == "result_limit" {
-			record.BusinessOutcome = "completed"
-			record.ExecutionProven = true
-		}
-		if record.Action == "open" && result.code == "" {
-			record.CleanupOutcome = "pending"
-		}
-		if stage == "close_session" {
-			record.BusinessOutcome = "not_applicable"
-			if result.code == "" {
-				record.CleanupOutcome = "completed"
-			}
-		}
-	}
 	err := updateOperationRecords(gateway.config.State, func(state *State) error {
 		key := operationKey(database, operationID)
 		record, exists := state.Operations[key]
 		if !exists || record.State != "in_flight" {
 			return ErrOperationExists
 		}
-		change(&record)
+		applyOperationOutcome(&record, *result, stage)
 		state.Operations[key] = record
 		if stage == "close_session" && result.code == "" {
 			for openedKey, opened := range state.Operations {
@@ -115,6 +83,77 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	}
 	if result.code == "outcome_unknown" {
 		gateway.holdOperation(database, operationID, permit)
+	}
+}
+
+// beginDispatchOperation records the durable intent for one worker call. An
+// operation that provably cannot commit keeps no intent: its terminal record is
+// written once, after the call, by settlePendingOperation.
+func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, stage, requestID string, writeCursor bool, command any) (string, *pendingOperation, error) {
+	if !nonCommittingOperation(action, writeCursor) {
+		operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", action, stage, session.worker.ID, session.upstream, command)
+		return operationID, nil, err
+	}
+	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+		return "", nil, err
+	}
+	digest, err := operationCommandDigest(command)
+	if err != nil {
+		return "", nil, err
+	}
+	return "", &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: digest}, nil
+}
+
+// settlePendingOperation writes the single terminal record of a dispatched
+// operation that was never registered. The record is the acknowledgement: when
+// it cannot be written the reply degrades to an unknown outcome.
+func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit) {
+	operationID, err := settleNonCommittingOperation(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(record *OperationRecord) {
+		applyOperationOutcome(record, *result, pending.stage)
+	})
+	result.operationID, result.operationStage = operationID, pending.stage
+	if err != nil {
+		finish := result.finish
+		*result = gateway.unknown(result.session, permit)
+		result.finish, result.operationID, result.operationStage = finish, operationID, pending.stage
+	}
+	if result.code == "outcome_unknown" {
+		gateway.holdOperation(pending.database, operationID, permit)
+	}
+}
+
+// applyOperationOutcome derives the durable record of a dispatched operation
+// from its gateway result.
+func applyOperationOutcome(record *OperationRecord, result gatewayResult, stage string) {
+	if result.session != nil {
+		record.Session = result.session.upstream
+	}
+	if result.rpc != nil {
+		record.Ambiguous, record.Rejected, record.ExecutionCompleted = result.rpc.Ambiguous, result.rpc.Rejected, result.rpc.ExecutionCompleted
+	}
+	if result.code == "outcome_unknown" {
+		record.State, record.MayHaveCommitted = "quarantined", true
+		if stage == "close_session" {
+			record.BusinessOutcome, record.CleanupOutcome = "not_applicable", "unknown"
+		} else {
+			record.BusinessOutcome = "unknown"
+		}
+		return
+	}
+	record.State = "terminal"
+	record.BusinessOutcome = "not_executed"
+	if result.code == "" || result.code == "sql_error" || result.code == "result_limit" {
+		record.BusinessOutcome = "completed"
+		record.ExecutionProven = true
+	}
+	if record.Action == "open" && result.code == "" {
+		record.CleanupOutcome = "pending"
+	}
+	if stage == "close_session" {
+		record.BusinessOutcome = "not_applicable"
+		if result.code == "" {
+			record.CleanupOutcome = "completed"
+		}
 	}
 }
 

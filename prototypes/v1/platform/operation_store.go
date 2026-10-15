@@ -92,6 +92,20 @@ func (store *stateStore) commitOperations(state State) error {
 	return nil
 }
 
+// readOperations visits the committed operation view without copying the rest
+// of the registry. The callback must not retain or mutate the state.
+func (store *stateStore) readOperations(visit func(State) error) error {
+	store.disk.mutex.Lock()
+	defer store.disk.mutex.Unlock()
+	if err := store.disk.available(); err != nil {
+		return err
+	}
+	if visit == nil {
+		return errors.New("operation read requires a visitor")
+	}
+	return visit(store.state)
+}
+
 func (store *stateStore) updateOperations(change func(*State) error) error {
 	store.disk.mutex.Lock()
 	defer store.disk.mutex.Unlock()

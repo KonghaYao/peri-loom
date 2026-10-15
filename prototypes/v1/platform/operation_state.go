@@ -207,31 +207,126 @@ func registerOperation(store StateStore, database controller.DatabaseID, request
 	return operationID, err
 }
 
+// seedOperationRecord stores the in-flight record of a new operation and returns
+// it, so a caller either leaves it open for settlement or settles it at once.
+func seedOperationRecord(state *State, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session, digest string) OperationRecord {
+	if state.Operations == nil {
+		state.Operations = map[string]OperationRecord{}
+	}
+	state.OperationSequence++
+	return OperationRecord{OperationStatus: OperationStatus{OperationID: operationID, RequestID: requestID, Database: database, Project: state.Databases[database.Key()].Project, Worker: worker, Source: source, Action: action, Stage: stage, State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: digest, Session: session, RegistrationSequence: state.OperationSequence}
+}
+
+// operationCommandDigest binds a durable record to the exact worker command it
+// authorizes.
+func operationCommandDigest(command any) (string, error) {
+	encoded, err := json.Marshal(command)
+	if err != nil {
+		return "", errors.New("operation command not encodable")
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// nonCommittingOperation reports whether a gateway action provably cannot
+// modify data. Describe only prepares a statement, and the worker refuses
+// non-read-only SQL on read cursors, so a read cursor can never commit.
+// Operations in this set need no durable intent before dispatch: their single
+// terminal record is the acknowledgement.
+func nonCommittingOperation(action string, writeCursor bool) bool {
+	switch action {
+	case "describe":
+		return true
+	case "cursor_open", "cursor_fetch", "cursor_close":
+		return !writeCursor
+	}
+	return false
+}
+
+// operationAdmission is the admission rule shared by registration and by the
+// pre-dispatch check of an unregistered operation: an isolated database and an
+// exhausted capacity refuse every new record.
+func operationAdmission(state State, database controller.DatabaseID, source string) error {
+	if _, blocked := isolatedOperation(state, database, source == "management"); blocked {
+		return ErrDatabaseQuarantined
+	}
+	_, unresolved := operationCounts(state)
+	if _, exists := state.Databases[database.Key()]; !exists || unresolved >= operationCapacity || state.OperationSequence == ^uint64(0) {
+		return ErrOperationCapacity
+	}
+	return nil
+}
+
+func readOperationState(store StateStore, visit func(State) error) error {
+	if narrow, ok := store.(interface {
+		readOperations(func(State) error) error
+	}); ok {
+		return narrow.readOperations(visit)
+	}
+	state, err := store.Snapshot()
+	if err != nil {
+		return err
+	}
+	return visit(state)
+}
+
+// verifyNonCommittingAdmission refuses an unregistered operation the durable
+// writer would reject, before SQL reaches the worker. The writer repeats every
+// check inside its commit.
+func verifyNonCommittingAdmission(store StateStore, database controller.DatabaseID, source string) error {
+	if store == nil || database.Validate() != nil {
+		return errors.New("operation registration unavailable")
+	}
+	return readOperationState(store, func(state State) error {
+		return operationAdmission(state, database, source)
+	})
+}
+
+// settleNonCommittingOperation writes the only durable record of an operation
+// that cannot commit. The record is created already settled, so the request
+// pays one sidecar commit instead of a registration plus a settlement.
+func settleNonCommittingOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, change func(*OperationRecord)) (string, error) {
+	operationID, err := controller.RandomID()
+	if err != nil {
+		return "", err
+	}
+	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || !identifierPattern.MatchString(digest) {
+		return operationID, errors.New("operation registration unavailable")
+	}
+	unlock := lockOperationNamespace(database.Namespace)
+	defer unlock()
+	err = updateOperationRecords(store, func(state *State) error {
+		if _, exists := state.Operations[operationKey(database, operationID)]; exists {
+			return ErrOperationExists
+		}
+		if err := operationAdmission(*state, database, source); err != nil {
+			return err
+		}
+		record := seedOperationRecord(state, database, operationID, requestID, source, action, stage, worker, session, digest)
+		if change != nil {
+			change(&record)
+		}
+		state.Operations[operationKey(database, operationID)] = record
+		return nil
+	})
+	return operationID, err
+}
+
 func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session string, command any) error {
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
-	encoded, err := json.Marshal(command)
+	digest, err := operationCommandDigest(command)
 	if err != nil || store == nil || database.Validate() != nil || !sqlLabel(requestID) || source == "management" && !labelPattern.MatchString(requestID) {
 		return errors.New("operation registration unavailable")
 	}
-	digest := sha256.Sum256(encoded)
 	return updateOperationRecords(store, func(state *State) error {
 		if _, exists := state.Operations[operationKey(database, operationID)]; exists {
 			return ErrOperationExists
 		}
-		if _, blocked := isolatedOperation(*state, database, source == "management"); blocked {
-			return ErrDatabaseQuarantined
+		if err := operationAdmission(*state, database, source); err != nil {
+			return err
 		}
-		descriptor, exists := state.Databases[database.Key()]
-		_, unresolved := operationCounts(*state)
-		if !exists || unresolved >= operationCapacity || state.OperationSequence == ^uint64(0) {
-			return ErrOperationCapacity
-		}
-		if state.Operations == nil {
-			state.Operations = map[string]OperationRecord{}
-		}
-		state.OperationSequence++
-		state.Operations[operationKey(database, operationID)] = OperationRecord{OperationStatus: OperationStatus{OperationID: operationID, RequestID: requestID, Database: database, Project: descriptor.Project, Worker: worker, Source: source, Action: action, Stage: stage, State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: hex.EncodeToString(digest[:]), Session: session, RegistrationSequence: state.OperationSequence}
+		state.Operations[operationKey(database, operationID)] = seedOperationRecord(state, database, operationID, requestID, source, action, stage, worker, session, digest)
 		return nil
 	})
 }

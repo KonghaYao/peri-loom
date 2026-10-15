@@ -57,8 +57,22 @@ type gatewayResult struct {
 	operationStage          string
 	operationDatabase       controller.DatabaseID
 	operationPending        bool
+	operationDeferred       *pendingOperation
 	operationObservation    *OperationStatus
 	auditExecutionCompleted bool
+}
+
+// pendingOperation carries everything the single terminal record of an
+// unregistered operation needs. Non-committing operations skip the durable
+// intent, so their record is written once, after the worker call.
+type pendingOperation struct {
+	database  controller.DatabaseID
+	requestID string
+	action    string
+	stage     string
+	worker    string
+	session   string
+	digest    string
 }
 
 func NewGateway(config GatewayConfig) (*Gateway, error) {

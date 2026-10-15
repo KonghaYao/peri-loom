@@ -576,9 +576,33 @@ func (handler *hranaHTTP) autocommit(request *http.Request, credential, session 
 	return *native.Autocommit, ""
 }
 
+// Only the Hrana adapter can attach this context value. A probe answers a
+// protocol question about a statement (its shape, its writability) with a
+// dispatch that cannot commit, so a successful probe is served without an
+// operation record and without an audit row; the client action that needed the
+// answer records its own. A failed probe becomes the client's error and keeps
+// its row. A public header cannot set the marker.
+type hranaProbeContextKey struct{}
+
+func hranaProbeRequest(ctx context.Context, action string) bool {
+	return action == "describe" && ctx.Value(hranaProbeContextKey{}) != nil
+}
+
 func (handler *hranaHTTP) call(request *http.Request, credential, path string, input any) (int, json.RawMessage, string) {
+	return handler.dispatch(request, credential, path, input, false)
+}
+
+func (handler *hranaHTTP) probe(request *http.Request, credential, path string, input any) (int, json.RawMessage, string) {
+	return handler.dispatch(request, credential, path, input, true)
+}
+
+func (handler *hranaHTTP) dispatch(request *http.Request, credential, path string, input any, probe bool) (int, json.RawMessage, string) {
 	encoded, _ := json.Marshal(input)
-	internal := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded)).WithContext(context.WithValue(request.Context(), hranaSessionContextKey{}, true))
+	ctx := context.WithValue(request.Context(), hranaSessionContextKey{}, true)
+	if probe {
+		ctx = context.WithValue(ctx, hranaProbeContextKey{}, true)
+	}
+	internal := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded)).WithContext(ctx)
 	internal.Header.Set("Authorization", "Bearer "+credential)
 	reply := httptest.NewRecorder()
 	handler.gateway.ServeHTTP(reply, internal)
@@ -623,7 +647,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		}
 	}
 	if statement.WantRows && strings.Contains(strings.ToUpper(statement.SQL), "RETURNING") {
-		code, description, failure := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": statement.SQL})
+		code, description, failure := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": statement.SQL})
 		if failure != "" {
 			return nil, failure, code >= 500 || failure == "outcome_unknown"
 		}

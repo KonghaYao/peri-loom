@@ -108,25 +108,32 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		if result.operationPending {
 			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
+		} else if result.operationDeferred != nil {
+			gateway.settlePendingOperation(result.operationDeferred, &result, permit)
 		}
 		outcome := result.code
 		if outcome == "" {
 			outcome = "ok"
 		}
-		event := AuditEvent{RequestID: identifier, Subject: principal.Subject, Project: principal.Project, Action: action, Outcome: outcome, TimestampMS: time.Now().UnixMilli()}
-		if event.Subject == "" || event.Project == "" {
-			event.Subject, event.Project = "unauthenticated", "unauthenticated"
-		}
-		if result.session != nil {
-			event.Database = result.session.database.Key()
-		}
-		if auditErr := gateway.config.Audit.Record(event); auditErr != nil {
-			if result.code != "outcome_unknown" {
-				result.auditExecutionCompleted = result.dispatched && (result.code == "" || result.code == "sql_error" || result.code == "result_limit")
-				result.code = "audit_unavailable"
-				result.status = 503
-				result.value = nil
-				result.stream = nil
+		// A successful platform probe is internal plumbing: the client action it
+		// answers audits its own outcome. A failed probe becomes the client's
+		// error, so that keeps a row.
+		if !hranaProbeRequest(ctx, action) || result.code != "" {
+			event := AuditEvent{RequestID: identifier, Subject: principal.Subject, Project: principal.Project, Action: action, Outcome: outcome, TimestampMS: time.Now().UnixMilli()}
+			if event.Subject == "" || event.Project == "" {
+				event.Subject, event.Project = "unauthenticated", "unauthenticated"
+			}
+			if result.session != nil {
+				event.Database = result.session.database.Key()
+			}
+			if auditErr := gateway.config.Audit.Record(event); auditErr != nil {
+				if result.code != "outcome_unknown" {
+					result.auditExecutionCompleted = result.dispatched && (result.code == "" || result.code == "sql_error" || result.code == "result_limit")
+					result.code = "audit_unavailable"
+					result.status = 503
+					result.value = nil
+					result.stream = nil
+				}
 			}
 		}
 		gateway.counters.observe(action, result.code, time.Since(started))

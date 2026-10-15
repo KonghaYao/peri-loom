@@ -203,14 +203,23 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	} else if action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open" {
 		command["sql"] = request.SQL
 	}
-	operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", action, stage, session.worker.ID, session.upstream, command)
-	if err != nil {
-		return operationAdmissionFailure(err)
+	// A platform probe cannot commit and is not a client action, so it takes no
+	// operation record; the client request that needed the answer records its
+	// own. The read-only admission check still refuses an isolated database.
+	if hranaProbeRequest(ctx, action) {
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+			return operationAdmissionFailure(err)
+		}
+	} else {
+		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, command)
+		if err != nil {
+			return operationAdmissionFailure(err)
+		}
+		defer func() {
+			result.operationID, result.operationStage, result.operationDatabase = operationID, stage, session.database
+			result.operationPending, result.operationDeferred = operationID != "", pending
+		}()
 	}
-	defer func() {
-		result.operationID, result.operationStage, result.operationDatabase = operationID, stage, session.database
-		result.operationPending = true
-	}()
 	if action == "close" {
 		command["command"] = "close_session"
 		var reply struct {
@@ -308,7 +317,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: map[string]bool{"executed": true}, dispatched: true}
 	}
 	var reply json.RawMessage
-	err = gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
+	err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
 	if err != nil {
 		return gateway.upstreamFailure(err, session, permit)
 	}
