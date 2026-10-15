@@ -52,6 +52,35 @@ impl Entry {
         Ok(!state.closing && state.handle.is_some())
     }
 
+    pub fn rebindable_sequence(&self) -> Result<u64> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("worker session state poisoned"))?;
+        ensure!(
+            !state.active && !state.closing,
+            "session busy during image publication"
+        );
+        let handle = state
+            .handle
+            .as_ref()
+            .context("worker session already closed")?;
+        ensure!(
+            !handle.in_transaction()?,
+            "cannot rebind an active transaction"
+        );
+        Ok(state.sequence)
+    }
+
+    pub fn preserve_sequence(&self, sequence: u64) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("worker session state poisoned"))?;
+        state.sequence = state.sequence.max(sequence);
+        Ok(())
+    }
+
     pub fn opened_state(&self, identifier: &str) -> Result<SessionState> {
         let handle = self
             .state

@@ -201,6 +201,15 @@ impl OwnershipRuntime {
         result
     }
 
+    pub(crate) fn initial_image_replaced(&self, identifier: &DatabaseId) -> Result<bool> {
+        self.worker.initial_image_replaced(identifier)
+    }
+
+    pub(crate) fn unload_replaced_image(&self, identifier: &DatabaseId) -> Result<()> {
+        self.worker.close(identifier)?;
+        Ok(())
+    }
+
     fn context(&self, identifier: &DatabaseId) -> Result<Arc<LeaseContext>> {
         identifier.validate()?;
         self.contexts

@@ -97,7 +97,14 @@ func TestP6VerifyScopedTokensAndNativeReadonly(test *testing.T) {
 	fixture.deny(scoped, "/v1/sql/open", map[string]any{"database": other})
 	fixture.deny(fixture.credential, "/v1/sql/open", map[string]any{"database": other})
 	fixture.deny(scoped, "/v1/databases/delete", map[string]any{"database": fixture.database})
-	fixture.deny(fixture.config.BootstrapKey, "/v1/sql/open", map[string]any{"database": fixture.database})
+	globalSession := fixture.open(fixture.config.BootstrapKey, fixture.database)
+	rows := fixture.must(fixture.config.BootstrapKey, "/v1/sql/query", map[string]any{"session": globalSession, "sql": "SELECT id FROM proof"})
+	if string(rows.Result) != "[[7]]" {
+		test.Fatalf("global SQL query rows=%s", rows.Result)
+	}
+	fixture.must(fixture.config.BootstrapKey, "/v1/sql/close", map[string]any{"session": globalSession})
+	otherGlobalSession := fixture.open(fixture.config.BootstrapKey, other)
+	fixture.must(fixture.config.BootstrapKey, "/v1/sql/close", map[string]any{"session": otherGlobalSession})
 	expiring := fixture.token(map[string]any{"database": fixture.database, "role": "writer"}, fixture.credential, 200*time.Millisecond)
 	time.Sleep(230 * time.Millisecond)
 	fixture.deny(expiring, "/v1/sql/open", map[string]any{"database": fixture.database})
@@ -111,7 +118,7 @@ func TestP6VerifyScopedTokensAndNativeReadonly(test *testing.T) {
 	if status != 400 || rejected.OK || rejected.Error.Code != "sql_error" || !rejected.Error.ExecutionCompleted {
 		test.Fatalf("native readonly query write status=%d code=%s execution_completed=%t", status, rejected.Error.Code, rejected.Error.ExecutionCompleted)
 	}
-	rows := fixture.must(readonly, "/v1/sql/query", map[string]any{"session": cloneSession, "sql": "SELECT id FROM proof"})
+	rows = fixture.must(readonly, "/v1/sql/query", map[string]any{"session": cloneSession, "sql": "SELECT id FROM proof"})
 	if string(rows.Result) != "[[7]]" {
 		test.Fatalf("readonly clone changed rows=%s", rows.Result)
 	}
@@ -130,7 +137,7 @@ func TestP6VerifyScopedTokensAndNativeReadonly(test *testing.T) {
 	revocable := fixture.token(map[string]any{"database": fixture.database, "role": "writer"}, key.Credential, time.Minute)
 	fixture.must(fixture.config.BootstrapKey, "/v1/keys/revoke", map[string]any{"id": key.ID})
 	fixture.deny(revocable, "/v1/sql/open", map[string]any{"database": fixture.database})
-	test.Log("actual scoped tenant/management/expiry/issuer-revocation/restore-incarnation denial; native read-only query-write blocked")
+	test.Log("actual scoped tenant/management/expiry/issuer-revocation/restore-incarnation denial; global admin SQL authorized; native read-only query-write blocked")
 }
 
 func TestP6VerifyBoundedNDJSONAndCommittedPrefix(test *testing.T) {

@@ -23,6 +23,7 @@ struct Registry {
 pub(super) struct Sessions {
     runtime: Arc<OwnershipRuntime>,
     registry: Mutex<Registry>,
+    image_refresh: Mutex<()>,
     max_sessions: usize,
 }
 
@@ -45,6 +46,7 @@ impl Sessions {
         Self {
             runtime,
             registry: Mutex::new(Registry::default()),
+            image_refresh: Mutex::new(()),
             max_sessions,
         }
     }
@@ -67,6 +69,11 @@ impl Sessions {
             registry.opening += 1;
         }
         let _opening = Opening(self);
+        let _refresh = self
+            .image_refresh
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        self.refresh_initial_image(database)?;
         let handle = Arc::new(self.runtime.open_session(database)?);
         let readonly = handle.is_readonly()?;
         let mut random = [0u8; 32];
@@ -115,7 +122,45 @@ impl Sessions {
     }
 
     pub fn begin(&self, identifier: &str) -> Result<SessionCall> {
+        let _refresh = self
+            .image_refresh
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        let entry = self.entry(identifier)?;
+        self.refresh_initial_image(&entry.database)?;
         self.entry(identifier)?.begin(identifier)
+    }
+
+    fn refresh_initial_image(&self, database: &DatabaseId) -> Result<()> {
+        if self.runtime.initial_image_replaced(database)? {
+            let previous = {
+                let registry = self
+                    .registry
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?;
+                registry
+                    .sessions
+                    .iter()
+                    .filter(|(_, entry)| entry.database == *database)
+                    .map(|(identifier, entry)| {
+                        Ok((identifier.clone(), entry.rebindable_sequence()?))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            self.clear_database(database)?;
+            self.runtime.unload_replaced_image(database)?;
+            for (identifier, sequence) in previous {
+                let handle = Arc::new(self.runtime.open_session(database)?);
+                let entry = Entry::new(database.clone(), handle)?;
+                entry.preserve_sequence(sequence)?;
+                self.registry
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("worker session registry poisoned"))?
+                    .sessions
+                    .insert(identifier, entry);
+            }
+        }
+        Ok(())
     }
 
     pub fn known(&self, identifier: &str) -> bool {
@@ -125,6 +170,10 @@ impl Sessions {
     }
 
     pub fn close(&self, identifier: &str, version: u32) -> Result<Option<SessionState>> {
+        let _refresh = self
+            .image_refresh
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
         let deadline = Instant::now() + Budget::trusted_default().max_query_duration;
         let entry = self.entry(identifier)?;
         let terminal = entry.close(identifier, deadline, version)?;

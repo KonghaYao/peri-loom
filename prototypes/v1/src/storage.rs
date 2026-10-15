@@ -296,6 +296,26 @@ impl RemoteStorage {
             .clone()
     }
 
+    pub(crate) fn initial_image_replaced(&self, fresh: &dyn ObjectStore) -> Result<bool> {
+        let manifest_id = {
+            let state = self.state.lock().expect("storage mutex poisoned");
+            if state.manifest.generation != 0
+                || state.manifest.logical_db_size != 0
+                || !state.manifest.segments.is_empty()
+                || state.manifest.applied_lsn != 0
+            {
+                return Ok(false);
+            }
+            state.manifest_id.clone()
+        };
+        let head = fresh
+            .get(&self.namespace.key("HEAD")?)?
+            .context("initial image HEAD missing")?;
+        let pointer: Head = serde_json::from_slice(&head.bytes)?;
+        ensure!(valid_hash(&pointer.manifest), "invalid initial image HEAD");
+        Ok(pointer.manifest != manifest_id)
+    }
+
     pub fn store(&self) -> Arc<dyn ObjectStore> {
         self.store.clone()
     }
@@ -326,6 +346,43 @@ impl RemoteStorage {
             dirty_segments: state.dirty.len(),
             cache,
         }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use crate::object_store::MemoryObjectStore;
+
+    #[test]
+    fn detects_external_initial_image_publication() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(MemoryObjectStore::default());
+        let namespace = Namespace::new("tenant", "database")?;
+        let cache = Arc::new(SegmentCache::new(directory.path(), 0, 0)?);
+        let storage = RemoteStorage::open(store.clone(), namespace.clone(), cache)?;
+        assert!(!storage.initial_image_replaced(store.as_ref())?);
+
+        let next = Manifest {
+            generation: 1,
+            parent: Some(storage.manifest_id()),
+            ..Manifest::default()
+        };
+        let bytes = serde_json::to_vec(&next)?;
+        let next_id = digest(&bytes);
+        store.put(
+            &namespace.key(&format!("manifests/{next_id}"))?,
+            &bytes,
+            PutCondition::Absent,
+        )?;
+        let head = store.get(&namespace.key("HEAD")?)?.unwrap();
+        store.put(
+            &namespace.key("HEAD")?,
+            &serde_json::to_vec(&Head { manifest: next_id })?,
+            PutCondition::Match(head.etag),
+        )?;
+        assert!(storage.initial_image_replaced(store.as_ref())?);
+        Ok(())
     }
 }
 

@@ -10,7 +10,8 @@ mod process_support;
 mod trace;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{symlink, PermissionsExt};
+use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,14 +53,87 @@ fn identifier(name: &str) -> DatabaseId {
     DatabaseId::new(Namespace::new("p4-completion", name).unwrap(), "main").unwrap()
 }
 
+fn private_evidence_directory(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir() && metadata.permissions().mode() & 0o777 == 0o700,
+        "P4 S3 evidence directory must be a private, non-symlink directory (0700)"
+    );
+    Ok(())
+}
+
+fn retained_directory(parent: &Path) -> Result<tempfile::TempDir> {
+    private_evidence_directory(parent)?;
+    let mut directory = tempfile::Builder::new()
+        .prefix("p4-s3-")
+        .tempdir_in(parent)?;
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
+    directory.disable_cleanup(true);
+    eprintln!(
+        "retained P4 S3 local evidence: {}",
+        directory.path().display()
+    );
+    Ok(directory)
+}
+
+#[test]
+fn s3_evidence_directory_is_private_and_survives_fixture_drop() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))?;
+    let retained = retained_directory(root.path())?;
+    let path = retained.path().to_owned();
+    drop(retained);
+    assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o700);
+    Ok(())
+}
+
+#[test]
+fn s3_evidence_directory_rejects_non_private_and_symlink_paths() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let evidence = root.path().join("evidence");
+    fs::create_dir(&evidence)?;
+    fs::set_permissions(&evidence, fs::Permissions::from_mode(0o700))?;
+    private_evidence_directory(&evidence)?;
+    fs::set_permissions(&evidence, fs::Permissions::from_mode(0o755))?;
+    assert!(private_evidence_directory(&evidence).is_err());
+    fs::set_permissions(&evidence, fs::Permissions::from_mode(0o700))?;
+    let linked = root.path().join("linked");
+    symlink(&evidence, &linked)?;
+    assert!(private_evidence_directory(&linked).is_err());
+    Ok(())
+}
+
+#[test]
+fn s3_evidence_retains_owned_process_stderr_with_private_mode() -> Result<()> {
+    let evidence = tempfile::tempdir()?;
+    let path = evidence
+        .path()
+        .to_str()
+        .context("evidence path is not Unicode")?;
+    let mut process = Process::spawn(&[], &[("PERI_TEST_PROCESS_LOG_DIR", path)])?;
+    assert!(!process.wait()?.success());
+    drop(process);
+    let logs = fs::read_dir(evidence.path())?.collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(logs.len(), 1);
+    let log = &logs[0].path();
+    assert_eq!(fs::metadata(log)?.permissions().mode() & 0o777, 0o600);
+    assert!(fs::read_to_string(log)?.contains("usage: peri-loom-v1"));
+    Ok(())
+}
+
 impl Fixture {
     fn new(real_s3: bool) -> Result<Self> {
-        let directory = tempfile::tempdir()?;
-        let (backend, raw, config) = if real_s3 {
+        let directory = if real_s3 {
             ensure!(
                 std::env::var("PERI_P4_S3_TEST").as_deref() == Ok("1"),
                 "requires Main's independent bucket and PERI_P4_S3_TEST=1"
             );
+            let evidence = std::env::var("PERI_P4_S3_EVIDENCE_DIR")?;
+            retained_directory(Path::new(&evidence))?
+        } else {
+            tempfile::tempdir()?
+        };
+        let (backend, raw, config) = if real_s3 {
             let raw = peri_loom_v1::config::authority_backend("s3")?;
             let endpoint = std::env::var("S3_ENDPOINT")?;
             let backend = Edge::start(Backend::Forward(endpoint))?;
@@ -93,6 +167,12 @@ impl Fixture {
         let mut environment = config;
         environment.push(("PERI_REQUEST_READ_TRACE".into(), "1".into()));
         environment.push(("S3_ENDPOINT".into(), backend.endpoint.clone()));
+        if real_s3 {
+            environment.push((
+                "PERI_TEST_PROCESS_LOG_DIR".into(),
+                directory.path().to_string_lossy().into_owned(),
+            ));
+        }
         let credentials = directory.path().join("workers.json");
         fs::write(
             &credentials,
@@ -127,8 +207,8 @@ impl Fixture {
         let endpoint = format!("{}/", rpc.endpoint);
         let control = AuthorityClient::new(&endpoint, AUTHORITY_CONTROL.into())?;
         let worker_client = AuthorityClient::new(&endpoint, WORKER_A.into())?;
-        let first = worker(&directory, &endpoint, "verify-a", WORKER_A)?;
-        let second = worker(&directory, &endpoint, "verify-b", WORKER_B)?;
+        let first = worker(&directory, &endpoint, "verify-a", WORKER_A, real_s3)?;
+        let second = worker(&directory, &endpoint, "verify-b", WORKER_B, real_s3)?;
         let name = format!(
             "scope-{}",
             directory
@@ -336,7 +416,22 @@ fn worker(
     endpoint: &str,
     name: &str,
     token: &str,
+    retain_evidence: bool,
 ) -> Result<Process> {
+    let mut environment = vec![
+        ("PERI_WORKER_AUTHORITY_TOKEN", token),
+        ("PERI_WORKER_CONTROL_TOKEN", WORKER_CONTROL),
+        ("PERI_WORKER_SQL_TOKEN", WORKER_SQL),
+    ];
+    if retain_evidence {
+        environment.push((
+            "PERI_TEST_PROCESS_LOG_DIR",
+            directory
+                .path()
+                .to_str()
+                .context("evidence path is not Unicode")?,
+        ));
+    }
     Process::start(
         &[
             "owned-worker".into(),
@@ -345,11 +440,7 @@ fn worker(
             name.into(),
             "127.0.0.1:0".into(),
         ],
-        &[
-            ("PERI_WORKER_AUTHORITY_TOKEN", token),
-            ("PERI_WORKER_CONTROL_TOKEN", WORKER_CONTROL),
-            ("PERI_WORKER_SQL_TOKEN", WORKER_SQL),
-        ],
+        &environment,
     )
 }
 
@@ -1421,7 +1512,16 @@ fn clean_restart(fixture: &Fixture) -> Result<()> {
         &fixture.ledger("known-terminal-restart-new-grant")?,
         &lease.binding,
     )?;
-    let mut recovered = worker(&fixture.directory, &endpoint, "verify-b", WORKER_B)?;
+    let mut recovered = worker(
+        &fixture.directory,
+        &endpoint,
+        "verify-b",
+        WORKER_B,
+        fixture
+            .environment
+            .iter()
+            .any(|(name, _)| name == "PERI_TEST_PROCESS_LOG_DIR"),
+    )?;
     acquire(&recovered, &lease)?;
     let session = open(&recovered, &fixture.database)?;
     assert_eq!(

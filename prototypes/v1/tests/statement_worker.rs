@@ -725,7 +725,7 @@ fn statement_readonly_role_cannot_write_or_bypass_native_admission() -> Result<(
 
 #[test]
 fn statement_v2_owner_state_and_cleanup_ack() -> Result<()> {
-    let worker = Worker::with_profile(true)?;
+    let mut worker = Worker::with_profile(true)?;
     let session = worker.session()?;
     let begun = worker.statement(&session, "BEGIN IMMEDIATE", vec![])?;
     assert_eq!(begun["ok"], true, "{begun}");
@@ -743,10 +743,31 @@ fn statement_v2_owner_state_and_cleanup_ack() -> Result<()> {
     let rejected = worker.statement(&session, "INSERT INTO missing_table VALUES (1)", vec![])?;
     assert_eq!(rejected["ok"], false, "{rejected}");
     assert_eq!(rejected["execution_completed"], true);
-    assert!(rejected.get("session_state").is_none());
+    assert_eq!(rejected["session_state"]["session"], session, "{rejected}");
+    assert_eq!(rejected["session_state"]["owner"], true, "{rejected}");
+    assert_eq!(
+        rejected["session_state"]["binding"],
+        begun["session_state"]["binding"]
+    );
+    assert!(
+        rejected["session_state"]["sequence"].as_u64().unwrap()
+            > created["session_state"]["sequence"].as_u64().unwrap(),
+        "{rejected}"
+    );
+    worker.version = 1;
+    let legacy = worker.statement(&session, "INSERT INTO missing_table VALUES (1)", vec![])?;
+    assert_eq!(legacy["ok"], false, "{legacy}");
+    assert_eq!(legacy["execution_completed"], true, "{legacy}");
+    assert!(legacy.get("session_state").is_none(), "{legacy}");
+    worker.version = 2;
     let committed = worker.statement(&session, "COMMIT", vec![])?;
     assert_eq!(committed["ok"], true, "{committed}");
     assert_eq!(committed["session_state"]["owner"], false);
+    assert!(
+        committed["session_state"]["sequence"].as_u64().unwrap()
+            > rejected["session_state"]["sequence"].as_u64().unwrap(),
+        "{committed}"
+    );
     let data = worker.statement(
         &session,
         "SELECT id FROM inside_transaction WHERE 0",

@@ -220,6 +220,27 @@ impl WorkerRuntime {
         }
     }
 
+    pub(crate) fn initial_image_replaced(&self, identifier: &DatabaseId) -> Result<bool> {
+        let loaded = {
+            let mut registry = self.lock()?;
+            registry.check_available(identifier)?;
+            match registry.entries.get(identifier) {
+                Some(Entry::Loaded(loaded)) => Some((loaded.database.database()?, loaded.epoch)),
+                _ => None,
+            }
+        };
+        match loaded {
+            Some((database, epoch)) => {
+                if database.storage().manifest().generation != 0 {
+                    return Ok(false);
+                }
+                let fresh = self.provider.open_store(identifier, epoch)?;
+                database.storage().initial_image_replaced(fresh.as_ref())
+            }
+            None => Ok(false),
+        }
+    }
+
     pub fn close(&self, identifier: &DatabaseId) -> Result<bool> {
         identifier.validate()?;
         let mut registry = self.lock()?;

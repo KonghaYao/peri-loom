@@ -21,9 +21,13 @@ use peri_loom_v1::{
 use reqwest::{blocking::Client, Method, StatusCode, Url};
 use std::{
     collections::BTreeMap,
+    fs,
+    io::Write,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::Path,
     sync::{Arc, Barrier},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 fn enabled() -> bool {
@@ -40,6 +44,21 @@ fn optional_env(name: &str) -> Result<Option<String>> {
         Err(std::env::VarError::NotPresent) => Ok(None),
         Err(_) => Err(anyhow!("{name} must be valid Unicode")),
     }
+}
+
+fn retain_bucket_setting(value: Option<&str>) -> Result<bool> {
+    ensure!(
+        matches!(value, None | Some("0") | Some("1")),
+        "PERI_S3_TEST_RETAIN must be 0 or 1"
+    );
+    Ok(value == Some("1"))
+}
+
+fn announce_retained_bucket(retain: bool, bucket: &str, output: &mut impl Write) -> Result<()> {
+    if retain {
+        writeln!(output, "retained isolated S3 test bucket: {bucket}")?;
+    }
+    Ok(())
 }
 
 fn config(bucket: String) -> Result<S3Config> {
@@ -168,6 +187,7 @@ fn ensure_fresh_bucket(config: &S3Config) -> Result<()> {
 struct TestBucket {
     config: S3Config,
     store: Arc<S3ObjectStore>,
+    retain: bool,
 }
 
 #[test]
@@ -232,6 +252,7 @@ fn p2_s3_authority_refs_pitr_and_gc_with_empty_worker_cache() -> Result<()> {
 
 impl TestBucket {
     fn new() -> Result<Self> {
+        let retain = retain_bucket_setting(optional_env("PERI_S3_TEST_RETAIN")?.as_deref())?;
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let temporary = tempfile::tempdir()?;
         let salt = blake3::hash(temporary.path().as_os_str().as_encoded_bytes()).to_hex();
@@ -241,14 +262,22 @@ impl TestBucket {
             &salt[..12]
         ))?;
         let store = Arc::new(S3ObjectStore::new(config.clone())?);
+        announce_retained_bucket(retain, &config.bucket, &mut std::io::stderr().lock())?;
         ensure_fresh_bucket(&config)?;
         raw(&config, Method::PUT, None, b"", BTreeMap::new())?;
-        Ok(Self { config, store })
+        Ok(Self {
+            config,
+            store,
+            retain,
+        })
     }
 }
 
 impl Drop for TestBucket {
     fn drop(&mut self) {
+        if self.retain {
+            return;
+        }
         if let Ok(keys) = self.store.list("tenant/") {
             for key in keys {
                 let _ = self.store.delete(&key, None);
@@ -256,6 +285,28 @@ impl Drop for TestBucket {
         }
         let _ = raw(&self.config, Method::DELETE, None, b"", BTreeMap::new());
     }
+}
+
+#[test]
+fn retain_bucket_requires_explicit_opt_in() {
+    assert!(!retain_bucket_setting(None).unwrap());
+    assert!(!retain_bucket_setting(Some("0")).unwrap());
+    assert!(retain_bucket_setting(Some("1")).unwrap());
+    assert!(retain_bucket_setting(Some("")).is_err());
+    assert!(retain_bucket_setting(Some("true")).is_err());
+}
+
+#[test]
+fn retained_bucket_notice_only_contains_generated_identifier() -> Result<()> {
+    let mut output = Vec::new();
+    announce_retained_bucket(false, "peri-p1-test-123", &mut output)?;
+    assert!(output.is_empty());
+    announce_retained_bucket(true, "peri-p1-test-123", &mut output)?;
+    assert_eq!(
+        output,
+        b"retained isolated S3 test bucket: peri-p1-test-123\n"
+    );
+    Ok(())
 }
 
 #[test]
@@ -393,6 +444,279 @@ fn minio_network_fresh_cache_sql_recovery() -> Result<()> {
     let integrity = database.query("PRAGMA integrity_check")?;
     assert!(matches!(&integrity[0][0], turso_core::Value::Text(text) if text.as_str() == "ok"));
     eprintln!("PASS real S3 SQL: delete all local cache, replay remote WAL, query, checkpoint, delete cache again and integrity_check");
+    Ok(())
+}
+
+fn private_microbench_dir(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o7777 == 0o700,
+        "PERI_LOCAL_BENCH_EVIDENCE_DIR must be an existing private 0700 directory"
+    );
+    Ok(())
+}
+
+fn microbench_record<T>(
+    started: Instant,
+    evidence: &mut impl Write,
+    bucket: &str,
+    s3_retries: usize,
+    operation: &str,
+    index: usize,
+    expected: serde_json::Value,
+    action: impl FnOnce() -> Result<(T, serde_json::Value)>,
+) -> Result<T> {
+    ensure!(
+        started.elapsed() < Duration::from_secs(90),
+        "microbenchmark exceeded 90s"
+    );
+    let operation_start = Instant::now();
+    let result = action();
+    let latency_ns = operation_start.elapsed().as_nanos();
+    let within_budget = started.elapsed() < Duration::from_secs(90);
+    let (correct, observed) = match &result {
+        Ok((_, observed)) => (within_budget, observed.clone()),
+        Err(_) => (false, serde_json::Value::Null),
+    };
+    serde_json::to_writer(
+        &mut *evidence,
+        &serde_json::json!({
+            "bucket": bucket,
+            "s3_retries": s3_retries,
+            "namespace": "tenant/local-s3-sql-microbenchmark",
+            "operation": operation,
+            "index": index,
+            "latency_ns": latency_ns,
+            "expected": expected,
+            "observed": observed,
+            "correct": correct
+        }),
+    )?;
+    writeln!(evidence)?;
+    evidence.flush()?;
+    ensure!(within_budget, "microbenchmark exceeded 90s");
+    Ok(result?.0)
+}
+
+fn microbench_integer(
+    rows: Vec<Vec<turso_core::Value>>,
+    expected: i64,
+) -> Result<serde_json::Value> {
+    ensure!(
+        matches!(rows.as_slice(), [row] if matches!(row.as_slice(), [turso_core::Value::Numeric(turso_core::Numeric::Integer(value))] if *value == expected)),
+        "microbenchmark SQL integer result mismatch"
+    );
+    Ok(serde_json::json!(expected))
+}
+
+#[test]
+#[ignore = "requires explicit local microbenchmark opt-in, retained bucket, private evidence directory and S3 credentials"]
+fn local_s3_sql_microbenchmark() -> Result<()> {
+    ensure!(
+        optional_env("PERI_LOCAL_MICROBENCH")?.as_deref() == Some("1"),
+        "PERI_LOCAL_MICROBENCH=1 required"
+    );
+    ensure!(
+        retain_bucket_setting(optional_env("PERI_S3_TEST_RETAIN")?.as_deref())?,
+        "PERI_S3_TEST_RETAIN=1 required"
+    );
+    for name in [
+        "PERI_S3_TEST_ENDPOINT",
+        "PERI_S3_TEST_ACCESS_KEY",
+        "PERI_S3_TEST_SECRET_KEY",
+    ] {
+        ensure!(optional_env(name)?.is_some(), "{name} required");
+    }
+    let evidence_dir = optional_env("PERI_LOCAL_BENCH_EVIDENCE_DIR")?
+        .ok_or_else(|| anyhow!("PERI_LOCAL_BENCH_EVIDENCE_DIR required"))?;
+    private_microbench_dir(Path::new(&evidence_dir))?;
+    let (mut evidence, _) = tempfile::Builder::new()
+        .prefix("local-s3-sql-")
+        .suffix(".jsonl")
+        .tempfile_in(&evidence_dir)?
+        .keep()?;
+    ensure!(
+        evidence.metadata()?.permissions().mode() & 0o7777 == 0o600,
+        "microbenchmark evidence must be 0600"
+    );
+
+    let started = Instant::now();
+    ensure!(
+        started.elapsed() < Duration::from_secs(90),
+        "microbenchmark exceeded 90s"
+    );
+    let fixture = TestBucket::new()?;
+    let s3_retries = fixture.config.retries;
+    let store = fixture.store.clone();
+    let namespace = Namespace::new("tenant", "local-s3-sql-microbenchmark")?;
+    let cache = Path::new(&evidence_dir).join("active-cache");
+    fs::create_dir(&cache)?;
+    fs::set_permissions(&cache, fs::Permissions::from_mode(0o700))?;
+    let database = microbench_record(
+        started,
+        &mut evidence,
+        &fixture.config.bucket,
+        s3_retries,
+        "open",
+        0,
+        serde_json::json!("opened"),
+        || {
+            Ok((
+                RemoteDatabase::open(store.clone(), namespace.clone(), &cache, 0)?,
+                serde_json::json!("opened"),
+            ))
+        },
+    )?;
+    microbench_record(
+        started,
+        &mut evidence,
+        &fixture.config.bucket,
+        s3_retries,
+        "setup",
+        0,
+        serde_json::json!("created"),
+        || {
+            database
+                .execute("CREATE TABLE ledger(id INTEGER PRIMARY KEY, amount INTEGER NOT NULL)")?;
+            Ok(((), serde_json::json!("created")))
+        },
+    )?;
+    for id in 1..=16 {
+        microbench_record(
+            started,
+            &mut evidence,
+            &fixture.config.bucket,
+            s3_retries,
+            "serial_insert",
+            id,
+            serde_json::json!({"id": id, "amount": id}),
+            || {
+                database.execute(&format!(
+                    "BEGIN; INSERT INTO ledger(id, amount) VALUES({id}, {id}); COMMIT;"
+                ))?;
+                Ok(((), serde_json::json!({"id": id, "amount": id})))
+            },
+        )?;
+    }
+    for index in 1..=64 {
+        let id = (index - 1) % 16 + 1;
+        microbench_record(
+            started,
+            &mut evidence,
+            &fixture.config.bucket,
+            s3_retries,
+            "serial_point_read",
+            index,
+            serde_json::json!({"id": id, "amount": id}),
+            || {
+                let rows = database.query(&format!("SELECT amount FROM ledger WHERE id={id}"))?;
+                Ok((
+                    (),
+                    serde_json::json!({"id": id, "amount": microbench_integer(rows, id as i64)?}),
+                ))
+            },
+        )?;
+    }
+    drop(database);
+    ensure!(
+        started.elapsed() < Duration::from_secs(90),
+        "microbenchmark exceeded 90s"
+    );
+    let cold_cache = Path::new(&evidence_dir).join("cold-cache");
+    fs::create_dir(&cold_cache)?;
+    fs::set_permissions(&cold_cache, fs::Permissions::from_mode(0o700))?;
+    let cold = microbench_record(
+        started,
+        &mut evidence,
+        &fixture.config.bucket,
+        s3_retries,
+        "cold_open",
+        0,
+        serde_json::json!("opened"),
+        || {
+            Ok((
+                RemoteDatabase::open(store, namespace, &cold_cache, 0)?,
+                serde_json::json!("opened"),
+            ))
+        },
+    )?;
+    for (operation, sql, expected) in [
+        ("cold_count", "SELECT count(*) FROM ledger", 16),
+        ("cold_sum", "SELECT sum(amount) FROM ledger", 136),
+    ] {
+        microbench_record(
+            started,
+            &mut evidence,
+            &fixture.config.bucket,
+            s3_retries,
+            operation,
+            0,
+            serde_json::json!(expected),
+            || {
+                let rows = cold.query(sql)?;
+                Ok(((), microbench_integer(rows, expected)?))
+            },
+        )?;
+    }
+    let expected_ledger: Vec<_> = (1..=16).map(|id| vec![id, id]).collect();
+    microbench_record(
+        started,
+        &mut evidence,
+        &fixture.config.bucket,
+        s3_retries,
+        "cold_ledger",
+        0,
+        serde_json::json!(expected_ledger),
+        || {
+            let rows = cold.query("SELECT id, amount FROM ledger ORDER BY id")?;
+            let actual: Vec<Vec<i64>> = rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|value| match value {
+                            turso_core::Value::Numeric(turso_core::Numeric::Integer(value)) => {
+                                Ok(value)
+                            }
+                            _ => Err(anyhow!("microbenchmark ledger value mismatch")),
+                        })
+                        .collect()
+                })
+                .collect::<Result<_>>()?;
+            ensure!(actual == expected_ledger, "microbenchmark ledger mismatch");
+            Ok(((), serde_json::json!(actual)))
+        },
+    )?;
+    microbench_record(
+        started,
+        &mut evidence,
+        &fixture.config.bucket,
+        s3_retries,
+        "integrity_check",
+        0,
+        serde_json::json!("ok"),
+        || {
+            let rows = cold.query("PRAGMA integrity_check")?;
+            ensure!(
+                matches!(rows.as_slice(), [row] if matches!(row.as_slice(), [turso_core::Value::Text(value)] if value.as_str() == "ok")),
+                "microbenchmark integrity check failed"
+            );
+            Ok(((), serde_json::json!("ok")))
+        },
+    )?;
+    eprintln!("PASS local S3 SQL microbenchmark: 16 serial inserts, 64 serial point reads, cold-cache full ledger/count/sum/integrity, S3 retries={s3_retries}; bucket {}", fixture.config.bucket);
+    Ok(())
+}
+
+#[test]
+fn microbench_evidence_requires_existing_private_directory() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
+    private_microbench_dir(directory.path())?;
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755))?;
+    assert!(private_microbench_dir(directory.path()).is_err());
+    assert!(private_microbench_dir(&directory.path().join("missing")).is_err());
     Ok(())
 }
 

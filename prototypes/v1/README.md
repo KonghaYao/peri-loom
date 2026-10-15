@@ -39,9 +39,32 @@ and `PERI_S3_TEST_ENDPOINT`, `PERI_S3_TEST_ACCESS_KEY`,
 cargo test --manifest-path prototypes/v1/Cargo.toml --locked --test minio -- --ignored --test-threads=1
 ```
 
-These tests create uniquely named temporary buckets and clean only their own
-fixtures. Never point them at a production service without bucket-creation
-permission. Do not count ignored service tests as passing in a local-only run.
+These tests create uniquely named buckets and normally delete their own objects
+and buckets on exit, including when a test fails. For first-failure forensics,
+set `PERI_S3_TEST_RETAIN=1` before running: every bucket created by that run is
+retained on success or failure, without deleting any objects or buckets. Before
+the first bucket HEAD/PUT request, the test prints only the generated bucket name
+as a retention identifier, not the endpoint or credentials. Even if setup fails
+or PUT has an unknown outcome before the fixture exists, use this identifier to
+inspect the exclusive endpoint; the notice does not prove creation succeeded.
+Archive and inspect retained buckets, then clean them up manually when the
+investigation is complete. Use these tests, especially
+retention mode, **only** with an exclusive disposable S3 endpoint and credentials;
+never point them at shared or production storage. Do not count ignored service
+tests as passing in a local-only run.
+
+The four ignored `p4_completion` real-S3 fault tests use a different fixture:
+they do not provision or delete buckets. Run one at a time only after independently
+confirming an exclusive endpoint and a separately provisioned bucket per test,
+with `PERI_P4_S3_TEST=1` and an existing private (0700), non-symlink
+`PERI_P4_S3_EVIDENCE_DIR`. Each run retains its own 0700 local directory and
+prints its path even if startup fails; spawned service stderr is saved there in
+0600 files (up to the most recent 64 KiB per process). A test still shuts down
+or kills only its own child services on failure; do not interpret that as a
+successful recovery, and never delete the retained directory or remote bucket
+after an unknown result. The test opt-in checks neither Docker project
+ownership nor whether the endpoint/bucket is exclusive, and is **not** a
+substitute for the P0–P6 joint gate or a license to run on a shared service.
 
 ### Historical SQLite semantic comparison
 

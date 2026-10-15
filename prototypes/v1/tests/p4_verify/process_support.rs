@@ -9,10 +9,10 @@ use peri_loom_v1::{
 };
 use serde_json::{json, Value};
 use std::{
-    fs,
-    io::{BufRead, BufReader, Read},
-    os::unix::fs::PermissionsExt,
-    path::Path,
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, Read, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -33,6 +33,7 @@ pub struct Process {
     ready: mpsc::Receiver<std::io::Result<String>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     logger: Option<thread::JoinHandle<()>>,
+    evidence: Option<PathBuf>,
     pub address: String,
 }
 
@@ -52,6 +53,17 @@ impl Process {
             command.env("PERI_NATIVE_GATE_TRACE", "1");
         }
         let mut child = command.spawn()?;
+        static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let evidence = environment
+            .iter()
+            .find(|(name, _)| *name == "PERI_TEST_PROCESS_LOG_DIR")
+            .map(|(_, value)| {
+                Path::new(value).join(format!(
+                    "process-{}-{}.stderr.log",
+                    child.id(),
+                    LOG_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+                ))
+            });
         let output = child.stdout.take().context("service stdout missing")?;
         let errors = child.stderr.take().context("service stderr missing")?;
         let (sender, ready) = mpsc::channel();
@@ -82,6 +94,7 @@ impl Process {
             ready,
             stderr,
             logger: Some(logger),
+            evidence,
             address: String::new(),
         })
     }
@@ -180,6 +193,20 @@ impl Drop for Process {
         let _ = self.child.wait();
         if let Some(logger) = self.logger.take() {
             let _ = logger.join();
+        }
+        if let Some(path) = &self.evidence {
+            let result = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .and_then(|mut file| file.write_all(self.stderr.lock().unwrap().as_slice()));
+            if let Err(error) = result {
+                eprintln!(
+                    "could not retain P4 S3 child stderr at {}: {error}",
+                    path.display()
+                );
+            }
         }
     }
 }

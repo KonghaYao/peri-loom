@@ -121,7 +121,9 @@ def main():
         request("sql_key_creation_denied", "/v1/keys/create", sql["credential"], {"project": project_a, "subject": "escalate", "role": "admin"}, 403, "forbidden")
         request("viewer_key_creation_denied", "/v1/keys/create", viewer["credential"], {"project": project_a, "subject": "escalate", "role": "admin"}, 403, "forbidden")
         request("cross_project_key_creation_denied", "/v1/keys/create", admin["credential"], {"project": project_b, "subject": "escalate", "role": "admin"}, 403, "forbidden")
-        request("global_sql_denied", "/v1/sql/open", global_key, {"database": database_a}, 403, "forbidden")
+        global_session = request("global_sql_open", "/v1/sql/open", global_key, {"database": database_a})["session"]
+        request("global_sql_query", "/v1/sql/query", global_key, {"session": global_session, "sql": "SELECT 1"}, verify=lambda value: value == [[1]])
+        request("global_sql_close", "/v1/sql/close", global_key, {"session": global_session})
         request("viewer_status", "/v1/databases/status", viewer["credential"], {"database": database_a})
         request("viewer_writer_token_denied", "/v1/tokens", viewer["credential"], {"database": database_a, "role": "writer", "expires_ms": int(time.time() * 1000) + 120000}, 403, "forbidden")
         request("viewer_sql_denied", "/v1/sql/open", viewer["credential"], {"database": database_a}, 403, "forbidden")

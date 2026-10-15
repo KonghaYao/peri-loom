@@ -54,10 +54,37 @@ fn nonce_binding_exact_deadline_and_receipt_payload_conflict_are_fail_closed() -
     assert_eq!(authority.state(&id)?.mode, OwnershipMode::Revoked);
     let fresh = grant_request(&authority, id.clone(), 11, 10, 1000, "late-intent")?;
     clock.set(7000);
+    assert_eq!(authority.grant(fresh)?.binding.epoch, 11);
+    assert_eq!(authority.state(&id)?.epoch, 11);
+    Ok(())
+}
+
+#[test]
+fn grant_nonce_is_valid_before_expiry_and_rejected_at_exact_deadline() -> Result<()> {
+    let clock = Clock::new(1000);
+    let store = ProbeStore::new(clock.clone());
+    let authority = OwnershipAuthority::new(store.clone(), clock.clone());
+    let before_id = identifier("nonce-before-expiry");
+    let expired_id = identifier("nonce-at-expiry");
+    let mut before = grant_request(&authority, before_id.clone(), 10, 0, 1000, "before")?;
+    let expired = grant_request(&authority, expired_id.clone(), 10, 0, 1000, "expired")?;
+    let challenge = authority.challenge(LeaseIntent::Grant(before.intent.clone()))?;
+    before.nonce = challenge.nonce;
+    let deadline = 1000 + challenge.expires_in_ms;
+
+    clock.set(deadline - 1);
+    assert_eq!(authority.grant(before)?.binding.epoch, 10);
+    assert_eq!(authority.state(&before_id)?.epoch, 10);
+
+    clock.set(deadline);
     let dispatches = store.put_count();
-    assert!(authority.grant(fresh).is_err());
+    assert!(authority.grant(expired).is_err());
     assert_eq!(store.put_count(), dispatches);
-    assert_eq!(authority.state(&id)?.epoch, 10);
+    assert_eq!(authority.state(&expired_id)?.epoch, 0);
+
+    let replacement = grant_request(&authority, expired_id.clone(), 10, 0, 1000, "replacement")?;
+    assert_eq!(authority.grant(replacement)?.binding.epoch, 10);
+    assert_eq!(authority.state(&expired_id)?.epoch, 10);
     Ok(())
 }
 

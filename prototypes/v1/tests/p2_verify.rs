@@ -494,9 +494,16 @@ fn last_reader_handle_protects_lazy_segment_and_corruption_is_not_hidden() -> Re
     let session = authority.branch_store("main")?;
     let retained = session.clone();
     drop(session);
+    let key = authority.namespace().key(&relative)?;
+    assert_eq!(retained.list(&key)?, vec![key.clone()]);
+    assert!(authority
+        .snapshot()?
+        .root
+        .pins
+        .values()
+        .any(|entries| { entries.iter().any(|entry| entry.blob == blob) }));
     let collector = GarbageCollector::new(authority.clone(), Duration::ZERO);
     assert_eq!(collector.collect()?.marked, 0);
-    let key = authority.namespace().key(&relative)?;
     assert_eq!(retained.get(&key)?.unwrap().bytes, vec![83; SEGMENT_SIZE]);
     let physical = authority
         .namespace()
@@ -510,6 +517,27 @@ fn last_reader_handle_protects_lazy_segment_and_corruption_is_not_hidden() -> Re
     drop(retained);
     assert!(collector.collect()?.marked > 0);
     assert!(raw.inner.get(&physical)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn undiscovered_orphan_is_not_pinned_by_unrelated_reader() -> Result<()> {
+    let (raw, authority, _) = setup()?;
+    let (relative, blob) = orphan(&authority, 85)?;
+    let reader = authority.branch_store("main")?;
+    let collector = GarbageCollector::new(authority.clone(), Duration::ZERO);
+    assert_eq!(collector.collect()?.marked, 1);
+    assert!(reader
+        .get(&authority.namespace().key(&relative)?)?
+        .is_none());
+    assert!(raw
+        .inner
+        .get(
+            &authority
+                .namespace()
+                .key(&format!("authority/blobs/{blob}"))?
+        )?
+        .is_none());
     Ok(())
 }
 
