@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 type recoveryIntentFixture struct {
@@ -261,16 +263,23 @@ func TestStoreRecoverySIGKILLWriter(test *testing.T) {
 	if err := syscall.Kill(os.Getpid(), syscall.SIGKILL); err != nil {
 		test.Fatal(err)
 	}
-	test.Fatal("SIGKILL did not terminate writer")
+	for {
+		time.Sleep(time.Second)
+	}
 }
 
 func TestStoreRecoveryActualSIGKILLReleasesLockAndPreservesAllocatedFloor(test *testing.T) {
 	for _, prefix := range []string{"intent", "floor", "metadata"} {
 		test.Run(prefix, func(test *testing.T) {
 			directory := test.TempDir()
-			command := exec.Command(os.Args[0], "-test.run=^TestStoreRecoverySIGKILLWriter$")
+			deadline, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(deadline, os.Args[0], "-test.run=^TestStoreRecoverySIGKILLWriter$")
 			command.Env = []string{"PERI_CONTROLLER_COMMIT_KILL_DIRECTORY=" + directory, "PERI_CONTROLLER_COMMIT_KILL_PREFIX=" + prefix}
 			output, err := command.CombinedOutput()
+			if deadline.Err() != nil {
+				test.Fatalf("writer did not terminate before deadline: %s %v", output, err)
+			}
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) {
 				test.Fatalf("writer did not exit by SIGKILL: %s %v", output, err)
