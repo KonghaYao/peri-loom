@@ -15,6 +15,7 @@
 | 离线测试覆盖 | Rust v1 workspace 最近一次全套绿色：47 条测试摘要、525 次 passed 计数（含重复汇总，非独立测试数）、12 ignored；Go 平台包 148.884 秒 PASS；Go Controller 全包 PASS（31.874 秒）；stress harness `go test -race ./...` PASS。 | 均非真实 S3 SQL 负载/并发容量数据；Rust ignored 的服务用例不能计入通过。 |
 | 独占 RustFS 有限验证 | `minio.rs` 5 项和 `p4_completion` 4 项分别在专属 RustFS/独立桶运行，每项测试各 1/1 PASS；9 个测试桶均留存。 | P4 首项执行器权限检查 FAIL，原始现场留存并裁定；后三项执行器成功。非完整 release/TLS 全栈或性能。详见 `07_experiment_report.md`、`08_experiment_report.md`。 |
 | 本机小样本 SQL | 第 9 轮 16 次串行提交写、64 次串行定值点读均符合固定预期，新空缓存读回 16 行/合计 136/完整性 `ok`；操作纳秒样本及自有桶保留。 | 包装器首次退出 1（已裁定但无执行器 PASS）；非发行全栈、非容量；指标和独立限制见 `09_experiment_report.md`、`09_verification.md`。 |
+| 提交后本机补测 | 已提交生产修复后 Rust 全套、平台/Controller/工具 Go 全包、Stress 工具 race 检测和 Python 自检绿色；新桶上冷缓存 SQL 正确性 1/1，独立留存清单复核。 | 仍是本机、单项测试和离线包验证；没有 Main 联合 PASS 或端到端商业容量。见 `10_experiment_report.md`、`10_verification.md`。 |
 
 ## 尚未关闭的阻断项
 
