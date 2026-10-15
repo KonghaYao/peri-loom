@@ -138,6 +138,25 @@ func TestHranaFullStreamCapacityRejectsBeforeOpeningSQL(t *testing.T) {
 	}
 }
 
+func TestHranaPipelineTotalStepsRejectsBeforeOpeningSQL(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	handler := newHranaHTTP(fixture.gateway)
+	step := `{"stmt":{"sql":"SELECT 1","want_rows":true}}`
+	steps := strings.TrimSuffix(strings.Repeat(step+",", 33), ",")
+	body := `{"requests":[{"type":"batch","batch":{"steps":[` + steps + `]}},{"type":"batch","batch":{"steps":[` + steps + `]}}]}`
+	request := httptest.NewRequest(http.MethodPost, "/db/tenant-a/db-a/main/v2/pipeline", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("aggregate step limit: %d %s", response.Code, response.Body.String())
+	}
+	if fixture.upstream.count("open_session") != 0 || fixture.upstream.count("statement") != 0 {
+		t.Fatal("over-budget pipeline dispatched SQL")
+	}
+}
+
 func TestHranaRouteRequiresExplicitExperimentalOptIn(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	path := "/db/tenant-a/db-a/main/v2/pipeline"

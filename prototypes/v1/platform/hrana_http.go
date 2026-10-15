@@ -28,6 +28,7 @@ type hranaHTTP struct {
 }
 
 const maxHranaStreams = 256
+const maxHranaPipelineSteps = 64
 const hranaIdleTimeout = 5 * time.Minute
 
 type hranaStream struct {
@@ -177,6 +178,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	if stream.storedSQL == nil {
 		stream.storedSQL = make(map[int]string)
 	}
+	totalSteps := 0
 	for _, entry := range pipeline.Requests {
 		if entry.Type != "close" && entry.Type != "execute" && entry.Type != "batch" && entry.Type != "sequence" && entry.Type != "store_sql" && entry.Type != "close_sql" && entry.Type != "get_autocommit" && entry.Type != "describe" {
 			http.Error(writer, "unsupported Hrana request", 400)
@@ -184,6 +186,15 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 		if len(entry.Batch.Steps) > 64 || entry.Type == "store_sql" && (entry.SQLID < 0 || len(entry.SQL) == 0 || len(entry.SQL) > 65536) {
 			http.Error(writer, "Hrana pipeline limit", 413)
+			return
+		}
+		if entry.Type == "batch" {
+			totalSteps += len(entry.Batch.Steps)
+		} else if entry.Type == "execute" || entry.Type == "sequence" || entry.Type == "describe" {
+			totalSteps++
+		}
+		if totalSteps > maxHranaPipelineSteps {
+			http.Error(writer, "Hrana pipeline step limit", http.StatusRequestEntityTooLarge)
 			return
 		}
 		for index, step := range entry.Batch.Steps {
