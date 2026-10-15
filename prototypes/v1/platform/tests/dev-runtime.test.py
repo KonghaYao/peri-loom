@@ -117,6 +117,25 @@ class RuntimeTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "storage identity"):
                         restarted.prepare()
 
+    def test_restart_terminal_requires_no_unresolved_platform_operations(self):
+        with tempfile.TemporaryDirectory(prefix="peri-test-launcher-") as directory:
+            project = self.project(directory)
+            project.prepare()
+            configuration = project.config["owned_stop_proof"]
+            path = pathlib.Path(directory) / "platform/state.json"
+            state = {"owned_run_generation": configuration["generation"], "operations": {}}
+            dev.private_json(path, {"version": 1, "payload": state})
+            dev.verify_no_unresolved_operations(project.directory, configuration)
+            known = {"state": "terminal", "business_outcome": "completed", "execution_proven": True,
+                     "cleanup_outcome": "completed"}
+            state["operations"] = {"known": known}
+            dev.atomic_private_json(path, {"version": 1, "payload": state})
+            dev.verify_no_unresolved_operations(project.directory, configuration)
+            state["operations"]["unknown"] = {**known, "state": "quarantined", "ambiguous": True}
+            dev.atomic_private_json(path, {"version": 1, "payload": state})
+            with self.assertRaisesRegex(RuntimeError, "unresolved platform operation"):
+                dev.verify_no_unresolved_operations(project.directory, configuration)
+
     def test_redirects_cannot_forward_credentials(self):
         self.assertIsNone(dev.NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://outside.invalid"))
 

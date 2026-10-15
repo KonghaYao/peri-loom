@@ -5,9 +5,10 @@
 The repository-root `compose.yaml` describes the intended single-host S3 deployment:
 one prebuilt, immutable application image, an existing dedicated S3-compatible bucket,
 host-provided TLS, and repository-relative bind mounts. **It is not yet safe to put into
-production**: `platform/dev.py` currently rejects any second launch against the same
-`launch.json`, even after a clean stop. Clean restart, disaster recovery, S3 durability,
-and HA have not been validated. Do not delete `deploy/state`, reset the ownership
+production**: the source launcher now admits a second launch only after a joined clean
+stop, matching worker proofs, a clean Authority marker, and no unresolved platform
+operations. The published `v1.0.0` image predates this fix. Dirty restart, disaster
+recovery, and HA have not been validated for production. Do not delete `deploy/state`, reset the ownership
 marker, or reuse the S3 bucket with a fresh state directory to bypass that guard.
 
 Prerequisites on a Linux Docker host:
@@ -64,16 +65,16 @@ gateway, and key broker run in the one application container.
 
 The Compose file sets `--backend s3` and TLS explicitly; changing backend, S3
 identity, bind address or security parameters for an existing state directory
-is not supported. No automatic restart policy is configured because restarting
-currently fails safely. Operators must not mistake an initial successful start
-for production readiness.
+is not supported. No automatic restart policy is configured: dirty restart remains
+denied. Operators must not mistake an initial successful start for production readiness.
 
 ## CI and image releases
 
 `.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. The tag must
 match `v<prototypes/v1/Cargo.toml version>`. It builds the image once and uses
 `verify-image.py` to test the actual container over TLS, including SQL, encrypted
-native storage, and clean shutdown. After verification it publishes
+native storage, clean shutdown, same-volume restart, and recovery of an acknowledged
+SQL write. After verification it publishes
 `ghcr.io/<owner>/<repo>:<tag>` and a **pre-release** GitHub
 Release. Only Linux amd64 is tested; no `latest` image is published. GHCR access
 depends on the package's visibility and the registry credentials of the client.
@@ -87,11 +88,11 @@ For a disposable local deployment using a published preview image, set
 docker compose -f prototypes/v1/deploy/compose.yaml up -d --no-build --pull always
 ```
 
-This is a development deployment, not a production upgrade procedure. A normal
-restart using an existing persistent state directory is rejected by the launcher.
-Do not remove the directory or reset the ownership marker to get past that rejection.
-The CI image test uses a fresh volume and local
-storage; it does not test S3, existing-volume restarts, or high availability.
+This is a development deployment, not a production upgrade procedure. The source
+launcher accepts a verified clean restart; dirty or uncertain shutdowns remain denied.
+Do not remove the directory or reset the ownership marker to bypass that guard.
+The CI image test uses one fresh volume across two launches with local storage;
+it does not test external S3 or high availability.
 
 ## Verify an existing full Linux image
 
@@ -116,8 +117,11 @@ The launcher creates a distinct development issuer CA and server leaf. The tool
 copies the connection and public certificates into a fresh 0700 temporary directory,
 rewrites the host fixture endpoint/CA path, verifies the CA chain, server purpose
 and loopback IP with OpenSSL, then runs the existing `whole-smoke.py` exactly once
-with normal Python certificate verification. Readiness polling does not dispatch
-SQL. This uses the default full launcher, not the separate observer profile.
+with normal Python certificate verification. It writes an additional acknowledged
+SQL probe, stops the container cleanly, restarts that same container and volume,
+and verifies the probe remains readable with the same database and credential.
+Readiness polling does not dispatch SQL. This uses the default full launcher, not
+the separate observer profile.
 
 ```sh
 python3 prototypes/v1/deploy/verify-image.py --image "$IMAGE" --backend s3
@@ -135,13 +139,14 @@ The final JSON prints the private result directory and cleanup status; exit 0
 requires the exact helper result schema, all 12 checks (including
 `native_encrypted_sql_ack`), its stdout acknowledgement, verified TLS, matching
 fixture database, positive authority puts, both worker metrics and no audit
-unavailability, plus shutdown proof and a successfully written/verified manifest.
+unavailability, same-volume restart, acknowledged SQL recovery, final shutdown
+proof and a successfully written/verified manifest.
 There is no invented separate SQL ACK field: the helper emits that named check.
 `smoke-process.json` retains the
 original smoke exit code and output (known fixture/S3 credentials redacted),
 `smoke.json` retains successful smoke results, and `result.json` records inspected
-image identity, resource settings, runtime UID/PID, stopped ExitCode/OOM/PID and
-the authority `clean\n` marker. `manifest.json` hashes these evidence files and
+image identity, resource settings, runtime UID/PID, restart proof, stopped
+ExitCode/OOM/PID and the authority `clean\n` marker. `manifest.json` hashes these evidence files and
 host verification/launcher/smoke/Dockerfile sources, never connections or secrets.
 PASS requires all four evidence files (`smoke-process.json`, `smoke.json`,
 `authority.lock`, `result.json`) and all four source hashes. The published result
@@ -152,8 +157,8 @@ These host hashes do not attest the image's compiled Rust/Go source provenance.
 The existing smoke labels its successful backend `external_s3_fixture` even in
 local mode; `result.json.backend` is the selected backend.
 
-Failure is conservatively `Unknown`, without automatic SQL retry or additional
-Close. The original smoke currently masks exception details with an exception type;
+Failure is conservatively `Unknown`, without automatic SQL retry or an additional
+Close after an uncertain outcome. The original smoke currently masks exception details with an exception type;
 the verifier preserves that output rather than inventing a more precise outcome.
 SIGINT/SIGTERM and tool exceptions attempt only ownership-verified cleanup. Shutdown
 sends TERM and waits (default 90 seconds), never force-kills. Removal requires an
@@ -161,15 +166,15 @@ exited container with ExitCode 0, no OOM, PID 0 and the clean authority marker;
 launcher ExitCode 0 supplies its joined platform/worker shutdown proof. If ownership,
 stop or clean proof is uncertain, container/volume and private fixture are retained
 for manual investigation, not automatically restarted or deleted. The private
-namespace is also always retained after dispatched smoke failure/timeout, even
+namespace is also always retained after dispatched smoke or restart-probe failure/timeout, even
 if the container subsequently stops with ExitCode 0 and a clean marker: process
 shutdown does not resolve an Unknown SQL outcome or establish no side effects.
 The private
 fixture contains credentials and must not be shared; it is removed after proven
 cleanup. SIGKILL/host loss cannot execute cleanup. Readiness/smoke deadlines default
 to 120/300 seconds and are configurable with `--ready-timeout`, `--smoke-timeout`
-and `--stop-timeout`. This is D04/R02 tooling, not completion of all whole7tasks
-or a live Linux/S3/restart gate.
+and `--stop-timeout`. The workflow covers clean local-volume restart on Linux;
+external S3 is opt-in and dirty restart, disaster recovery, and HA remain separate gates.
 
 Local and RustFS whole11 runs are bounded functional checks, not HA or
 performance acceptance. Retain run outputs outside the source repository.

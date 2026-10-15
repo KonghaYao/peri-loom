@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -48,6 +49,9 @@ class Verification:
         self.attempted_create = False
         self.smoke_dispatched = False
         self.smoke_proven = False
+        self.restart_probe_dispatched = False
+        self.restart_probe_proven = False
+        self.ready_count = 0
         self.report = {"pass": False, "backend": arguments.backend, "container_name": self.name, "volume_name": self.volume, "status": "Unknown", "cleanup": "not_created"}
         self.environment = {name: os.environ[name] for name in ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "XDG_RUNTIME_DIR", "TMPDIR") if name in os.environ}
         if arguments.backend == "s3":
@@ -120,11 +124,12 @@ class Verification:
             if not value["State"]["Running"]:
                 raise RuntimeError("container exited before readiness")
             logs = self.docker("logs", self.container)
-            if any(self.ready_event(line) for line in logs.stdout.splitlines()):
+            if sum(self.ready_event(line) for line in logs.stdout.splitlines()) > self.ready_count:
                 break
             time.sleep(0.5)
         else:
             raise RuntimeError("readiness timeout")
+        self.ready_count += 1
         uid = self.docker("exec", self.container, "id", "-u").stdout.strip()
         if uid != "10001":
             raise RuntimeError("runtime UID mismatch")
@@ -154,6 +159,48 @@ class Verification:
         connection.unlink()
         private_json(connection, config)
         self.report["tls"] = "issuer_and_loopback_verified"
+
+    def restart(self):
+        spec = importlib.util.spec_from_file_location("peri_verified_launcher", SMOKE.parents[1] / "dev.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        original = json.loads((self.fixture / "connection.json").read_text())
+        def call(config, path, body):
+            return launcher.request(config["endpoint"], config["project_api_key"], path, body, config["ca_file"])
+        table = "restart_probe_" + secrets.token_hex(8)
+        value = secrets.token_hex(16)
+        session = call(original, "/v1/sql/open", {"database": original["database"]})
+        self.restart_probe_dispatched = True
+        call(original, "/v1/sql/execute", {"session": session["session"], "sql": f"CREATE TABLE {table}(value TEXT NOT NULL);INSERT INTO {table} VALUES('{value}');"})
+        call(original, "/v1/sql/close", {"session": session["session"]})
+        self.docker("kill", "--signal", "TERM", self.container)
+        self.docker("wait", self.container, timeout=self.arguments.stop_timeout)
+        stopped = self.inspect()["State"]
+        if stopped["Running"] or stopped["ExitCode"] != 0 or stopped["OOMKilled"] or stopped["Pid"] != 0:
+            raise RuntimeError("first clean stop not proven")
+        authority = self.fixture / "restart-authority.lock"
+        self.copy("/data/peri/authority/authority.lock", authority)
+        if authority.read_bytes() != b"clean\n":
+            raise RuntimeError("first authority clean marker missing")
+        terminal = self.fixture / "launcher-terminal.json"
+        self.copy("/data/peri/launcher-terminal.json", terminal)
+        if not terminal.read_bytes():
+            raise RuntimeError("first launcher terminal proof missing")
+        self.docker("start", self.container)
+        for name in ("image-dev.py", "connection.json", "ca.crt", "tls.crt"):
+            (self.fixture / name).unlink()
+        self.ready()
+        current = json.loads((self.fixture / "connection.json").read_text())
+        if current["database"] != original["database"] or current["project_api_key"] != original["project_api_key"]:
+            raise RuntimeError("restart changed persisted database or project credential")
+        session = call(current, "/v1/sql/open", {"database": current["database"]})
+        result = call(current, "/v1/sql/query", {"session": session["session"], "sql": f"SELECT value FROM {table}"})
+        if result != [[value]]:
+            raise RuntimeError("acknowledged SQL write missing after restart")
+        call(current, "/v1/sql/close", {"session": session["session"]})
+        self.restart_probe_proven = True
+        self.report["restart"] = {"first_clean_stop": True, "same_state_volume": True,
+                                  "same_database_and_credential": True, "acknowledged_sql_recovered": True}
 
     @staticmethod
     def ready_event(line):
@@ -254,7 +301,7 @@ class Verification:
             self.report["authority_clean"] = marker.read_bytes() == b"clean\n"
             if not self.report["authority_clean"]:
                 raise RuntimeError("authority clean marker missing")
-            if self.smoke_dispatched and not self.smoke_proven:
+            if self.smoke_dispatched and not self.smoke_proven or self.restart_probe_dispatched and not self.restart_probe_proven:
                 self.report["retention_reason"] = "SQL outcome Unknown; clean process stop is not SQL resolution"
                 return
             self.docker("rm", self.container)
@@ -272,6 +319,8 @@ class Verification:
             self.ready()
             self.report["stage"] = "smoke"
             self.smoke()
+            self.report["stage"] = "restart"
+            self.restart()
             self.report["status"] = "smoke_passed"
         except BaseException as error:
             self.report["failure_type"] = type(error).__name__

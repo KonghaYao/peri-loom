@@ -42,7 +42,7 @@ jobs:
           python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_verify_image.py'
       - name: Build service image
         run: docker build -f prototypes/v1/deploy/Dockerfile -t peri-loom:release .
-      - name: Verify service and clean shutdown
+      - name: Verify service, same-volume restart, and clean shutdown
         run: python3 prototypes/v1/deploy/verify-image.py --image peri-loom:release
       - uses: docker/login-action@v3
         with:
@@ -62,5 +62,5 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
-          printf 'Verified Linux service image: `%s`\n\nThis is a preview: clean restart with a persistent state directory is rejected. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" > "$RUNNER_TEMP/notes.md"
+          printf 'Verified Linux service image: `%s`\n\nThis is a preview: clean restart and acknowledged SQL recovery are tested with a persistent local volume. Dirty restart remains denied; disaster recovery, live external S3 and HA are not certified by this workflow. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" > "$RUNNER_TEMP/notes.md"
           gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"

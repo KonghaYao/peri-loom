@@ -71,8 +71,64 @@ def signed_owned_identity(configuration, identity):
     return {"payload": payload, "mac": hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()}
 
 
+def terminal_record(run_directory, configuration):
+    return {"version": 1, "generation": configuration["generation"],
+            "launch_sha256": hashlib.sha256((run_directory / "launch.json").read_bytes()).hexdigest(),
+            "platform_sha256": hashlib.sha256((run_directory / "platform.json").read_bytes()).hexdigest(),
+            "state_sha256": hashlib.sha256((run_directory / "platform/state.json").read_bytes()).hexdigest(),
+            "state_floor_sha256": hashlib.sha256((run_directory / "platform/state.json.floor").read_bytes()).hexdigest(),
+            "proof_sha256": {f"{worker}.{kind}.json": hashlib.sha256((run_directory / "owned-proof" / f"{worker}.{kind}.json").read_bytes()).hexdigest()
+                             for worker in configuration["workers"] for kind in ("identity", "stop")}}
+
+
+def verify_clean_terminal(run_directory, configuration):
+    marker = run_directory / "launcher-terminal.json"
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_mode & 0o077 or marker.stat().st_size > 4096:
+        raise RuntimeError("clean launcher terminal proof missing or invalid")
+    try:
+        signed = json.loads(marker.read_bytes(), object_pairs_hook=unique_object)
+        if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
+            raise ValueError("invalid terminal proof envelope")
+        expected = terminal_record(run_directory, configuration)
+        payload = json.loads(signed["payload"], object_pairs_hook=unique_object)
+        if payload != expected or type(payload["version"]) is not int:
+            raise ValueError("terminal proof does not match runtime")
+        key = pathlib.Path(configuration["key_file"]).read_bytes()
+        if not hmac.compare_digest(signed["mac"], hmac.new(key, signed["payload"].encode(), hashlib.sha256).hexdigest()):
+            raise ValueError("terminal proof signature mismatch")
+    except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as error:
+        raise RuntimeError("clean launcher terminal proof invalid") from error
+    authority = run_directory / "authority/authority.lock"
+    if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
+        raise RuntimeError("authority clean startup marker missing")
+
+
+def verify_no_unresolved_operations(run_directory, configuration):
+    path = run_directory / "platform/state.json"
+    if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 32 * 1024 * 1024:
+        raise RuntimeError("private platform state unavailable for clean restart")
+    try:
+        envelope = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
+        state = envelope["payload"]
+        operations = state.get("operations", {})
+        if state.get("owned_run_generation") != configuration["generation"] or not isinstance(operations, dict):
+            raise ValueError("platform run binding mismatch")
+        for record in operations.values():
+            if not isinstance(record, dict) or record.get("state") != "terminal" or record.get("ambiguous", False) or record.get("retirement_pending", False) or record.get("local_resources_retired", False) or record.get("decision", ""):
+                raise ValueError("unresolved operation")
+            if record.get("cleanup_outcome") not in ("completed", "not_applicable"):
+                raise ValueError("unresolved cleanup")
+            if not (record.get("business_outcome") == "completed" and record.get("execution_proven") is True
+                    or record.get("business_outcome") == "not_executed"
+                    or record.get("source") == "gateway" and record.get("action") == "close"
+                    and record.get("business_outcome") == "not_applicable" and record.get("cleanup_outcome") == "completed"):
+                raise ValueError("unresolved business outcome")
+    except (KeyError, ValueError, TypeError, UnicodeError, RuntimeError) as error:
+        raise RuntimeError("unresolved platform operation prevents clean restart") from error
+
+
 def verify_owned_stop_proofs(run_directory, configuration, workers):
-    """Inspect historical evidence only; this does not authorize a restart."""
+    """Verify both worker incarnations were joined before a clean restart."""
     proof_directory = run_directory / "owned-proof"
     key_file = run_directory / "keys/owned-proof.key"
     if (configuration.get("directory") != str(proof_directory)
@@ -278,9 +334,27 @@ class Project:
             if self.config.get("writer_admission", False) != self.arguments.writer_admission:
                 raise RuntimeError("writer admission configuration mismatch")
             configuration = self.config.get("owned_stop_proof")
-            if configuration:
-                verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
-            raise RuntimeError("owned worker incarnation cannot be relaunched; use a fresh fixture")
+            if not configuration:
+                raise RuntimeError("owned stop proof configuration missing")
+            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            verify_clean_terminal(self.directory, configuration)
+            marker = self.directory / "launcher-terminal.json"
+            marker.unlink()
+            descriptor = os.open(self.directory, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            history = self.directory / "owned-proof-history"
+            private_directory(history)
+            archive = history / (configuration["generation"] + "-" + secrets.token_hex(8))
+            if archive.exists():
+                raise RuntimeError("owned stop proof generation already archived")
+            (self.directory / "owned-proof").rename(archive)
+            private_directory(self.directory / "owned-proof")
+            return
+        if (self.directory / "launcher-terminal.json").exists():
+            raise RuntimeError("unexpected clean launcher terminal proof")
         authority = free_address()
         broker = free_address()
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
@@ -548,6 +622,17 @@ class Project:
         if failures:
             raise RuntimeError("; ".join(failures))
 
+    def mark_clean_terminal(self):
+        if set(self.processes) != {"authority", "platform", "worker-a", "worker-b"}:
+            raise RuntimeError("clean launcher terminal requires all services")
+        configuration = self.config["owned_stop_proof"]
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+        authority = self.directory / "authority/authority.lock"
+        if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
+            raise RuntimeError("authority clean startup marker missing")
+        verify_no_unresolved_operations(self.directory, configuration)
+        atomic_private_json(self.directory / "launcher-terminal.json", signed_owned_identity(configuration, terminal_record(self.directory, configuration)))
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -582,6 +667,8 @@ def main():
     finally:
         try:
             project.cleanup()
+            if failure is None:
+                project.mark_clean_terminal()
         except Exception as error:
             failure = error
         finally:

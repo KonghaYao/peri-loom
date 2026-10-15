@@ -143,7 +143,7 @@ class OwnedStopProofTests(unittest.TestCase):
                 project.stop_worker("worker-a")
             self.assertEqual(list(pathlib.Path(project.config["owned_stop_proof"]["directory"]).iterdir()), [])
 
-    def test_complete_proofs_are_evidence_not_restart_permission(self):
+    def test_complete_proofs_without_terminal_marker_do_not_authorize_restart(self):
         for backend in ("local", "s3"):
             environment = {"S3_ENDPOINT": "http://127.0.0.1:9000", "S3_BUCKET": "synthetic", "S3_REGION": "us-east-1"}
             with self.subTest(backend=backend), tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory, patch.dict(dev.os.environ, environment):
@@ -156,7 +156,7 @@ class OwnedStopProofTests(unittest.TestCase):
                     for kind, record in (("identity", identity), ("stop", {**identity, "waited": True})):
                         dev.atomic_private_json(pathlib.Path(configuration["directory"]) / f"{worker}.{kind}.json", dev.signed_owned_identity(configuration, record))
                 dev.verify_owned_stop_proofs(project.directory, configuration, project.launch["workers"])
-                with self.assertRaisesRegex(RuntimeError, "cannot be relaunched"):
+                with self.assertRaisesRegex(RuntimeError, "terminal proof missing"):
                     dev.Project(project.arguments).prepare()
                 stop_path = pathlib.Path(configuration["directory"]) / "worker-b.stop.json"
                 original = stop_path.read_bytes()
@@ -179,6 +179,58 @@ class OwnedStopProofTests(unittest.TestCase):
                 (pathlib.Path(configuration["directory"]) / "worker-a.identity.json").unlink()
                 with self.assertRaisesRegex(RuntimeError, "incomplete"):
                     dev.Project(project.arguments).prepare()
+
+    def test_clean_terminal_is_single_use_and_rotates_worker_proof_files(self):
+        for backend in ("local", "s3"):
+            environment = {"S3_ENDPOINT": "http://127.0.0.1:9000", "S3_BUCKET": "synthetic", "S3_REGION": "us-east-1"}
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory, patch.dict(dev.os.environ, environment):
+                project = self.project(directory, backend)
+                configuration = project.config["owned_stop_proof"]
+                old_generation = configuration["generation"]
+                for worker in project.launch["workers"]:
+                    identity = {"version": 1, "generation": old_generation, "worker_id": worker,
+                                "nonce": configuration["workers"][worker], "pid": 10001, "started": "incarnation",
+                                "waited": False, "exit_code": 0}
+                    for kind, record in (("identity", identity), ("stop", {**identity, "waited": True})):
+                        dev.atomic_private_json(project.directory / "owned-proof" / f"{worker}.{kind}.json", dev.signed_owned_identity(configuration, record))
+                authority = project.directory / "authority/authority.lock"
+                authority.write_bytes(b"clean\n")
+                dev.private_json(project.directory / "platform/state.json", {"payload": {"owned_run_generation": old_generation, "operations": {}}})
+                dev.private_json(project.directory / "platform/state.json.floor", {"version": 1})
+                dev.atomic_private_json(project.directory / "launcher-terminal.json", dev.signed_owned_identity(configuration, dev.terminal_record(project.directory, configuration)))
+                restarted = dev.Project(project.arguments)
+                restarted.prepare()
+                self.assertEqual(restarted.config["owned_stop_proof"]["generation"], old_generation)
+                self.assertFalse((project.directory / "launcher-terminal.json").exists())
+                self.assertEqual(list((project.directory / "owned-proof").iterdir()), [])
+                archives = list((project.directory / "owned-proof-history").glob(old_generation + "-*"))
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(len(list(archives[0].iterdir())), 4)
+                with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
+                    dev.Project(project.arguments).prepare()
+
+    def test_clean_terminal_rejects_dirty_authority_and_modified_configuration(self):
+        with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
+            project = self.project(directory)
+            configuration = project.config["owned_stop_proof"]
+            for worker in project.launch["workers"]:
+                identity = {"version": 1, "generation": configuration["generation"], "worker_id": worker,
+                            "nonce": configuration["workers"][worker], "pid": 10001, "started": "incarnation",
+                            "waited": False, "exit_code": 0}
+                for kind, record in (("identity", identity), ("stop", {**identity, "waited": True})):
+                    dev.atomic_private_json(project.directory / "owned-proof" / f"{worker}.{kind}.json", dev.signed_owned_identity(configuration, record))
+            dev.private_json(project.directory / "platform/state.json", {"payload": {"owned_run_generation": configuration["generation"], "operations": {}}})
+            dev.private_json(project.directory / "platform/state.json.floor", {"version": 1})
+            dev.atomic_private_json(project.directory / "launcher-terminal.json", dev.signed_owned_identity(configuration, dev.terminal_record(project.directory, configuration)))
+            authority = project.directory / "authority/authority.lock"
+            authority.write_bytes(b"dirty\n")
+            with self.assertRaisesRegex(RuntimeError, "authority clean"):
+                dev.Project(project.arguments).prepare()
+            authority.write_bytes(b"clean\n")
+            with (project.directory / "platform.json").open("a") as output:
+                output.write(" ")
+            with self.assertRaisesRegex(RuntimeError, "terminal proof invalid"):
+                dev.Project(project.arguments).prepare()
 
 
 if __name__ == "__main__":

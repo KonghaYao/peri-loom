@@ -67,6 +67,7 @@ class VerificationTests(unittest.TestCase):
         self.verification.prepare = Mock()
         self.verification.ready = Mock()
         self.verification.smoke = Mock()
+        self.verification.restart = Mock()
         def cleanup():
             self.verification.report["cleanup"] = "removed_owned_container"
         self.verification.cleanup = Mock(side_effect=cleanup)
@@ -296,12 +297,20 @@ class VerificationTests(unittest.TestCase):
     def test_manifest_and_all_required_hashes_gate_pass(self):
         self.eligible_run()
         self.assertTrue(self.verification.run())
+        self.verification.restart.assert_called_once()
         manifest = json.loads((self.verification.directory / "manifest.json").read_text())
         self.assertEqual(set(manifest["sha256"]), set(verify.REQUIRED_EVIDENCE))
         self.assertEqual(len(manifest["source_sha256"]), 4)
         for name, expected in manifest["sha256"].items():
             self.assertEqual(verify.digest(self.verification.directory / name), expected)
         self.assertTrue(json.loads((self.verification.directory / "result.json").read_text())["pass"])
+
+    def test_restart_failure_prevents_pass(self):
+        self.eligible_run()
+        self.verification.restart.side_effect = RuntimeError("restart failed")
+        self.assertFalse(self.verification.run())
+        self.assertEqual(self.verification.report["stage"], "restart")
+        self.assertFalse(json.loads((self.verification.directory / "result.json").read_text())["pass"])
 
     def test_missing_required_evidence_prevents_pass(self):
         self.eligible_run()
