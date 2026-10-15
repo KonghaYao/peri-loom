@@ -66,6 +66,47 @@ func activeSecurityDatabase(test *testing.T, store StateStore, kms KMS) KeyDescr
 	return descriptor
 }
 
+type narrowAuthProbe struct {
+	StateStore
+	snapshots int
+}
+
+func (probe *narrowAuthProbe) Snapshot() (State, error) {
+	probe.snapshots++
+	return State{}, errors.New("full state snapshot on auth path")
+}
+
+func (probe *narrowAuthProbe) credentialByDigest(digest string) (APIKey, bool, error) {
+	return probe.StateStore.(*stateStore).credentialByDigest(digest)
+}
+
+func (probe *narrowAuthProbe) authorizationState(keyID, projectID string, database controller.DatabaseID) (State, error) {
+	return probe.StateStore.(*stateStore).authorizationState(keyID, projectID, database)
+}
+
+func TestStateStoreNarrowAuthSeesCommittedRevocationWithoutFullSnapshot(test *testing.T) {
+	store, _, key, credential := identityFixture(test, "sql")
+	probe := &narrowAuthProbe{StateStore: store}
+	identity := &identity{store: probe}
+	principal, err := identity.Authenticate(credential)
+	if err != nil || principal.KeyID != key.ID || identity.Authorize(principal, securityDatabase(), "sql") != nil {
+		test.Fatalf("narrow auth denied current key: %v", err)
+	}
+	gateway := &Gateway{config: GatewayConfig{State: probe, Identity: identity}}
+	if _, err := gateway.authorizeQuota(principal, securityDatabase()); err != nil {
+		test.Fatalf("gateway narrow authorization failed: %v", err)
+	}
+	if probe.snapshots != 0 {
+		test.Fatal("hot authentication cloned full state")
+	}
+	if err := RevokeAPIKey(store, key.ID); err != nil {
+		test.Fatal(err)
+	}
+	if _, err := identity.Authenticate(credential); err == nil || identity.Authorize(principal, securityDatabase(), "sql") == nil || probe.snapshots != 0 {
+		test.Fatal("revocation was stale or authentication fell back to full snapshot")
+	}
+}
+
 func TestStateLockReopenAndConcurrentRevisions(test *testing.T) {
 	directory := test.TempDir()
 	store, err := OpenStateStore(directory)

@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+
+	controller "peri-loom/controller"
 )
 
 type stateStore struct {
-	disk  *durableFile
-	state State
+	disk        *durableFile
+	state       State
+	digestIndex map[string]string
 }
 
 func OpenStateStore(directory string) (StateStore, error) {
@@ -33,7 +36,10 @@ func OpenStateStore(directory string) (StateStore, error) {
 		disk.close()
 		return nil, err
 	}
-	store := &stateStore{disk: disk, state: state}
+	store := &stateStore{disk: disk, state: state, digestIndex: make(map[string]string, len(state.APIKeys))}
+	for id, key := range state.APIKeys {
+		store.digestIndex[key.Digest] = id
+	}
 	known, _ := operationCounts(state)
 	if known > operationKnownRetention {
 		if err := updateOperationRecords(store, nil); err != nil {
@@ -77,6 +83,58 @@ func (store *stateStore) Snapshot() (State, error) {
 	return cloneState(store.state)
 }
 
+func (store *stateStore) credentialByDigest(digest string) (APIKey, bool, error) {
+	store.disk.mutex.Lock()
+	defer store.disk.mutex.Unlock()
+	if err := store.disk.available(); err != nil {
+		return APIKey{}, false, err
+	}
+	id, found := store.digestIndex[digest]
+	if !found {
+		return APIKey{}, false, nil
+	}
+	key, found := store.state.APIKeys[id]
+	return key, found, nil
+}
+
+func (store *stateStore) authorizationState(keyID, projectID string, database controller.DatabaseID) (State, error) {
+	store.disk.mutex.Lock()
+	defer store.disk.mutex.Unlock()
+	if err := store.disk.available(); err != nil {
+		return State{}, err
+	}
+	view := State{
+		APIKeys: map[string]APIKey{}, Projects: map[string]Project{},
+		Databases: map[string]Database{}, Keys: map[string]KeyDescriptor{},
+	}
+	if key, found := store.state.APIKeys[keyID]; found {
+		view.APIKeys[keyID] = key
+	}
+	if project, found := store.state.Projects[projectID]; found {
+		view.Projects[projectID] = project
+	}
+	if record, found := store.state.Databases[database.Key()]; found {
+		view.Databases[database.Key()] = record
+		if project, found := store.state.Projects[record.Project]; found {
+			view.Projects[record.Project] = project
+		}
+	}
+	if descriptor, found := store.state.Keys[namespaceKey(database.Namespace)]; found {
+		descriptor.Envelope = nil
+		view.Keys[namespaceKey(database.Namespace)] = descriptor
+	}
+	return view, nil
+}
+
+func readAuthorizationState(store StateStore, keyID, projectID string, database controller.DatabaseID) (State, error) {
+	if narrow, ok := store.(interface {
+		authorizationState(string, string, controller.DatabaseID) (State, error)
+	}); ok {
+		return narrow.authorizationState(keyID, projectID, database)
+	}
+	return store.Snapshot()
+}
+
 func (store *stateStore) Update(mutation func(*State) error) error {
 	store.disk.mutex.Lock()
 	defer store.disk.mutex.Unlock()
@@ -106,6 +164,13 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	}
 	if err := store.disk.commit(committed.Revision, committed); err != nil {
 		return err
+	}
+	if len(committed.APIKeys) != len(store.state.APIKeys) {
+		for id, key := range committed.APIKeys {
+			if _, exists := store.state.APIKeys[id]; !exists {
+				store.digestIndex[key.Digest] = id
+			}
+		}
 	}
 	store.state = committed
 	return nil

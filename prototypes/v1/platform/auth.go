@@ -52,17 +52,29 @@ func (identity *identity) Authenticate(credential string) (Principal, error) {
 	if !validCredential(credential) {
 		return Principal{}, errors.New("unauthenticated")
 	}
-	state, err := identity.store.Snapshot()
-	if err != nil {
-		return Principal{}, errors.New("identity unavailable")
-	}
 	digest := sha256.Sum256([]byte(credential))
 	var matched *APIKey
-	for _, key := range state.APIKeys {
-		decoded, err := hex.DecodeString(key.Digest)
-		if err == nil && subtle.ConstantTimeCompare(digest[:], decoded) == 1 {
-			record := key
-			matched = &record
+	if indexed, ok := identity.store.(interface {
+		credentialByDigest(string) (APIKey, bool, error)
+	}); ok {
+		key, found, err := indexed.credentialByDigest(hex.EncodeToString(digest[:]))
+		if err != nil {
+			return Principal{}, errors.New("identity unavailable")
+		}
+		if found {
+			matched = &key
+		}
+	} else {
+		state, err := identity.store.Snapshot()
+		if err != nil {
+			return Principal{}, errors.New("identity unavailable")
+		}
+		for _, key := range state.APIKeys {
+			decoded, err := hex.DecodeString(key.Digest)
+			if err == nil && subtle.ConstantTimeCompare(digest[:], decoded) == 1 {
+				record := key
+				matched = &record
+			}
 		}
 	}
 	if matched == nil || matched.Revoked {
@@ -72,7 +84,7 @@ func (identity *identity) Authenticate(credential string) (Principal, error) {
 }
 
 func (identity *identity) Authorize(principal Principal, database controller.DatabaseID, action string) error {
-	state, err := identity.store.Snapshot()
+	state, err := readAuthorizationState(identity.store, principal.KeyID, principal.Project, database)
 	if err != nil {
 		return errors.New("identity unavailable")
 	}

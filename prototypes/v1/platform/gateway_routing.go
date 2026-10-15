@@ -23,7 +23,7 @@ func (gateway *Gateway) authorizeQuota(principal Principal, database controller.
 	if principal.Database != nil && *principal.Database != database {
 		return Quotas{}, errors.New("database scope mismatch")
 	}
-	state, err := gateway.config.State.Snapshot()
+	state, err := readAuthorizationState(gateway.config.State, principal.KeyID, principal.Project, database)
 	if err != nil {
 		return Quotas{}, errors.New("state unavailable")
 	}
