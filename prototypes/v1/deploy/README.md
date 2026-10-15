@@ -70,11 +70,11 @@ for production readiness.
 
 ## CI and image releases
 
-`.github/workflows/v1-image.yml` builds the full image on relevant branch pushes,
-pull requests, and manual runs. It uses `verify-image.py` to test the actual
-container over TLS, including SQL, encrypted native storage, and clean shutdown.
-A tag matching `v<prototypes/v1/Cargo.toml version>` rebuilds and verifies the
-image before publishing `ghcr.io/<owner>/<repo>:<tag>` and a **pre-release** GitHub
+`.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. The tag must
+match `v<prototypes/v1/Cargo.toml version>`. It builds the image once and uses
+`verify-image.py` to test the actual container over TLS, including SQL, encrypted
+native storage, and clean shutdown. After verification it publishes
+`ghcr.io/<owner>/<repo>:<tag>` and a **pre-release** GitHub
 Release. Only Linux amd64 is tested; no `latest` image is published. GHCR access
 depends on the package's visibility and the registry credentials of the client.
 
