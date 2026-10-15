@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, ensure, Result};
@@ -144,6 +144,58 @@ fn cold_cache_restores_committed_wal_tail_and_checkpoint() -> Result<()> {
     fresh.close()?;
     let third = tempfile::tempdir()?;
     assert_eq!(count(&open(store, third.path())?)?, 2);
+    Ok(())
+}
+
+struct CountingWalReads {
+    inner: LocalObjectStore,
+    chunks: AtomicUsize,
+}
+
+impl ObjectStore for CountingWalReads {
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        if key.contains("wal/chunks/") {
+            self.chunks.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+#[test]
+fn wal_replay_visits_a_record_before_fetching_the_next_chunk() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let store = Arc::new(CountingWalReads {
+        inner: LocalObjectStore::open(objects.path())?,
+        chunks: AtomicUsize::new(0),
+    });
+    let wal = RemoteWal::new(store.clone());
+    let namespace = namespace();
+    wal.append(&namespace, 1, WalBatch::default())?;
+    wal.append(&namespace, 1, WalBatch::default())?;
+    store.chunks.store(0, Ordering::SeqCst);
+    let mut visited = 0;
+    let stopped = wal.for_each_record(&namespace, 0, |_| {
+        visited += 1;
+        bail!("stop after first verified record")
+    });
+    ensure!(stopped.is_err(), "visitor error was lost");
+    ensure!(visited == 1, "unexpected number of visited records");
+    ensure!(
+        store.chunks.load(Ordering::SeqCst) == 1,
+        "replay fetched later records before the visitor finished"
+    );
     Ok(())
 }
 

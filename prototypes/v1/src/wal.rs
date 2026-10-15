@@ -387,20 +387,18 @@ impl RemoteWal {
         self.check_writer()?;
         Ok(lsn)
     }
-}
 
-impl DurableWal for RemoteWal {
-    fn append(&self, namespace: &Namespace, epoch: u64, batch: WalBatch) -> Result<u64> {
-        self.append_commit(namespace, epoch, batch, None)
-    }
-
-    fn read(&self, namespace: &Namespace, from_lsn: u64) -> Result<Vec<WalRecord>> {
+    pub fn for_each_record(
+        &self,
+        namespace: &Namespace,
+        from_lsn: u64,
+        mut visit: impl FnMut(WalRecord) -> Result<()>,
+    ) -> Result<()> {
         let index = self.index(namespace)?.0;
         ensure!(
             from_lsn == 0 || from_lsn >= index.replay_baseline_lsn,
             "requested WAL history was truncated; replay from baseline"
         );
-        let mut records = Vec::new();
         for entry in index.entries.iter().filter(|entry| entry.lsn >= from_lsn) {
             let object = self
                 .store
@@ -415,8 +413,23 @@ impl DurableWal for RemoteWal {
                 record.namespace == *namespace && record.lsn == entry.lsn,
                 "WAL record identity mismatch"
             );
-            records.push(record);
+            visit(record)?;
         }
+        Ok(())
+    }
+}
+
+impl DurableWal for RemoteWal {
+    fn append(&self, namespace: &Namespace, epoch: u64, batch: WalBatch) -> Result<u64> {
+        self.append_commit(namespace, epoch, batch, None)
+    }
+
+    fn read(&self, namespace: &Namespace, from_lsn: u64) -> Result<Vec<WalRecord>> {
+        let mut records = Vec::new();
+        self.for_each_record(namespace, from_lsn, |record| {
+            records.push(record);
+            Ok(())
+        })?;
         Ok(records)
     }
 

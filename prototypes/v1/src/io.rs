@@ -85,9 +85,10 @@ impl RemoteIO {
             lsn: metadata.last_lsn,
             ..State::default()
         };
-        for record in wal.read(&namespace, 0)? {
+        wal.for_each_record(&namespace, 0, |record| {
             apply_batch(&mut state.bytes, &record.batch)?;
-        }
+            Ok(())
+        })?;
         state.last_commit = committed_position(&state.bytes).ok().flatten();
         let path = root
             .join("database")
