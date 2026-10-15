@@ -127,6 +127,25 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
+	placements, err := metadata.Snapshot()
+	if err != nil {
+		return err
+	}
+	activeWorkers := map[string]bool{}
+	for _, placement := range placements.Placements {
+		if placement.DesiredState == "active" {
+			activeWorkers[placement.DesiredWorker] = true
+		}
+	}
+	if len(activeWorkers) > 0 {
+		identifiers := make([]string, 0, len(activeWorkers))
+		for identifier := range activeWorkers {
+			identifiers = append(identifiers, identifier)
+		}
+		if err := control.RefreshWorkers(ctx, identifiers...); err != nil {
+			return err
+		}
+	}
 	validator, err := NewLeaseValidator(config.Controller.AuthorityURL, config.WorkerAuthorityTokens)
 	if err != nil {
 		return err

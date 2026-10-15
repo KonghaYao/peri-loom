@@ -90,6 +90,21 @@ func TestPollWorkersUsesNonSamplingHeartbeat(test *testing.T) {
 	}
 }
 
+func TestRefreshWorkersProbesOnlyRequestedActiveWorker(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	before, err := fixture.store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := fixture.controller.RefreshWorkers(context.Background(), "worker-a"); err != nil {
+		test.Fatal(err)
+	}
+	after, err := fixture.store.Snapshot()
+	if err != nil || after.Revision != before.Revision || !after.Workers["worker-a"].Healthy || after.Workers["worker-b"].Healthy || fixture.fake.calls["get_worker_heartbeat"] != 1 {
+		test.Fatal("startup probe touched unrelated Worker or persisted pure heartbeat")
+	}
+}
+
 func TestReconcileLostGrantACKReplaysExactDurableReceiptAfterRestart(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	database := reconcileDatabase("grant-ack")

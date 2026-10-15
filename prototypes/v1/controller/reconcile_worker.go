@@ -39,9 +39,28 @@ func (controller *Controller) lookupWorker(identifier string) (Worker, error) {
 }
 
 func (controller *Controller) pollWorkers(ctx context.Context) error {
-	workersView, err := readWorkers(controller.store)
-	if err != nil {
-		return err
+	return controller.pollWorkersSelected(ctx, nil)
+}
+
+func (controller *Controller) pollWorkersSelected(ctx context.Context, selected []string) error {
+	var workersView map[string]Worker
+	if selected == nil {
+		all, err := readWorkers(controller.store)
+		if err != nil {
+			return err
+		}
+		workersView = all
+	} else {
+		workersView = make(map[string]Worker, len(selected))
+		for _, identifier := range selected {
+			worker, found, err := readWorker(controller.store, identifier)
+			if err != nil {
+				return err
+			}
+			if found {
+				workersView[identifier] = worker
+			}
+		}
 	}
 	identifiers := make([]string, 0, len(workersView))
 	for identifier := range workersView {
@@ -107,6 +126,11 @@ func (controller *Controller) pollWorker(ctx context.Context, identifier string,
 	observedMS := time.Now().UnixMilli()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if observer, ok := controller.store.(interface {
+		observeWorkerHeartbeat(string, string, bool, int, int64) error
+	}); ok {
+		return observer.observeWorkerHeartbeat(identifier, worker.Address, valid, load, observedMS)
 	}
 	return controller.store.Update(func(current *Metadata) error {
 		registered, exists := current.Workers[identifier]

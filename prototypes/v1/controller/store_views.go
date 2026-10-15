@@ -40,7 +40,7 @@ func (store *diskStore) RoutingView(database DatabaseID) (Placement, Worker, boo
 		placement.Grant = &grant
 	}
 	placement.PendingCommand = append([]byte(nil), placement.PendingCommand...)
-	return placement, store.metadata.Workers[placement.DesiredWorker], true, nil
+	return placement, store.applyHeartbeat(store.metadata.Workers[placement.DesiredWorker]), true, nil
 }
 
 func readWorker(store MetadataStore, identifier string) (Worker, bool, error) {
@@ -64,6 +64,9 @@ func (store *diskStore) workerView(identifier string) (Worker, bool, error) {
 		return Worker{}, false, err
 	}
 	worker, found := store.metadata.Workers[identifier]
+	if found {
+		worker = store.applyHeartbeat(worker)
+	}
 	return worker, found, nil
 }
 
@@ -88,7 +91,7 @@ func (store *diskStore) workersView() (map[string]Worker, error) {
 	}
 	workers := make(map[string]Worker, len(store.metadata.Workers))
 	for identifier, worker := range store.metadata.Workers {
-		workers[identifier] = worker
+		workers[identifier] = store.applyHeartbeat(worker)
 	}
 	return workers, nil
 }

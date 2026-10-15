@@ -20,6 +20,7 @@ type diskStore struct {
 	directory   string
 	lock        *os.File
 	metadata    Metadata
+	heartbeats  map[string]heartbeatObservation
 	closed      bool
 	uncertain   bool
 	initialized bool
@@ -73,7 +74,7 @@ func OpenStore(directory string) (MetadataStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &diskStore{directory: absolute, lock: lock}
+	store := &diskStore{directory: absolute, lock: lock, heartbeats: make(map[string]heartbeatObservation)}
 	success := false
 	defer func() {
 		if !success {
@@ -114,6 +115,11 @@ func OpenStore(directory string) (MetadataStore, error) {
 			return nil, err
 		}
 		store.metadata = metadata
+		// A persisted heartbeat is historical evidence, not a live probe after
+		// process restart. Keep the durable before image intact for recovery.
+		for identifier, worker := range metadata.Workers {
+			store.heartbeats[identifier] = heartbeatObservation{address: worker.Address, load: 0, lastHeartbeatMS: worker.LastHeartbeatMS}
+		}
 	}
 	store.initialized = true
 	success = true
@@ -126,7 +132,12 @@ func (store *diskStore) Snapshot() (Metadata, error) {
 	if err := store.available(); err != nil {
 		return Metadata{}, err
 	}
-	return cloneMetadata(store.metadata)
+	view, err := cloneMetadata(store.metadata)
+	if err != nil {
+		return Metadata{}, err
+	}
+	store.applyHeartbeats(view.Workers)
+	return view, nil
 }
 
 func (store *diskStore) Update(mutation func(*Metadata) error) error {
@@ -142,6 +153,7 @@ func (store *diskStore) Update(mutation func(*Metadata) error) error {
 	if err != nil {
 		return err
 	}
+	store.applyHeartbeats(candidate.Workers)
 	if err := mutation(&candidate); err != nil {
 		return err
 	}
@@ -164,6 +176,7 @@ func (store *diskStore) Update(mutation func(*Metadata) error) error {
 		return fmt.Errorf("%w: %v", ErrStoreUncertain, err)
 	}
 	store.metadata = committed
+	store.refreshHeartbeatObservations()
 	return nil
 }
 

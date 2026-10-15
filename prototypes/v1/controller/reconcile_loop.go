@@ -57,6 +57,17 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
+// RefreshWorkers reestablishes live worker observations before a restarted
+// service advertises ready for previously active placements.
+func (controller *Controller) RefreshWorkers(ctx context.Context, identifiers ...string) error {
+	release, err := controller.enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return controller.pollWorkersSelected(ctx, identifiers)
+}
+
 func (controller *Controller) reconcileActive(ctx context.Context, placement *Placement) error {
 	actual, err := controller.authorityState(ctx, placement.Database)
 	if err != nil {

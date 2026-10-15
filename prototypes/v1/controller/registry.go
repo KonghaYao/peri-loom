@@ -60,6 +60,11 @@ func HeartbeatWorker(store MetadataStore, id string, load int, nowMS int64) erro
 	if !componentPattern.MatchString(id) || load < 0 || nowMS < 0 {
 		return errors.New("invalid worker heartbeat")
 	}
+	if observer, ok := store.(interface {
+		heartbeatWorker(string, int, int64) error
+	}); ok {
+		return observer.heartbeatWorker(id, load, nowMS)
+	}
 	return store.Update(func(metadata *Metadata) error {
 		worker, exists := metadata.Workers[id]
 		if !exists {

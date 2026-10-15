@@ -11,7 +11,7 @@
 | F05 | 未完成 | 分配前查询与进程总预算；T04 cgroup 数据 |
 | F06 | 部分实现 | 冷启动 WAL 回放逐条读取、校验并应用，避免先聚集全部 `WalRecord`；仍持有完整索引与 WAL 镜像，增量验证仍复制全量镜像。需完成固定缓冲预算、自动 compact 与 T06 三档数据 |
 | F07 | 未完成 | 原生 session lease、joined cleanup、自动卸载与同库唤醒合并；T01/T02/T09 |
-| F08 | 部分实现 | 生产控制存储现支持单库 placement+Worker 一致视图、单 Worker 和 Worker 集合窄读；Gateway 路由与 Reconcile 的逐活跃库 Worker 检查不再逐次克隆全目录。Reconcile 每轮仍扫描完整 placement 目录，Worker 心跳仍每次持久化全量 metadata；活跃集合分离、可重建心跳、恢复历史边界及 T01/T05 仍未完成 |
+| F08 | 部分实现 | 生产控制存储支持单库 placement+Worker 一致视图、单 Worker 和 Worker 集合窄读；Gateway 路由与 Reconcile 的逐活跃库 Worker 检查不再逐次克隆全目录。纯 Worker 心跳现只更新可重建内存视图，不增加 metadata revision 或写盘；重启后 Worker 默认未验证，须新探测才可用，控制变更仍走原持久化协议。Reconcile 每轮仍扫描完整 placement 目录；活跃集合分离、恢复历史边界及 T01/T05 仍未完成 |
 | F09 | 部分实现 | Worker 心跳现在最多 16 路并发且单探测有 2 秒上限；慢的首个 Worker 不再阻止健康同伴更新。仍需独立续租调度、跨库生命周期隔离、Authority 控制容量与 T08 故障注入 |
 | F10 | 未完成 | 有界入口准入及拒绝审计预算；T07 |
 | F11 | 部分实现 | Hrana HTTP pipeline 在任何 SQL 派发前限制请求总步骤为 64，执行中按 8 MiB 与当前项目 MaxResultBytes 的较小值限制聚合结果，整个 pipeline 最多 30 秒；超限阻止后续步骤并标明可能部分执行/不可自动重试，超时标明结果未知。仍需分页背压和跨库 writer 公平推进；T03/T10 尚未完成 |

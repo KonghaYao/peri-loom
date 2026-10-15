@@ -6,4 +6,4 @@
 
 Controller 全套 `go test -count=1 -timeout 10m ./...` 通过，主包耗时 44.407 秒。Platform 全套 `GOMAXPROCS=2 PERI_RUST_BINARY=<当前 debug 二进制> go test -count=1 -p 1 -timeout 10m ./...` 通过，主包耗时 188.645 秒。
 
-本项只消除了逐活跃库和逐 SQL 路由的全目录克隆。Reconcile 每轮仍扫描完整 placements，Worker 心跳仍更新并同步持久化全量 metadata；Rust Authority 的 epoch floor 历史扫描、T01/T05 的 10k 冷库与历史规模验收也未完成。
+本项只消除了逐活跃库和逐 SQL 路由的全目录克隆。后续纯心跳写盘拆分见 [心跳验证](./controller-heartbeat-validation-2026-10-15.md)。Reconcile 每轮仍扫描完整 placements；Rust Authority 的 epoch floor 历史扫描、T01/T05 的 10k 冷库与历史规模验收也未完成。
