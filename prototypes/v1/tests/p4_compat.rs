@@ -66,7 +66,7 @@ fn migration_retains_restored_state_refs_blobs_and_native_wal() -> Result<()> {
     let initial = ownership.state(&identifier)?;
     assert!(initial.binding.is_none());
     let migrated = base.snapshot()?.root;
-    assert_eq!(migrated.version, 2);
+    assert_eq!(migrated.version, 4);
     assert_eq!(migrated.incarnation, before.incarnation);
     assert_eq!(migrated.branches, before.branches);
     assert_eq!(migrated.snapshots, before.snapshots);
@@ -75,8 +75,10 @@ fn migration_retains_restored_state_refs_blobs_and_native_wal() -> Result<()> {
     assert_eq!(migrated.uploads, before.uploads);
     assert_eq!(migrated.pins, before.pins);
     assert_eq!(migrated.tombstones, before.tombstones);
+    assert_eq!(migrated.receipts.len(), 1);
+    assert!(migrated.receipt_index.is_some());
     for (operation, revision) in before.receipts {
-        assert_eq!(migrated.receipts[&operation], revision);
+        assert_eq!(base.receipt(&operation)?, Some(revision));
     }
     let intent = GrantIntent {
         database: identifier.clone(),
@@ -130,5 +132,69 @@ fn corrupt_legacy_envelope_fails_without_reinitialization() -> Result<()> {
     store.put(&key, &corrupted, PutCondition::Match(object.etag))?;
     assert!(Authority::open(store.clone(), identifier.namespace).is_err());
     assert_eq!(store.get(&key)?.unwrap().bytes, corrupted);
+    Ok(())
+}
+
+#[test]
+fn paged_receipts_keep_owned_root_bounded_and_corruption_fails_closed() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let store: Arc<dyn ObjectStore> = Arc::new(LocalObjectStore::open(temporary.path())?);
+    let namespace = Namespace::new("receipt", "bounded")?;
+    let database = DatabaseId::new(namespace.clone(), "main")?;
+    let authority = Authority::open(store.clone(), namespace.clone())?;
+    let ownership = OwnershipAuthority::new(store.clone(), Arc::new(Clock));
+    ownership.state(&database)?;
+    let root_key = namespace.key("authority/root")?;
+    let before = authority.snapshot()?.root;
+    let first = authority.transact(None, |_| Ok(()))?.root;
+    let first_receipt = first
+        .receipts
+        .iter()
+        .find(|(id, _)| !before.receipts.contains_key(*id))
+        .map(|(id, revision)| (id.clone(), *revision))
+        .unwrap();
+    for _ in 1..256 {
+        authority.transact(None, |_| Ok(()))?;
+    }
+    let snapshot = authority.snapshot()?;
+    assert_eq!(snapshot.root.version, 4);
+    assert!(snapshot.root.receipts.len() <= 128);
+    assert!(!snapshot.root.receipts.contains_key(&first_receipt.0));
+    assert_eq!(authority.receipt(&first_receipt.0)?, Some(first_receipt.1));
+    assert!(store.get(&root_key)?.unwrap().bytes.len() <= 32 * 1024);
+    let page_key = namespace.key(&format!(
+        "authority/index-pages/{}",
+        snapshot.root.receipt_index.as_deref().unwrap()
+    ))?;
+    let page = store.get(&page_key)?.unwrap();
+    let mut corrupt = page.bytes.clone();
+    corrupt[0] ^= 1;
+    store.put(&page_key, &corrupt, PutCondition::Match(page.etag))?;
+    assert!(authority.snapshot().is_err());
+    assert!(Authority::open(store.clone(), namespace).is_err());
+    Ok(())
+}
+
+#[test]
+fn legacy_receipt_migration_shrinks_root_without_losing_history() -> Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let store: Arc<dyn ObjectStore> = Arc::new(LocalObjectStore::open(temporary.path())?);
+    let namespace = Namespace::new("receipt", "migration")?;
+    let database = DatabaseId::new(namespace.clone(), "main")?;
+    let authority = Authority::open(store.clone(), namespace.clone())?;
+    for _ in 0..100 {
+        authority.transact(None, |_| Ok(()))?;
+    }
+    let before = authority.snapshot()?.root;
+    let key = namespace.key("authority/root")?;
+    let old_size = store.get(&key)?.unwrap().bytes.len();
+    OwnershipAuthority::new(store.clone(), Arc::new(Clock)).state(&database)?;
+    let after = authority.snapshot()?.root;
+    assert_eq!(after.version, 4);
+    assert_eq!(after.receipts.len(), 1);
+    assert!(store.get(&key)?.unwrap().bytes.len() < old_size / 2);
+    for (operation, revision) in before.receipts {
+        assert_eq!(authority.receipt(&operation)?, Some(revision));
+    }
     Ok(())
 }

@@ -104,6 +104,7 @@ fn pins_only(current: &CatalogRoot, candidate: &CatalogRoot) -> Result<()> {
     normalized.pins = current.pins.clone();
     normalized.revision = current.revision;
     normalized.receipts = current.receipts.clone();
+    normalized.receipt_index = current.receipt_index.clone();
     ensure!(&normalized == current, "ReadOnly permits only service pins");
     Ok(())
 }

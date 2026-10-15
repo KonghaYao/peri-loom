@@ -76,7 +76,7 @@ impl CleanupObserver {
             .context("cleanup owner missing")?
             .clone();
         ensure!(
-            root.version == 2
+            matches!(root.version, 2 | 4)
                 && root.incarnation == binding.root_incarnation
                 && root.ownership.as_ref().unwrap().authority_term == binding.authority_term
                 && owner.epoch == binding.epoch
@@ -152,7 +152,11 @@ impl CleanupObserver {
             catalog.authority_term == watch.authority_term
                 && catalog.branches.get(&watch.branch) == Some(&watch.owner)
         });
-        if !success || root.version != 2 || root.incarnation != watch.incarnation || !matched {
+        if !success
+            || !matches!(root.version, 2 | 4)
+            || root.incarnation != watch.incarnation
+            || !matched
+        {
             watch.failed.store(true, Ordering::SeqCst);
             return;
         }

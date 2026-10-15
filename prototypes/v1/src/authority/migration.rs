@@ -1,6 +1,8 @@
 use anyhow::{ensure, Context, Result};
 
-use super::{codec, semantic, unique_id, Authority, CatalogRoot, RootSnapshot};
+use super::{
+    codec, paged_index::PagedIndex, semantic, unique_id, Authority, CatalogRoot, RootSnapshot,
+};
 use crate::object_store::{PreconditionFailed, PutCondition};
 use crate::ownership::types::{AccessRole, GrantState, OwnerRecord};
 
@@ -50,15 +52,22 @@ impl Authority {
                 record.epoch = record.epoch.max(floor);
                 record.branch_incarnation = branch.incarnation;
             }
-            candidate.version = 2;
+            candidate.version = 4;
             candidate.ownership = Some(catalog);
             candidate.revision = candidate
                 .revision
                 .checked_add(1)
                 .context("authority revision exhausted")?;
-            candidate
-                .receipts
-                .insert(operation.clone(), candidate.revision);
+            let index = PagedIndex::new(self.store.as_ref(), &self.namespace);
+            if previous.root.version != 4 {
+                candidate.receipt_index = index.build(
+                    std::mem::take(&mut candidate.receipts)
+                        .into_iter()
+                        .map(|(id, revision)| (id, serde_json::json!(revision)))
+                        .collect(),
+                )?;
+            }
+            self.record_receipt(&mut candidate, operation.clone())?;
             self.validate_root(&candidate)?;
             match self.store.put(
                 &self.namespace.key("authority/root")?,
@@ -78,7 +87,7 @@ impl Authority {
                         );
                     }
                     let observed = self.snapshot()?;
-                    if observed.root.receipts.get(&operation) == Some(&candidate.revision) {
+                    if self.receipt_in(&observed.root, &operation)? == Some(candidate.revision) {
                         return Ok(observed);
                     }
                 }

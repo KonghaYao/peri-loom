@@ -270,8 +270,8 @@ fn envelope_missing_root_and_backend_errors_have_no_cached_fallback() -> Result<
         serde_json::to_vec(&checksum_mismatch)?,
         serde_json::to_vec(&unknown_envelope)?,
         envelope(&serde_json::to_string(&root)?.replacen(
-            "\"version\":2",
-            "\"version\":2,\"version\":2",
+            "\"version\":4",
+            "\"version\":4,\"version\":4",
             1,
         )),
     ];

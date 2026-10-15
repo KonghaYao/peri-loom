@@ -177,8 +177,19 @@ fn final_root_guard_rechecks_expiry_after_uncached_candidate_read() -> Result<()
         assert_eq!(observed.root, expected.root);
         assert_eq!(observed.etag, expected.etag);
         assert_eq!(raw.memory.get(&root_key)?.unwrap().bytes, expected_bytes);
-        assert_eq!(mutations.len(), count + if after_upload { 2 } else { 0 });
         let staged = &mutations[count..];
+        assert_eq!(
+            staged
+                .iter()
+                .filter(|operation| operation.contains("/authority/blobs/"))
+                .count(),
+            usize::from(after_upload)
+        );
+        assert!(staged.iter().all(|operation| {
+            operation.contains("/authority/blobs/")
+                || operation.ends_with("/authority/root")
+                || operation.contains("/authority/index-pages/")
+        }));
         assert_eq!(
             staged
                 .iter()

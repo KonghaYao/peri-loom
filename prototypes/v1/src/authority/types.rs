@@ -76,6 +76,8 @@ pub struct CatalogRoot {
     pub blobs: BTreeMap<String, ObjectEntry>,
     #[serde(default)]
     pub receipts: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_index: Option<String>,
     pub objects: BTreeMap<String, ObjectEntry>,
     pub branches: BTreeMap<String, BranchRef>,
     pub snapshots: BTreeMap<String, RecoveryPoint>,

@@ -20,6 +20,10 @@ impl Authority {
             next.receipts == previous.receipts,
             "authority receipts cannot be mutated"
         );
+        ensure!(
+            next.receipt_index == previous.receipt_index,
+            "authority receipt index cannot be mutated"
+        );
         super::ownership::catalog_rules::prepare(self, previous, next)?;
         for (name, branch) in &mut next.branches {
             if let Some(old) = previous.branches.get(name) {

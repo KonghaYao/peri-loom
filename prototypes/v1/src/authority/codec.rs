@@ -33,7 +33,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<CatalogRoot> {
     );
     let root: CatalogRoot = serde_json::from_str(envelope.root.get())?;
     ensure!(
-        matches!(root.version, 1 | 2),
+        matches!(root.version, 1 | 2 | 4),
         "unsupported authority root version"
     );
     ensure!(

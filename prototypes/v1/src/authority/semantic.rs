@@ -104,7 +104,7 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
 impl Authority {
     pub(super) fn validate_root(&self, root: &CatalogRoot) -> Result<()> {
         ensure!(
-            matches!(root.version, 1 | 2)
+            matches!(root.version, 1 | 2 | 4)
                 && root.revision >= 1
                 && root.namespace == self.namespace
                 && root.incarnation == self.incarnation
@@ -112,6 +112,19 @@ impl Authority {
             "authority root identity mismatch"
         );
         super::migration::validate(root)?;
+        if root.version == 4 {
+            ensure!(
+                root.receipts.len() <= super::INLINE_RECEIPTS_MAX,
+                "inline receipt window exceeded"
+            );
+            super::paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
+                .verify_root(root.receipt_index.as_deref())?;
+        } else {
+            ensure!(
+                root.receipt_index.is_none(),
+                "paged receipts in legacy root"
+            );
+        }
         ensure!(
             root.receipts.iter().all(|(id, revision)| valid_hash(id)
                 && *revision > 0

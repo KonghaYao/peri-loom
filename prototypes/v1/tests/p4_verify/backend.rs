@@ -108,7 +108,7 @@ fn boot_lost_ack_does_not_reactivate_from_a_historical_receipt() -> Result<()> {
     let result = authority.state(&id);
     let committed = base.snapshot()?.root;
     assert_eq!(
-        committed.version, 2,
+        committed.version, 4,
         "fixture did not commit the ambiguous boot CAS"
     );
     assert_eq!(committed.ownership.as_ref().unwrap().authority_term, 1);

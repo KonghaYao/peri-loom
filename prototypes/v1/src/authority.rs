@@ -4,6 +4,7 @@ mod codec;
 mod migration;
 pub mod ownership;
 mod ownership_view;
+pub(crate) mod paged_index;
 pub(crate) mod request_reads;
 mod semantic;
 pub mod types;
@@ -33,6 +34,9 @@ pub struct Authority {
     incarnation: String,
     guard: Option<Arc<dyn MutationGuard>>,
 }
+
+const INLINE_RECEIPTS_MAX: usize = 128;
+const RECEIPT_ARCHIVE_BATCH: usize = 64;
 
 #[cfg(test)]
 mod upload_batch_tests {
@@ -125,6 +129,7 @@ impl Authority {
                     ownership: None,
                     blobs: BTreeMap::new(),
                     receipts: BTreeMap::new(),
+                    receipt_index: None,
                     objects: BTreeMap::new(),
                     branches: BTreeMap::from([("main".into(), BranchRef::default())]),
                     snapshots: BTreeMap::new(),
@@ -200,6 +205,53 @@ impl Authority {
         })
     }
 
+    pub fn receipt(&self, operation: &str) -> Result<Option<u64>> {
+        let snapshot = self.snapshot()?;
+        self.receipt_in(&snapshot.root, operation)
+    }
+
+    fn receipt_in(&self, root: &CatalogRoot, operation: &str) -> Result<Option<u64>> {
+        if let Some(revision) = root.receipts.get(operation) {
+            return Ok(Some(*revision));
+        }
+        if root.version == 4 {
+            let value = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
+                .get(root.receipt_index.as_deref(), operation)?;
+            value
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .filter(|revision| *revision > 0 && *revision <= root.revision)
+                        .context("invalid paged authority receipt")
+                })
+                .transpose()
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn record_receipt(&self, root: &mut CatalogRoot, operation: String) -> Result<()> {
+        root.receipts.insert(operation, root.revision);
+        if root.version != 4 || root.receipts.len() <= INLINE_RECEIPTS_MAX {
+            return Ok(());
+        }
+        let mut oldest: Vec<_> = root
+            .receipts
+            .iter()
+            .map(|(id, revision)| (id.clone(), *revision))
+            .collect();
+        oldest.sort_by_key(|(_, revision)| *revision);
+        let index = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace);
+        let mut pointer = root.receipt_index.clone();
+        for (id, revision) in oldest.into_iter().take(RECEIPT_ARCHIVE_BATCH) {
+            pointer =
+                Some(index.insert_once(pointer.as_deref(), &id, serde_json::json!(revision))?);
+            root.receipts.remove(&id);
+        }
+        root.receipt_index = pointer;
+        Ok(())
+    }
+
     pub fn transact<F>(&self, expected_revision: Option<u64>, mutation: F) -> Result<RootSnapshot>
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
@@ -231,9 +283,7 @@ impl Authority {
                 .revision
                 .checked_add(1)
                 .context("authority revision overflow")?;
-            candidate
-                .receipts
-                .insert(operation.clone(), candidate.revision);
+            self.record_receipt(&mut candidate, operation.clone())?;
             self.validate_root(&candidate)?;
             let encoded = encode(&candidate)?;
             if let Some(guard) = &self.guard {
@@ -254,7 +304,7 @@ impl Authority {
                 Err(error) => {
                     self.uncertain(MutationStage::RootPublish, &error);
                     let observed = self.snapshot()?;
-                    if observed.root.receipts.get(&operation) == Some(&candidate.revision) {
+                    if self.receipt_in(&observed.root, &operation)? == Some(candidate.revision) {
                         return Ok(observed);
                     }
                     if error.is::<PreconditionFailed>() && expected_revision.is_none() {

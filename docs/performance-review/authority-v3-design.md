@@ -1,6 +1,6 @@
 # F01/F02：Authority 在线状态改造设计记录
 
-状态：设计，尚未实现。此文记录当前代码必须满足的迁移约束，不能当作性能修复或验收结果。
+状态：部分实现。泛用回执使用实际 schema v4（v3 在兼容测试中保留为拒绝版本）；完整目录、历史、ownership 命令回执和 WAL index 仍未迁移。此文记录最终迁移约束，不能当作 F01/F02 完成或性能验收结果。
 
 ## 当前路径及问题
 
@@ -27,8 +27,8 @@ WAL index 也必须改为分段、持久树或等价有界结构：只迁移 roo
 ## 实施顺序与验证
 
 1. 冻结旧版格式与故障语义的回归：丢失 root/WAL ACK、CAS 冲突、旧 epoch、损坏页、pin/GC、恢复点和跨版本 reopen。
-2. 加入有上限的不可变页存储与校验，先承载历史和回执；单次查找需按页读取，不重新构造全量 root。再迁移对象注册表、pins、uploads、tombstones。
+2. 加入有上限的不可变页存储与校验，先承载历史和回执；单次查找需按页读取，不重新构造全量 root。泛用事务回执已经采用 128 条近期窗口与 16 KiB 分页索引，旧回执在 boot 时批量建树；仍需消除归档批次在前台事务中的延迟尖峰，并迁移 ownership 命令回执、对象注册表、pins、uploads、tombstones。
 3. 引入分段 WAL index 与增量验证；清理热路径对 `CatalogRoot` 和完整 `WalMetadata` 的依赖。启动/后台完整审计应有可观察进度和资源预算。
 4. 跑 T05 的 100/1k/10k/100k 递增历史、F02 的 30 天续租和 1/8/32 分支竞争。记录每请求 GET/PUT 数与字节、root 大小、CAS 重试、CPU、分配、峰值内存和 p95/p99。达到停止阈值时留存现场，不以未完成大规模负载声称通过。
 
-当前未实现这些步骤；`implementation-status.md` 保持 F01/F02 为未完成。
+目前 F01 未完成，F02 仅泛用回执局部完成；`implementation-status.md` 记录可验证的实际范围。Rust 全套本轮仍在 `runtime_resources::compacted_cold_open_is_lazy_and_old_immutable_recovery_remains_valid` 因默认 5 秒查询预算失败，不能称完整回归通过。

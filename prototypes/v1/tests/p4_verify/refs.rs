@@ -174,7 +174,7 @@ fn frozen_legacy_checksum_uses_embedded_bytes_and_boot_preserves_physical_object
     let authority = OwnershipAuthority::new(store.clone(), Clock::new(1000));
     let initial = authority.state(&id)?;
     let after = base.snapshot()?.root;
-    assert_eq!(after.version, 2);
+    assert_eq!(after.version, 4);
     assert_eq!(after.branches, before.branches);
     assert_eq!(after.snapshots, before.snapshots);
     assert_eq!(after.incarnation, before.incarnation);

@@ -11,6 +11,7 @@ const MAX_ENTRIES: usize = 128;
 #[derive(Default)]
 struct Reads {
     entries: BTreeMap<(usize, String), (ObjectEntry, Vec<u8>)>,
+    pages: BTreeMap<(usize, String), Vec<u8>>,
     bytes: usize,
     hits: u64,
     misses: u64,
@@ -63,7 +64,7 @@ impl Drop for Scope {
                     reads.hits,
                     reads.misses,
                     reads.rejected,
-                    reads.entries.len(),
+                    reads.entries.len() + reads.pages.len(),
                     reads.bytes
                 );
             }
@@ -94,7 +95,7 @@ pub(super) fn remember(backend: usize, key: String, entry: &ObjectEntry, bytes: 
         let Some(reads) = current.as_mut() else {
             return;
         };
-        if reads.entries.len() >= MAX_ENTRIES
+        if reads.entries.len() + reads.pages.len() >= MAX_ENTRIES
             || bytes.len() > MAX_BYTES.saturating_sub(reads.bytes)
             || reads.entries.contains_key(&(backend, key.clone()))
         {
@@ -105,6 +106,38 @@ pub(super) fn remember(backend: usize, key: String, entry: &ObjectEntry, bytes: 
         reads
             .entries
             .insert((backend, key), (entry.clone(), bytes.to_vec()));
+    });
+}
+
+pub(super) fn get_page(backend: usize, key: &str) -> Option<Vec<u8>> {
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        let reads = current.as_mut()?;
+        let result = reads.pages.get(&(backend, key.to_owned())).cloned();
+        if result.is_some() {
+            reads.hits += 1;
+        } else {
+            reads.misses += 1;
+        }
+        result
+    })
+}
+
+pub(super) fn remember_page(backend: usize, key: String, bytes: &[u8]) {
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        let Some(reads) = current.as_mut() else {
+            return;
+        };
+        if reads.entries.len() + reads.pages.len() >= MAX_ENTRIES
+            || bytes.len() > MAX_BYTES.saturating_sub(reads.bytes)
+            || reads.pages.contains_key(&(backend, key.clone()))
+        {
+            reads.rejected += 1;
+            return;
+        }
+        reads.bytes += bytes.len();
+        reads.pages.insert((backend, key), bytes.to_vec());
     });
 }
 
