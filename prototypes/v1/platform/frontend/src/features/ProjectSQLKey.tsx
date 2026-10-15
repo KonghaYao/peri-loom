@@ -63,7 +63,7 @@ export default function ProjectSQLKey({ project, database, call, canActivate, on
   return <div className="stack" data-testid="project-sql-key">
     <p className="muted">平台管理员可为项目 {project} 创建 SQL 凭证，查看 {database.namespace.database} / {database.branch} 的数据。</p>
     {!issued ? <form className="actions" onSubmit={event => { event.preventDefault(); setConfirmOpen(true); }}>
-      <label>凭证名称<Input value={subject} onChange={event => setSubject(event.target.value)} required maxLength={128} pattern="[A-Za-z0-9_.@:-]+" /></label>
+      <Input label="凭证名称" value={subject} onChange={event => setSubject(event.target.value)} required maxLength={128} pattern="[A-Za-z0-9_.@:-]+" />
       <Button type="submit" variant="secondary" disabled={busy || !project || !/^[A-Za-z0-9_.@:-]{1,128}$/.test(subject)}>{busy ? '创建中…' : '创建项目 SQL 凭证'}</Button>
     </form> : <div className="stack">
       <p><Badge variant="orange">仅显示一次 · SQL 读写权限</Badge> · 项目 {issued.project}</p>
@@ -77,9 +77,8 @@ export default function ProjectSQLKey({ project, database, call, canActivate, on
     </div>}
     {notice && <p role="status">{notice}</p>}
     {error && <Banner variant="error" role="alert" description={error} />}
-    <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="创建项目 SQL 凭证" danger>
+    <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="创建项目 SQL 凭证" danger footer={<Button type="button" variant="primary" disabled={busy} onClick={() => void issue()}>确认创建</Button>}>
       <Banner variant="alert" description={`确认为项目 ${project} 创建新凭证？它拥有 SQL 读写权限，仅显示一次；不用时请撤销。`} />
-      <Button type="button" variant="primary" disabled={busy} onClick={() => void issue()}>确认创建</Button>
     </Modal>
   </div>;
 }

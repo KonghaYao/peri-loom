@@ -6,10 +6,10 @@ import { Banner } from '@cloudflare/kumo/components/banner';
 import { Empty } from '@cloudflare/kumo/components/empty';
 import { formatPreviewCell } from '../features/table-browser';
 
-export function Modal({ open, onClose, title, children, danger = false }: { open: boolean; onClose: () => void; title: string; children: ReactNode; danger?: boolean }) {
-  return <Dialog.Root open={open} onOpenChange={value => { if (!value) onClose(); }} role={danger ? 'alertdialog' : 'dialog'}><Dialog>
+export function Modal({ open, onClose, title, children, footer, danger = false }: { open: boolean; onClose: () => void; title: string; children: ReactNode; footer?: ReactNode; danger?: boolean }) {
+  return <Dialog.Root open={open} onOpenChange={value => { if (!value) onClose(); }} role={danger ? 'alertdialog' : 'dialog'}><Dialog className="app-modal">
     <Dialog.Title>{title}</Dialog.Title><div className="modal-body">{children}</div>
-    <div className="modal-footer"><Button variant="secondary" onClick={onClose}>取消</Button></div>
+    <div className="modal-footer"><Button variant="secondary" onClick={onClose}>取消</Button>{footer}</div>
   </Dialog></Dialog.Root>;
 }
 
