@@ -31,6 +31,13 @@ type durableFile struct {
 	closed    bool
 	poisoned  bool
 	prototype any
+	// parentOperations rebuilds the durable operation view that recovery merges
+	// into the persisted parent. An operation sidecar commits without rewriting
+	// the registry payload, so the persisted snapshot trails the sidecar between
+	// registry commits; validation has to compare a candidate against the parent
+	// state recovery would reconstruct, not against that older snapshot. Nil for
+	// every durable file that owns its whole state.
+	parentOperations func(*State)
 }
 
 type diskEnvelope struct {

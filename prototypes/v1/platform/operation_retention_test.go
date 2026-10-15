@@ -477,3 +477,65 @@ func TestOperationKnownTerminalEligibilityRequiresProof(test *testing.T) {
 		test.Fatal("known not-executed terminal not eligible")
 	}
 }
+
+// A registry commit snapshots the operations that are in flight at that moment.
+// A long session settles such an operation afterwards, and the bounded retention
+// set evicts it once the database holds the full known-terminal allowance. The
+// next registry commit is still a legal successor of the durable parent, so it
+// must be validated against the recovered operation view - the registry payload
+// joined with the operation sidecar - and not against the stale registry
+// snapshot. Rejecting it poisons the registry, and every authenticated request
+// then fails as 401 unauthenticated until the platform restarts.
+func TestOperationRegistryCommitSurvivesEvictedInflightSnapshot(test *testing.T) {
+	store := operationDurableStore(test)
+	database := securityDatabase()
+	_, credential, err := NewAPIKey(store, "longsession", "alpha", "admin", false)
+	if err != nil {
+		test.Fatal(err)
+	}
+	identity, err := NewIdentity(store, make([]byte, 32))
+	if err != nil {
+		test.Fatal(err)
+	}
+	inFlight := "inflight_0001"
+	if err := beginOperation(store, database, inFlight, "gateway", "execute", "tool_rpc", "worker-a", "", map[string]any{"command": "execute"}); err != nil {
+		test.Fatal(err)
+	}
+	if err := store.Update(func(*State) error { return nil }); err != nil {
+		test.Fatal(err)
+	}
+	if err := finishOperation(store, database, inFlight, nil, true); err != nil {
+		test.Fatal(err)
+	}
+	for index := 0; index < operationKnownRetention+8; index++ {
+		identifier := fmt.Sprintf("describe_%04d", index)
+		digest, err := operationCommandDigest(map[string]any{"index": index})
+		if err != nil {
+			test.Fatal(err)
+		}
+		if _, err := settleNonCommittingOperation(store, database, identifier, "gateway", "describe", "tool_rpc", "worker-a", "", digest, func(record *OperationRecord) {
+			record.State, record.BusinessOutcome, record.ExecutionProven = "terminal", "completed", true
+		}); err != nil {
+			test.Fatal(err)
+		}
+	}
+	state, err := store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if state.OperationEvictions == 0 {
+		test.Fatal("retention never evicted a settled snapshot")
+	}
+	if _, exists := state.Operations[operationKey(database, inFlight)]; exists {
+		test.Fatal("eviction kept the settled in-flight snapshot")
+	}
+	if err := store.Update(func(*State) error { return nil }); err != nil {
+		test.Fatalf("registry commit after operation eviction: %v", err)
+	}
+	if _, err := store.Snapshot(); err != nil {
+		test.Fatalf("store unavailable after registry commit: %v", err)
+	}
+	if _, err := identity.Authenticate(credential); err != nil {
+		test.Fatalf("authentication lost after registry commit: %v", err)
+	}
+}

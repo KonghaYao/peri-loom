@@ -114,6 +114,17 @@ func validateDurableTransition(disk *durableFile, after diskEnvelope) error {
 			if err := validateState(*before, nil); err != nil {
 				return err
 			}
+			if disk.parentOperations != nil {
+				// Recovery joins the durable operation sidecar into this payload,
+				// so the successor state must be compared against that same view.
+				disk.parentOperations(before)
+				if before.Revision != disk.revision {
+					return errors.New("invalid durable parent state")
+				}
+				if err := validateState(*before, nil); err != nil {
+					return err
+				}
+			}
 		}
 		return validateState(next, before)
 	case auditHead:

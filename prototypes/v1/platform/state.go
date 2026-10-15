@@ -44,6 +44,7 @@ func OpenStateStore(directory string) (StateStore, error) {
 		return nil, err
 	}
 	store.operations = operations
+	disk.parentOperations = registryParentOperations(operations)
 	state = store.state
 	for id, key := range state.APIKeys {
 		store.digestIndex[key.Digest] = id

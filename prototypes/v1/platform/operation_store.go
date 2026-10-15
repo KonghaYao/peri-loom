@@ -82,6 +82,29 @@ func openOperationDisk(directory string, registry *durableFile, state *State) (*
 	return disk, nil
 }
 
+// registryParentOperations rebuilds the operation view recovery would join into a
+// registry payload. Between registry commits the sidecar is the only writer of
+// operations, so the persisted snapshot alone is not the parent a successor has
+// to be legal against: an operation etched into that snapshot can settle and be
+// evicted afterwards, and validating against the stale copy would reject a valid
+// commit and poison the registry.
+func registryParentOperations(sidecar *durableFile) func(*State) {
+	return func(parent *State) {
+		sidecar.mutex.Lock()
+		defer sidecar.mutex.Unlock()
+		if sidecar.payload == nil {
+			return
+		}
+		var current durableOperations
+		if strictDecode(sidecar.payload, &current) != nil || current.Version != 1 || current.BaseRevision != parent.Revision {
+			// A sidecar behind the registry was not checkpointed, and recovery
+			// treats the registry as the complete operation view in that case.
+			return
+		}
+		applyDurableOperations(parent, current)
+	}
+}
+
 func (store *stateStore) commitOperations(state State) error {
 	store.operations.mutex.Lock()
 	defer store.operations.mutex.Unlock()
