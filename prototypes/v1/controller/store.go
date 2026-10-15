@@ -16,14 +16,15 @@ var ErrStoreClosed = errors.New("metadata store closed")
 var ErrStoreUncertain = errors.New("metadata persistence outcome uncertain; reopen requires durable verification")
 
 type diskStore struct {
-	mutex       sync.Mutex
-	directory   string
-	lock        *os.File
-	metadata    Metadata
-	heartbeats  map[string]heartbeatObservation
-	closed      bool
-	uncertain   bool
-	initialized bool
+	mutex         sync.Mutex
+	directory     string
+	lock          *os.File
+	metadata      Metadata
+	heartbeats    map[string]heartbeatObservation
+	reconcileKeys map[string]struct{}
+	closed        bool
+	uncertain     bool
+	initialized   bool
 }
 
 type epochFloor struct {
@@ -121,6 +122,7 @@ func OpenStore(directory string) (MetadataStore, error) {
 			store.heartbeats[identifier] = heartbeatObservation{address: worker.Address, load: 0, lastHeartbeatMS: worker.LastHeartbeatMS}
 		}
 	}
+	store.reconcileKeys = actionablePlacements(store.metadata.Placements)
 	store.initialized = true
 	success = true
 	return store, nil
@@ -171,11 +173,13 @@ func (store *diskStore) Update(mutation func(*Metadata) error) error {
 	if err := validateMetadata(committed, &store.metadata); err != nil {
 		return err
 	}
+	keys := actionablePlacements(committed.Placements)
 	if err := store.persist(committed); err != nil {
 		store.uncertain = true
 		return fmt.Errorf("%w: %v", ErrStoreUncertain, err)
 	}
 	store.metadata = committed
+	store.reconcileKeys = keys
 	store.refreshHeartbeatObservations()
 	return nil
 }

@@ -16,7 +16,7 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 	if err := controller.pollWorkers(ctx); err != nil {
 		return err
 	}
-	metadata, err := controller.store.Snapshot()
+	metadata, err := readReconcileView(controller.store)
 	if err != nil {
 		return err
 	}

@@ -62,11 +62,10 @@ func (controller *Controller) Status(database DatabaseID) (Placement, error) {
 	if err := database.Validate(); err != nil {
 		return Placement{}, err
 	}
-	metadata, err := controller.store.Snapshot()
+	placement, _, exists, err := ReadRouting(controller.store, database)
 	if err != nil {
 		return Placement{}, err
 	}
-	placement, exists := metadata.Placements[database.Key()]
 	if !exists {
 		return Placement{}, ErrPlacementMissing
 	}
