@@ -20,6 +20,9 @@ func validRole(role string) bool {
 }
 
 func validateState(state State, previous *State) error {
+	if state.OperationStorageVersion > 1 || previous != nil && state.OperationStorageVersion < previous.OperationStorageVersion {
+		return errors.New("operation storage version cannot be reset")
+	}
 	if (state.OwnedRunGeneration == "") != (state.OwnedRunBinding == "") || state.OwnedRunBinding != "" && !ownedProofToken(state.OwnedRunBinding) || previous != nil && previous.OwnedRunBinding != "" && state.OwnedRunBinding != previous.OwnedRunBinding {
 		return errors.New("owned run binding immutable")
 	}

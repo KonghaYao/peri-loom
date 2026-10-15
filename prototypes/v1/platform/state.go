@@ -10,6 +10,7 @@ import (
 
 type stateStore struct {
 	disk        *durableFile
+	operations  *durableFile
 	state       State
 	digestIndex map[string]string
 }
@@ -37,13 +38,20 @@ func OpenStateStore(directory string) (StateStore, error) {
 		return nil, err
 	}
 	store := &stateStore{disk: disk, state: state, digestIndex: make(map[string]string, len(state.APIKeys))}
+	operations, err := openOperationDisk(directory, disk, &store.state)
+	if err != nil {
+		disk.close()
+		return nil, err
+	}
+	store.operations = operations
+	state = store.state
 	for id, key := range state.APIKeys {
 		store.digestIndex[key.Digest] = id
 	}
 	known, _ := operationCounts(state)
 	if known > operationKnownRetention {
 		if err := updateOperationRecords(store, nil); err != nil {
-			disk.close()
+			store.Close()
 			return nil, err
 		}
 	}
@@ -65,7 +73,7 @@ func OpenStateStore(directory string) (StateStore, error) {
 				}
 				return nil
 			}); err != nil {
-				disk.close()
+				store.Close()
 				return nil, err
 			}
 			break
@@ -165,6 +173,9 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	if err := store.disk.commit(committed.Revision, committed); err != nil {
 		return err
 	}
+	if err := store.commitOperations(committed); err != nil {
+		return err
+	}
 	if len(committed.APIKeys) != len(store.state.APIKeys) {
 		for id, key := range committed.APIKeys {
 			if _, exists := store.state.APIKeys[id]; !exists {
@@ -176,7 +187,9 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	return nil
 }
 
-func (store *stateStore) Close() error { return store.disk.close() }
+func (store *stateStore) Close() error {
+	return errors.Join(store.operations.close(), store.disk.close())
+}
 
 func cloneState(state State) (State, error) {
 	encoded, err := json.Marshal(state)

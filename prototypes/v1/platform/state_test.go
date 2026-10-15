@@ -116,6 +116,10 @@ func TestStateLockReopenAndConcurrentRevisions(test *testing.T) {
 	if _, err := OpenStateStore(directory); !errors.Is(err, ErrStateLocked) {
 		test.Fatalf("lock missing: %v", err)
 	}
+	initial, err := store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
 	var group sync.WaitGroup
 	for index := 0; index < 16; index++ {
 		group.Add(1)
@@ -136,8 +140,160 @@ func TestStateLockReopenAndConcurrentRevisions(test *testing.T) {
 	}
 	defer reopened.Close()
 	state, err := reopened.Snapshot()
-	if err != nil || state.Revision != 16 {
+	if err != nil || state.Revision != initial.Revision+16 {
 		test.Fatalf("reopened revision: %d %v", state.Revision, err)
+	}
+}
+
+func TestOperationSidecarDoesNotRewriteRegistry(test *testing.T) {
+	store := operationDurableStore(test)
+	database := securityDatabase()
+	directory := filepath.Dir(store.(*stateStore).disk.path)
+	registry := filepath.Join(directory, "state.json")
+	before, err := os.ReadFile(registry)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := beginOperation(store, database, "sidecar", "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
+		test.Fatal(err)
+	}
+	after, err := os.ReadFile(registry)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if string(before) != string(after) {
+		test.Fatal("operation-only commit rewrote the registry")
+	}
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := OpenStateStore(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reopened.Close()
+	state, err := reopened.Snapshot()
+	if err != nil || state.Operations[operationKey(database, "sidecar")].State != "quarantined" {
+		test.Fatalf("sidecar operation lost across restart: %v", err)
+	}
+}
+
+func TestOperationSidecarRegistryCheckpointWinsAfterCrash(test *testing.T) {
+	store := operationDurableStore(test)
+	database := securityDatabase()
+	directory := filepath.Dir(store.(*stateStore).disk.path)
+	if err := beginOperation(store, database, "checkpoint", "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
+		test.Fatal(err)
+	}
+	if err := finishOperation(store, database, "checkpoint", nil, true); err != nil {
+		test.Fatal(err)
+	}
+	if err := store.Update(func(state *State) error {
+		state.Organizations["second"] = Organization{ID: "second", Name: "second"}
+		return nil
+	}); err != nil {
+		test.Fatal(err)
+	}
+	// Model a crash after the registry commit but before its sidecar checkpoint:
+	// the older sidecar is valid, yet the newer registry is authoritative.
+	concrete := store.(*stateStore)
+	concrete.operations.mutex.Lock()
+	if err := concrete.operations.commit(concrete.operations.revision+1, durableOperations{
+		Version: 1, BaseRevision: concrete.state.Revision - 1,
+		Records: map[string]OperationRecord{},
+	}); err != nil {
+		concrete.operations.mutex.Unlock()
+		test.Fatal(err)
+	}
+	concrete.operations.mutex.Unlock()
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := OpenStateStore(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reopened.Close()
+	state, err := reopened.Snapshot()
+	if err != nil || state.Organizations["second"].ID != "second" || state.Operations[operationKey(database, "checkpoint")].State != "terminal" {
+		test.Fatalf("newer registry did not restore sidecar: %v", err)
+	}
+}
+
+func TestOperationSidecarMissingFailsClosed(test *testing.T) {
+	store := operationDurableStore(test)
+	directory := filepath.Dir(store.(*stateStore).disk.path)
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(directory, "operations")); err != nil {
+		test.Fatal(err)
+	}
+	if reopened, err := OpenStateStore(directory); err == nil {
+		reopened.Close()
+		test.Fatal("missing mandatory operation storage was recreated")
+	}
+}
+
+func TestOperationSidecarWriteFailurePoisonsBeforeDispatch(test *testing.T) {
+	store := operationDurableStore(test)
+	defer store.Close()
+	path := store.(*stateStore).operations.path
+	if err := os.Remove(path); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		test.Fatal(err)
+	}
+	if err := beginOperation(store, securityDatabase(), "unsafe", "gateway", "execute", "tool_rpc", "worker-a", "", nil); !errors.Is(err, ErrStateUncertain) {
+		test.Fatalf("sidecar write failure did not prevent dispatch: %v", err)
+	}
+	if _, err := store.Snapshot(); !errors.Is(err, ErrStateUncertain) {
+		test.Fatal("store remained available after uncertain operation commit")
+	}
+}
+
+func TestOperationSidecarMigratesLegacyRegistry(test *testing.T) {
+	source := operationDurableStore(test)
+	database := securityDatabase()
+	if err := beginOperation(source, database, "legacy", "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
+		test.Fatal(err)
+	}
+	if err := finishOperation(source, database, "legacy", nil, true); err != nil {
+		test.Fatal(err)
+	}
+	legacy, err := source.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	legacy.Revision, legacy.OperationStorageVersion = 0, 0
+	directory := test.TempDir()
+	disk, err := openDurable(filepath.Join(directory, "state.json"), legacy)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := disk.close(); err != nil {
+		test.Fatal(err)
+	}
+	migrated, err := OpenStateStore(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
+	state, err := migrated.Snapshot()
+	if err != nil || state.OperationStorageVersion != 1 || state.Operations[operationKey(database, "legacy")].State != "terminal" {
+		test.Fatalf("migration lost legacy operation: %v", err)
+	}
+	if err := migrated.Close(); err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := OpenStateStore(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reopened.Close()
+	state, err = reopened.Snapshot()
+	if err != nil || state.Operations[operationKey(database, "legacy")].State != "terminal" {
+		test.Fatalf("migrated operation lost after restart: %v", err)
 	}
 }
 

@@ -90,6 +90,9 @@ func openDurable(path string, initial any) (*durableFile, error) {
 	} else {
 		for _, entry := range entries {
 			name := entry.Name()
+			if filepath.Base(absolute) == "state.json" && name == "operations" && entry.IsDir() {
+				continue
+			}
 			if name == filepath.Base(absolute) || name == filepath.Base(absolute)+".floor" || name == filepath.Base(absolute)+".lock" || name == filepath.Base(absolute)+".pending" || (strings.HasPrefix(name, ".private-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular()) {
 				continue
 			}

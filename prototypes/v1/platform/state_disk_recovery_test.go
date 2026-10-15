@@ -27,6 +27,11 @@ func durableRecoveryFixture(test *testing.T) (string, diskEnvelope, diskEnvelope
 	if err := finishOperation(store, database, "lost", &SQLRPCError{Ambiguous: true}, false); err != nil {
 		test.Fatal(err)
 	}
+	// Recovery fixtures exercise registry commits, so checkpoint the operation
+	// sidecar into the registry before constructing the interrupted commit.
+	if err := store.Update(func(*State) error { return nil }); err != nil {
+		test.Fatal(err)
+	}
 	path := store.(*stateStore).disk.path
 	var before diskEnvelope
 	if err := readPrivate(path, &before); err != nil {

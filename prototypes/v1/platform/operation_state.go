@@ -151,7 +151,13 @@ func compactKnownOperations(state *State, eligible map[string]bool) error {
 }
 
 func updateOperationRecords(store StateStore, change func(*State) error) error {
-	return store.Update(func(state *State) error {
+	update := store.Update
+	if narrow, ok := store.(interface {
+		updateOperations(func(*State) error) error
+	}); ok {
+		update = narrow.updateOperations
+	}
+	return update(func(state *State) error {
 		eligible := map[string]bool{}
 		for key, record := range state.Operations {
 			if operationKnownTerminal(record) {
