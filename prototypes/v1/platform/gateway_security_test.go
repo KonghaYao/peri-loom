@@ -11,6 +11,34 @@ import (
 	controller "peri-loom/controller"
 )
 
+type narrowRouteProbe struct {
+	controller.MetadataStore
+	snapshots int
+}
+
+func (probe *narrowRouteProbe) Snapshot() (controller.Metadata, error) {
+	probe.snapshots++
+	return controller.Metadata{}, errors.New("full placement snapshot on gateway route")
+}
+
+func (probe *narrowRouteProbe) RoutingView(database controller.DatabaseID) (controller.Placement, controller.Worker, bool, error) {
+	metadata, err := probe.MetadataStore.Snapshot()
+	if err != nil {
+		return controller.Placement{}, controller.Worker{}, false, err
+	}
+	placement, found := metadata.Placements[database.Key()]
+	return placement, metadata.Workers[placement.DesiredWorker], found, nil
+}
+
+func TestGatewayOpenRoutesWithoutFullPlacementSnapshot(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	probe := &narrowRouteProbe{MetadataStore: fixture.placements}
+	fixture.gateway.config.Placements = probe
+	if session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first); !publicSessionID(session) || probe.snapshots != 0 {
+		test.Fatal("Gateway open cloned the full placement directory")
+	}
+}
+
 func TestGatewayTenantProjectSubjectAndOpaqueIsolation(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)

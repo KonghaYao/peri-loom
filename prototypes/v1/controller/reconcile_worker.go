@@ -9,32 +9,29 @@ import (
 )
 
 func (controller *Controller) selectWorker(region, exclude string) (Worker, error) {
-	metadata, err := controller.store.Snapshot()
+	workers, err := readWorkers(controller.store)
 	if err != nil {
 		return Worker{}, err
 	}
-	return SelectWorker(metadata, region, exclude, time.Now().UnixMilli(), controller.cfg.HeartbeatTimeout.Milliseconds())
+	return SelectWorker(Metadata{Workers: workers}, region, exclude, time.Now().UnixMilli(), controller.cfg.HeartbeatTimeout.Milliseconds())
 }
 
 func (controller *Controller) eligibleWorker(identifier, region string) (Worker, error) {
-	metadata, err := controller.store.Snapshot()
+	worker, exists, err := readWorker(controller.store, identifier)
 	if err != nil {
 		return Worker{}, err
 	}
-	worker, exists := metadata.Workers[identifier]
 	if !exists {
 		return Worker{}, errors.New("worker missing")
 	}
-	metadata.Workers = map[string]Worker{identifier: worker}
-	return SelectWorker(metadata, region, "", time.Now().UnixMilli(), controller.cfg.HeartbeatTimeout.Milliseconds())
+	return SelectWorker(Metadata{Workers: map[string]Worker{identifier: worker}}, region, "", time.Now().UnixMilli(), controller.cfg.HeartbeatTimeout.Milliseconds())
 }
 
 func (controller *Controller) lookupWorker(identifier string) (Worker, error) {
-	metadata, err := controller.store.Snapshot()
+	worker, exists, err := readWorker(controller.store, identifier)
 	if err != nil {
 		return Worker{}, err
 	}
-	worker, exists := metadata.Workers[identifier]
 	if !exists {
 		return Worker{}, errors.New("worker missing")
 	}
@@ -42,12 +39,12 @@ func (controller *Controller) lookupWorker(identifier string) (Worker, error) {
 }
 
 func (controller *Controller) pollWorkers(ctx context.Context) error {
-	metadata, err := controller.store.Snapshot()
+	workersView, err := readWorkers(controller.store)
 	if err != nil {
 		return err
 	}
-	identifiers := make([]string, 0, len(metadata.Workers))
-	for identifier := range metadata.Workers {
+	identifiers := make([]string, 0, len(workersView))
+	for identifier := range workersView {
 		identifiers = append(identifiers, identifier)
 	}
 	sort.Strings(identifiers)
@@ -64,7 +61,7 @@ func (controller *Controller) pollWorkers(ctx context.Context) error {
 		go func() {
 			defer group.Done()
 			for identifier := range jobs {
-				if err := controller.pollWorker(ctx, identifier, metadata.Workers[identifier]); err != nil {
+				if err := controller.pollWorker(ctx, identifier, workersView[identifier]); err != nil {
 					failures <- err
 				}
 			}

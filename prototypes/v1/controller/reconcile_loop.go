@@ -62,11 +62,10 @@ func (controller *Controller) reconcileActive(ctx context.Context, placement *Pl
 	if err != nil {
 		return err
 	}
-	metadata, err := controller.store.Snapshot()
+	worker, exists, err := readWorker(controller.store, placement.DesiredWorker)
 	if err != nil {
 		return err
 	}
-	worker, exists := metadata.Workers[placement.DesiredWorker]
 	now := time.Now().UnixMilli()
 	fresh := exists && worker.Healthy && now >= worker.LastHeartbeatMS && now-worker.LastHeartbeatMS < controller.cfg.HeartbeatTimeout.Milliseconds()
 	if !fresh {

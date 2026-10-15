@@ -42,11 +42,10 @@ func (gateway *Gateway) authorizeQuota(principal Principal, database controller.
 }
 
 func (gateway *Gateway) route(database controller.DatabaseID) (controller.Worker, controller.Binding, error) {
-	metadata, err := gateway.config.Placements.Snapshot()
+	placement, worker, found, err := controller.ReadRouting(gateway.config.Placements, database)
 	if err != nil {
 		return controller.Worker{}, controller.Binding{}, errors.New("placement unavailable")
 	}
-	placement, found := metadata.Placements[database.Key()]
 	if !found || placement.Database != database || placement.DesiredState != "active" || placement.Grant == nil {
 		return controller.Worker{}, controller.Binding{}, errors.New("database not active")
 	}
@@ -59,8 +58,7 @@ func (gateway *Gateway) route(database controller.DatabaseID) (controller.Worker
 	if binding.Database != database || binding.Epoch != placement.Epoch || binding.WorkerID != placement.DesiredWorker || binding.LeaseID != placement.LeaseID || binding.Role != placement.Role || binding.RootIncarnation == "" || binding.AuthorityTerm == 0 || binding.BranchIncarnation == 0 || placement.Grant.RemainingTTLMS == 0 || (binding.Role != "writer" && binding.Role != "read_only") {
 		return controller.Worker{}, controller.Binding{}, errors.New("placement identity invalid")
 	}
-	worker, found := metadata.Workers[binding.WorkerID]
-	if !found || worker.ID != binding.WorkerID || !worker.Healthy || worker.Draining {
+	if worker.ID != binding.WorkerID || !worker.Healthy || worker.Draining {
 		return controller.Worker{}, controller.Binding{}, errors.New("worker unavailable")
 	}
 	return worker, binding, nil
