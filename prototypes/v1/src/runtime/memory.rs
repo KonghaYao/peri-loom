@@ -30,6 +30,11 @@ pub(super) fn fits_reservation(
 #[cfg(test)]
 mod tests {
     use super::fits_reservation;
+    use crate::namespace::Namespace;
+    use crate::object_store::MemoryObjectStore;
+    use crate::provider::LocalAuthorityProvider;
+    use crate::runtime::{DatabaseId, WorkerLimits, WorkerRuntime};
+    use std::sync::Arc;
 
     #[test]
     fn reservations_limit_512m_and_2g_workers_without_overflow() {
@@ -39,5 +44,24 @@ mod tests {
         assert!(!fits_reservation(32, 128, 8 * mib, 1024 * mib));
         assert!(fits_reservation(32, 48, 8 * mib, 1024 * mib));
         assert!(!fits_reservation(usize::MAX, 2, 8 * mib, usize::MAX));
+    }
+
+    #[test]
+    fn runtime_rejects_a_second_session_then_releases_its_reservation() -> anyhow::Result<()> {
+        let cache = tempfile::tempdir()?;
+        let provider = Arc::new(LocalAuthorityProvider::new(Arc::new(
+            MemoryObjectStore::default(),
+        )));
+        let mut runtime = WorkerRuntime::new(provider, cache.path(), WorkerLimits::default())?;
+        Arc::get_mut(&mut runtime)
+            .unwrap()
+            .memory_reservation_budget = Some(24 * 1024 * 1024);
+        let database = DatabaseId::new(Namespace::new("memory", "admission")?, "main")?;
+        let first = runtime.open(database.clone(), 0)?;
+        assert!(runtime.open(database.clone(), 0).is_err());
+        drop(first);
+        let replacement = runtime.open(database, 0)?;
+        drop(replacement);
+        Ok(())
     }
 }
