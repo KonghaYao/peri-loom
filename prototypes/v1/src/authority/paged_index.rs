@@ -70,6 +70,18 @@ impl<'a> PagedIndex<'a> {
         self.insert_at(root, key, &value, 0, &[])
     }
 
+    pub(crate) fn insert_many(
+        &self,
+        root: Option<&str>,
+        entries: BTreeMap<String, Value>,
+    ) -> Result<String> {
+        ensure!(!entries.is_empty(), "empty index update");
+        for key in entries.keys() {
+            validate_key(key)?;
+        }
+        self.insert_many_at(root, entries, 0, &[])
+    }
+
     pub(crate) fn build(&self, entries: BTreeMap<String, Value>) -> Result<Option<String>> {
         for key in entries.keys() {
             validate_key(key)?;
@@ -117,6 +129,70 @@ impl<'a> PagedIndex<'a> {
                         depth,
                         children,
                     })
+                }
+            },
+        }
+    }
+
+    fn insert_many_at(
+        &self,
+        root: Option<&str>,
+        updates: BTreeMap<String, Value>,
+        depth: u8,
+        prefix: &[u8],
+    ) -> Result<String> {
+        match root {
+            None => self.leaf_or_branch(updates, depth),
+            Some(hash) => match self.read(hash, depth, prefix)? {
+                Page::Leaf { mut entries, .. } => {
+                    let mut changed = false;
+                    for (key, value) in updates {
+                        if let Some(previous) = entries.get(&key) {
+                            ensure!(previous == &value, "index key identity conflict");
+                        } else {
+                            entries.insert(key, value);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        self.leaf_or_branch(entries, depth)
+                    } else {
+                        Ok(hash.to_owned())
+                    }
+                }
+                Page::Branch { mut children, .. } => {
+                    let mut groups: BTreeMap<u8, BTreeMap<String, Value>> = BTreeMap::new();
+                    for (key, value) in updates {
+                        groups
+                            .entry(nibble(&key, depth)?)
+                            .or_default()
+                            .insert(key, value);
+                    }
+                    let mut changed = false;
+                    for (selected, group) in groups {
+                        let slot = selected.to_string();
+                        let mut next_prefix = prefix.to_vec();
+                        next_prefix.push(selected);
+                        let next = self.insert_many_at(
+                            children.get(&slot).map(String::as_str),
+                            group,
+                            depth + 1,
+                            &next_prefix,
+                        )?;
+                        if children.get(&slot) != Some(&next) {
+                            children.insert(slot, next);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        self.write(&Page::Branch {
+                            version: 1,
+                            depth,
+                            children,
+                        })
+                    } else {
+                        Ok(hash.to_owned())
+                    }
                 }
             },
         }
@@ -339,6 +415,50 @@ mod tests {
             pages.len() <= 40,
             "bulk migration rewrote pages per receipt"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn archive_batch_rewrites_each_affected_page_once() -> Result<()> {
+        let store = MemoryObjectStore::default();
+        let namespace = namespace();
+        let index = PagedIndex::new(&store, &namespace);
+        let root = index
+            .build(
+                (0..1_000)
+                    .map(|sequence| (format!("receipt-{sequence:05}"), json!(sequence)))
+                    .collect(),
+            )?
+            .unwrap();
+        let prefix = namespace.key("authority/index-pages")?;
+        let before = store.list(&prefix)?.len();
+        let updated = index.insert_many(
+            Some(&root),
+            (1_000..1_064)
+                .map(|sequence| (format!("receipt-{sequence:05}"), json!(sequence)))
+                .collect(),
+        )?;
+        assert!(store.list(&prefix)?.len() <= before + 32);
+        assert_eq!(index.get(Some(&root), "receipt-01000")?, None);
+        for sequence in 0..1_064 {
+            assert_eq!(
+                index.get(Some(&updated), &format!("receipt-{sequence:05}"))?,
+                Some(json!(sequence))
+            );
+        }
+        assert_eq!(
+            index.insert_many(
+                Some(&updated),
+                BTreeMap::from([("receipt-01000".into(), json!(1000))])
+            )?,
+            updated
+        );
+        assert!(index
+            .insert_many(
+                Some(&updated),
+                BTreeMap::from([("receipt-01000".into(), json!(0))])
+            )
+            .is_err());
         Ok(())
     }
 

@@ -242,13 +242,16 @@ impl Authority {
             .collect();
         oldest.sort_by_key(|(_, revision)| *revision);
         let index = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace);
-        let mut pointer = root.receipt_index.clone();
-        for (id, revision) in oldest.into_iter().take(RECEIPT_ARCHIVE_BATCH) {
-            pointer =
-                Some(index.insert_once(pointer.as_deref(), &id, serde_json::json!(revision))?);
+        let archived: Vec<_> = oldest.into_iter().take(RECEIPT_ARCHIVE_BATCH).collect();
+        let updates = archived
+            .iter()
+            .map(|(id, revision)| (id.clone(), serde_json::json!(revision)))
+            .collect();
+        let pointer = index.insert_many(root.receipt_index.as_deref(), updates)?;
+        for (id, _) in archived {
             root.receipts.remove(&id);
         }
-        root.receipt_index = pointer;
+        root.receipt_index = Some(pointer);
         Ok(())
     }
 
