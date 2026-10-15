@@ -578,7 +578,7 @@ func (handler *hranaHTTP) autocommit(request *http.Request, credential, session 
 
 func (handler *hranaHTTP) call(request *http.Request, credential, path string, input any) (int, json.RawMessage, string) {
 	encoded, _ := json.Marshal(input)
-	internal := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded)).WithContext(request.Context())
+	internal := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded)).WithContext(context.WithValue(request.Context(), hranaSessionContextKey{}, true))
 	internal.Header.Set("Authorization", "Bearer "+credential)
 	reply := httptest.NewRecorder()
 	handler.gateway.ServeHTTP(reply, internal)

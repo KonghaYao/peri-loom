@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	controller "peri-loom/controller"
 )
@@ -71,7 +72,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if err != nil {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenPublicID, gateway.unknown(nil, permit), nil)
 	}
-	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, keyID: principal.KeyID, writerProtocol: writerProtocol}
+	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, keyID: principal.KeyID, writerProtocol: writerProtocol, hrana: ctx.Value(hranaSessionContextKey{}) != nil, lastUsed: time.Now()}
 	if writerProtocol && (!session.acceptWriterState(writerState, binding) || writerState.Owner) {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenWriterBinding, gateway.unknown(nil, permit), nil)
 	}
@@ -85,7 +86,10 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	gateway.sessions[identifier] = session
 	gateway.mu.Unlock()
 	permit.keepSession = true
-	return gatewayResult{value: map[string]any{"session": identifier, "readonly": *reply.Readonly}, dispatched: true, session: session, finish: session.mu.Unlock}
+	return gatewayResult{value: map[string]any{"session": identifier, "readonly": *reply.Readonly}, dispatched: true, session: session, finish: func() {
+		session.lastUsed = time.Now()
+		session.mu.Unlock()
+	}}
 }
 
 func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool) gatewayResult {
@@ -117,7 +121,10 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 	result := gateway.dispatchLocked(ctx, principal, request, requestID, action, quota, permit, ndjson, session)
 	result.permit = permit
 	result.session = session
-	result.finish = session.mu.Unlock
+	result.finish = func() {
+		session.lastUsed = time.Now()
+		session.mu.Unlock()
+	}
 	return result
 }
 

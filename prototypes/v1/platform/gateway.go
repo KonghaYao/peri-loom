@@ -39,6 +39,8 @@ type gatewaySession struct {
 	writerKnown    bool
 	writerOwner    bool
 	writerSequence uint64
+	hrana          bool
+	lastUsed       time.Time
 }
 
 type gatewayResult struct {

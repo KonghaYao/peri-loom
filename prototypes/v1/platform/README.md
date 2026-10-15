@@ -100,6 +100,13 @@ outcomes retain admission permits and poison the session instead of treating
 timeout, close, or readback as cancellation proof. Migration invalidates old
 session bindings; reopen explicitly against the current placement.
 
+Native SQL sessions idle for 5 minutes are closed by the Gateway's background
+cleanup loop. Each completed request refreshes the idle deadline. Cleanup waits
+for a confirmed Worker close before returning the session quota; an uncertain
+close retains the session and quota for explicit recovery. Clients should close
+sessions when finished and must not rely on an idle session to keep an open
+transaction alive. Hrana streams keep their separate idle timer.
+
 JSON retains native integer literals. Go generic results use `json.Number`;
 TypeScript and the browser console use `bigint` for unsafe integer literals.
 NDJSON streams bounded, already materialized native rows; it is not an

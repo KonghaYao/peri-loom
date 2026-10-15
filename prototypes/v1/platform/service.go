@@ -194,8 +194,9 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	publicServer.WriteTimeout = requestTimeout + 5*time.Second
 	publicServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
 	brokerServer := hardenedServer(broker)
-	finished := make(chan error, 3)
+	finished := make(chan error, 4)
 	go func() { finished <- control.Run(ctx) }()
+	go func() { finished <- gateway.runNativeSessionExpiry(ctx) }()
 	go func() { finished <- brokerServer.Serve(brokerListener) }()
 	go func() {
 		if config.TLSCertificate != "" {
@@ -221,7 +222,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	shutdown, stop := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stop()
 	shutdownError := errors.Join(publicServer.Shutdown(shutdown), brokerServer.Shutdown(shutdown))
-	for completed < 3 {
+	for completed < 4 {
 		select {
 		case err := <-finished:
 			completed++
