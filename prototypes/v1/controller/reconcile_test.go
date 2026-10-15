@@ -7,6 +7,70 @@ import (
 	"time"
 )
 
+type delayedHeartbeat struct {
+	ControlTransport
+	entered chan struct{}
+}
+
+func (transport delayedHeartbeat) Worker(ctx context.Context, worker Worker, requestID string, input, output any) error {
+	if worker.ID == "worker-a" {
+		close(transport.entered)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return transport.ControlTransport.Worker(ctx, worker, requestID, input, output)
+}
+
+func TestPollWorkersSlowFirstWorkerDoesNotDelayHealthyPeer(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	transport := delayedHeartbeat{ControlTransport: fixture.fake, entered: make(chan struct{})}
+	control, err := NewController(fixture.store, transport, ReconcileConfig{LeaseTTL: time.Second, HeartbeatTimeout: 2 * time.Second, Interval: time.Millisecond})
+	if err != nil {
+		test.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- control.pollWorkers(context.Background()) }()
+	select {
+	case <-transport.entered:
+	case <-time.After(time.Second):
+		test.Fatal("slow worker heartbeat was not started")
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		metadata, err := fixture.store.Snapshot()
+		if err != nil {
+			test.Fatal(err)
+		}
+		if metadata.Workers["worker-b"].Healthy {
+			break
+		}
+		if time.Now().After(deadline) {
+			test.Fatal("healthy worker was held behind slow worker")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-finished:
+		test.Fatal("slow worker probe ended before its deadline")
+	default:
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			test.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		test.Fatal("slow heartbeat exceeded per-worker deadline")
+	}
+	metadata, err := fixture.store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if metadata.Workers["worker-a"].Healthy || !metadata.Workers["worker-b"].Healthy {
+		test.Fatalf("incorrect independent heartbeat state: %+v", metadata.Workers)
+	}
+}
+
 func TestPollWorkersUsesNonSamplingHeartbeat(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	if err := fixture.controller.pollWorkers(context.Background()); err != nil {

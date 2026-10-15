@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -50,39 +51,79 @@ func (controller *Controller) pollWorkers(ctx context.Context) error {
 		identifiers = append(identifiers, identifier)
 	}
 	sort.Strings(identifiers)
+	if len(identifiers) == 0 {
+		return ctx.Err()
+	}
+	const maxConcurrentHeartbeats = 16
+	workers := min(len(identifiers), maxConcurrentHeartbeats)
+	jobs := make(chan string)
+	failures := make(chan error, len(identifiers))
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for identifier := range jobs {
+				if err := controller.pollWorker(ctx, identifier, metadata.Workers[identifier]); err != nil {
+					failures <- err
+				}
+			}
+		}()
+	}
 	for _, identifier := range identifiers {
 		if err := ctx.Err(); err != nil {
-			return err
+			break
 		}
-		worker := metadata.Workers[identifier]
-		requestID, err := RandomID()
-		if err != nil {
-			return err
-		}
-		var report workerReport
-		rpcErr := controller.transport.Worker(ctx, worker, requestID, workerAction{Command: "get_worker_heartbeat"}, &report)
-		valid := rpcErr == nil && report.WorkerID == identifier && report.Resources.LoadedDatabases >= 0 && report.Resources.LoadingDatabases >= 0
-		load := report.Resources.LoadedDatabases + report.Resources.LoadingDatabases
-		if load < 0 {
-			valid = false
-		}
-		if err := controller.store.Update(func(current *Metadata) error {
-			registered, exists := current.Workers[identifier]
-			if !exists || registered.Address != worker.Address {
-				return nil
-			}
-			registered.Healthy = valid
-			if valid {
-				registered.Load = load
-				registered.LastHeartbeatMS = time.Now().UnixMilli()
-			}
-			current.Workers[identifier] = registered
-			return nil
-		}); err != nil {
-			return err
-		}
+		jobs <- identifier
 	}
-	return nil
+	close(jobs)
+	group.Wait()
+	close(failures)
+	var all []error
+	for err := range failures {
+		all = append(all, err)
+	}
+	return errors.Join(append(all, ctx.Err())...)
+}
+
+func (controller *Controller) pollWorker(ctx context.Context, identifier string, worker Worker) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	requestID, err := RandomID()
+	if err != nil {
+		return err
+	}
+	limit := min(controller.cfg.HeartbeatTimeout/2, 2*time.Second)
+	if limit < time.Millisecond {
+		limit = time.Millisecond
+	}
+	probe, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	var report workerReport
+	rpcErr := controller.transport.Worker(probe, worker, requestID, workerAction{Command: "get_worker_heartbeat"}, &report)
+	valid := rpcErr == nil && report.WorkerID == identifier && report.Resources.LoadedDatabases >= 0 && report.Resources.LoadingDatabases >= 0
+	load := report.Resources.LoadedDatabases + report.Resources.LoadingDatabases
+	if load < 0 {
+		valid = false
+	}
+	observedMS := time.Now().UnixMilli()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return controller.store.Update(func(current *Metadata) error {
+		registered, exists := current.Workers[identifier]
+		if !exists || registered.Address != worker.Address {
+			return nil
+		}
+		registered.Healthy = valid
+		if valid {
+			registered.Load = load
+			registered.LastHeartbeatMS = observedMS
+		}
+		current.Workers[identifier] = registered
+		return nil
+	})
 }
 
 func (controller *Controller) applyWorker(ctx context.Context, placement *Placement) error {
