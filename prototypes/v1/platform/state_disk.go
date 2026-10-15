@@ -17,6 +17,10 @@ var ErrStateLocked = errors.New("private state locked")
 var ErrStateClosed = errors.New("private state closed")
 var ErrStateUncertain = errors.New("private persistence uncertain; durable verification required")
 
+// auditBatchMaximum bounds how many audit records one durable head commit
+// carries; recovery must accept exactly the revision gaps this permits.
+const auditBatchMaximum = 32
+
 type durableFile struct {
 	mutex     sync.Mutex
 	path      string
@@ -83,17 +87,16 @@ func openDurable(path string, initial any) (*durableFile, error) {
 		return nil, err
 	}
 	if fresh && len(entries) == 1 && entries[0].Name() == filepath.Base(absolute)+".lock" {
-		if err := disk.persist(0, initial); err != nil {
+		if err := disk.initialize(initial); err != nil {
 			return nil, err
 		}
-		disk.fresh = true
 	} else {
 		for _, entry := range entries {
 			name := entry.Name()
 			if filepath.Base(absolute) == "state.json" && name == "operations" && entry.IsDir() {
 				continue
 			}
-			if name == filepath.Base(absolute) || name == filepath.Base(absolute)+".floor" || name == filepath.Base(absolute)+".lock" || name == filepath.Base(absolute)+".pending" || (strings.HasPrefix(name, ".private-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular()) {
+			if name == filepath.Base(absolute) || name == filepath.Base(absolute)+".floor" || name == filepath.Base(absolute)+".lock" || (strings.HasPrefix(name, ".private-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular()) {
 				continue
 			}
 			if strings.HasSuffix(filepath.Base(absolute), ".head") && name == strings.TrimSuffix(filepath.Base(absolute), ".head") {
@@ -104,19 +107,45 @@ func openDurable(path string, initial any) (*durableFile, error) {
 			}
 			return nil, errors.New("unexpected private state file")
 		}
-		if err := recoverDurableCommit(disk); err != nil {
-			return nil, err
-		}
 		var envelope diskEnvelope
-		if err := readDurableEnvelope(absolute, &envelope); err != nil {
-			return nil, err
+		readErr := readDurableEnvelope(absolute, &envelope)
+		if errors.Is(readErr, os.ErrNotExist) {
+			// The floor is durable before the payload, so a missing payload is
+			// either an interrupted initialization or a wiped store. Only a floor
+			// that never left revision zero can prove the initialization.
+			if err := disk.resumeInitialization(); err != nil {
+				return nil, err
+			}
+			ok = true
+			return disk, nil
+		}
+		if readErr != nil {
+			return nil, readErr
 		}
 		var floor diskFloor
 		if err := readPrivate(absolute+".floor", &floor); err != nil {
 			return nil, err
 		}
 		digest := digestHex(envelope.Payload)
-		if !validDurableEnvelope(envelope) || floor.Version != 1 || envelope.Revision != floor.Revision || envelope.Checksum != digest || floor.Checksum != digest {
+		if !validDurableEnvelope(envelope) || floor.Version != 1 || floor.Revision > envelope.Revision {
+			return nil, errors.New("state checksum/rollback/incomplete persistence")
+		}
+		if floor.Revision < envelope.Revision {
+			// The payload is written before the floor, so a crash between the two
+			// can only leave the floor behind a fully durable payload. Advancing it
+			// here keeps the rollback bound monotonic without replaying anything,
+			// but no writer can leave a gap wider than one durable transition.
+			if envelope.Revision-floor.Revision > durableRevisionStep(disk.prototype) {
+				return nil, errors.New("state checksum/rollback/incomplete persistence")
+			}
+			encoded, err := json.Marshal(diskFloor{Version: 1, Revision: envelope.Revision, Checksum: digest})
+			if err != nil {
+				return nil, err
+			}
+			if err := atomicPrivate(absolute+".floor", encoded); err != nil {
+				return nil, err
+			}
+		} else if floor.Checksum != digest {
 			return nil, errors.New("state checksum/rollback/incomplete persistence")
 		}
 		disk.payload = append(json.RawMessage(nil), envelope.Payload...)
@@ -126,32 +155,58 @@ func openDurable(path string, initial any) (*durableFile, error) {
 	return disk, nil
 }
 
+// initialize writes revision zero. The floor is durable before the payload so an
+// interrupted initialization stays resumable from the floor alone, and the
+// rollback bound never trails a payload that already landed.
+func (disk *durableFile) initialize(value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil || len(payload) > durablePayloadBytes {
+		return errors.New("invalid or oversized private state")
+	}
+	after := diskEnvelope{Version: 1, Revision: 0, Checksum: digestHex(payload), Payload: payload}
+	if err := validateDurableTransition(disk, after); err != nil {
+		return err
+	}
+	floor, _ := json.Marshal(diskFloor{Version: 1, Revision: 0, Checksum: after.Checksum})
+	if err := atomicPrivate(disk.path+".floor", floor); err != nil {
+		return err
+	}
+	envelope, _ := json.Marshal(after)
+	if err := atomicPrivate(disk.path, envelope); err != nil {
+		return err
+	}
+	disk.payload = payload
+	disk.revision = 0
+	disk.fresh = true
+	return nil
+}
+
+// resumeInitialization finishes an initialization whose payload never landed.
+// Any other missing payload is a wiped or unreadable store and stays refused.
+func (disk *durableFile) resumeInitialization() error {
+	var floor diskFloor
+	if err := readPrivate(disk.path+".floor", &floor); err != nil || floor.Version != 1 || floor.Revision != 0 {
+		return errors.New("state checksum/rollback/incomplete persistence")
+	}
+	return disk.initialize(disk.prototype)
+}
+
 func (disk *durableFile) persist(revision uint64, value any) error {
 	payload, err := json.Marshal(value)
 	if err != nil || len(payload) > durablePayloadBytes {
 		return errors.New("invalid or oversized private state")
 	}
 	checksum := digestHex(payload)
-	floor, _ := json.Marshal(diskFloor{Version: 1, Revision: revision, Checksum: checksum})
 	after := diskEnvelope{Version: 1, Revision: revision, Checksum: checksum, Payload: payload}
+	if err := validateDurableTransition(disk, after); err != nil {
+		return err
+	}
 	envelope, _ := json.Marshal(after)
-	intent := durableCommitIntent{Version: 1, Target: disk.path, After: after}
-	if disk.payload != nil {
-		intent.Before = &diskEnvelope{Version: 1, Revision: disk.revision, Checksum: digestHex(disk.payload), Payload: disk.payload}
-	}
-	if err := validateDurableCommit(intent, disk); err != nil {
-		return err
-	}
-	if err := writeDurableIntent(disk.path, intent); err != nil {
-		return err
-	}
-	if err := atomicPrivate(disk.path+".floor", floor); err != nil {
-		return err
-	}
+	floor, _ := json.Marshal(diskFloor{Version: 1, Revision: revision, Checksum: checksum})
 	if err := atomicPrivate(disk.path, envelope); err != nil {
 		return err
 	}
-	if err := removeDurableIntent(disk.path); err != nil {
+	if err := atomicPrivate(disk.path+".floor", floor); err != nil {
 		return err
 	}
 	disk.revision = revision
@@ -165,6 +220,20 @@ func (disk *durableFile) commit(revision uint64, value any) error {
 	}
 	if disk.revision == ^uint64(0) || revision != disk.revision+1 {
 		return errors.New("private revision must increment exactly")
+	}
+	if err := disk.persist(revision, value); err != nil {
+		disk.poisoned = true
+		return ErrStateUncertain
+	}
+	return nil
+}
+
+func (disk *durableFile) commitAuditBatch(revision uint64, value auditHead) error {
+	if err := disk.available(); err != nil {
+		return err
+	}
+	if revision <= disk.revision || revision-disk.revision > auditBatchMaximum || value.Sequence != revision {
+		return errors.New("invalid audit batch revision")
 	}
 	if err := disk.persist(revision, value); err != nil {
 		disk.poisoned = true

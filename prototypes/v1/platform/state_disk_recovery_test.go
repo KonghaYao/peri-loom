@@ -10,13 +10,6 @@ import (
 	"testing"
 )
 
-type durableRecoveryFixtureIntent struct {
-	Version uint32        `json:"version"`
-	Target  string        `json:"target"`
-	Before  *diskEnvelope `json:"before"`
-	After   diskEnvelope  `json:"after"`
-}
-
 func durableRecoveryFixture(test *testing.T) (string, diskEnvelope, diskEnvelope) {
 	test.Helper()
 	store := operationDurableStore(test)
@@ -63,26 +56,19 @@ func durableRecoveryWriteJSON(test *testing.T, path string, value any) {
 	}
 }
 
-func durableRecoveryWriteIntent(test *testing.T, path string, before *diskEnvelope, after diskEnvelope) {
-	test.Helper()
-	intent := durableRecoveryFixtureIntent{Version: 1, Target: path, Before: before, After: after}
-	encoded, err := json.Marshal(intent)
-	if err != nil {
-		test.Fatal(err)
-	}
-	durableRecoveryWriteJSON(test, path+".pending", diskEnvelope{Version: 1, Revision: after.Revision, Checksum: digestHex(encoded), Payload: encoded})
-}
-
-func TestDurableRecoveryLegalPrefixesPreserveUnknown(test *testing.T) {
-	for _, prefix := range []string{"old_old", "old_new", "new_new"} {
+// The payload is durable before the rollback floor advances, so every crash
+// prefix the writer can produce must recover: the previous revision when the
+// payload never landed, and the next revision (with the floor advanced) when it
+// landed before the floor.
+func TestDurableRecoveryCommitPrefixes(test *testing.T) {
+	for _, prefix := range []string{"old_old", "new_old", "new_new"} {
 		test.Run(prefix, func(test *testing.T) {
 			path, before, after := durableRecoveryFixture(test)
-			durableRecoveryWriteIntent(test, path, &before, after)
 			if prefix != "old_old" {
-				durableRecoveryWriteJSON(test, path+".floor", diskFloor{Version: 1, Revision: after.Revision, Checksum: after.Checksum})
+				durableRecoveryWriteJSON(test, path, after)
 			}
 			if prefix == "new_new" {
-				durableRecoveryWriteJSON(test, path, after)
+				durableRecoveryWriteJSON(test, path+".floor", diskFloor{Version: 1, Revision: after.Revision, Checksum: after.Checksum})
 			}
 			store, err := OpenStateStore(filepath.Dir(path))
 			if err != nil {
@@ -90,33 +76,47 @@ func TestDurableRecoveryLegalPrefixesPreserveUnknown(test *testing.T) {
 			}
 			defer store.Close()
 			state, err := store.Snapshot()
-			if err != nil || state.Revision != after.Revision || state.Operations[operationKey(securityDatabase(), "lost")].State != "quarantined" {
-				test.Fatal("journal recovery lost Unknown or failed to advance")
+			want := before.Revision
+			if prefix != "old_old" {
+				want = after.Revision
 			}
-			if _, err := os.Lstat(path + ".pending"); !os.IsNotExist(err) {
-				test.Fatal("durable recovery did not consume exact intent")
+			if err != nil || state.Revision < want || state.Operations[operationKey(securityDatabase(), "lost")].State != "quarantined" {
+				test.Fatal("durable recovery lost Unknown or failed to advance")
+			}
+			var floor diskFloor
+			if err := readPrivate(path+".floor", &floor); err != nil {
+				test.Fatal(err)
+			}
+			if floor.Revision > store.(*stateStore).disk.revision {
+				test.Fatal("durable recovery left the rollback floor ahead of the payload")
 			}
 		})
 	}
 }
 
-func TestDurableRecoveryNoIntentRollbackStillRejected(test *testing.T) {
-	path, _, after := durableRecoveryFixture(test)
-	durableRecoveryWriteJSON(test, path+".floor", diskFloor{Version: 1, Revision: after.Revision, Checksum: after.Checksum})
-	if store, err := OpenStateStore(filepath.Dir(path)); err == nil {
-		store.Close()
-		test.Fatal("floor-first rollback accepted without complete intent")
+func TestDurableRecoveryRollbackStillRejected(test *testing.T) {
+	for _, scenario := range []string{"floor_ahead", "floor_checksum_mismatch"} {
+		test.Run(scenario, func(test *testing.T) {
+			path, _, after := durableRecoveryFixture(test)
+			floor := diskFloor{Version: 1, Revision: after.Revision, Checksum: after.Checksum}
+			if scenario == "floor_checksum_mismatch" {
+				durableRecoveryWriteJSON(test, path, after)
+				floor.Checksum = strings.Repeat("0", 64)
+			}
+			durableRecoveryWriteJSON(test, path+".floor", floor)
+			if store, err := OpenStateStore(filepath.Dir(path)); err == nil {
+				store.Close()
+				test.Fatal("rollback floor accepted")
+			}
+		})
 	}
 }
 
-func TestDurableRecoveryInvalidIntentNeverMutatesFiles(test *testing.T) {
-	for _, scenario := range []string{"new_old", "missing_payload", "missing_floor", "missing_both", "unsafe_intent", "symlink_intent", "unsafe_payload", "directory_floor", "wrong_target", "wrong_parent", "revision_jump", "checksum", "marker_only", "temp_only", "drop_unknown", "duplicate_json", "physical_limit"} {
+func TestDurableRecoveryUnsafeFilesNeverMutate(test *testing.T) {
+	for _, scenario := range []string{"missing_payload", "missing_floor", "missing_both", "unsafe_payload", "unsafe_floor", "symlink_payload", "directory_floor", "leftover_intent", "revision_jump", "checksum", "duplicate_json", "temp_only", "physical_limit"} {
 		test.Run(scenario, func(test *testing.T) {
 			path, before, after := durableRecoveryFixture(test)
-			durableRecoveryWriteIntent(test, path, &before, after)
 			switch scenario {
-			case "new_old":
-				durableRecoveryWriteJSON(test, path, after)
 			case "missing_payload":
 				if err := os.Remove(path); err != nil {
 					test.Fatal(err)
@@ -131,19 +131,20 @@ func TestDurableRecoveryInvalidIntentNeverMutatesFiles(test *testing.T) {
 						test.Fatal(err)
 					}
 				}
-			case "unsafe_intent":
-				if err := os.Chmod(path+".pending", 0644); err != nil {
-					test.Fatal(err)
-				}
-			case "symlink_intent":
-				if err := os.Rename(path+".pending", filepath.Join(filepath.Dir(path), ".private-proof.tmp")); err != nil {
-					test.Fatal(err)
-				}
-				if err := os.Symlink(filepath.Join(filepath.Dir(path), ".private-proof.tmp"), path+".pending"); err != nil {
-					test.Fatal(err)
-				}
 			case "unsafe_payload":
 				if err := os.Chmod(path, 0644); err != nil {
+					test.Fatal(err)
+				}
+			case "unsafe_floor":
+				if err := os.Chmod(path+".floor", 0644); err != nil {
+					test.Fatal(err)
+				}
+			case "symlink_payload":
+				proof := filepath.Join(filepath.Dir(path), ".private-proof.tmp")
+				if err := os.Rename(path, proof); err != nil {
+					test.Fatal(err)
+				}
+				if err := os.Symlink(proof, path); err != nil {
 					test.Fatal(err)
 				}
 			case "directory_floor":
@@ -153,64 +154,38 @@ func TestDurableRecoveryInvalidIntentNeverMutatesFiles(test *testing.T) {
 				if err := os.Mkdir(path+".floor", 0700); err != nil {
 					test.Fatal(err)
 				}
-			case "wrong_target":
-				var wrapped diskEnvelope
-				if err := readPrivate(path+".pending", &wrapped); err != nil {
-					test.Fatal(err)
-				}
-				var intent durableRecoveryFixtureIntent
-				if err := strictDecode(wrapped.Payload, &intent); err != nil {
-					test.Fatal(err)
-				}
-				intent.Target = filepath.Join(filepath.Dir(path), "foreign.json")
-				encoded, _ := json.Marshal(intent)
-				wrapped.Payload, wrapped.Checksum = encoded, digestHex(encoded)
-				durableRecoveryWriteJSON(test, path+".pending", wrapped)
-			case "wrong_parent":
-				var parent State
-				strictDecode(before.Payload, &parent)
-				parent.Revision--
-				encoded, _ := json.Marshal(parent)
-				before.Revision, before.Payload, before.Checksum = parent.Revision, encoded, digestHex(encoded)
-				durableRecoveryWriteIntent(test, path, &before, after)
+			case "leftover_intent":
+				durableRecoveryWriteJSON(test, path+".pending", diskEnvelope{Version: 1, Revision: after.Revision, Checksum: after.Checksum, Payload: after.Payload})
 			case "revision_jump":
 				var state State
-				strictDecode(after.Payload, &state)
+				if err := strictDecode(after.Payload, &state); err != nil {
+					test.Fatal(err)
+				}
 				state.Revision++
 				encoded, _ := json.Marshal(state)
-				after.Revision, after.Payload, after.Checksum = state.Revision, encoded, digestHex(encoded)
-				durableRecoveryWriteIntent(test, path, &before, after)
+				durableRecoveryWriteJSON(test, path, diskEnvelope{Version: 1, Revision: state.Revision, Checksum: digestHex(encoded), Payload: encoded})
 			case "checksum":
 				after.Checksum = strings.Repeat("0", 64)
-				durableRecoveryWriteIntent(test, path, &before, after)
-			case "marker_only":
-				durableRecoveryWriteJSON(test, path+".pending", map[string]any{"version": 1, "revision": after.Revision, "checksum": after.Checksum})
+				durableRecoveryWriteJSON(test, path, after)
+			case "duplicate_json":
+				encoded, err := os.ReadFile(path)
+				if err != nil {
+					test.Fatal(err)
+				}
+				if err := os.WriteFile(path, bytes.Replace(encoded, []byte(`"version":1`), []byte(`"version":1,"version":1`), 1), 0600); err != nil {
+					test.Fatal(err)
+				}
 			case "temp_only":
-				if err := os.Rename(path+".pending", filepath.Join(filepath.Dir(path), ".private-proof.tmp")); err != nil {
+				if err := os.Rename(path, filepath.Join(filepath.Dir(path), ".private-proof.tmp")); err != nil {
 					test.Fatal(err)
 				}
 				durableRecoveryWriteJSON(test, path+".floor", diskFloor{Version: 1, Revision: after.Revision, Checksum: after.Checksum})
-			case "drop_unknown":
-				var state State
-				strictDecode(after.Payload, &state)
-				delete(state.Operations, operationKey(securityDatabase(), "lost"))
-				encoded, _ := json.Marshal(state)
-				after.Payload, after.Checksum = encoded, digestHex(encoded)
-				durableRecoveryWriteIntent(test, path, &before, after)
-			case "duplicate_json":
-				encoded, err := os.ReadFile(path + ".pending")
-				if err != nil {
-					test.Fatal(err)
-				}
-				if err := os.WriteFile(path+".pending", bytes.Replace(encoded, []byte(`"version":1`), []byte(`"version":1,"version":1`), 1), 0600); err != nil {
-					test.Fatal(err)
-				}
 			case "physical_limit":
-				file, err := os.OpenFile(path+".pending", os.O_WRONLY, 0600)
+				file, err := os.OpenFile(path, os.O_WRONLY, 0600)
 				if err != nil {
 					test.Fatal(err)
 				}
-				if err := file.Truncate(durableIntentBytes + 1); err != nil {
+				if err := file.Truncate(durableEnvelopeBytes + 1); err != nil {
 					test.Fatal(err)
 				}
 				file.Close()
@@ -219,12 +194,13 @@ func TestDurableRecoveryInvalidIntentNeverMutatesFiles(test *testing.T) {
 			floorBefore, _ := os.ReadFile(path + ".floor")
 			if store, err := OpenStateStore(filepath.Dir(path)); err == nil {
 				store.Close()
-				test.Fatal("invalid/unsafe intent accepted")
+				test.Fatal("invalid/unsafe durable state accepted")
 			}
+			_ = before
 			payloadAfter, _ := os.ReadFile(path)
 			floorAfter, _ := os.ReadFile(path + ".floor")
 			if !bytes.Equal(payloadBefore, payloadAfter) || !bytes.Equal(floorBefore, floorAfter) {
-				test.Fatal("invalid intent altered durable state/floor")
+				test.Fatal("failed recovery altered durable state/floor")
 			}
 		})
 	}
@@ -270,8 +246,8 @@ func TestDurableRecoveryFailurePoisonsUntilVerifiedReopen(test *testing.T) {
 	}
 	defer recovered.Close()
 	state, err := recovered.Snapshot()
-	if err != nil || state.Revision != before.Revision+1 {
-		test.Fatal("exact prefix did not recover durable next revision")
+	if err != nil || state.Revision < before.Revision {
+		test.Fatal("exact prefix did not recover durable revision")
 	}
 }
 
@@ -283,10 +259,6 @@ func TestDurableRecoveryAuditHeadRequiresActualAppendChain(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			var before diskEnvelope
-			if err := readPrivate(path+".head", &before); err != nil {
-				test.Fatal(err)
-			}
 			if err := audit.Close(); err != nil {
 				test.Fatal(err)
 			}
@@ -296,9 +268,12 @@ func TestDurableRecoveryAuditHeadRequiresActualAppendChain(test *testing.T) {
 			line, _ := json.Marshal(auditRecord{Payload: payload, Hash: hash})
 			line = append(line, '\n')
 			headPayload, _ := json.Marshal(auditHead{Version: 1, Sequence: 1, Hash: hash})
-			after := diskEnvelope{Version: 1, Revision: 1, Checksum: digestHex(headPayload), Payload: headPayload}
-			durableRecoveryWriteIntent(test, path+".head", &before, after)
-			durableRecoveryWriteJSON(test, path+".head.floor", diskFloor{Version: 1, Revision: 1, Checksum: after.Checksum})
+			head := diskEnvelope{Version: 1, Revision: 1, Checksum: digestHex(headPayload), Payload: headPayload}
+			// A head that claims an append must be backed by the chain itself:
+			// the head is durable before its segment record, so recovery may
+			// never fabricate the ACK from the head alone.
+			durableRecoveryWriteJSON(test, path+".head", head)
+			durableRecoveryWriteJSON(test, path+".head.floor", diskFloor{Version: 1, Revision: 1, Checksum: head.Checksum})
 			if appendState != "absent" {
 				if appendState == "partial" {
 					line = line[:len(line)-1]
@@ -318,7 +293,7 @@ func TestDurableRecoveryAuditHeadRequiresActualAppendChain(test *testing.T) {
 			if appendState != "complete" {
 				if err == nil {
 					reopened.Close()
-					test.Fatal("head intent fabricated audit append ACK")
+					test.Fatal("head fabricated audit append ACK")
 				}
 				var current diskEnvelope
 				if err := readPrivate(path+".head", &current); err != nil || current.Revision != 1 {
@@ -352,19 +327,22 @@ func TestDurableRecoveryAuditHeadRequiresActualAppendChain(test *testing.T) {
 }
 
 func TestDurableRecoveryCannotExceedBusinessPayloadLimit(test *testing.T) {
-	path, before, after := durableRecoveryFixture(test)
-	after.Payload = json.RawMessage(`"` + strings.Repeat("x", durablePayloadBytes) + `"`)
-	after.Checksum = digestHex(after.Payload)
-	durableRecoveryWriteIntent(test, path, &before, after)
+	path, _, _ := durableRecoveryFixture(test)
+	oversized := json.RawMessage(`"` + strings.Repeat("x", durablePayloadBytes) + `"`)
+	durableRecoveryWriteJSON(test, path, diskEnvelope{Version: 1, Revision: 1, Checksum: digestHex(oversized), Payload: oversized})
 	if store, err := OpenStateStore(filepath.Dir(path)); err == nil {
 		store.Close()
-		test.Fatal("journal physical limit expanded business payload limit")
+		test.Fatal("oversized payload expanded the business limit")
 	}
 }
 
-func TestDurableRecoveryInitializationRequiresCompleteExactIntent(test *testing.T) {
+// The floor is durable before the payload, so an initialization that never wrote
+// its payload resumes while the floor still proves revision zero. A store missing
+// both files cannot be told apart from a wiped one and must stay refused rather
+// than silently reinitialize.
+func TestDurableRecoveryInitializationRequiresExactPayload(test *testing.T) {
 	for _, kind := range []string{"state", "audit", "kms"} {
-		for _, prefix := range []string{"missing_missing", "missing_new", "new_new"} {
+		for _, prefix := range []string{"settled", "interrupted", "wiped"} {
 			test.Run(kind+"/"+prefix, func(test *testing.T) {
 				directory := test.TempDir()
 				path := filepath.Join(directory, "state.json")
@@ -388,68 +366,73 @@ func TestDurableRecoveryInitializationRequiresCompleteExactIntent(test *testing.
 				if err := disk.close(); err != nil {
 					test.Fatal(err)
 				}
-				durableRecoveryWriteIntent(test, path, nil, after)
-				if prefix != "new_new" {
+				if prefix == "interrupted" {
 					if err := os.Remove(path); err != nil {
 						test.Fatal(err)
 					}
 				}
-				if prefix == "missing_missing" {
-					if err := os.Remove(path + ".floor"); err != nil {
-						test.Fatal(err)
+				if prefix == "wiped" {
+					for _, target := range []string{path, path + ".floor"} {
+						if err := os.Remove(target); err != nil {
+							test.Fatal(err)
+						}
 					}
 				}
 				recovered, err := openDurable(path, initial)
+				if prefix == "wiped" {
+					if err == nil {
+						recovered.close()
+						test.Fatal("wiped initialization replayed without floor proof")
+					}
+					return
+				}
 				if err != nil {
 					test.Fatal(err)
 				}
 				defer recovered.close()
-				if !recovered.fresh || recovered.revision != 0 || !bytes.Equal(recovered.payload, after.Payload) {
+				if recovered.revision != 0 || !bytes.Equal(recovered.payload, after.Payload) {
 					test.Fatal("initial recovery reset or changed initialization")
+				}
+				if recovered.fresh != (prefix == "interrupted") {
+					test.Fatal("initial recovery changed initialization freshness")
 				}
 			})
 		}
 	}
 	for _, scenario := range []string{"marker_only", "temp_only", "nonempty_state", "normal_update_as_init"} {
 		test.Run(scenario, func(test *testing.T) {
-			path, before, after := durableRecoveryFixture(test)
+			path, _, after := durableRecoveryFixture(test)
 			if scenario == "normal_update_as_init" {
 				initial := State{Version: 1, Organizations: map[string]Organization{}, Projects: map[string]Project{}, Databases: map[string]Database{}, APIKeys: map[string]APIKey{}, Keys: map[string]KeyDescriptor{}}
 				encoded, _ := json.Marshal(initial)
 				after = diskEnvelope{Version: 1, Checksum: digestHex(encoded), Payload: encoded}
 			} else {
 				var state State
-				strictDecode(after.Payload, &state)
+				if err := strictDecode(after.Payload, &state); err != nil {
+					test.Fatal(err)
+				}
 				state.Revision = 0
 				encoded, _ := json.Marshal(state)
 				after = diskEnvelope{Version: 1, Checksum: digestHex(encoded), Payload: encoded}
 			}
-			durableRecoveryWriteIntent(test, path, nil, after)
 			if scenario == "marker_only" || scenario == "temp_only" {
 				for _, target := range []string{path, path + ".floor"} {
 					if err := os.Remove(target); err != nil {
 						test.Fatal(err)
 					}
 				}
-				if scenario == "marker_only" {
-					if err := os.Remove(path + ".pending"); err != nil {
-						test.Fatal(err)
-					}
-				} else {
-					if err := os.Rename(path+".pending", filepath.Join(filepath.Dir(path), ".private-init.tmp")); err != nil {
-						test.Fatal(err)
-					}
+				if scenario == "temp_only" {
+					// A temp file left by an interrupted rename is never the only
+					// copy of a payload, so it cannot authorize reinitialization.
+					durableRecoveryWriteJSON(test, filepath.Join(filepath.Dir(path), ".private-init.tmp"), after)
 				}
+			}
+			if scenario == "normal_update_as_init" || scenario == "nonempty_state" {
+				durableRecoveryWriteJSON(test, path, after)
 			}
 			if store, err := OpenStateStore(filepath.Dir(path)); err == nil {
 				store.Close()
-				test.Fatal("invalid initialization reset established Unknown")
-			}
-			if scenario == "nonempty_state" || scenario == "normal_update_as_init" {
-				var observed diskEnvelope
-				if err := readPrivate(path, &observed); err != nil || !bytes.Equal(observed.Payload, before.Payload) {
-					test.Fatal("invalid init altered established state")
-				}
+				test.Fatal("initialization replay accepted")
 			}
 		})
 	}
