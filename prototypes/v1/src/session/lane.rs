@@ -198,6 +198,7 @@ impl SessionLane {
         sql: &str,
         args: &[Value],
         named_args: &[(String, Value)],
+        want_rows: bool,
         budget: &Budget,
     ) -> Result<StatementResult> {
         let _reads = crate::authority::request_reads::Scope::enter();
@@ -212,6 +213,7 @@ impl SessionLane {
             sql,
             args,
             named_args,
+            want_rows,
             budget,
             &deadline,
         );

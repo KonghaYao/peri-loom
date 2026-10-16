@@ -144,7 +144,7 @@ impl RemoteSession {
         args: &[Value],
         budget: &Budget,
     ) -> Result<StatementResult> {
-        self.statement_with_named_args_and_budget(sql, args, &[], budget)
+        self.statement_with_named_args_and_budget(sql, args, &[], true, budget)
     }
 
     pub fn statement_with_named_args(
@@ -152,8 +152,15 @@ impl RemoteSession {
         sql: &str,
         args: &[Value],
         named_args: &[(String, Value)],
+        want_rows: bool,
     ) -> Result<StatementResult> {
-        self.statement_with_named_args_and_budget(sql, args, named_args, &Budget::trusted_default())
+        self.statement_with_named_args_and_budget(
+            sql,
+            args,
+            named_args,
+            want_rows,
+            &Budget::trusted_default(),
+        )
     }
 
     fn statement_with_named_args_and_budget(
@@ -161,6 +168,7 @@ impl RemoteSession {
         sql: &str,
         args: &[Value],
         named_args: &[(String, Value)],
+        want_rows: bool,
         budget: &Budget,
     ) -> Result<StatementResult> {
         self.lane.statement(
@@ -168,6 +176,7 @@ impl RemoteSession {
             sql,
             args,
             named_args,
+            want_rows,
             budget,
         )
     }

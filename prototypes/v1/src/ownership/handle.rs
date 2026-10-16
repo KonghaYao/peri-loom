@@ -109,11 +109,12 @@ impl OwnedHandle {
         sql: &str,
         args: &[Value],
         named_args: &[(String, Value)],
+        want_rows: bool,
     ) -> Result<StatementResult> {
         self.handle
             .as_ref()
             .unwrap()
-            .statement_with_named_args(sql, args, named_args)
+            .statement_with_named_args(sql, args, named_args, want_rows)
     }
 
     pub fn in_transaction(&self) -> Result<bool> {

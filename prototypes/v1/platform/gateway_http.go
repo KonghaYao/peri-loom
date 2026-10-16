@@ -24,7 +24,10 @@ type gatewayRequest struct {
 	WriteCursor bool                   `json:"write_cursor,omitempty"`
 	Args        []sqlArgument          `json:"args,omitempty"`
 	NamedArgs   []namedSQLArgument     `json:"named_args,omitempty"`
-	RequestID   string                 `json:"request_id,omitempty"`
+	// Absent means the caller wants the rows. A statement asked for its outcome
+	// still executes and settles; only the row payload is left unmaterialized.
+	WantRows  *bool  `json:"want_rows,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type sqlArgument struct {
@@ -310,6 +313,9 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 		if action == "statement" || action == "cursor_open" {
 			allowed["args"] = true
 			allowed["named_args"] = true
+		}
+		if action == "statement" {
+			allowed["want_rows"] = true
 		}
 		if action == "cursor_open" {
 			allowed["write_cursor"] = true

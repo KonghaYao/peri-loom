@@ -95,11 +95,12 @@ impl DatabaseHandle {
         sql: &str,
         args: &[Value],
         named_args: &[(String, Value)],
+        want_rows: bool,
     ) -> Result<StatementResult> {
         self.session
             .as_ref()
             .unwrap()
-            .statement_with_named_args(sql, args, named_args)
+            .statement_with_named_args(sql, args, named_args, want_rows)
     }
     pub fn in_transaction(&self) -> Result<bool> {
         self.session.as_ref().unwrap().in_transaction()

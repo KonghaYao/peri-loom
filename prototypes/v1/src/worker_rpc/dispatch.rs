@@ -147,6 +147,7 @@ impl State {
                 sql,
                 args,
                 named_args,
+                want_rows,
                 ..
             } => {
                 ensure!(
@@ -162,7 +163,7 @@ impl State {
                     .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
                     .collect::<Result<Vec<_>>>()?;
                 let call = call.context("worker session RPC guard absent")?;
-                let result = call.handle().statement_with_named_args(&sql, &args, &named_args).map(|result| {
+                let result = call.handle().statement_with_named_args(&sql, &args, &named_args, want_rows).map(|result| {
                     json!({
                         "cols": result.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
                         "rows": result.rows.into_iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),

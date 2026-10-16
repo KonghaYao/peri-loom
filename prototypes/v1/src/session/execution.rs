@@ -158,6 +158,10 @@ pub(super) fn statement(
     sql: &str,
     args: &[Value],
     named_args: &[(String, Value)],
+    // A caller that wants no rows still steps the statement to Done; only
+    // materializing and returning them is skipped, so the write and its outcome
+    // are unaffected.
+    want_rows: bool,
     budget: &Budget,
     deadline: &RequestDeadline,
 ) -> Result<StatementResult> {
@@ -203,7 +207,7 @@ pub(super) fn statement(
                 .collect::<Vec<_>>();
             let prior_rowid_generation = connection.last_insert_rowid_generation();
             let prior_changes = connection.total_changes();
-            let (_, rows) = run(&context, statement, &mut guard, true, 0)?;
+            let (_, rows) = run(&context, statement, &mut guard, want_rows, 0)?;
             let affected_row_count = if connection.total_changes() != prior_changes {
                 connection.changes()
             } else {

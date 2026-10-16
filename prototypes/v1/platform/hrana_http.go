@@ -693,7 +693,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 			return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, true, false)
 		}
 	}
-	reply := handler.call(request, credential, "/v1/sql/statement", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs})
+	reply := handler.call(request, credential, "/v1/sql/statement", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "want_rows": statement.WantRows})
 	if reply.code != "" {
 		if reply.readOnlyCandidate {
 			readonly, describeFailure, fatal := handler.cursorStatementReadonly(request, credential, session, statement.SQL)

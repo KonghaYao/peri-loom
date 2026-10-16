@@ -92,12 +92,24 @@ impl Worker {
         args: Vec<StatementArg>,
         named_args: Vec<NamedStatementArg>,
     ) -> Result<Value> {
+        self.statement_named_projection(session, sql, args, named_args, true)
+    }
+
+    fn statement_named_projection(
+        &self,
+        session: &str,
+        sql: &str,
+        args: Vec<StatementArg>,
+        named_args: Vec<NamedStatementArg>,
+        want_rows: bool,
+    ) -> Result<Value> {
         self.call(
             WorkerCommand::Statement {
                 session: session.into(),
                 sql: sql.into(),
                 args,
                 named_args,
+                want_rows,
             },
             false,
         )
@@ -952,6 +964,41 @@ fn native_statement_metadata_parameters_and_transactions_via_worker_rpc() -> Res
         false,
     )?;
     assert_eq!(old["result"], json!([["returned"]]));
+    assert_eq!(
+        worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn statement_without_rows_still_settles_its_write() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    let created = worker.statement(
+        &session,
+        "CREATE TABLE returning_records(id INTEGER PRIMARY KEY, label TEXT)",
+        vec![],
+    )?;
+    assert_eq!(created["ok"], true, "{created}");
+
+    let projected = worker.statement_named_projection(
+        &session,
+        "INSERT INTO returning_records(id, label) VALUES (1, 'hidden') RETURNING label",
+        vec![],
+        vec![],
+        false,
+    )?;
+    assert_eq!(projected["ok"], true, "{projected}");
+    assert_eq!(projected["result"]["rows"], json!([]));
+    assert_eq!(projected["result"]["affected_row_count"], 1);
+
+    let read_back = worker.statement(
+        &session,
+        "SELECT label FROM returning_records WHERE id = 1",
+        vec![],
+    )?;
+    assert_eq!(read_back["result"]["rows"], json!([["hidden"]]));
     assert_eq!(
         worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
         true

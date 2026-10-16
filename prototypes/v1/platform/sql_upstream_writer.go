@@ -88,6 +88,18 @@ func writerCommandValid(operation string, encoded []byte, fields map[string]json
 	} else if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" {
 		expected = 5
 	}
+	// The row projection is optional: an absent field and an explicit true mean
+	// the same thing to the worker, so a caller that omits it keeps the full
+	// result this contract always allowed.
+	if operation == "statement" {
+		if raw, exists := fields["want_rows"]; exists {
+			var wantRows bool
+			if json.Unmarshal(raw, &wantRows) != nil {
+				return false
+			}
+			expected++
+		}
+	}
 	var session string
 	if len(fields) != expected || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) {
 		return false

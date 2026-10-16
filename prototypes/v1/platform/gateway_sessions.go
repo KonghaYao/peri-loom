@@ -317,6 +317,9 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			namedArgs = []namedSQLArgument{}
 		}
 		command["named_args"] = namedArgs
+		if request.WantRows != nil {
+			command["want_rows"] = *request.WantRows
+		}
 		var reply json.RawMessage
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)

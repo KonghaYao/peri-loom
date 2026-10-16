@@ -40,6 +40,10 @@ pub enum WorkerCommand {
         args: Vec<StatementArg>,
         #[serde(default)]
         named_args: Vec<NamedStatementArg>,
+        // Absent means the caller expects the rows, so a caller that predates
+        // this field keeps the full result.
+        #[serde(default = "want_rows_default")]
+        want_rows: bool,
     },
     OpenReadCursor {
         session: String,
@@ -90,6 +94,10 @@ pub enum WorkerCommand {
         max_events: usize,
     },
     Shutdown,
+}
+
+fn want_rows_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
