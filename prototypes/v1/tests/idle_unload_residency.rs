@@ -27,7 +27,10 @@ fn failed_load_releases_the_slot_and_the_next_open_pays_a_full_load() -> Result<
 
     provider.failures.store(1, Ordering::SeqCst);
     let failed = runtime.open(database.clone(), 1);
-    assert!(failed.is_err(), "injected provider failure must fail the open");
+    assert!(
+        failed.is_err(),
+        "injected provider failure must fail the open"
+    );
     drop(failed);
 
     let status = runtime.status()?;
