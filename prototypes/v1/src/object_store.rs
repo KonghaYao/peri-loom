@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredObject {
+    #[serde(with = "payload")]
     pub bytes: Vec<u8>,
     pub etag: String,
 }

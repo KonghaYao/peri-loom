@@ -41,3 +41,76 @@ pub(crate) fn deserialize<'input, Input: Deserializer<'input>>(
 
     input.deserialize_any(Payload)
 }
+
+/// The same convention for a list of bodies. A batched field cannot borrow the
+/// scalar adapter, and leaving it as `Vec<Vec<u8>>` would put a multi-megabyte
+/// batch on the wire as an array of integer arrays.
+pub(crate) mod batch {
+    use std::fmt;
+
+    use serde::de::{DeserializeSeed, Deserializer, SeqAccess, Visitor};
+    use serde::ser::SerializeSeq;
+    use serde::{Serialize, Serializer};
+
+    pub(crate) fn serialize<Output: Serializer>(
+        segments: &[Vec<u8>],
+        output: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        let mut sequence = output.serialize_seq(Some(segments.len()))?;
+        for segment in segments {
+            sequence.serialize_element(&Encoded(segment))?;
+        }
+        sequence.end()
+    }
+
+    struct Encoded<'body>(&'body [u8]);
+
+    impl Serialize for Encoded<'_> {
+        fn serialize<Output: Serializer>(
+            &self,
+            output: Output,
+        ) -> Result<Output::Ok, Output::Error> {
+            super::serialize(self.0, output)
+        }
+    }
+
+    pub(crate) fn deserialize<'input, Input: Deserializer<'input>>(
+        input: Input,
+    ) -> Result<Vec<Vec<u8>>, Input::Error> {
+        struct Batch;
+
+        impl<'input> Visitor<'input> for Batch {
+            type Value = Vec<Vec<u8>>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("array of base64 payloads or legacy byte arrays")
+            }
+
+            fn visit_seq<Sequence: SeqAccess<'input>>(
+                self,
+                mut sequence: Sequence,
+            ) -> Result<Self::Value, Sequence::Error> {
+                let mut segments = Vec::new();
+                while let Some(segment) = sequence.next_element_seed(Element)? {
+                    segments.push(segment);
+                }
+                Ok(segments)
+            }
+        }
+
+        input.deserialize_seq(Batch)
+    }
+
+    struct Element;
+
+    impl<'input> DeserializeSeed<'input> for Element {
+        type Value = Vec<u8>;
+
+        fn deserialize<Input: Deserializer<'input>>(
+            self,
+            input: Input,
+        ) -> Result<Self::Value, Input::Error> {
+            super::deserialize(input)
+        }
+    }
+}

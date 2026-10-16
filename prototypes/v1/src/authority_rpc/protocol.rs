@@ -6,6 +6,10 @@ use crate::ownership::types::{
 };
 use crate::runtime::DatabaseId;
 
+#[cfg(test)]
+#[path = "payload_tests.rs"]
+mod payload_tests;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_RPC_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_SEGMENT_BATCH: usize = 16;
@@ -125,6 +129,7 @@ pub enum MaintenanceOperation {
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionOperation {
     UploadSegments {
+        #[serde(with = "crate::object_store::payload::batch")]
         segments: Vec<Vec<u8>>,
     },
     RegisterSegments {
@@ -139,6 +144,7 @@ pub enum SessionOperation {
     },
     Put {
         key: String,
+        #[serde(with = "crate::object_store::payload")]
         bytes: Vec<u8>,
         condition: PutCondition,
     },
