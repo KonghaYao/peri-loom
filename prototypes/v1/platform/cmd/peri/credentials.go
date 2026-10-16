@@ -40,8 +40,8 @@ func readCredential(path string) (string, error) {
 	return strings.TrimSpace(string(bytes)), nil
 }
 
-func tlsOptions(path string, timeout time.Duration) (sdk.Options, error) {
-	options := sdk.Options{Timeout: timeout}
+func tlsOptions(path string, timeout time.Duration, connectionReuse bool) (sdk.Options, error) {
+	options := sdk.Options{Timeout: timeout, ConnectionReuse: connectionReuse}
 	if path == "" {
 		return options, nil
 	}

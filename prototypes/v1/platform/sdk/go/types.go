@@ -35,7 +35,14 @@ func (database DatabaseID) Validate() error {
 type Options struct {
 	// ConnectionReuse 显式启用外部连接复用（默认 false：逐请求新建连接）。
 	// 复用只改变连接存活期；传输层失败仍以 outcome_unknown 结束，绝不自动重发。
-	ConnectionReuse bool
+	//
+	// 启用后的唯一语义代价：服务端静默关闭空闲连接（对端 FIN）与下一次请求竞态时，
+	// net/http 以 errServerClosedIdle 结束这次请求——shouldRetryRequest 正是在这里
+	// 重发可重放请求（src/net/http/transport.go），而本 SDK 的 POST 不可重放
+	// （GetBody=nil，见 client.go），所以不重发：代价是一次本可成功的 POST 以
+	// outcome_unknown 返回，把「请求未发生」报成「结果不明」。默认关闭时每个请求
+	// 独立建连，不存在这个窗口。
+	ConnectionReuse  bool
 	Timeout          time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64

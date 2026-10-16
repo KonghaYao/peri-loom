@@ -5,10 +5,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"sync"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -189,7 +189,10 @@ func TestExplicitConnectionCloseForcesReconnect(t *testing.T) {
 }
 
 // 静默关闭（无 Connection: close）：劫持连接写完完整合法响应后直接关闭 TCP。
-// 客户端已把该连接视为空闲；下一次未派发请求必须重新建连并成功。同步确定，不用 sleep。
+// 该连接是否已被 transport 从空闲池剔除取决于 readLoop 何时观察到对端 FIN，所以下一次
+// 调用两条路径都可能走：命中已关闭的空闲连接（net/http 以 errServerClosedIdle 上报，
+// 本 SDK 报 outcome_unknown）或重建连接（成功）。这里断言与调度无关的性质：一次调用
+// 最多派发一次 SQL、失败只能是 outcome_unknown、随后的调用必须恢复成功。
 func TestSilentlyClosedIdleConnectionIsRecovered(t *testing.T) {
 	server, accepted, requests := newFixture(t, func(writer http.ResponseWriter, request *http.Request) {
 		hijacker, ok := writer.(http.Hijacker)
@@ -216,11 +219,37 @@ func TestSilentlyClosedIdleConnectionIsRecovered(t *testing.T) {
 	if atomic.LoadInt64(accepted) != 1 {
 		t.Fatalf("warmup connections: %d", atomic.LoadInt64(accepted))
 	}
-	if err := client.call(context.Background(), "/v1/sql/query", "silent-2", map[string]string{"sql": "SELECT 2"}, &rows, true); err != nil {
+
+	before := atomic.LoadInt64(requests)
+	failure := client.call(context.Background(), "/v1/sql/query", "silent-2", map[string]string{"sql": "SELECT 2"}, &rows, true)
+	dispatched := atomic.LoadInt64(requests) - before
+	if dispatched > 1 {
+		t.Fatalf("second call dispatched %d times, want at most one", dispatched)
+	}
+	if failure == nil {
+		// 重建连接：成功必须由恰好一次派发支撑，重放会把计数推成两次。
+		if dispatched != 1 {
+			t.Fatalf("reported success after %d dispatches", dispatched)
+		}
+		t.Log("race landed on a fresh connection")
+	} else {
+		var typed *Error
+		if !errors.As(failure, &typed) || typed.Code != "outcome_unknown" || !typed.OutcomeUnknown {
+			t.Fatalf("silently closed idle connection must report outcome_unknown, got %v", failure)
+		}
+		// 命中已关闭连接时请求没有离开客户端：既不该有派发，也不该有另一次尝试补上来。
+		if dispatched != 0 {
+			t.Fatalf("dead pooled connection dispatched %d times", dispatched)
+		}
+		t.Log("race landed on the closed idle connection")
+	}
+
+	// 恢复：静默关闭不得让客户端失效，也不得让同一次调用被重发到新连接上。
+	if err := client.call(context.Background(), "/v1/sql/query", "silent-3", map[string]string{"sql": "SELECT 3"}, &rows, true); err != nil {
 		t.Fatalf("after silent idle close: %v", err)
 	}
-	if atomic.LoadInt64(requests) != 2 || atomic.LoadInt64(accepted) != 2 {
-		t.Fatalf("requests=%d accepted=%d, want 2/2", atomic.LoadInt64(requests), atomic.LoadInt64(accepted))
+	if total := atomic.LoadInt64(requests); total > 3 {
+		t.Fatalf("dispatches=%d for 3 calls, SQL was replayed", total)
 	}
 }
 
