@@ -312,6 +312,13 @@ impl BranchStore {
                 head: branch.head.clone(),
                 wal: branch.wal.clone(),
             });
+            // Retire the oldest points instead of letting the window grow with the
+            // session: see `RETAINED_RECOVERY_POINTS` for why the window is bounded.
+            let excess = branch
+                .history
+                .len()
+                .saturating_sub(super::RETAINED_RECOVERY_POINTS);
+            branch.history.drain(..excess);
         }
         Ok(validated)
     }

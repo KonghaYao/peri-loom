@@ -91,6 +91,17 @@ mod admitted {
 
 const INLINE_RECEIPTS_MAX: usize = 128;
 
+/// Recovery points a branch keeps in the head document. The head is decoded, validated,
+/// re-encoded and conditionally published on every statement, and one point is ~661 B of
+/// it, so an unbounded window makes each later statement of a long session more expensive
+/// than the one before it (measured: a 157-statement load grows from 86 ms to 1.3 s per
+/// statement and from 52 KB to 155 KB of head). A branch therefore keeps a rolling window:
+/// the newest points stay, older ones leave oldest-first, exactly as `retain_after` drops
+/// them when an operator asks. `snapshot` is the durable anchor that outlives the window,
+/// and a query for a sequence that left it keeps failing closed with "exact committed
+/// sequence is not retained" instead of answering with a neighbouring point.
+const RETAINED_RECOVERY_POINTS: usize = 32;
+
 /// Test-only: whether a publication reaches the store as one durability group.
 #[cfg(test)]
 static GROUP_COMMIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
