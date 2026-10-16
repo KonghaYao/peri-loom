@@ -44,17 +44,120 @@ type journalEntry struct {
 	Hash    string          `json:"hash"`
 }
 
+// operationSnapshotEnvelopeVersion is the snapshot envelope this binary writes.
+// Version zero is what a snapshot written before the envelope decodes as: it binds the
+// chain position but nothing about its own content, so it is only accepted while the
+// surviving chain still proves that position, and replay re-seals it in the current
+// envelope before the store opens. A later envelope version must not be read with this
+// binary's encoding rules.
+const operationSnapshotEnvelopeVersion = 2
+
+// operationSnapshotScope names what a snapshot covers: the platform operation view of
+// one state directory, not one DatabaseID's journal. It is a constant marker instead
+// of the directory path, because a path is not a durable storage identity.
+const operationSnapshotScope = "state_directory/platform.operations"
+
+// operationSnapshotOrigin records how the content of a snapshot was accepted. Content
+// that only a pre-envelope snapshot could vouch for keeps saying so after the reseal, so
+// the directory's own artifact shows that a migration happened instead of looking like a
+// snapshot that was always bound. The marker is advisory, not a control: a writer able to
+// replace the file can set or drop it, which is why it stays out of the content digest
+// and no verification decision depends on it beyond rejecting values this binary cannot
+// interpret.
+const (
+	operationSnapshotOriginNative = "native"
+	operationSnapshotOriginReseal = "legacy_reseal"
+)
+
 // operationSnapshot materializes the bounded set so replay never walks the whole
 // chain. It binds the chain position it was taken at, so a snapshot that is not
 // provably part of the chain is refused instead of trusted.
+//
+// A chain position proves where a snapshot was taken, never what it stored there:
+// dropping an unresolved record keeps every position field, keeps the JSON legal, and
+// erases the isolation fact the compacted prefix no longer restates. The envelope
+// therefore states the format, the scope that was materialized and a digest of the
+// content itself, so a snapshot that no longer matches what was written at that
+// position is refused instead of applied.
 type operationSnapshot struct {
-	Version      uint32                     `json:"version"`
-	BaseRevision uint64                     `json:"base_revision"`
-	Revision     uint64                     `json:"revision"`
-	Digest       string                     `json:"digest"`
-	Sequence     uint64                     `json:"sequence"`
-	Evictions    uint64                     `json:"evictions"`
-	Records      map[string]OperationRecord `json:"records"`
+	EnvelopeVersion uint32                     `json:"envelope_version"`
+	Scope           string                     `json:"scope"`
+	Version         uint32                     `json:"version"`
+	BaseRevision    uint64                     `json:"base_revision"`
+	Revision        uint64                     `json:"revision"`
+	Digest          string                     `json:"digest"`
+	Sequence        uint64                     `json:"sequence"`
+	Evictions       uint64                     `json:"evictions"`
+	Records         map[string]OperationRecord `json:"records"`
+	ContentDigest   string                     `json:"content_digest"`
+	Origin          string                     `json:"snapshot_origin"`
+}
+
+// contentDigest is the single canonical encoding of a snapshot: the writer and the
+// loader both call it, so the two sides cannot drift into different format knowledge.
+// encoding/json orders map keys, which makes the payload byte-stable for a given value
+// instead of depending on Go's map iteration order. The envelope version selects the
+// encoding and the digest cannot cover itself, so neither is part of the input. The
+// payload is derived from the record structs, so changing their encoded shape changes
+// the canonical payload and needs a new envelope version, not a silent edit here.
+func (snapshot operationSnapshot) contentDigest() (string, error) {
+	payload, err := json.Marshal(map[string]any{
+		"envelope_version": snapshot.EnvelopeVersion,
+		"scope":            snapshot.Scope,
+		"version":          snapshot.Version,
+		"base_revision":    snapshot.BaseRevision,
+		"revision":         snapshot.Revision,
+		"digest":           snapshot.Digest,
+		"sequence":         snapshot.Sequence,
+		"evictions":        snapshot.Evictions,
+		"records":          snapshot.Records,
+	})
+	if err != nil {
+		return "", errors.New("invalid operation snapshot")
+	}
+	return digestHex(payload), nil
+}
+
+// sealSnapshot stamps the envelope of a snapshot that is about to be written. Content
+// is never rewritten: the digest covers exactly the records and counters stored
+// beside it.
+func sealSnapshot(snapshot *operationSnapshot, origin string) error {
+	snapshot.EnvelopeVersion = operationSnapshotEnvelopeVersion
+	snapshot.Scope = operationSnapshotScope
+	snapshot.Origin = origin
+	digest, err := snapshot.contentDigest()
+	if err != nil {
+		return err
+	}
+	snapshot.ContentDigest = digest
+	return nil
+}
+
+// verifySnapshotEnvelope checks a decoded snapshot against its own envelope before
+// replay trusts a single record from it.
+func verifySnapshotEnvelope(snapshot operationSnapshot) error {
+	if snapshot.Version != operationJournalVersion || snapshot.Revision == 0 || len(snapshot.Digest) != 64 || snapshot.Records == nil {
+		return errors.New("invalid operation snapshot")
+	}
+	if snapshot.EnvelopeVersion == 0 {
+		// Legacy snapshot: it carries no content binding, so all that can be checked is
+		// its chain position and replay has to re-seal it.
+		return nil
+	}
+	if snapshot.EnvelopeVersion != operationSnapshotEnvelopeVersion {
+		return errors.New("unsupported operation snapshot envelope")
+	}
+	if snapshot.Scope != operationSnapshotScope {
+		return errors.New("operation snapshot scope mismatch")
+	}
+	if snapshot.Origin != operationSnapshotOriginNative && snapshot.Origin != operationSnapshotOriginReseal {
+		return errors.New("unknown operation snapshot origin")
+	}
+	digest, err := snapshot.contentDigest()
+	if err != nil || len(snapshot.ContentDigest) != 64 || digest != snapshot.ContentDigest {
+		return errors.New("operation snapshot content digest mismatch")
+	}
+	return nil
 }
 
 // journalWitness is the rollback witness at offset zero of the log. It is written
@@ -256,7 +359,12 @@ func (journal *operationJournal) replay() error {
 	if err := journal.verifySnapshot(entries); err != nil {
 		return err
 	}
-	return journal.verifyWitness(witness, witnessed)
+	if err := journal.verifyWitness(witness, witnessed); err != nil {
+		return err
+	}
+	// Only a snapshot whose position just verified is re-sealed; a refused one never
+	// reaches this point, so unproven content is never stamped as bound content.
+	return journal.resealLegacySnapshot()
 }
 
 func readOperationJournalBytes(path string, maximum int64) ([]byte, error) {
@@ -335,8 +443,32 @@ func (journal *operationJournal) loadSnapshot() error {
 	if err := readDurableBounded(path, operationJournalMaximumBytes, &snapshot); err != nil {
 		return err
 	}
-	if snapshot.Version != operationJournalVersion || snapshot.Revision == 0 || len(snapshot.Digest) != 64 || snapshot.Records == nil {
+	if err := verifySnapshotEnvelope(snapshot); err != nil {
+		return err
+	}
+	journal.snapshot = &snapshot
+	return nil
+}
+
+// resealLegacySnapshot rewrites a snapshot that predates the envelope, so the window in
+// which a durable view is trusted without a content binding is the one startup whose
+// chain position replay already verified, instead of every startup. The content is
+// written back unchanged and a failure refuses the open: a legacy directory that cannot
+// be re-sealed must not keep reopening on an unprovable view.
+func (journal *operationJournal) resealLegacySnapshot() error {
+	if journal.snapshot == nil || journal.snapshot.EnvelopeVersion != 0 {
+		return nil
+	}
+	snapshot := *journal.snapshot
+	if err := sealSnapshot(&snapshot, operationSnapshotOriginReseal); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil || len(encoded) > operationJournalMaximumBytes {
 		return errors.New("invalid operation snapshot")
+	}
+	if err := atomicPrivate(journal.snapshotPath(), encoded); err != nil {
+		return err
 	}
 	journal.snapshot = &snapshot
 	return nil
@@ -493,6 +625,16 @@ func (journal *operationJournal) compact(view State) error {
 	started := time.Now()
 	defer func() { journal.compactionNS += uint64(time.Since(started)) }()
 	snapshot := operationSnapshot{Version: operationJournalVersion, BaseRevision: view.Revision, Revision: journal.revision, Digest: journal.digest, Sequence: view.OperationSequence, Evictions: view.OperationEvictions, Records: view.Operations}
+	// A materialization keeps the origin of the view it materializes: content that once
+	// needed the pre-envelope acceptance path is still the same content here, so the
+	// artifact must not start describing itself as natively bound.
+	origin := operationSnapshotOriginNative
+	if journal.snapshot != nil && journal.snapshot.Origin == operationSnapshotOriginReseal {
+		origin = operationSnapshotOriginReseal
+	}
+	if err := sealSnapshot(&snapshot, origin); err != nil {
+		return err
+	}
 	encoded, err := json.Marshal(snapshot)
 	if err != nil || len(encoded) > operationJournalMaximumBytes {
 		return errors.New("invalid operation snapshot")
