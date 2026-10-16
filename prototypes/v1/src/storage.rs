@@ -232,7 +232,7 @@ impl RemoteStorage {
             .checked_add(1)
             .context("generation overflow")?;
         next.logical_db_size = state.size;
-        next.segments = state.segments.clone();
+        next.segments.clone_from(&state.segments);
         next.applied_wal_position = position;
         next.applied_lsn = applied_lsn;
         next.parent = Some(state.manifest_id.clone());
@@ -280,12 +280,39 @@ impl RemoteStorage {
         Ok(())
     }
 
+    // The whole manifest is only for callers that publish it. Anything on a
+    // per-request path reads a scalar: cloning the segment index for one field is
+    // unbounded work on a request that never touches a page.
     pub fn manifest(&self) -> Manifest {
         self.state
             .lock()
             .expect("storage mutex poisoned")
             .manifest
             .clone()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("storage mutex poisoned")
+            .manifest
+            .generation
+    }
+
+    pub fn applied_lsn(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("storage mutex poisoned")
+            .manifest
+            .applied_lsn
+    }
+
+    pub fn applied_wal_position(&self) -> WalPosition {
+        self.state
+            .lock()
+            .expect("storage mutex poisoned")
+            .manifest
+            .applied_wal_position
     }
 
     pub fn manifest_id(&self) -> String {
@@ -296,7 +323,14 @@ impl RemoteStorage {
             .clone()
     }
 
-    pub(crate) fn initial_image_replaced(&self, fresh: &dyn ObjectStore) -> Result<bool> {
+    /// `fresh` opens the store the comparison reads HEAD from. It is only called
+    /// once the local manifest proved it can be the pristine initial image: a
+    /// generation-zero image that already carries pages needs no store session at
+    /// all, and opening one is a remote round trip.
+    pub(crate) fn initial_image_replaced<F>(&self, fresh: F) -> Result<bool>
+    where
+        F: FnOnce() -> Result<Arc<dyn ObjectStore>>,
+    {
         let manifest_id = {
             let state = self.state.lock().expect("storage mutex poisoned");
             if state.manifest.generation != 0
@@ -308,6 +342,7 @@ impl RemoteStorage {
             }
             state.manifest_id.clone()
         };
+        let fresh = fresh()?;
         let head = fresh
             .get(&self.namespace.key("HEAD")?)?
             .context("initial image HEAD missing")?;
@@ -379,7 +414,7 @@ mod image_tests {
         let namespace = Namespace::new("tenant", "database")?;
         let cache = Arc::new(SegmentCache::new(directory.path(), 0, 0)?);
         let storage = RemoteStorage::open(store.clone(), namespace.clone(), cache)?;
-        assert!(!storage.initial_image_replaced(store.as_ref())?);
+        assert!(!storage.initial_image_replaced(|| Ok(store.clone()))?);
 
         let next = Manifest {
             generation: 1,
@@ -399,7 +434,38 @@ mod image_tests {
             &serde_json::to_vec(&Head { manifest: next_id })?,
             PutCondition::Match(head.etag),
         )?;
-        assert!(storage.initial_image_replaced(store.as_ref())?);
+        assert!(storage.initial_image_replaced(|| Ok(store.clone()))?);
+        Ok(())
+    }
+
+    // A generation-zero image that already carries pages can never be the pristine
+    // image an imported publication replaces, so the entry path must decide that
+    // without opening a store session.
+    #[test]
+    fn skips_the_initial_image_probe_once_the_image_is_published() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(MemoryObjectStore::default());
+        let namespace = Namespace::new("tenant", "database")?;
+        let cache = Arc::new(SegmentCache::new(directory.path(), 0, 0)?);
+        let storage = RemoteStorage::open(store.clone(), namespace, cache)?;
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let probe = || -> Result<Arc<dyn ObjectStore>> {
+            probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(store.clone())
+        };
+        assert!(!storage.initial_image_replaced(probe)?);
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        storage.write_at(0, b"page")?;
+        storage.publish(WalPosition::default(), 1)?;
+        assert_eq!(storage.generation(), storage.manifest().generation);
+        assert_eq!(storage.applied_lsn(), 1);
+        assert_eq!(
+            storage.applied_wal_position(),
+            storage.manifest().applied_wal_position
+        );
+        assert!(!storage.initial_image_replaced(probe)?);
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
         Ok(())
     }
 }

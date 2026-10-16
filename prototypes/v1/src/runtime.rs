@@ -254,13 +254,9 @@ impl WorkerRuntime {
             }
         };
         match loaded {
-            Some((database, epoch)) => {
-                if database.storage().manifest().generation != 0 {
-                    return Ok(false);
-                }
-                let fresh = self.provider.open_store(identifier, epoch)?;
-                database.storage().initial_image_replaced(fresh.as_ref())
-            }
+            Some((database, epoch)) => database
+                .storage()
+                .initial_image_replaced(|| self.provider.open_store(identifier, epoch)),
             None => Ok(false),
         }
     }

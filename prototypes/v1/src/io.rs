@@ -175,7 +175,7 @@ impl RemoteIO {
                 && state.position.is_none()
                 && state.batch.operations.is_empty()
                 && state.bytes.len() <= 32
-                && state.lsn == self.shared.storage.manifest().applied_lsn,
+                && state.lsn == self.shared.storage.applied_lsn(),
             "database open has uncommitted WAL or an unsettled publication"
         );
         self.shared
@@ -276,7 +276,7 @@ impl Shared {
             "WAL reset cannot discard pending writes"
         );
         ensure!(
-            state.bytes.len() <= 32 || self.storage.manifest().applied_lsn >= state.lsn,
+            state.bytes.len() <= 32 || self.storage.applied_lsn() >= state.lsn,
             "WAL reset cannot discard an uncheckpointed durable tail"
         );
         Ok(())
@@ -358,7 +358,7 @@ impl Shared {
         );
         let position = state
             .position
-            .unwrap_or(self.storage.manifest().applied_wal_position);
+            .unwrap_or(self.storage.applied_wal_position());
         self.storage.publish(position, state.lsn)?;
         state.position = None;
         state.dirty = false;
