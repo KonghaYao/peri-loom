@@ -1,0 +1,23 @@
+services:
+  # Replaces the default host bind mount with a Docker named volume that lives
+  # inside the Docker VM's filesystem. This is the second persistence type of the
+  # architecture x persistence comparison; the application command, image and
+  # security settings are unchanged.
+  #
+  # A named volume is not equivalent to a host bind mount for backup, inspection
+  # or disaster recovery: read it through the container, and remove it with
+  # `docker volume rm` only when you intend to destroy the run directory.
+  app:
+    volumes:
+      - type: volume
+        source: peri-loom-state
+        target: /data/peri
+      - type: bind
+        source: ../../../deploy/dev-tls
+        target: /run/tls
+        read_only: true
+        bind:
+          create_host_path: false
+volumes:
+  peri-loom-state:
+    name: ${PERI_STATE_VOLUME:-peri-loom-state}

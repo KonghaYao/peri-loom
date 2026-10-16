@@ -6,12 +6,11 @@ on:
       - 'v*'
 
 jobs:
-  publish:
+  check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     permissions:
-      contents: write
-      packages: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,27 +39,90 @@ jobs:
           MINIO_IMAGE=minio:ci MINIO_MC_IMAGE=minio-mc:ci PERI_TEST_BUCKET=disposable-ci-bucket MINIO_ROOT_USER=testuser MINIO_ROOT_PASSWORD=testpassword docker compose -f prototypes/v1/deploy/compose.yaml -f prototypes/v1/deploy/compose.minio.yaml --profile minio config --quiet
           python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_compose.py'
           python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_verify_image.py'
-      - name: Build service image
-        run: docker build -f prototypes/v1/deploy/Dockerfile -t peri-loom:release .
+
+  # One native runner per architecture: the Rust/Turso native dependency and the
+  # CGO Go build are compiled on the machine that will run them. Each runner
+  # verifies the image it built, on its own architecture, before publishing.
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build service image for ${{ matrix.platform }}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          docker buildx build --platform ${{ matrix.platform }} --load \
+            --build-arg VERSION="$RELEASE_TAG" \
+            --build-arg REVISION="$GITHUB_SHA" \
+            -f prototypes/v1/deploy/Dockerfile -t peri-loom:release .
       - name: Verify service, same-volume restart, and clean shutdown
         run: python3 prototypes/v1/deploy/verify-image.py --image peri-loom:release
+      - name: Record the architecture this runner actually executed
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint sh peri-loom:release -c 'uname -m; ldd /usr/local/bin/peri-loom-v1'
+          test "$(docker image inspect peri-loom:release --format '{{.Architecture}}')" = "${{ matrix.arch }}"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish verified image
+      - name: Publish the verified ${{ matrix.arch }} image
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:${RELEASE_TAG}-${{ matrix.arch }}"
           docker tag peri-loom:release "$image"
           docker push "$image"
+          docker buildx imagetools inspect "$image"
+
+  # The release tag only ever points at a manifest list whose members were each
+  # built and verified on their own native runner.
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assemble the multi-architecture manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx imagetools create --tag "${image}:${RELEASE_TAG}" \
+            "${image}:${RELEASE_TAG}-amd64" "${image}:${RELEASE_TAG}-arm64"
+          docker buildx imagetools inspect "${image}:${RELEASE_TAG}"
       - name: Create preview release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
-          printf 'Verified Linux service image: `%s`\n\nThis is a preview: clean restart and acknowledged SQL recovery are tested with a persistent local volume. Dirty restart remains denied; disaster recovery, live external S3 and HA are not certified by this workflow. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" > "$RUNNER_TEMP/notes.md"
+          printf 'Verified Linux service images: `%s`\n\nThe released tag is a multi-architecture manifest list whose `linux/amd64` and `linux/arm64` members were each built and verified natively; `%s-amd64` and `%s-arm64` pin one platform each. Apple Silicon no longer has to run the amd64 image under emulation.\n\nThis is a preview: clean restart and acknowledged SQL recovery are tested with a persistent local volume. Dirty restart remains denied; disaster recovery, live external S3 and HA are not certified by this workflow. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" "$image" "$image" > "$RUNNER_TEMP/notes.md"
           gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"

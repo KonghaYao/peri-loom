@@ -14,8 +14,9 @@ marker, or reuse the S3 bucket with a fresh state directory to bypass that guard
 
 Prerequisites on a Linux Docker host:
 
-- Docker Engine with the Compose plugin; access to a reviewed Linux amd64 image
-  identified by digest (`PERI_IMAGE`). Published tags here are preview releases,
+- Docker Engine with the Compose plugin; access to a reviewed Linux image
+  identified by digest (`PERI_IMAGE`) whose architecture matches the Docker host —
+  the release tag is a manifest list covering `linux/amd64` and `linux/arm64`. Published tags here are preview releases,
   not production-certified images. Local builds additionally require the Turso
   submodule and the Rust/Go dependencies described below.
 - An already-created, dedicated S3-compatible bucket with an endpoint reachable
@@ -72,13 +73,25 @@ denied. Operators must not mistake an initial successful start for production re
 ## CI and image releases
 
 `.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. The tag must
-match `v<prototypes/v1/Cargo.toml version>`. It builds the image once and uses
-`verify-image.py` to test the actual container over TLS, including SQL, encrypted
-native storage, clean shutdown, same-volume restart, and recovery of an acknowledged
-SQL write. After verification it publishes
-`ghcr.io/<owner>/<repo>:<tag>` and a **pre-release** GitHub
-Release. Only Linux amd64 is tested; no `latest` image is published. GHCR access
+match `v<prototypes/v1/Cargo.toml version>`. A `check` job validates the version and
+the Compose/verifier configuration, then a `build` matrix runs one **native** runner
+per architecture (`ubuntu-24.04` for `linux/amd64`, `ubuntu-24.04-arm` for
+`linux/arm64`). Each runner builds only its own platform, runs `verify-image.py`
+against that image on that architecture (SQL, encrypted native storage, clean
+shutdown, same-volume restart, recovery of an acknowledged SQL write), records
+`uname -m`/`ldd`/`docker image inspect` as architecture evidence, and pushes
+`ghcr.io/<owner>/<repo>:<tag>-<arch>`. A final `publish` job merges those two
+digests into the multi-architecture manifest `ghcr.io/<owner>/<repo>:<tag>` with
+`docker buildx imagetools create` and opens a **pre-release** GitHub Release. No
+`latest` image is published. GHCR access
 depends on the package's visibility and the registry credentials of the client.
+
+No emulated or cross-compiled build is part of the release path: the Go build uses
+CGO and the Rust/Turso build links the platform C library, so a foreign-architecture
+binary must be compiled and tested where it will run. The Dockerfile additionally
+fails the build when an embedded binary's ELF machine does not match the requested
+platform, and an architecture-scoped `TARGETARCH` is part of every BuildKit cache
+id so two architectures can never share one `target` or module cache.
 
 For a disposable local deployment using a published preview image, set
 `PERI_IMAGE=ghcr.io/<owner>/<repo>:<tag>`, prepare `deploy/dev-tls` with
@@ -88,6 +101,25 @@ For a disposable local deployment using a published preview image, set
 ```sh
 docker compose -f prototypes/v1/deploy/compose.yaml up -d --no-build --pull always
 ```
+
+The default Compose mount for `/data/peri` is a **host directory bind mount**, which
+on Docker Desktop and OrbStack is served by a VM file-sharing layer rather than by
+the VM's own filesystem. To place the same run directory in a Docker named volume
+inside the VM instead:
+
+```sh
+docker compose -f prototypes/v1/deploy/compose.yaml \
+  -f prototypes/v1/deploy/compose.named-volume.yaml up -d --no-build
+```
+
+Set `PERI_STATE_VOLUME` to name the volume. Both mounts are persistent; a named
+volume is not interchangeable with a bind mount for backup, host-side inspection or
+disaster recovery — read it through a container, and never remove it to shortcut the
+ownership guard. The multi-architecture measurements in
+`.peri/plans/native-image-and-arch-matrix-report.md` show that, on an Apple Silicon
+host, the choice between these two persistent mounts and the emulated/native
+architecture are separate contributors to per-request latency, and that neither one
+alone explains it.
 
 This is a development deployment, not a production upgrade procedure. The source
 launcher accepts a verified clean restart; dirty or uncertain shutdowns remain denied.
