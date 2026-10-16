@@ -104,8 +104,8 @@ func (gateway *Gateway) retireSession(ctx context.Context, session *gatewaySessi
 		noteCleanupFailure(session, err)
 		return err
 	}
-	permit, ok := gateway.admission.reserve(session.project, quota, false, true)
-	if !ok {
+	permit, reason := gateway.admission.reserve(session.project, quota, false, true)
+	if reason != rejectionNone {
 		noteCleanupFailure(session, errSessionCleanupAdmission)
 		return errSessionCleanupAdmission
 	}

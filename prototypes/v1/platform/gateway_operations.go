@@ -10,10 +10,16 @@ import (
 
 func operationAdmissionFailure(failure error) gatewayResult {
 	if errors.Is(failure, ErrDatabaseQuarantined) {
-		return gatewayFailure(409, "database_isolated")
+		return gatewayRefusal(409, "database_isolated", rejectionQuarantine)
 	}
 	if errors.Is(failure, ErrOperationExists) {
 		return gatewayFailure(409, "operation_recorded")
+	}
+	if errors.Is(failure, ErrOperationCapacity) {
+		return gatewayRefusal(503, "operation_registration_unavailable", rejectionOperationCapacity)
+	}
+	if errors.Is(failure, ErrOperationQueueFull) {
+		return gatewayRefusal(503, "operation_registration_unavailable", rejectionOperationQueueFull)
 	}
 	return gatewayFailure(503, "operation_registration_unavailable")
 }

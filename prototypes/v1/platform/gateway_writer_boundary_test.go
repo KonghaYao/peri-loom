@@ -130,17 +130,17 @@ func TestWriterAdmissionClassificationBoundedAndSeparate(test *testing.T) {
 	quota := Quotas{MaxConcurrent: 4, RequestsPerSecond: 4, MaxSessions: 4, MaxSQLBytes: 64, MaxResultBytes: 64}
 	var releases []func()
 	for count := 0; count < 6; count++ {
-		release, ok := gate.classify("project", quota)
-		if !ok {
+		release, reason := gate.classify("project", quota)
+		if reason != rejectionNone {
 			test.Fatal("classification bound below C+2")
 		}
 		releases = append(releases, release)
 	}
-	if _, ok := gate.classify("project", quota); ok {
+	if _, reason := gate.classify("project", quota); reason != rejectionClassifyLimit {
 		test.Fatal("unbounded classification queue")
 	}
-	owner, ok := gate.reserveWriter("project", quota, true)
-	if !ok {
+	owner, reason := gate.reserveWriter("project", quota, true)
+	if reason != rejectionNone {
 		test.Fatal("parsing consumed SQL execution reserve")
 	}
 	owner.finish()

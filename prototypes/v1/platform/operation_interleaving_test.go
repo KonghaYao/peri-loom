@@ -133,8 +133,8 @@ func TestOperationLateHoldAfterRetirementCannotLeakPermit(test *testing.T) {
 	management, fixture := retirementInterleavingFixture(test)
 	management.config.Resources = fixture.gateway
 	state, _ := fixture.state.Snapshot()
-	permit, admitted := fixture.gateway.admission.reserve("project-a", state.Projects["project-a"].Quotas, true, false)
-	if !admitted {
+	permit, reason := fixture.gateway.admission.reserve("project-a", state.Projects["project-a"].Quotas, true, false)
+	if reason != rejectionNone {
 		test.Fatal("permit unavailable")
 	}
 	permit.retain()

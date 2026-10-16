@@ -181,9 +181,9 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 	stage = "open_session"
 	if management.config.Resources != nil {
 		descriptor := state.Databases[input.Database.Key()]
-		var admitted bool
-		permit, admitted = management.config.Resources.admission.reserveLane(descriptor.Project, state.Projects[descriptor.Project].Quotas, true, false, true)
-		if !admitted {
+		var admission rejectionReason
+		permit, admission = management.config.Resources.admission.reserveLane(descriptor.Project, state.Projects[descriptor.Project].Quotas, true, false, true)
+		if admission != rejectionNone {
 			return nil, errors.New("native resource admission unavailable")
 		}
 	}

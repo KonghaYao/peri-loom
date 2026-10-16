@@ -130,15 +130,15 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 			session.mu.Unlock()
 			return failure
 		}
-		var ok bool
+		var admissionReason rejectionReason
 		if action == "close" {
-			permit, ok = gateway.admission.reserve(principal.Project, quota, false, true)
+			permit, admissionReason = gateway.admission.reserve(principal.Project, quota, false, true)
 		} else {
-			permit, ok = gateway.admission.reserveWriter(principal.Project, quota, session.writerProtocol && session.writerKnown && session.writerOwner)
+			permit, admissionReason = gateway.admission.reserveWriter(principal.Project, quota, session.writerProtocol && session.writerKnown && session.writerOwner)
 		}
-		if !ok {
+		if admissionReason != rejectionNone {
 			session.mu.Unlock()
-			return gatewayFailure(429, "quota_exceeded")
+			return gatewayRefusal(429, "quota_exceeded", admissionReason)
 		}
 	}
 	result := gateway.dispatchLocked(ctx, principal, request, requestID, action, quota, permit, ndjson, session)
@@ -345,7 +345,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes {
-			return gatewayResult{status: 413, code: "result_limit", dispatched: true}
+			return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget}
 		}
 		if !validDescribeResult(reply) {
 			return gateway.unknown(session, permit)
@@ -370,7 +370,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes {
-			return gatewayResult{status: 413, code: "result_limit", dispatched: true}
+			return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget}
 		}
 		if !validStatementResult(reply) {
 			return gateway.unknown(session, permit)
@@ -396,7 +396,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gateway.upstreamFailure(err, session, permit)
 	}
 	if len(reply) > quota.MaxResultBytes {
-		return gatewayResult{status: 413, code: "result_limit", dispatched: true}
+		return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget}
 	}
 	var rows [][]json.RawMessage
 	if len(reply) == 0 || reply[0] != '[' || json.Unmarshal(reply, &rows) != nil {
@@ -405,7 +405,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	if ndjson {
 		stream, err := gatewayRows(requestID, rows, quota.MaxResultBytes)
 		if err != nil {
-			return gatewayResult{status: 413, code: "result_limit", dispatched: true}
+			return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget}
 		}
 		return gatewayResult{dispatched: true, stream: stream}
 	}
@@ -469,7 +469,33 @@ func (gateway *Gateway) upstreamFailure(err error, session *gatewaySession, perm
 	// The worker text is the operator's evidence; the caller only sees the
 	// classified code and message.
 	log.Printf("SQL worker failure: code=%s status=%d executed=%t rejected=%t worker_error=%s", worker.code, worker.status, worker.executed, worker.rejected, workerFailureLog(failure.workerFailure))
-	return gatewayResult{status: worker.status, code: worker.code, failure: &worker, dispatched: true, session: session}
+	return gatewayResult{status: worker.status, code: worker.code, failure: &worker, dispatched: true, session: session, rejection: workerRejection(worker)}
+}
+
+// workerRejection names the layer behind a worker failure whose own reply proves
+// the statement was turned away. The platform cannot see inside the worker, so it
+// only names a layer where the proof is unambiguous: a deadline is a refusal only
+// when the worker proved the statement never entered execution, because a
+// deadline after execution is a settled statement and must not be reported as
+// something the platform refused. A refused statement with no recognised cause
+// keeps its code and stays unnamed rather than being filed under a layer the
+// evidence does not support.
+func workerRejection(worker sqlFailure) rejectionReason {
+	switch worker.code {
+	case "sql_timeout":
+		if worker.rejected {
+			return rejectionDeadline
+		}
+	case "result_limit":
+		return rejectionMemoryBudget
+	case "sql_limit":
+		return rejectionSQLBytes
+	case "sql_conflict":
+		if worker.rejected {
+			return rejectionWriterBusy
+		}
+	}
+	return rejectionNone
 }
 
 func upstreamSessionID(identifier string) bool {

@@ -101,6 +101,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal
 	var permit *admissionPermit
+	// The refusal of an admission lane is recorded at the lane, not derived from the
+	// answer, so it starts as "no lane refused anything".
+	admissionReason := rejectionNone
 	// Conservative default: only a decoded request may lower it.
 	committing := true
 	result := gatewayFailure(400, "invalid_request")
@@ -156,7 +159,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				}
 			}
 		}
-		gateway.counters.observe(action, result.code, time.Since(started))
+		// One account answers "did this request hold an admission permit" separately
+		// from "was it refused", so the goodput numbers are not read off the codes.
+		gateway.counters.observe(gatewayObservation{action: action, code: result.code, rejection: result.rejection, admitted: permit != nil, elapsed: time.Since(started)})
 		result.committing = committing
 		// A dispatched unknown is the transition that isolates a namespace: the
 		// refusals it causes are not logged again, this line is their only log
@@ -196,7 +201,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	if principal.Project == "*" && principal.Role == "admin" && principal.Database == nil {
 		earlyBody, err = io.ReadAll(http.MaxBytesReader(writer, request.Body, sqlWireLimit))
 		if err != nil {
-			result = gatewayFailure(413, "request_limit")
+			result = gatewayRefusal(413, "request_limit", rejectionSQLBytes)
 			return
 		}
 		var valid bool
@@ -259,18 +264,17 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}
 	deferredAdmission := action != "open" && gateway.admission.eligible(project.Quotas)
 	if !deferredAdmission {
-		permit, found = gateway.admission.reserve(principal.Project, project.Quotas, action == "open", action == "close")
+		permit, admissionReason = gateway.admission.reserve(principal.Project, project.Quotas, action == "open", action == "close")
 	}
 	gateway.mu.Unlock()
-	if !deferredAdmission && !found {
-		result = gatewayFailure(429, "quota_exceeded")
+	if !deferredAdmission && admissionReason != rejectionNone {
+		result = gatewayRefusal(429, "quota_exceeded", admissionReason)
 		return
 	}
 	if deferredAdmission {
-		var ok bool
-		releaseClassification, ok = gateway.admission.classify(principal.Project, project.Quotas)
-		if !ok {
-			result = gatewayFailure(429, "quota_exceeded")
+		releaseClassification, admissionReason = gateway.admission.classify(principal.Project, project.Quotas)
+		if admissionReason != rejectionNone {
+			result = gatewayRefusal(429, "quota_exceeded", admissionReason)
 			return
 		}
 	}
@@ -280,13 +284,13 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}
 	if earlyBody != nil {
 		if len(earlyBody) > limit {
-			result = gatewayFailure(413, "request_limit")
+			result = gatewayRefusal(413, "request_limit", rejectionSQLBytes)
 			return
 		}
 	} else {
 		body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, int64(limit)))
 		if err != nil {
-			result = gatewayFailure(413, "request_limit")
+			result = gatewayRefusal(413, "request_limit", rejectionSQLBytes)
 			return
 		}
 		var valid bool
@@ -302,7 +306,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		identifier = parsed.RequestID
 	}
 	if (action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open") && (len(parsed.SQL) == 0 || len(parsed.SQL) > project.Quotas.MaxSQLBytes) {
-		result = gatewayFailure(413, "sql_limit")
+		result = gatewayRefusal(413, "sql_limit", rejectionSQLBytes)
 		return
 	}
 	// A describe or a cursor bound to a read cannot commit, so a SQL error on

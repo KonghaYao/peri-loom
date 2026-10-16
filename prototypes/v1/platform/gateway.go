@@ -53,9 +53,14 @@ type gatewaySession struct {
 	unownedAt time.Time
 }
 
+// gatewayResult carries the answer of one request. rejection names the layer that
+// refused it, when a layer refused it: it is recorded here at the refusal site for
+// the operator log and the counters and never reaches the reply body, whose fields
+// are published (see rejectionReason).
 type gatewayResult struct {
 	status                  int
 	code                    string
+	rejection               rejectionReason
 	failure                 *sqlFailure
 	value                   any
 	dispatched              bool
@@ -143,11 +148,18 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 	}
 	ledger := &cleanupLedger{}
 	ledger.observe(isolated, time.Now())
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {
 	return gatewayResult{status: status, code: code}
+}
+
+// gatewayRefusal answers a request the platform decided to refuse, naming the
+// layer that refused it. The status and the code are the ones the caller already
+// publishes; only the local account learns which layer answered.
+func gatewayRefusal(status int, code string, reason rejectionReason) gatewayResult {
+	return gatewayResult{status: status, code: code, rejection: reason}
 }
 
 func (gateway *Gateway) Close(ctx context.Context) error {
@@ -210,8 +222,8 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 			// already registered: the drain has to be able to retire the
 			// sessions it still holds, or the process ends while a namespace it
 			// could have cleaned stays owed.
-			permit, ok := gateway.admission.reserve(session.project, state.Projects[session.project].Quotas, false, true)
-			if !ok {
+			permit, reason := gateway.admission.reserve(session.project, state.Projects[session.project].Quotas, false, true)
+			if reason != rejectionNone {
 				session.mu.Unlock()
 				continue
 			}
