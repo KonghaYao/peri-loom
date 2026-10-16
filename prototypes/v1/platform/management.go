@@ -150,6 +150,10 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 			managementReply(response, 409, input.RequestID, nil, "release_fencing_proof_unavailable")
 			return
 		}
+		if errors.Is(err, errReleaseScopeMismatch) {
+			managementReply(response, 409, input.RequestID, nil, "release_scope_mismatch")
+			return
+		}
 		var native *nativeToolError
 		if !errors.As(err, &native) {
 			if errors.Is(err, errManagementForbidden) {

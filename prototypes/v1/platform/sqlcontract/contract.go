@@ -190,6 +190,7 @@ var vocabulary = []struct {
 	{"operation_registration_unavailable", Platform},
 	{"release_fencing_proof_unavailable", Platform},
 	{"release_not_retired", Platform},
+	{"release_scope_mismatch", Platform},
 	{"release_stop_proof_missing", Platform},
 	{"unavailable", Platform},
 	{"not_found", Unsupported},

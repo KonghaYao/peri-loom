@@ -47,6 +47,7 @@ export const CODES = {
   operation_registration_unavailable: "platform",
   release_fencing_proof_unavailable: "platform",
   release_not_retired: "platform",
+  release_scope_mismatch: "platform",
   release_stop_proof_missing: "platform",
   unavailable: "platform",
   not_found: "unsupported",
