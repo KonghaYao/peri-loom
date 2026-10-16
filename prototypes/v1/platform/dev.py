@@ -20,6 +20,18 @@ import urllib.request
 import ssl
 
 
+SHUTDOWN_BUDGET_SECONDS = 40
+SHUTDOWN_FINALIZE_SECONDS = 5
+ORCHESTRATION_GRACE_SECONDS = SHUTDOWN_BUDGET_SECONDS + SHUTDOWN_FINALIZE_SECONDS
+# Each stage cap has to stay strictly above the budget the component gives
+# itself (10 s for the platform and for both Rust processes): a cap the process
+# reaches first is a launcher SIGKILL mid-teardown, which loses the unclean exit
+# that component would have reported itself. The caps sum to the launcher budget,
+# and the launcher declares the platform's cap and this grace to the platform
+# child, which refuses a cap that reaches the grace.
+SHUTDOWN_STAGE_CAPS = {"platform": 15, "workers": 13, "authority": 12}
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, destination):
         return None
@@ -103,6 +115,26 @@ def verify_clean_terminal(run_directory, configuration):
         raise RuntimeError("authority clean startup marker missing")
 
 
+class OperationViewNotMaterialized(RuntimeError):
+    """The payload is not the final operation view a shutdown checkpoint wrote."""
+
+
+def require_materialized_operation_view(state):
+    """Mirror operationsCheckpointMaterialized: operation records commit to a sidecar that
+    dev.py does not read, so a payload whose checkpoint trails its revision may hide
+    unresolved records; only the shutdown checkpoint writes the field, and a version-0
+    payload predates the sidecar and carries its whole operation view itself."""
+    version = state.get("operation_storage_version", 0)
+    if type(version) is not int or version not in (0, 1):
+        raise OperationViewNotMaterialized("platform operation storage identity unrecognized; clean restart requires the reviewed format")
+    if version == 0:
+        return
+    checkpoint = state.get("operations_checkpoint")
+    revision = state.get("revision")
+    if type(checkpoint) is not int or checkpoint <= 0 or type(revision) is not int or checkpoint != revision:
+        raise OperationViewNotMaterialized("platform operation view was not materialized at shutdown")
+
+
 def verify_no_unresolved_operations(run_directory, configuration):
     path = run_directory / "platform/state.json"
     if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 32 * 1024 * 1024:
@@ -113,6 +145,7 @@ def verify_no_unresolved_operations(run_directory, configuration):
         operations = state.get("operations", {})
         if state.get("owned_run_generation") != configuration["generation"] or not isinstance(operations, dict):
             raise ValueError("platform run binding mismatch")
+        require_materialized_operation_view(state)
         for record in operations.values():
             if not isinstance(record, dict) or record.get("state") != "terminal" or record.get("ambiguous", False) or record.get("retirement_pending", False) or record.get("local_resources_retired", False) or record.get("decision", ""):
                 raise ValueError("unresolved operation")
@@ -123,6 +156,8 @@ def verify_no_unresolved_operations(run_directory, configuration):
                     or record.get("source") == "gateway" and record.get("action") == "close"
                     and record.get("business_outcome") == "not_applicable" and record.get("cleanup_outcome") == "completed"):
                 raise ValueError("unresolved business outcome")
+    except OperationViewNotMaterialized:
+        raise
     except (KeyError, ValueError, TypeError, UnicodeError, RuntimeError) as error:
         raise RuntimeError("unresolved platform operation prevents clean restart") from error
 
@@ -180,10 +215,13 @@ def verify_owned_stop_proofs(run_directory, configuration, workers):
 
 def stop_owned_worker(run_directory, worker):
     private_directory(run_directory)
+    deadline = time.monotonic() + SHUTDOWN_STAGE_CAPS["workers"] + SHUTDOWN_FINALIZE_SECONDS
     with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(40)
+        client.settimeout(max(0, deadline - time.monotonic()))
         client.connect(str(run_directory / "owned-stop.sock"))
+        client.settimeout(max(0, deadline - time.monotonic()))
         client.sendall(json.dumps({"worker": worker}).encode() + b"\n")
+        client.settimeout(max(0, deadline - time.monotonic()))
         reply = json.loads(client.makefile("rb").readline(1024))
     if reply != {"stopped": True}:
         raise RuntimeError("owned worker stop unavailable; retain isolation")
@@ -212,7 +250,7 @@ def bootstrap_credential():
     return credential
 
 
-def request(endpoint, credential, path, body, certificate=None):
+def request(endpoint, credential, path, body, certificate=None, timeout=30):
     payload = dict(body)
     if "request_id" not in payload:
         payload["request_id"] = secrets.token_hex(16)
@@ -226,7 +264,7 @@ def request(endpoint, credential, path, body, certificate=None):
     http_failure = False
     try:
         try:
-            incoming = client.open(outgoing, timeout=30)
+            incoming = client.open(outgoing, timeout=timeout)
         except urllib.error.HTTPError as failure:
             if not 400 <= failure.code <= 599:
                 raise
@@ -260,6 +298,49 @@ class Project:
         self.owned_identities = {}
         self.maintenance = None
         self.run_lock = None
+        self.shutdown_budget_seconds = getattr(arguments, "shutdown_budget_seconds", SHUTDOWN_BUDGET_SECONDS)
+        self.shutdown_deadline = None
+        self.stop_record = None
+        self.cleanup_complete = False
+        self.shutdown_failure = None
+        self.stop_record_lock = threading.Lock()
+
+    def begin_shutdown(self):
+        if self.shutdown_deadline is None:
+            self.shutdown_deadline = time.monotonic() + self.shutdown_budget_seconds
+        self.stop.set()
+
+    def remaining(self, deadline=None):
+        end = self.shutdown_deadline
+        if deadline is not None:
+            end = deadline if end is None else min(end, deadline)
+        return max(0, end - time.monotonic())
+
+    def write_stop_record(self, outcome=None, reason=None):
+        with self.stop_record_lock:
+            configuration = getattr(self, "config", {}).get("owned_stop_proof")
+            if not configuration:
+                if self.processes:
+                    raise RuntimeError("stop evidence signing configuration unavailable; retain isolation")
+                return
+            if self.stop_record is None:
+                self.stop_record = {"version": 1, "generation": configuration["generation"],
+                                    "outcome": "in_progress", "reason": "shutdown_started",
+                                    "deadline_ms": int(self.shutdown_deadline * 1000),
+                                    "stages": [], "unresolved_operations": "not_verified"}
+            if outcome is not None:
+                self.stop_record["outcome"] = outcome
+            if reason is not None:
+                self.stop_record["reason"] = reason
+            atomic_private_json(self.directory / "launcher-stop.json", signed_owned_identity(configuration, self.stop_record))
+
+    def authority_lock_status(self):
+        path = self.directory / "authority/authority.lock"
+        if path.is_symlink() or not path.is_file():
+            return "unavailable"
+        with path.open("rb") as source:
+            value = source.read(7)
+        return "clean" if value == b"clean\n" else "dirty" if value == b"dirty\n" else "invalid"
 
     def acquire_run_lock(self):
         if self.run_lock is not None:
@@ -290,6 +371,8 @@ class Project:
             self.run_lock = None
 
     def prepare(self):
+        if not sum(SHUTDOWN_STAGE_CAPS.values()) <= self.shutdown_budget_seconds <= ORCHESTRATION_GRACE_SECONDS - SHUTDOWN_FINALIZE_SECONDS:
+            raise RuntimeError("shutdown budget must cover stage caps and leave five seconds within orchestration grace; use --shutdown-budget-seconds 40 with the reviewed 45-second deployment profile")
         observer = getattr(self.arguments, "sql_open_observer", False)
         worker_request_bytes = getattr(self.arguments, "worker_max_request_bytes", 512 * 1024)
         if not 1 <= worker_request_bytes <= 32 * 1024 * 1024:
@@ -339,6 +422,8 @@ class Project:
                 raise RuntimeError("owned stop proof configuration missing")
             verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
             verify_clean_terminal(self.directory, configuration)
+            # 复用的 clean 语义必须与停机时一致：历史 terminal proof 也是在一个可能滞后于侧车的 payload 上做出的判定。
+            verify_no_unresolved_operations(self.directory, configuration)
             marker = self.directory / "launcher-terminal.json"
             marker.unlink()
             descriptor = os.open(self.directory, os.O_RDONLY)
@@ -462,14 +547,37 @@ class Project:
         if worker not in self.owned_identities:
             raise RuntimeError("worker is not owned by this launcher")
         process = self.processes[worker]
+        if self.stop.is_set():
+            raise RuntimeError("launcher shutdown owns worker stop")
+        deadline = time.monotonic() + SHUTDOWN_STAGE_CAPS["workers"]
         if process.poll() is None:
             process.terminate()
-        try:
-            exit_code = process.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            exit_code = process.wait(timeout=10)
-        self.record_joined_worker_stop(worker, exit_code)
+        while not self.stop.is_set():
+            timeout = min(0.2, self.remaining(deadline))
+            try:
+                exit_code = process.wait(timeout=timeout)
+                if self.stop.is_set():
+                    break
+                self.record_joined_worker_stop(worker, exit_code)
+                return
+            except subprocess.TimeoutExpired:
+                if self.remaining(deadline) > 0:
+                    continue
+                self.shutdown_failure = "maintenance worker shutdown incomplete"
+                self.begin_shutdown()
+                configuration = self.config.get("owned_stop_proof")
+                if configuration:
+                    self.write_stop_record("unclean", self.shutdown_failure)
+                    stage = {"name": worker, "cap_ms": SHUTDOWN_STAGE_CAPS["workers"] * 1000,
+                             "waited_ms": SHUTDOWN_STAGE_CAPS["workers"] * 1000,
+                             "exit_code": process.poll(), "signal": signal.SIGKILL,
+                             "ack": False, "authority_lock": self.authority_lock_status()}
+                    self.stop_record["stages"].append(stage)
+                    self.write_stop_record()
+                process.kill()
+                process.wait(timeout=SHUTDOWN_FINALIZE_SECONDS)
+                raise RuntimeError("maintenance worker shutdown incomplete; retain isolation")
+        raise RuntimeError("launcher shutdown owns worker stop")
 
     def record_joined_worker_stop(self, worker, exit_code):
         proof = dict(self.owned_identities[worker], waited=True, exit_code=exit_code)
@@ -524,6 +632,11 @@ class Project:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"
         platform_environment["PERI_HRANA_EXPERIMENTAL"] = "1" if os.environ.get("PERI_HRANA_EXPERIMENTAL") == "1" else "0"
+        # The launcher owns the outer deadline, so it declares it: the platform
+        # refuses to start on a budget its own stage cap would not cover, and on a
+        # stage cap the deployment grace would not cover either.
+        platform_environment["PERI_SHUTDOWN_STAGE_CAP_MS"] = str(SHUTDOWN_STAGE_CAPS["platform"] * 1000)
+        platform_environment["PERI_SHUTDOWN_OUTER_GRACE_MS"] = str(ORCHESTRATION_GRACE_SECONDS * 1000)
         self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], platform_environment)
         for identity, worker in self.launch["workers"].items():
             environment = safe_environment(capacity_trace=True)
@@ -565,74 +678,168 @@ class Project:
                     reported.add(name)
                     print(json.dumps({"degraded": True, "service": name, "reason": "worker_stopped_controller_reconciles_remaining_capacity"}), flush=True)
 
+    def shutdown_request(self, name, deadline, replies):
+        try:
+            if name == "authority":
+                address, token, path = self.launch["authority"], self.config["controller"]["authority_token"], "/"
+            else:
+                worker = self.launch["workers"][name]
+                address, token, path = worker["address"], worker["control_token"], "/control"
+            timeout = self.remaining(deadline)
+            if timeout <= 0:
+                raise RuntimeError("shutdown deadline expired")
+            request("http://" + address, token, path, {"version": 1, "command": {"command": "shutdown"}}, timeout=timeout)
+            replies.put(True)
+        except Exception:
+            replies.put(False)
+
+    def kill_unclean(self, name, stage, reason):
+        stage["signal"] = signal.SIGKILL
+        stage["authority_lock"] = self.authority_lock_status()
+        self.write_stop_record("unclean", reason)
+        process = self.processes[name]
+        if process.poll() is None:
+            process.kill()
+        stage["exit_code"] = process.poll()
+        self.write_stop_record()
+
+    def shutdown_stage(self, names, cap, failures):
+        started = time.monotonic()
+        deadline = min(self.shutdown_deadline, started + cap)
+        pending = []
+        for name in names:
+            process = self.processes.get(name)
+            if process is None:
+                continue
+            stage = {"name": name, "cap_ms": cap * 1000, "waited_ms": 0,
+                     "exit_code": process.poll(), "ack": False,
+                     "authority_lock": self.authority_lock_status(), "waits": []}
+            self.stop_record["stages"].append(stage)
+            self.write_stop_record()
+            replies = None
+            if stage["exit_code"] is None and not failures and self.remaining(deadline) > 0:
+                if name == "platform":
+                    process.terminate()
+                    stage["ack"] = True
+                else:
+                    replies = queue.Queue()
+                    # urlopen 的 socket timeout 不是总 deadline；后台请求只能交回结果，不能写证明。
+                    threading.Thread(target=self.shutdown_request, args=(name, deadline, replies), daemon=True).start()
+            pending.append((name, process, stage, replies))
+
+        def finish(item):
+            name, process, stage, replies = item
+            local_failures = []
+            try:
+                if stage["exit_code"] is None:
+                    if self.remaining(deadline) <= 0:
+                        raise subprocess.TimeoutExpired(name, 0)
+                    if replies is not None:
+                        timeout = self.remaining(deadline)
+                        stage["waits"].append({"operation": "rpc", "timeout_ms": timeout * 1000})
+                        stage["ack"] = replies.get(timeout=timeout)
+                        if not stage["ack"]:
+                            local_failures.append(name + " shutdown response incomplete")
+                    timeout = self.remaining(deadline)
+                    stage["waits"].append({"operation": "join", "timeout_ms": timeout * 1000})
+                    stage["exit_code"] = process.wait(timeout=timeout)
+                    if self.remaining(deadline) <= 0:
+                        raise subprocess.TimeoutExpired(name, timeout)
+                    if not local_failures and stage["ack"] and stage["exit_code"] == 0 and name in self.owned_identities:
+                        try:
+                            self.record_joined_worker_stop(name, 0)
+                        except (OSError, RuntimeError, ValueError):
+                            local_failures.append(name + " owned stop proof unavailable")
+                if stage["exit_code"] != 0:
+                    local_failures.append(name + " exited without a clean proof")
+            except (subprocess.TimeoutExpired, queue.Empty):
+                local_failures.append(name + " shutdown incomplete; no clean proof")
+                stage["remaining_ms"] = self.remaining() * 1000
+                self.kill_unclean(name, stage, local_failures[-1])
+            stage["waited_ms"] = (time.monotonic() - started) * 1000
+            stage["authority_lock"] = self.authority_lock_status()
+            return local_failures
+
+        if failures:
+            for item in pending:
+                name, process, stage, _ = item
+                if stage["exit_code"] is None:
+                    reason = name + " skipped graceful shutdown after prior failure"
+                    self.kill_unclean(name, stage, reason)
+                    failures.append(reason)
+            self.write_stop_record("unclean", "; ".join(failures))
+            return
+
+        if len(pending) == 1:
+            failures.extend(finish(pending[0]))
+        else:
+            results = [None] * len(pending)
+            errors = [None] * len(pending)
+            def run(index, item):
+                try:
+                    results[index] = finish(item)
+                except BaseException as error:
+                    errors[index] = error
+            threads = [threading.Thread(target=run, args=(index, item), daemon=True)
+                       for index, item in enumerate(pending)]
+            for thread in threads:
+                thread.start()
+            for index, thread in enumerate(threads):
+                thread.join(timeout=max(0, self.remaining(deadline)))
+                if thread.is_alive():
+                    name, process, stage, _ = pending[index]
+                    reason = name + " shutdown deadline expired; no clean proof"
+                    self.kill_unclean(name, stage, reason)
+                    failures.append(reason)
+                elif errors[index] is not None:
+                    raise errors[index]
+                else:
+                    failures.extend(results[index])
+        self.write_stop_record("unclean" if failures else None, "; ".join(failures) if failures else None)
+
     def cleanup(self):
+        self.begin_shutdown()
+        self.write_stop_record("unclean" if self.shutdown_failure else None, self.shutdown_failure)
         if self.maintenance is not None:
             self.maintenance.close()
             (self.directory / "owned-stop.sock").unlink(missing_ok=True)
-        failures = []
-        platform = self.processes.get("platform")
-        if platform:
-            if platform.poll() is None:
-                platform.terminate()
-                try:
-                    if platform.wait(timeout=15) != 0:
-                        failures.append("platform exited without a clean proof")
-                except subprocess.TimeoutExpired:
-                    failures.append("platform shutdown incomplete")
-                    platform.kill()
-                    platform.wait()
-            elif platform.returncode != 0:
-                failures.append("platform exited without a clean proof")
-        for name in ("worker-a", "worker-b", "authority"):
-            process = self.processes.get(name)
-            if not process:
-                continue
-            if process.poll() is not None:
-                if process.returncode != 0:
-                    failures.append(name + " exited before a joined clean proof")
-                continue
-            shutdown_acknowledged = True
-            try:
-                if name == "authority":
-                    address, token, path = self.launch["authority"], self.config["controller"]["authority_token"], "/"
-                else:
-                    worker = self.launch["workers"][name]
-                    address, token, path = worker["address"], worker["control_token"], "/control"
-                request("http://" + address, token, path, {"version": 1, "command": {"command": "shutdown"}})
-            except RuntimeError:
-                shutdown_acknowledged = False
-                failures.append(name + " shutdown response incomplete")
-            try:
-                result = process.wait(timeout=20)
-                if result != 0:
-                    failures.append(name + " exited without a clean proof")
-                elif shutdown_acknowledged and name in self.owned_identities:
-                    try:
-                        self.record_joined_worker_stop(name, result)
-                    except (OSError, RuntimeError, ValueError):
-                        failures.append(name + " owned stop proof unavailable")
-            except subprocess.TimeoutExpired:
-                failures.append(name + " still running; killed and dirty restart must be reconciled")
-                process.kill()
-                process.wait()
+        failures = ["prior unclean stop; no clean proof"] if self.stop_record and self.stop_record["outcome"] == "unclean" else []
+        for names, stage in ((["platform"], "platform"), (["worker-a", "worker-b"], "workers"), (["authority"], "authority")):
+            self.shutdown_stage(names, SHUTDOWN_STAGE_CAPS[stage], failures)
         for process in self.processes.values():
-            if process.stdout is not None:
+            if process.stdout is not None and process.poll() is not None:
                 process.stdout.close()
         for log in self.logs:
             log.close()
+        if self.remaining() <= 0:
+            failures.append("shutdown deadline expired; no clean proof")
         if failures:
+            self.write_stop_record("unclean", "; ".join(failures))
             raise RuntimeError("; ".join(failures))
+        self.cleanup_complete = True
 
     def mark_clean_terminal(self):
-        if set(self.processes) != {"authority", "platform", "worker-a", "worker-b"}:
-            raise RuntimeError("clean launcher terminal requires all services")
-        configuration = self.config["owned_stop_proof"]
-        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
-        authority = self.directory / "authority/authority.lock"
-        if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
-            raise RuntimeError("authority clean startup marker missing")
-        verify_no_unresolved_operations(self.directory, configuration)
-        atomic_private_json(self.directory / "launcher-terminal.json", signed_owned_identity(configuration, terminal_record(self.directory, configuration)))
+        try:
+            if not self.cleanup_complete or self.stop_record is None or self.stop_record["outcome"] == "unclean" or self.remaining() <= 0:
+                raise RuntimeError("shutdown incomplete or deadline expired; no clean proof")
+            if set(self.processes) != {"authority", "platform", "worker-a", "worker-b"}:
+                raise RuntimeError("clean launcher terminal requires all services")
+            configuration = self.config["owned_stop_proof"]
+            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            authority = self.directory / "authority/authority.lock"
+            if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
+                raise RuntimeError("authority clean startup marker missing")
+            verify_no_unresolved_operations(self.directory, configuration)
+            self.stop_record["unresolved_operations"] = False
+            terminal = signed_owned_identity(configuration, terminal_record(self.directory, configuration))
+            if self.remaining() <= 0:
+                raise RuntimeError("shutdown deadline expired; no clean proof")
+            atomic_private_json(self.directory / "launcher-terminal.json", terminal)
+            self.write_stop_record("clean", "terminal_proof_written")
+        except Exception as error:
+            # 诊断要能区分“未物化”和“未解析”，否则 launcher-stop.json 只留下同一句话。
+            self.write_stop_record("unclean", ("terminal_proof_unavailable: " + str(error))[:512])
+            raise
 
 
 def main():
@@ -647,6 +854,7 @@ def main():
     parser.add_argument("--sql-max-duration-ms", type=int, default=5000)
     parser.add_argument("--dev-sql-timeout-seconds", type=int, default=30)
     parser.add_argument("--sql-open-observer", action="store_true")
+    parser.add_argument("--shutdown-budget-seconds", type=float, default=SHUTDOWN_BUDGET_SECONDS)
     parser.add_argument("--stop-worker", choices=("worker-a", "worker-b"))
     arguments = parser.parse_args()
     if arguments.stop_worker:
@@ -658,8 +866,8 @@ def main():
         print(json.dumps({"stopped": True, "remote_terminal": "not_proven", "recovery": "new_database_or_fixture_required"}))
         return 0
     project = Project(arguments)
-    signal.signal(signal.SIGTERM, lambda signum, frame: project.stop.set())
-    signal.signal(signal.SIGINT, lambda signum, frame: project.stop.set())
+    signal.signal(signal.SIGTERM, lambda signum, frame: project.begin_shutdown())
+    signal.signal(signal.SIGINT, lambda signum, frame: project.begin_shutdown())
     failure = None
     try:
         project.run()
@@ -670,6 +878,8 @@ def main():
             project.cleanup()
             if failure is None:
                 project.mark_clean_terminal()
+            else:
+                project.write_stop_record("unclean", "launcher_failed_before_cleanup")
         except Exception as error:
             failure = error
         finally:

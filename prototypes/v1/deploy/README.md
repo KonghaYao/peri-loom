@@ -317,9 +317,53 @@ New state seeds organization `local`, project `default`, and encrypted database
 API keys and must not be shared or collected as ordinary diagnostics. Its endpoint
 is container-loopback: external SDK callers use the published HTTPS endpoint instead.
 
-SIGTERM goes to the launcher, which shuts down platform services and joins normal
-worker/authority RPC shutdowns so clean markers can be proven. The 45-second Compose
-grace period covers normal shutdown; forced kills are dirty restarts, not clean proof.
+SIGTERM/SIGINT 首次到达时，launcher 固定一个 monotonic deadline。
+`dev.py --shutdown-budget-seconds` 默认 40 秒，阶段上限为 platform 15 秒、
+两个 worker 共用 13 秒、authority 12 秒；RPC 与 join 共用阶段剩余时间，
+仅两个 worker 可并行。每个阶段上限都严格高于该组件自身的停机预算（platform
+与两个 Rust 进程均为 10 秒；Rust 侧还能用 `PERI_SHUTDOWN_BUDGET_MS` 覆盖为
+1..20 秒，launcher 白名单不转发该变量，绕过 launcher 直接运行 Rust 进程时
+由运维自行保证它小于对应阶段上限）：上限先到的结果是 launcher 在停机中途
+SIGKILL，丢掉组件本可自己报告的 unclean 退出。launcher 同时把 platform 的阶段
+上限通过 `PERI_SHUTDOWN_STAGE_CAP_MS` 显式声明给子进程，并把本次部署的整体
+grace 通过 `PERI_SHUTDOWN_OUTER_GRACE_MS` 一并声明，platform 在启动时拒绝高于
+默认值又未声明上限、预算不严格小于已声明上限、或声明上限达到/超过该 grace 的
+配置：上限大于真实外层强杀时限的声明是永不失败的检查，不是被覆盖的停机。三个
+部署入口的 45 秒 grace 留出 5 秒收尾裕量，`tests/test_shutdown_budget.py` 校验
+它们与 launcher 默认值一致，校验阶段上限仍高于从两侧实现源码读出的组件预算，并
+校验 launcher 声明给 platform 的两个变量名与上限均落在 grace 之内。启动前拒绝
+阶段上限总和大于预算、或预算加收尾裕量大于部署 grace 的配置；当前 profile
+只接受 40 秒，不能仅增加 CLI 数字而不重新评审阶段与编排配置。
+
+清理入口原子落盘 HMAC 签名的 `launcher-stop.json`（`in_progress`）；
+超时或失败先落盘 `unclean` 再 kill，不无界等待 kill 后退出。
+前序阶段失败后，下游不再请求 graceful shutdown，而是保持隔离并强制停止，
+避免把失败的依赖链继续包装为 clean。此诊断文件绝不是复用授权；只有完整验证
+worker stop proofs、authority clean marker 和现有 operation 判据后，才生成
+`launcher-terminal.json` 并将诊断状态改为 `clean`。磁盘写入失败时不会越过
+“先落盘再 kill”的门，外层强杀仍可能发生；这些时间上限不保证磁盘 fsync 的延迟。
+被强杀的阶段记录它收到的信号（`signal`），`exit_code` 只在 launcher 确实回收
+到退出码时才为整数，来不及回收时为 `null`：这是“未观测到退出码”，不是“退出码为
+0”。强杀、超时和未解决操作均不能凭诊断文件复用，且不提供 `--reconciled` 透传；
+终端证明失败时 `launcher-stop.json` 的 `reason` 会带上具体成因，便于区分。
+复用还要求 platform payload 是停机物化后的最终视图：`operation_storage_version`
+为 1 时必须存在正整数 `operations_checkpoint` 且等于 `revision`，否则一律以
+“未物化”拒绝，未知存储版本同样 fail-closed（旧快照看不到只写侧车的 operation，
+未物化与未解析在诊断中可区分）；operation 存储版本缺失或为 0 的旧格式 payload
+沿用原有判据。复用门与停机判定调用同一份规则，曾进入 Unknown/quarantine 的
+物化记录继续阻止复用。物化标记证明的是“sidecar 视图已写进 payload”，不是
+“这次 stop 是 clean”：判定仍要求 terminal 终局为 `clean`，被放弃的
+checkpoint goroutine 也可能在 unclean 之后继续提交物化，因此两者缺一不可。
+
+Helm 暂保留 TCP readiness；它只证明监听可达，不证明 drain 状态。Go readiness
+端点尚未接线，不能先改成 HTTP probe，也不增加可能误报 healthy 的 healthcheck。
+容器级外层强杀回归使用已有 Python 镜像与模拟慢停 platform，不代表 Rust/S3
+seal/fencing 的端到端验收：
+
+```sh
+PERI_SHUTDOWN_TEST_IMAGE=<local-python-image-id> \
+  python3 -m unittest discover -s prototypes/v1/deploy/tests -p 'test_outer_grace.py' -v
+```
 
 ## Existing external S3
 

@@ -45,7 +45,11 @@ old-process quiescence. The launcher holds a private, nonblocking exclusive
 run-directory lock across startup and joined shutdown; this prevents competing
 launchers, but does not authorize reuse. In-place restart still needs Authority
 clean-marker verification, lease fencing, old-cache lifecycle
-handling, and crash-atomic generation/configuration rotation. Use a new fixture;
+handling, and crash-atomic generation/configuration rotation. Reuse also requires
+the platform payload to be the final view a shutdown checkpoint materialized
+(`operations_checkpoint == revision`); operation records otherwise commit to a
+sidecar that the launcher does not read, so a payload that may trail that sidecar
+is refused as not materialized rather than trusted. Use a new fixture;
 never erase proof records or ownership dirty markers to force a restart.
 For a fresh fixture only, `PERI_BOOTSTRAP_KEY` can reuse a previously protected global key;
 other fixture credentials and database contents are new. Never put the key in a command argument or log.
@@ -110,7 +114,13 @@ non-200 status on the Worker `/sql` call, is answered as `outcome_unknown` with
 explicit rollback, but a multi-statement committed prefix is not rolled back
 automatically. Unknown
 outcomes retain admission permits and poison the session instead of treating
-timeout, close, or readback as cancellation proof. Every client — the Hrana
+timeout, close, or readback as cancellation proof; that transition is logged with
+the request id, stage, database and the session it had, and with the Worker's own
+verdict (`rpc=ambiguous=…,rejected=…,execution_completed=…`, or `rpc=none` when
+the platform holds no verdict) and its failure text or the transport error
+(`observation=`, `none` when neither exists), while the isolated-namespace
+refusals it causes are audited without a second log line.
+Every client — the Hrana
 adapters, the Go and TypeScript SDKs, the browser console and the stress
 harnesses — decides from `peri-loom/platform/sqlcontract`, which owns the code
 vocabulary, the meaning of the two evidence fields and the rule that a failure
@@ -124,9 +134,15 @@ session bindings; reopen explicitly against the current placement.
 Native SQL sessions idle for 5 minutes are closed by the Gateway's background
 cleanup loop. Each completed request refreshes the idle deadline. Cleanup waits
 for a confirmed Worker close before returning the session quota; an uncertain
-close retains the session and quota for explicit recovery. Clients should close
-sessions when finished and must not rely on an idle session to keep an open
-transaction alive. Hrana streams keep their separate idle timer.
+close retains the session and quota for explicit recovery instead of growing the
+durable operation log: a retained session is retried on a bounded account of
+twelve attempts or ten minutes, with backoff. Every failed attempt is logged with
+the session identity and counted in the cleanup ledger. A spent account has no
+in-process exit — the session keeps its seat and its quota until an operator
+retires it, and while it exists the launcher refuses a clean stop rather than
+hiding the retained session. Clients should close sessions when finished and must
+not rely on an idle session to keep an open transaction alive. Hrana streams keep
+their separate idle timer.
 
 JSON retains native integer literals. Go generic results use `json.Number`;
 TypeScript and the browser console use `bigint` for unsafe integer literals.
@@ -190,6 +206,39 @@ refuse this field vocabulary at open. Because the snapshot has no anchor outside
 its own directory, an edited snapshot that keeps a legal chain position is only
 detectable through its content digest: a writer who can rewrite the directory can
 also recompute that digest.
+
+A clean stop materializes the operation view. Operation commits append to the
+sidecar log without rewriting the registry payload, so a reader of `state.json`
+alone can trail the durable log by an arbitrary number of operations. Shutdown
+therefore commits the joined view into the payload and freezes both write paths,
+and that commit stamps `payload.operations_checkpoint` with its own revision. A
+reader may treat `payload.operations` as the durable operation view exactly when
+`operations_checkpoint != 0 && operations_checkpoint == payload.revision`
+(equivalently `== envelope.revision`); an absent or older value means the payload
+may lag the sidecar, and a clean-stop judgment must not be based on it. A
+checkpoint that cannot commit leaves the marker behind, keeps both write paths
+open and makes the process exit non-zero, so no clean-terminal proof can be
+recorded for that stop.
+
+The whole teardown — HTTP shutdown, gateway drain, operation checkpoint and audit
+tail — shares one deadline, reported as `platform shutdown incomplete` when a step
+does not finish inside it, instead of waiting for a step that may never return.
+`PERI_SHUTDOWN_TIMEOUT_MS` lowers that deadline (1s to 60s, default 10s) and an
+unusable value refuses to start. A budget above the default only starts next to
+`PERI_SHUTDOWN_STAGE_CAP_MS`, the per-stage stop cap the launcher holds this
+process to, and it has to stay strictly below it: a process still tearing down
+when the cap expires is killed mid-stop, which is the dirty stop this shared
+deadline exists to prevent. Raising without that declaration refuses to start,
+and so does a declared cap the default budget does not fit under.
+`PERI_SHUTDOWN_OUTER_GRACE_MS` is the deployment's statement about the whole
+stop, the grace the orchestrator enforces around the process, and a declared cap
+that reaches it refuses to start as well: a cap larger than the real kill is a
+check that cannot fail, not a covered stop. The process cannot observe either
+deadline, so both stay declarations by the launcher, and an unusable value
+refuses to start rather than dropping the comparison. The operation
+checkpoint is only half of a reuse judgment: it proves the sidecar view reached
+the payload, never that the stop itself was clean, and a checkpoint step the
+deadline abandoned can still commit after the stop was reported unclean.
 
 ## Build, test, and SDKs
 
