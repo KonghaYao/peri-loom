@@ -12,6 +12,8 @@ pub(super) struct Registry {
     pub entries: BTreeMap<DatabaseId, Entry>,
     pub sessions: usize,
     pub quarantined: BTreeMap<DatabaseId, u64>,
+    pub quarantined_since: BTreeMap<DatabaseId, Instant>,
+    pub resident_since: BTreeMap<DatabaseId, Instant>,
 }
 
 pub(super) enum Entry {
@@ -114,6 +116,10 @@ impl Instance {
                 .quarantined
                 .entry(self.identifier.clone())
                 .or_insert(self.epoch);
+            registry
+                .quarantined_since
+                .entry(self.identifier.clone())
+                .or_insert_with(Instant::now);
         }
     }
 }

@@ -200,6 +200,15 @@ fn sql_lane_rejects_before_engine_and_control_metrics_stays_available() -> Resul
     let metrics = worker.call(WorkerCommand::GetMetrics, true)?.1;
     assert_eq!(metrics["ok"], true);
     assert_eq!(metrics["result"]["sql_inflight"], 1);
+    // One ownership sample backs both fields, so the count can never disagree with
+    // the list it summarises.
+    assert_eq!(
+        metrics["result"]["ownership_failures_count"],
+        metrics["result"]["ownership_failures"]
+            .as_array()
+            .map(|failures| failures.len())
+            .unwrap_or_default()
+    );
     let (status, _) = worker.call(
         WorkerCommand::Query {
             session: "unknown".into(),

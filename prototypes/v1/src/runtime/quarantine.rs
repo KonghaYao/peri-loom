@@ -5,7 +5,10 @@ use super::DatabaseId;
 use crate::session::AdmissionError;
 
 impl Registry {
-    pub fn resident_count(&self) -> usize {
+    /// Admission caliber: a database that could not prove a clean unload keeps
+    /// consuming its slot until an operator retires it, so tombstones without a
+    /// native entry count here.
+    pub fn capacity_resident_count(&self) -> usize {
         self.entries.len().saturating_add(
             self.quarantined
                 .keys()
@@ -14,9 +17,33 @@ impl Registry {
         )
     }
 
+    /// Reporting caliber: only identities with a live native entry. Quarantined
+    /// tombstones are reported by `quarantined_count`/`oldest_quarantined_age_ms`
+    /// so the resident figures describe residency rather than retained capacity.
+    pub fn live_resident_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn oldest_live_resident_age_ms(&self) -> u64 {
+        self.resident_since
+            .iter()
+            .filter(|(identifier, _)| self.entries.contains_key(*identifier))
+            .map(|(_, since)| since.elapsed().as_millis() as u64)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn oldest_quarantined_age_ms(&self) -> u64 {
+        self.quarantined_since
+            .values()
+            .map(|since| since.elapsed().as_millis() as u64)
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn check_capacity(&self, limit: usize) -> Result<()> {
         ensure!(
-            self.resident_count() < limit,
+            self.capacity_resident_count() < limit,
             "worker database capacity exceeded"
         );
         Ok(())
@@ -35,6 +62,9 @@ impl Registry {
             self.quarantined
                 .entry(identifier.clone())
                 .or_insert(loaded.epoch);
+            self.quarantined_since
+                .entry(identifier.clone())
+                .or_insert_with(std::time::Instant::now);
             loaded.draining = true;
             loaded.idle_since = None;
         }
@@ -60,6 +90,7 @@ impl Registry {
             && matches!(self.entries.get(identifier), Some(Entry::Retiring(_)))
         {
             self.entries.remove(identifier);
+            self.resident_since.remove(identifier);
         }
     }
 }

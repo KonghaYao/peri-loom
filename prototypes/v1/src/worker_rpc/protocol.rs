@@ -21,6 +21,15 @@ pub enum WorkerCommand {
     OpenSession {
         database: DatabaseId,
     },
+    OpenOwnedSession {
+        database: DatabaseId,
+        owner_incarnation: String,
+    },
+    CloseOwnedSessions {
+        binding: LeaseBinding,
+        owner_incarnation: String,
+        open_request_id: String,
+    },
     Execute {
         session: String,
         sql: String,
@@ -99,6 +108,35 @@ pub enum WorkerCommand {
         max_events: usize,
     },
     Shutdown,
+    ShutdownWithin {
+        remaining_ms: u64,
+    },
+}
+
+/// Only emitted before dispatch; absence never establishes non-execution.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionRejection {
+    pub error: String,
+    pub execution_completed: bool,
+    pub admission: AdmissionOutcome,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionOutcome {
+    NotAdmitted,
+}
+
+impl AdmissionRejection {
+    pub fn encode(reason: &str) -> Vec<u8> {
+        serde_json::to_vec(&Self {
+            error: reason.into(),
+            execution_completed: false,
+            admission: AdmissionOutcome::NotAdmitted,
+        })
+        .expect("admission response serializes")
+    }
 }
 
 fn want_rows_default() -> bool {

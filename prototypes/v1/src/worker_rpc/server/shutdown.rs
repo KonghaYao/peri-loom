@@ -1,6 +1,47 @@
 use std::thread::JoinHandle;
 
 use anyhow::{Error, Result};
+use serde_json::Value;
+
+/// Reports the retirement counters that still prove work outstanding, or `None`
+/// for a sample that proves none. An unavailable sample is unproven rather than
+/// clean, and a missing counter is treated the same way.
+pub(super) fn retirement_unproven(health: &Value) -> Option<String> {
+    if health["available"] != true {
+        return Some("retirement sample unavailable".to_owned());
+    }
+    let mut outstanding = Vec::new();
+    for key in [
+        "quarantined_databases",
+        "retiring_databases",
+        "pending_statements",
+        "pending_io",
+        "retained_engines",
+        "retained_connections",
+    ] {
+        let Some(count) = health[key].as_u64() else {
+            return Some(format!("retirement counter unavailable: {key}"));
+        };
+        if count != 0 {
+            outstanding.push(format!("{key}={count}"));
+        }
+    }
+    (!outstanding.is_empty()).then(|| outstanding.join(","))
+}
+
+/// Names the counters an operator needs when a shutdown is unclean, keeping the
+/// numeric fields ahead of the free-text reason.
+pub(super) fn unclean_log_line(reason: &str, health: &Value) -> String {
+    format!(
+        "level=error event=worker_shutdown outcome=unclean quarantined_databases={} retiring_databases={} pending_statements={} pending_io={} retained_engines={} retained_connections={} reason={reason}",
+        health["quarantined_databases"],
+        health["retiring_databases"],
+        health["pending_statements"],
+        health["pending_io"],
+        health["retained_engines"],
+        health["retained_connections"],
+    )
+}
 
 #[derive(Default)]
 pub(super) struct WorkerThreads {
@@ -51,9 +92,19 @@ impl WorkerThreads {
                     .get_or_insert_with(|| anyhow::anyhow!("worker watchdog thread panicked"));
             }
         }
-        clear()?;
-        result?;
-        match self.failure {
+        // Every stage contributes to one unclean summary: an operator needs the
+        // session ledger, the run loop and the watchdog together rather than
+        // whichever failed first, and no stage may skip the ones after it.
+        let clear = clear();
+        let mut failure = self.failure;
+        for (label, later) in [("session cleanup", clear.err()), ("run loop", result.err())] {
+            let Some(later) = later else { continue };
+            failure = Some(match failure {
+                Some(previous) => previous.context(format!("{label}: {later:#}")),
+                None => later.context(label),
+            });
+        }
+        match failure {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -173,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn original_clear_then_run_error_priority_is_preserved_over_thread_panics() {
+    fn cleanup_and_run_failures_are_reported_alongside_thread_panics() {
         for clear_fails in [false, true] {
             let mut workers = WorkerThreads::default();
             workers.push(thread::spawn(|| panic!("synthetic worker panic")));
@@ -193,15 +244,67 @@ mod tests {
                 )
                 .unwrap_err();
             assert_eq!(clears.load(Ordering::SeqCst), 1);
+            let reported = format!("{error:#}");
+            assert!(
+                reported.contains("worker RPC thread panicked"),
+                "{reported}"
+            );
+            assert!(reported.contains("run loop failed"), "{reported}");
             assert_eq!(
-                error.to_string(),
-                if clear_fails {
-                    "session clear failed"
-                } else {
-                    "run loop failed"
-                }
+                reported.contains("session clear failed"),
+                clear_fails,
+                "{reported}"
             );
         }
+    }
+
+    #[test]
+    fn every_unclean_stage_is_reported_together_instead_of_the_first_one() {
+        let error = WorkerThreads::default()
+            .finish(
+                thread::spawn(|| Err(anyhow::anyhow!("watchdog sweep failed"))),
+                Err(anyhow::anyhow!("run loop failed")),
+                || Err(anyhow::anyhow!("2 session cleanups failed")),
+            )
+            .unwrap_err();
+        let reported = format!("{error:#}");
+        for expected in [
+            "watchdog sweep failed",
+            "run loop failed",
+            "2 session cleanups failed",
+        ] {
+            assert!(reported.contains(expected), "{reported}");
+        }
+    }
+
+    #[test]
+    fn retirement_counters_decide_whether_an_outstanding_work_claim_holds() {
+        let clean = serde_json::json!({"available": true, "quarantined_databases": 0, "retiring_databases": 0,
+            "pending_statements": 0, "pending_io": 0, "retained_engines": 0, "retained_connections": 0});
+        assert_eq!(super::retirement_unproven(&clean), None);
+        let quarantined = serde_json::json!({"available": true, "quarantined_databases": 2, "retiring_databases": 1,
+            "pending_statements": 0, "pending_io": 0, "retained_engines": 3, "retained_connections": 0});
+        assert_eq!(
+            super::retirement_unproven(&quarantined).unwrap(),
+            "quarantined_databases=2,retiring_databases=1,retained_engines=3"
+        );
+        // An unavailable sample is unproven, never a release.
+        let unavailable = serde_json::json!({"available": false, "quarantined_databases": null});
+        assert!(super::retirement_unproven(&unavailable).is_some());
+        let truncated = serde_json::json!({"available": true, "quarantined_databases": 0});
+        assert!(super::retirement_unproven(&truncated).is_some());
+    }
+
+    #[test]
+    fn unclean_log_line_keeps_the_counters_ahead_of_the_reason() {
+        let health = serde_json::json!({"available": true, "quarantined_databases": 2, "retiring_databases": null,
+            "pending_statements": 1, "pending_io": 0, "retained_engines": 3, "retained_connections": 0});
+        let line = super::unclean_log_line("1 session cleanups failed", &health);
+        assert!(line.starts_with("level=error event=worker_shutdown outcome=unclean"));
+        assert!(line.contains("quarantined_databases=2"));
+        assert!(line.contains("retained_engines=3"));
+        assert!(line.contains("pending_statements=1"));
+        assert!(line.ends_with("reason=1 session cleanups failed"));
     }
 
     #[test]

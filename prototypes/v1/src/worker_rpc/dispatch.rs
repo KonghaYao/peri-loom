@@ -54,10 +54,20 @@ impl State {
                 ensure!(control, "control authorization required");
                 let usage = self.admission.snapshot()?;
                 let sql_inflight = usage.general_sql + usage.owner_sql + usage.cleanup_sql;
+                // One sample per response: the ownership state includes per-database
+                // resource probes, so taking it twice would report two instants of
+                // the same worker.
+                let status = self.runtime.status()?;
+                let ownership_failures = status.failures;
                 Ok(json!({
                     "metrics": Metrics::global().snapshot(),
                     "capacity_trace": self.runtime.capacity_trace_snapshot(),
-                    "resources": self.runtime.status()?.resources,
+                    "resources": status.resources,
+                    "ownership_failures": ownership_failures,
+                    "ownership_failures_count": ownership_failures.len(),
+                    "lifecycle": self.sessions.lifecycle_metrics()?,
+                    "lifecycle_protocol": 1,
+                    "shutdown_protocol": 1,
                     "http_inflight": self.inflight.in_use(),
                     "sql_inflight": sql_inflight,
                     "rpc_lanes": usage,
@@ -72,20 +82,66 @@ impl State {
                     OwnershipCommand::RevokeDatabase { database, .. } => Some(database.clone()),
                     _ => None,
                 };
-                let result = self.runtime.command(action)?;
-                if let Some(identifier) = revoked {
-                    self.sessions.clear_database(&identifier)?;
-                }
+                let result = self.runtime.command(action);
+                let cleanup = revoked
+                    .map(|identifier| self.sessions.clear_database(&identifier))
+                    .transpose();
+                let result = result?;
+                cleanup?;
                 Ok(result)
+            }
+            WorkerCommand::ShutdownWithin { remaining_ms } => {
+                ensure!(control, "control authorization required");
+                ensure!(
+                    (1..=20_000).contains(&remaining_ms),
+                    "invalid shutdown remaining budget"
+                );
+                self.shutdown_budget
+                    .start_with(std::time::Duration::from_millis(remaining_ms));
+                self.stop();
+                Ok(json!({"stopping": true, "clean": false}))
             }
             WorkerCommand::Shutdown => {
                 ensure!(control, "control authorization required");
                 self.stop();
                 Ok(json!({"stopping": true}))
             }
+            WorkerCommand::CloseOwnedSessions {
+                binding,
+                owner_incarnation,
+                open_request_id,
+            } => {
+                ensure!(control, "control authorization required");
+                self.sessions
+                    .close_owned(&binding, &owner_incarnation, &open_request_id, deadline)
+            }
             _ if control => bail!("SQL authorization required"),
+            WorkerCommand::OpenOwnedSession {
+                database,
+                owner_incarnation,
+            } => {
+                crate::ownership::types::validate_label(&owner_incarnation)?;
+                let (mut result, snapshot) = self.sessions.open(
+                    &database,
+                    version,
+                    deadline,
+                    Some(owner_incarnation),
+                    request_id,
+                )?;
+                result["binding"] = serde_json::to_value(
+                    self.sessions.binding(
+                        result["session"]
+                            .as_str()
+                            .context("missing session identity")?,
+                    )?,
+                )?;
+                *terminal = snapshot;
+                Ok(result)
+            }
             WorkerCommand::OpenSession { database } => {
-                let (result, snapshot) = self.sessions.open(&database, version, deadline)?;
+                let (result, snapshot) = self
+                    .sessions
+                    .open(&database, version, deadline, None, request_id)?;
                 *terminal = snapshot;
                 Ok(result)
             }

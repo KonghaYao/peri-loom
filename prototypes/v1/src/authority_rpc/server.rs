@@ -57,6 +57,7 @@ struct State {
     inflight: Arc<Quota>,
     cleanup: Mutex<Vec<thread::JoinHandle<()>>>,
     wakeup: Wakeup,
+    shutdown_budget: crate::shutdown_budget::ShutdownBudget,
 }
 
 struct Session {
@@ -94,6 +95,7 @@ impl Server {
                 inflight: Quota::new(MAX_INFLIGHT),
                 cleanup: Mutex::new(Vec::new()),
                 wakeup: acceptor_wakeup,
+                shutdown_budget: crate::shutdown_budget::ShutdownBudget::configured()?,
             }),
         })
     }
@@ -105,10 +107,27 @@ impl Server {
     }
 
     pub fn run(mut self) -> Result<()> {
-        let mut workers = Vec::new();
+        let budget = self.state.shutdown_budget.clone();
+        let _shutdown_return = budget.cancel_on_return();
+        let result = self.run_inner();
+        drop(self);
+        budget.finish();
+        result
+    }
+
+    fn run_inner(&mut self) -> Result<()> {
+        let mut thread_failure = false;
+        let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
         let result = (|| {
             while !self.state.stopping.load(Ordering::SeqCst) {
-                workers.retain(|worker: &thread::JoinHandle<()>| !worker.is_finished());
+                let mut index = 0;
+                while index < workers.len() {
+                    if workers[index].is_finished() {
+                        thread_failure |= workers.swap_remove(index).join().is_err();
+                    } else {
+                        index += 1;
+                    }
+                }
                 self.acceptor.park()?;
                 while !self.state.stopping.load(Ordering::SeqCst) {
                     let Some(mut connection) = self.acceptor.take()? else {
@@ -134,10 +153,11 @@ impl Server {
             }
             Ok(())
         })();
+        self.state.shutdown_budget.start();
         self.state.stopping.store(true, Ordering::SeqCst);
         self.state.wakeup.wake();
         for worker in workers {
-            let _ = worker.join();
+            thread_failure |= worker.join().is_err();
         }
         for cleanup in std::mem::take(
             &mut *self
@@ -146,7 +166,7 @@ impl Server {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("scope cleanup poisoned"))?,
         ) {
-            let _ = cleanup.join();
+            thread_failure |= cleanup.join().is_err();
         }
         let sessions = std::mem::take(
             &mut *self
@@ -156,14 +176,36 @@ impl Server {
                 .map_err(|_| anyhow::anyhow!("session registry poisoned"))?,
         );
         drop(sessions);
+        ensure!(
+            !thread_failure,
+            "authority shutdown thread failed; not clean"
+        );
         if result.is_ok() && self.state.authority.quiescent() {
+            self.state.shutdown_budget.check()?;
             self.seal.mark_clean()?;
+            // Both clean markers are backend writes, so the budget can expire
+            // between the check above and the record landing. Revoke the marker
+            // instead of leaving evidence a restart would trust without proof, and
+            // report a failed revoke rather than hiding it behind the deadline.
+            if let Err(error) = self.state.shutdown_budget.check() {
+                self.seal.mark_dirty().map_err(|rollback| {
+                    rollback.context(format!("seal rollback failed: {error:#}"))
+                })?;
+                return Err(error);
+            }
             self.startup.mark_clean()?;
+            if let Err(error) = self.state.shutdown_budget.check() {
+                self.startup.mark_dirty().map_err(|rollback| {
+                    rollback.context(format!("startup marker rollback failed: {error:#}"))
+                })?;
+                return Err(error);
+            }
         } else {
             return Err(result.err().unwrap_or_else(|| {
                 anyhow::anyhow!("authority has unsettled backend operations; startup remains dirty")
             }));
         }
+        self.state.shutdown_budget.check()?;
         Ok(())
     }
 }
@@ -321,6 +363,7 @@ impl State {
                 let mut result =
                     serde_json::to_value(crate::metrics::Metrics::global().snapshot())?;
                 result["capacity_trace"] = crate::capacity_trace::snapshot();
+                result["shutdown_protocol"] = json!(1);
                 Ok(result)
             }
             AuthorityCommand::GetCapacityTrace {
@@ -572,8 +615,21 @@ impl State {
                     SessionOperation::List { prefix } => Ok(json!(selected.store.list(&prefix)?)),
                 }
             }
+            AuthorityCommand::ShutdownWithin { remaining_ms } => {
+                Self::control(principal)?;
+                ensure!(
+                    (1..=20_000).contains(&remaining_ms),
+                    "invalid shutdown remaining budget"
+                );
+                self.shutdown_budget
+                    .start_with(Duration::from_millis(remaining_ms));
+                self.stopping.store(true, Ordering::SeqCst);
+                self.wakeup.wake();
+                Ok(json!({"stopping": true, "clean": false}))
+            }
             AuthorityCommand::Shutdown => {
                 Self::control(principal)?;
+                self.shutdown_budget.start();
                 self.stopping.store(true, Ordering::SeqCst);
                 // The acceptor is parked on `poll`, so it has to be told; waiting
                 // out the supervision period would delay every clean shutdown.

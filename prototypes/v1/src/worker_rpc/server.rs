@@ -67,12 +67,14 @@ pub(super) struct State {
     pub diagnostics: Diagnostics,
     pub limits: WorkerLimits,
     wakeup: Wakeup,
+    pub(super) shutdown_budget: crate::shutdown_budget::ShutdownBudget,
 }
 
 impl State {
     /// Stops the worker and releases the parked acceptor so shutdown does not
     /// wait out the supervision period.
     pub(super) fn stop(&self) {
+        self.shutdown_budget.start();
         self.stopped.store(true, Ordering::SeqCst);
         self.wakeup.wake();
     }
@@ -149,7 +151,7 @@ impl WorkerServer {
         Ok(Self {
             acceptor,
             state: Arc::new(State {
-                sessions: Sessions::new(runtime.clone(), limits.max_sessions),
+                sessions: Sessions::new(runtime.clone(), limits.max_sessions)?,
                 runtime,
                 control_token,
                 sql_token,
@@ -160,6 +162,7 @@ impl WorkerServer {
                 diagnostics: Diagnostics::default(),
                 limits,
                 wakeup: acceptor_wakeup,
+                shutdown_budget: crate::shutdown_budget::ShutdownBudget::configured()?,
             }),
         })
     }
@@ -169,23 +172,41 @@ impl WorkerServer {
     }
 
     pub fn run(self) -> Result<()> {
+        let budget = self.state.shutdown_budget.clone();
+        let _shutdown_return = budget.cancel_on_return();
+        let result = self.run_inner();
+        drop(self);
+        budget.finish();
+        result
+    }
+
+    fn run_inner(&self) -> Result<()> {
         let watchdog_state = self.state.clone();
         let watchdog = thread::spawn(move || {
             let mut failure = None;
             while !watchdog_state.stopped.load(Ordering::SeqCst) {
                 match watchdog_state.runtime.status() {
                     Ok(status) => {
-                        for database in status.databases {
-                            if matches!(
-                                database.mode,
-                                OwnershipMode::Revoked | OwnershipMode::Detached
-                            ) {
-                                if let Err(error) =
-                                    watchdog_state.sessions.clear_database(&database.database)
-                                {
-                                    failure.get_or_insert(error);
-                                }
-                            }
+                        let mut revoked: Vec<_> = status
+                            .databases
+                            .into_iter()
+                            .filter(|database| {
+                                matches!(
+                                    database.mode,
+                                    OwnershipMode::Revoked | OwnershipMode::Detached
+                                )
+                            })
+                            .map(|database| database.database)
+                            .collect();
+                        revoked.extend(status.failures.into_iter().map(|failure| failure.database));
+                        if let Err(error) = watchdog_state.sessions.sweep(&revoked) {
+                            failure.get_or_insert(error);
+                        }
+                        // Failure detail is not dropped here: the sweep records and
+                        // prints each database once, and the same ledger is what
+                        // `get_metrics` reports as `ownership_failures`.
+                        if let Err(error) = watchdog_state.runtime.sweep_revocations() {
+                            failure.get_or_insert(error);
                         }
                     }
                     Err(error) => {
@@ -217,7 +238,9 @@ impl WorkerServer {
                         let _ = http::reply(
                             &mut connection,
                             429,
-                            b"{\"error\":\"worker connection limit reached\"}",
+                            &super::protocol::AdmissionRejection::encode(
+                                "worker connection limit reached",
+                            ),
                         );
                         continue;
                     };
@@ -235,7 +258,26 @@ impl WorkerServer {
             Ok(())
         })();
         self.state.stop();
-        workers.finish(watchdog, result, || self.state.sessions.clear())
+        let shutdown = workers.finish(watchdog, result, || self.state.sessions.clear());
+        // Sample retirement unconditionally: a failed session cleanup must not hide
+        // why the worker is unclean, which is exactly what an early `?` did.
+        let health = self.state.runtime.retirement_health();
+        let mut failures = Vec::new();
+        if let Err(error) = shutdown {
+            failures.push(format!("{error:#}"));
+        }
+        if let Some(outstanding) = shutdown::retirement_unproven(&health) {
+            failures.push(format!("retirement unproven: {outstanding}"));
+        }
+        if let Err(error) = self.state.shutdown_budget.check() {
+            failures.push(format!("{error:#}"));
+        }
+        if !failures.is_empty() {
+            let reason = failures.join("; ");
+            eprintln!("{}", shutdown::unclean_log_line(&reason, &health));
+            anyhow::bail!("worker shutdown unproven; not clean: {reason}");
+        }
+        Ok(())
     }
 }
 
@@ -285,7 +327,12 @@ impl State {
             // The execution budget is taken per request. Charging it per
             // connection is what let a parked socket hold a slot indefinitely.
             let Some(_execution_ticket) = self.inflight.try_acquire() else {
-                let _ = transport::reply(stream, 429, b"{\"error\":\"worker saturated\"}", false);
+                let _ = transport::reply(
+                    stream,
+                    429,
+                    &super::protocol::AdmissionRejection::encode("worker saturated"),
+                    false,
+                );
                 return Ok(());
             };
             if !self.handle(stream, request, accepted, keep_alive)? {
@@ -332,6 +379,7 @@ impl State {
         let stateful = matches!(
             &parsed.command,
             WorkerCommand::OpenSession { .. }
+                | WorkerCommand::OpenOwnedSession { .. }
                 | WorkerCommand::Execute { .. }
                 | WorkerCommand::Query { .. }
                 | WorkerCommand::Describe { .. }
@@ -370,8 +418,10 @@ impl State {
                 &parsed.command,
                 WorkerCommand::Ownership { .. }
                     | WorkerCommand::GetMetrics
+                    | WorkerCommand::CloseOwnedSessions { .. }
                     | WorkerCommand::GetCapacityTrace { .. }
                     | WorkerCommand::Shutdown
+                    | WorkerCommand::ShutdownWithin { .. }
             );
             ensure!(
                 administrative == control,
@@ -428,7 +478,7 @@ impl State {
             let _ = transport::reply(
                 stream,
                 429,
-                b"{\"error\":\"worker execution lane saturated\"}",
+                &super::protocol::AdmissionRejection::encode("worker execution lane saturated"),
                 false,
             );
             return Ok(false);
@@ -530,6 +580,11 @@ impl State {
             Err(error) => failure_response(version, identifier, control, error, terminal),
         };
         let bytes = serde_json::to_vec(&response)?;
+        // A client may send its next request as soon as it receives the receipt.
+        // Only write cursors still need the guard to classify a lost reply.
+        if !write_cursor_request {
+            drop(call.take());
+        }
         let result = transport::reply(stream, 200, &bytes, keep_alive);
         if result.is_err() && write_cursor_request && response.ok {
             if let Some(call) = call.as_ref() {

@@ -202,6 +202,13 @@ pub struct OwnershipWorkerState {
     pub worker_id: String,
     pub databases: Vec<DatabaseOwnership>,
     pub resources: WorkerStatus,
+    pub failures: Vec<OwnershipFailure>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OwnershipFailure {
+    pub database: DatabaseId,
+    pub error: String,
 }
 
 pub fn validate_label(label: &str) -> Result<()> {

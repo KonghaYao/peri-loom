@@ -57,4 +57,48 @@ impl Seal {
         )?;
         Ok(())
     }
+
+    /// Revokes the clean record when the write raced the shutdown budget.
+    /// The conditional write pins the rollback to the row this authority itself
+    /// wrote, so rolling back cannot reopen a takeover window for anyone else.
+    pub fn mark_dirty(&mut self) -> Result<()> {
+        self.record.clean = false;
+        self.etag = self.store.put(
+            KEY,
+            &serde_json::to_vec(&self.record)?,
+            PutCondition::Match(self.etag.clone()),
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object_store::MemoryObjectStore;
+
+    #[test]
+    fn rollback_closes_the_clean_window_a_restart_would_trust() -> Result<()> {
+        let store = Arc::new(MemoryObjectStore::default());
+        let mut seal = Seal::acquire(store.clone())?;
+        seal.mark_clean()?;
+        // The window this guards: a clean record is accepted by the next startup,
+        // so an over-budget shutdown that lands it must be able to revoke it.
+        let published: serde_json::Value =
+            serde_json::from_slice(&store.get(KEY)?.expect("seal record").bytes)?;
+        assert_eq!(published["clean"], true);
+        seal.mark_dirty()?;
+        assert!(Seal::acquire(store).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn rollback_requires_the_etag_of_the_record_this_authority_wrote() -> Result<()> {
+        let store = Arc::new(MemoryObjectStore::default());
+        let mut previous = Seal::acquire(store.clone())?;
+        previous.mark_clean()?;
+        let _takeover = Seal::acquire(store)?;
+        assert!(previous.mark_dirty().is_err());
+        Ok(())
+    }
 }

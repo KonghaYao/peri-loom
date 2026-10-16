@@ -95,6 +95,7 @@ pub struct DatabaseStatus {
     pub active_sessions: usize,
     pub idle_ms: Option<u64>,
     pub resources: Option<ResourceUsage>,
+    pub resource_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -102,5 +103,9 @@ pub struct WorkerStatus {
     pub loaded_databases: usize,
     pub loading_databases: usize,
     pub active_sessions: usize,
+    pub resident_count: usize,
+    pub oldest_resident_age_ms: u64,
+    pub quarantined_count: usize,
+    pub oldest_quarantined_age_ms: u64,
     pub databases: Vec<DatabaseStatus>,
 }

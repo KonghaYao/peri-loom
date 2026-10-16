@@ -18,12 +18,20 @@ use super::types::{
 
 const DEADLINE_MARGIN_MS: u64 = 5;
 
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;
+
 pub struct OwnershipRuntime {
     worker_id: String,
     provider: Arc<RemoteAuthorityProvider>,
     worker: Arc<WorkerRuntime>,
     contexts: Contexts,
     clock: Arc<dyn LeaseClock>,
+    /// Detach failures keyed by database, first error wins. The watchdog sweeps
+    /// every 100 ms, so a fresh error is recorded and printed once instead of ten
+    /// times a second, and cleared as soon as that database detaches.
+    detach_failures: Mutex<BTreeMap<DatabaseId, String>>,
 }
 
 impl OwnershipRuntime {
@@ -79,6 +87,7 @@ impl OwnershipRuntime {
             worker,
             contexts,
             clock,
+            detach_failures: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -129,26 +138,124 @@ impl OwnershipRuntime {
             .contexts
             .lock()
             .map_err(|_| anyhow::anyhow!("ownership registry poisoned"))?
-            .values()
-            .cloned()
+            .iter()
+            .map(|(identifier, context)| (identifier.clone(), context.clone()))
             .collect();
         let mut databases = Vec::new();
-        for context in contexts {
-            let description = context.description()?;
-            if include_resources && description.mode == OwnershipMode::Revoked {
-                self.finish_detach(&context)?;
+        let mut failures = Vec::new();
+        for (identifier, context) in contexts {
+            match context.description().and_then(|description| {
+                self.worker.ensure_instance_available(&identifier)?;
+                Ok(description)
+            }) {
+                Ok(description) => databases.push(description),
+                Err(error) => failures.push(super::types::OwnershipFailure {
+                    database: identifier,
+                    error: error.to_string(),
+                }),
             }
-            databases.push(description);
+        }
+        for (database, error) in self
+            .detach_failures
+            .lock()
+            .map_err(|_| anyhow::anyhow!("detach failure ledger poisoned"))?
+            .iter()
+        {
+            // One caliber for ownership failures: sampling and detach failures are
+            // reported as the same per-database list, so a reader never has to
+            // reconcile two counts for the same database.
+            if !failures.iter().any(|failure| failure.database == *database) {
+                failures.push(super::types::OwnershipFailure {
+                    database: database.clone(),
+                    error: error.clone(),
+                });
+            }
         }
         Ok(OwnershipWorkerState {
             worker_id: self.worker_id.clone(),
             databases,
+            failures,
             resources: if include_resources {
                 self.worker.status()?
             } else {
                 self.worker.status_for_control()?
             },
         })
+    }
+
+    pub fn sweep_revocations(&self) -> Result<()> {
+        let contexts: Vec<_> = self
+            .contexts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ownership registry poisoned"))?
+            .iter()
+            .map(|(identifier, context)| (identifier.clone(), context.clone()))
+            .collect();
+        let mut failures = Vec::new();
+        for (identifier, context) in contexts {
+            let state = match context.lock() {
+                Ok(state) => state,
+                Err(error) => {
+                    failures.push(super::types::OwnershipFailure {
+                        database: identifier,
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let stopped = matches!(state.mode, OwnershipMode::Revoked | OwnershipMode::Draining);
+            drop(state);
+            if stopped {
+                if let Err(error) = self.finish_detach(&context) {
+                    failures.push(super::types::OwnershipFailure {
+                        database: identifier,
+                        error: error.to_string(),
+                    });
+                }
+            }
+        }
+        self.note_detach_failures(&failures)
+    }
+
+    /// Records and prints first-time detach failures, and clears databases that
+    /// stopped failing. Without this a failed detach only ever existed inside the
+    /// sweep's return value, which the watchdog discarded.
+    fn note_detach_failures(&self, failures: &[super::types::OwnershipFailure]) -> Result<()> {
+        let mut ledger = self
+            .detach_failures
+            .lock()
+            .map_err(|_| anyhow::anyhow!("detach failure ledger poisoned"))?;
+        let mut recovered = Vec::new();
+        ledger.retain(|database, _| {
+            let failing = failures.iter().any(|failure| failure.database == *database);
+            if !failing {
+                recovered.push(database.clone());
+            }
+            failing
+        });
+        for failure in failures {
+            if ledger.contains_key(&failure.database) {
+                continue;
+            }
+            eprintln!(
+                "level=error event=ownership_detach outcome=failed database={}/{} error={}",
+                failure.database.namespace.tenant,
+                failure.database.namespace.database,
+                failure.error
+            );
+            ledger.insert(failure.database.clone(), failure.error.clone());
+        }
+        if !recovered.is_empty() {
+            eprintln!(
+                "level=info event=ownership_detach outcome=recovered databases={}",
+                recovered.len()
+            );
+        }
+        Ok(())
+    }
+
+    pub fn evict_idle(&self, idle: std::time::Duration) -> Result<Vec<DatabaseId>> {
+        self.worker.evict_idle(idle)
     }
 
     pub fn retirement_health(&self) -> serde_json::Value {

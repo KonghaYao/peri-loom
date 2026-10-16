@@ -14,6 +14,32 @@ use std::{
 use support::{fixture, identifier, Gate};
 
 #[test]
+fn thousand_database_rotations_reopen_acked_wal_under_resident_cap() -> Result<()> {
+    let (_, _, runtime) = fixture(WorkerLimits {
+        max_open_databases: 2,
+        ..WorkerLimits::default()
+    })?;
+    for index in 0..1000 {
+        let id = identifier(&format!("rotation_{index}"));
+        let handle = runtime.open(id.clone(), 1)?;
+        handle.execute(&format!(
+            "CREATE TABLE data(value INTEGER); INSERT INTO data VALUES({index})"
+        ))?;
+        drop(handle);
+        runtime.evict_idle(Duration::ZERO)?;
+        assert_eq!(runtime.status()?.resident_count, 0);
+        let reopened = runtime.open(id, 1)?;
+        assert_eq!(
+            reopened.query("SELECT value FROM data")?[0][0].to_string(),
+            index.to_string()
+        );
+        drop(reopened);
+        runtime.evict_idle(Duration::ZERO)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn sessions_are_independent_and_final_drop_aborts_transaction() -> Result<()> {
     let (_, _, runtime) = fixture(WorkerLimits::default())?;
     let first = runtime.open(identifier("db"), 1)?;

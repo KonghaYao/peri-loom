@@ -571,7 +571,7 @@ fn general_saturation_preserves_owner_commit_and_waiter_cleanup() -> Result<()> 
         })
         .collect::<Vec<_>>();
     worker.await_general(3)?;
-    let (status, _) = worker.call(
+    let (status, rejected) = worker.call(
         WorkerCommand::Query {
             session: "f".repeat(64),
             sql: "SELECT 1".into(),
@@ -580,6 +580,8 @@ fn general_saturation_preserves_owner_commit_and_waiter_cleanup() -> Result<()> 
         false,
     )?;
     assert_eq!(status, 429);
+    assert_eq!(rejected["admission"], "not_admitted");
+    assert_eq!(rejected["execution_completed"], false);
     let (_, closed) = worker.call(
         WorkerCommand::CloseSession {
             session: waiters[0].clone(),

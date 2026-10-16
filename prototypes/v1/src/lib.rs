@@ -25,6 +25,7 @@ pub mod runtime_cli;
 pub mod sdk;
 pub mod service_cli;
 pub mod session;
+mod shutdown_budget;
 pub mod storage;
 pub mod wal;
 pub mod worker_rpc;

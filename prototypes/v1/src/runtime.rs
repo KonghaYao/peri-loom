@@ -120,6 +120,9 @@ impl WorkerRuntime {
             let loading = Loading::new(epoch);
             let completion = loading.completion.clone();
             registry
+                .resident_since
+                .insert(identifier.clone(), Instant::now());
+            registry
                 .entries
                 .insert(identifier.clone(), Entry::Loading(loading));
             registry.sessions += 1;
@@ -152,6 +155,9 @@ impl WorkerRuntime {
                             .insert(identifier.clone(), Entry::Retiring(epoch));
                     } else {
                         registry.entries.remove(&identifier);
+                        if !registry.quarantined.contains_key(&identifier) {
+                            registry.resident_since.remove(&identifier);
+                        }
                     }
                     registry.sessions -= 1;
                     drop(registry);
@@ -358,6 +364,10 @@ impl WorkerRuntime {
         registry.observe_all_quarantines();
         let mut status = WorkerStatus {
             active_sessions: registry.sessions,
+            resident_count: registry.live_resident_count(),
+            oldest_resident_age_ms: registry.oldest_live_resident_age_ms(),
+            quarantined_count: registry.quarantined.len(),
+            oldest_quarantined_age_ms: registry.oldest_quarantined_age_ms(),
             ..WorkerStatus::default()
         };
         let mut databases = Vec::new();
@@ -406,6 +416,7 @@ impl WorkerRuntime {
                     active_sessions: sessions,
                     idle_ms,
                     resources: None,
+                    resource_error: None,
                 },
                 database,
             ));
@@ -413,10 +424,10 @@ impl WorkerRuntime {
         drop(registry);
         for (mut information, database) in databases {
             if include_resources {
-                information.resources = database
-                    .map(|database| database.resources())
-                    .transpose()?
-                    .flatten();
+                match database.map(|database| database.resources()).transpose() {
+                    Ok(resources) => information.resources = resources.flatten(),
+                    Err(error) => information.resource_error = Some(error.to_string()),
+                }
             }
             status.databases.push(information);
         }

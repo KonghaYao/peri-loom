@@ -61,6 +61,13 @@ impl AuthorityStartup {
         self.write_marker(b"clean\n")
     }
 
+    /// Revokes a clean marker that landed after the shutdown deadline. The marker
+    /// is what authorizes reuse of the state directory, so an over-budget stop
+    /// must not leave it behind.
+    pub(crate) fn mark_dirty(&mut self) -> Result<()> {
+        self.write_marker(b"dirty\n")
+    }
+
     fn write_marker(&mut self, marker: &[u8]) -> Result<()> {
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(marker)?;

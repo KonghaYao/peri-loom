@@ -92,6 +92,9 @@ pub enum AuthorityCommand {
         operation: SessionOperation,
     },
     Shutdown,
+    ShutdownWithin {
+        remaining_ms: u64,
+    },
     GetMetrics,
     GetCapacityTrace {
         stream_id: String,

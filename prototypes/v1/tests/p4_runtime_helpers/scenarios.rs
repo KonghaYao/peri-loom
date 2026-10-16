@@ -193,6 +193,9 @@ fn fresh_authority_ttl_not_delayed_controller_reply_bounds_local_admission() -> 
     assert!(fixture.runtime.status()?.databases[0].remaining_ttl_ms <= 145);
     fixture.worker_clock.0.store(156, Ordering::SeqCst);
     assert!(fixture.runtime.open_session(&fixture.identifier).is_err());
+    assert_eq!(fixture.runtime.status()?.resources.loaded_databases, 1);
+    assert!(fixture.runtime.status()?.failures.is_empty());
+    fixture.runtime.sweep_revocations()?;
     assert_eq!(fixture.runtime.status()?.resources.loaded_databases, 0);
     Ok(())
 }
@@ -295,7 +298,10 @@ fn recovered_clock_and_late_renewal_cannot_resurrect_a_poisoned_lease() -> Resul
     });
     fixture.gate.wait_entered();
     fixture.worker_clock.0.store(u64::MAX, Ordering::SeqCst);
-    assert!(fixture.runtime.status().is_err());
+    let failed = fixture.runtime.status()?;
+    assert!(failed.databases.is_empty());
+    assert_eq!(failed.failures.len(), 1);
+    assert_eq!(failed.failures[0].database, fixture.identifier);
     fixture.worker_clock.0.store(1, Ordering::SeqCst);
     fixture.gate.release();
     assert!(pending.join().unwrap().is_err());
