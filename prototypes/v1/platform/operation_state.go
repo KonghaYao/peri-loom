@@ -247,12 +247,26 @@ func (view stateAdmissionView) database(key string) (Database, bool) {
 
 func (view stateAdmissionView) sequence() uint64 { return view.state.OperationSequence }
 
+// retirementOperation reports the operations that only retire a session the
+// platform already registered. Isolation stops new work from touching a branch
+// whose outcome is unknown, but it must not stop the close of a session that is
+// already open: that close is the platform's own cleanup, it carries no SQL, and
+// refusing it would leave the session, its quota and its storage in place
+// forever — the isolation would block the only path that resolves it.
+func retirementOperation(action, stage string) bool {
+	return action == "close" && stage == "close_session"
+}
+
 // operationAdmission is the admission rule shared by registration and by the
 // pre-dispatch check of an unregistered operation: an isolated database and an
-// exhausted capacity refuse every new record.
-func operationAdmission(view operationAdmissionView, database controller.DatabaseID, source string) error {
-	if _, blocked := view.isolation(database, source == "management"); blocked {
-		return ErrDatabaseQuarantined
+// exhausted capacity refuse every new record. A retirement operation is exempt
+// from the isolation refusal only; every other action, and the capacity bound,
+// keeps refusing.
+func operationAdmission(view operationAdmissionView, database controller.DatabaseID, source string, retirement bool) error {
+	if !retirement {
+		if _, blocked := view.isolation(database, source == "management"); blocked {
+			return ErrDatabaseQuarantined
+		}
 	}
 	_, unresolved := view.counts()
 	if _, exists := view.database(database.Key()); !exists || unresolved >= operationCapacity || view.sequence() == ^uint64(0) {
@@ -282,7 +296,7 @@ func verifyNonCommittingAdmission(store StateStore, database controller.Database
 		return errors.New("operation registration unavailable")
 	}
 	return readOperationState(store, func(state State) error {
-		return operationAdmission(stateAdmissionView{state: state}, database, source)
+		return operationAdmission(stateAdmissionView{state: state}, database, source, false)
 	})
 }
 
@@ -303,7 +317,7 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
-		if err := operationAdmission(edit, database, source); err != nil {
+		if err := operationAdmission(edit, database, source, false); err != nil {
 			return err
 		}
 		record := seedOperationRecord(edit, database, operationID, requestID, source, action, stage, worker, session, digest)
@@ -331,7 +345,7 @@ func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, 
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
-		if err := operationAdmission(edit, database, source); err != nil {
+		if err := operationAdmission(edit, database, source, retirementOperation(action, stage)); err != nil {
 			return err
 		}
 		edit.put(operationKey(database, operationID), seedOperationRecord(edit, database, operationID, requestID, source, action, stage, worker, session, digest))

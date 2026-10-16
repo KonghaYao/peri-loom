@@ -182,7 +182,7 @@ func TestSlowNativeIdleCloseDoesNotDelayOtherProject(test *testing.T) {
 	}
 }
 
-func TestNativeIdleAmbiguousCloseRetainsSessionAndDoesNotRetry(test *testing.T) {
+func TestNativeIdleAmbiguousCloseRetainsSessionAndDoesNotReplayImmediately(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	identifier := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
 	fixture.gateway.mu.Lock()
@@ -206,8 +206,11 @@ func TestNativeIdleAmbiguousCloseRetainsSessionAndDoesNotRetry(test *testing.T) 
 	if !poisoned || closed {
 		test.Fatal("unknown close released or failed to quarantine session")
 	}
+	// The retirement command is retried, but not replayed inside its own retry
+	// window: the account is what keeps an unreachable worker from turning the
+	// sweep into a loop, and the retained permit keeps the unknown outcome.
 	if err := fixture.gateway.expireNativeSessions(context.Background(), time.Minute); err != nil || fixture.upstream.count("close_session") != 1 {
-		test.Fatal("unknown close was automatically replayed")
+		test.Fatal("retirement command was replayed inside its retry window")
 	}
 	_, _, unknown := fixture.gateway.admission.status()
 	if unknown == 0 {

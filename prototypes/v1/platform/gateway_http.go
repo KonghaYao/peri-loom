@@ -149,6 +149,12 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		gateway.counters.observe(action, result.code, time.Since(started))
 		result.committing = committing
+		// A dispatched unknown is the transition that isolates a namespace: the
+		// refusals it causes are not logged again, this line is their only log
+		// trace, and the audit row above is not the operator's first stop.
+		if result.code == "outcome_unknown" && result.dispatched {
+			logUnknownOutcome(identifier, action, &result)
+		}
 		gateway.writeResponse(writer, identifier, result)
 	}()
 	if !correlationValid || request.Method != "POST" || action == "invalid" || request.URL.RawQuery != "" {

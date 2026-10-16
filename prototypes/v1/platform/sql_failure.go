@@ -58,6 +58,13 @@ var sqlFailurePhrases = []struct {
 	{"writer admission queue full", sqlFailureRefused},
 	{"writer admission closing", sqlFailureRefused},
 	{"writer admission quarantine", sqlFailureRefused},
+	// The admission refusals the worker encodes as a bare rejection body
+	// (worker_rpc/protocol.rs AdmissionRejection): the request was turned away
+	// before it entered execution or any queue, so the statement is refused
+	// rather than unknown and the caller may resend it.
+	{"worker execution lane saturated", sqlFailureRefused},
+	{"worker connection limit reached", sqlFailureRefused},
+	{"worker saturated", sqlFailureRefused},
 	{"local ownership revoked or detached", sqlFailureRefused},
 	{"local ownership epoch mismatch", sqlFailureRefused},
 	{"scoped store generation revoked", sqlFailureRefused},

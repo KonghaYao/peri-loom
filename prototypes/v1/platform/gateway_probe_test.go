@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	controller "peri-loom/controller"
 )
@@ -104,6 +105,18 @@ func TestHranaFailedProbeKeepsAuditRow(test *testing.T) {
 	if !audited {
 		test.Fatalf("failed probe left no audit row: %v", actions)
 	}
+	// The refused request retires its session on its own goroutine, so wait for
+	// that retirement to leave the registry before the accounting below.
+	retired := time.Now().Add(time.Second)
+	for {
+		gateway.mu.Lock()
+		registered := len(gateway.sessions)
+		gateway.mu.Unlock()
+		if registered == 0 || time.Now().After(retired) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	state, err := store.Snapshot()
 	if err != nil {
 		test.Fatal(err)
@@ -112,10 +125,17 @@ func TestHranaFailedProbeKeepsAuditRow(test *testing.T) {
 		if record.Action == "describe" {
 			test.Fatalf("failed probe left %+v", record.OperationStatus)
 		}
+		if record.Action == "cursor_open" || record.Action == "cursor_fetch" {
+			test.Fatalf("refused cursor dispatched: %+v", record.OperationStatus)
+		}
 	}
-	// Only the session open remains: the refused cursor never dispatched.
-	if grew := sidecarRevision(store) - before; grew != 2 {
-		test.Fatalf("refused cursor request cost %d operation sidecar revisions, want 2", grew)
+	// The refused request pays for the session it opened and for the retirement
+	// of that session, which the platform still owes: a failed probe makes the
+	// session's outcome unknown, and the close_session below is the only path
+	// that returns the session and its quota to an accounted end. The cursor
+	// itself never dispatched, so no cursor operation is recorded above.
+	if grew := sidecarRevision(store) - before; grew != 4 {
+		test.Fatalf("refused cursor request cost %d operation sidecar revisions, want 4", grew)
 	}
 }
 

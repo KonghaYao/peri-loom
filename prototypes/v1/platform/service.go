@@ -40,7 +40,7 @@ func RunServiceWithWorkerStopVerifier(parent context.Context, config ServiceConf
 	return runService(parent, config, output, verifier)
 }
 
-func runService(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) error {
+func runService(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) (result error) {
 	requestTimeout := 30 * time.Second
 	if setting := os.Getenv("PERI_DEV_SQL_TIMEOUT_SECONDS"); setting != "" {
 		seconds, err := strconv.Atoi(setting)
@@ -49,6 +49,12 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 		}
 		requestTimeout = time.Duration(seconds) * time.Second
 	}
+	shutdownTimeout, err := serviceShutdownTimeout()
+	if err != nil {
+		return err
+	}
+	budget := newShutdownBudget(shutdownTimeout)
+	defer budget.stop()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	state, err := OpenStateStore(config.StateDirectory)
@@ -85,7 +91,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
-	defer audit.Close()
+	defer func() { result = joinServiceResult(result, closeAuditWithin(budget, audit)) }()
 	master, err := NewLocalKMS(config.KMSKeyring)
 	if err != nil {
 		return err
@@ -166,7 +172,17 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
-	defer gateway.Close(context.Background())
+	// The tail runs on every exit path and under the same budget as the HTTP
+	// shutdown above it: first the drain, which is the last writer of an
+	// operation, then the checkpoint that makes the durable operation view
+	// readable without the sidecar. Skipping either would leave a process that
+	// reports success while its own teardown is unfinished.
+	defer func() {
+		result = joinServiceResult(result, runServiceTeardown(budget, []stopStep{
+			{name: "gateway drain", run: gateway.Close},
+			{name: "operation checkpoint", run: func(context.Context) error { return CheckpointOperations(state) }},
+		}))
+	}()
 	telemetry, err := NewTelemetry(transport, metadata, workerControl)
 	if err != nil {
 		return err
@@ -219,8 +235,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 		}
 	}
 	cancel()
-	shutdown, stop := context.WithTimeout(context.Background(), 10*time.Second)
-	defer stop()
+	shutdown := budget.begin()
 	shutdownError := errors.Join(publicServer.Shutdown(shutdown), brokerServer.Shutdown(shutdown))
 	for completed < 4 {
 		select {
@@ -233,7 +248,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 			return errors.Join(failure, shutdownError, shutdown.Err())
 		}
 	}
-	return errors.Join(failure, shutdownError, gateway.Close(shutdown))
+	return errors.Join(failure, shutdownError)
 }
 
 func newPublicMux(gateway *Gateway, management http.Handler) *http.ServeMux {

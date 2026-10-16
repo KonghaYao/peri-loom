@@ -118,8 +118,13 @@ func (controller *Controller) pollWorker(ctx context.Context, identifier string,
 	defer cancel()
 	var report workerReport
 	rpcErr := controller.transport.Worker(probe, worker, requestID, workerAction{Command: "get_worker_heartbeat"}, &report)
-	valid := rpcErr == nil && report.WorkerID == identifier && report.Resources.LoadedDatabases >= 0 && report.Resources.LoadingDatabases >= 0
-	load := report.Resources.LoadedDatabases + report.Resources.LoadingDatabases
+	valid := rpcErr == nil && report.WorkerID == identifier && report.Resources.LoadedDatabases >= 0 && report.Resources.LoadingDatabases >= 0 && report.Resources.ResidentCount >= 0 && report.Resources.QuarantinedCount >= 0
+	// A database the worker cannot describe is still a database it holds: it is
+	// named under failures and left out of the reported database list, so its
+	// absence is not evidence of release. Counting those entries as residency
+	// keeps the reported load from understating the worker, and the worker stays
+	// healthy because it can still serve every database it did describe.
+	load := report.Resources.LoadedDatabases + report.Resources.LoadingDatabases + len(report.Failures)
 	if load < 0 {
 		valid = false
 	}

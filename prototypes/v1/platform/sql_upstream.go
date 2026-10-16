@@ -14,12 +14,17 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	controller "peri-loom/controller"
 	"peri-loom/platform/sqlcontract"
 )
 
 const sqlWireLimit = 32 * 1024 * 1024
+
+// sqlAdmissionRejectionLimit bounds the one non-200 body the platform reads. A
+// refusal before dispatch is a handful of fields; anything larger is not it.
+const sqlAdmissionRejectionLimit = 4 * 1024
 
 type SQLRPCError struct {
 	Ambiguous  bool
@@ -205,11 +210,19 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		// The status code is not SQL evidence. The worker answers every SQL reply
-		// with 200 and everything else with a bare {"error":...} body, so this exit
-		// learns only that the request reached the worker. Whether the statement ran
-		// is unproven, and the caller is told exactly that: outcome_unknown with a
-		// possible commit, never a definite "rejected".
+		// The worker answers every SQL reply with 200 and everything else with a
+		// bare body, so a status alone proves only that the request reached the
+		// worker. The one exception is the refusal it encodes before dispatch:
+		// that body says the request never entered execution or any queue, and it
+		// is accepted only in its complete, strictly decoded form and only with the
+		// status the worker reserves for it. Every other status, a missing or
+		// extra field, an unreadable or oversized body stays unproven, because no
+		// body may prove non-execution through a status the worker never used for
+		// it. This classification explains the request it answers and nothing else:
+		// it releases no earlier unknown and authorises no replay.
+		if rejection := admissionRejection(ctx, response); rejection != nil {
+			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenAdmissionRejected, rejection)
+		}
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenHTTPStatus, &SQLRPCError{Ambiguous: true, StatusCode: response.StatusCode})
 	}
 	if response.ContentLength > sqlWireLimit {
@@ -228,6 +241,43 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		return err
 	}
 	return sqlDecode(ctx, body, requestID, output)
+}
+
+// admissionRejection reads the one non-200 body that carries admission evidence:
+// the refusal a worker sends when it turned a request away before dispatch
+// (prototypes/v1/src/worker_rpc/protocol.rs AdmissionRejection, encoded with
+// deny_unknown_fields, hence the strict decode here). The request never entered
+// execution or any queue, so a refusal is proof it did not run — and only then:
+// a partial body, an unknown field, a different status or an unreadable reply
+// proves nothing and keeps the ambiguous classification.
+func admissionRejection(ctx context.Context, response *http.Response) *SQLRPCError {
+	if response.StatusCode != http.StatusTooManyRequests || ctx == nil || ctx.Err() != nil {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, sqlAdmissionRejectionLimit+1))
+	if err != nil || len(body) > sqlAdmissionRejectionLimit || !utf8.Valid(body) || ctx.Err() != nil {
+		return nil
+	}
+	var rejection struct {
+		Error              string `json:"error"`
+		ExecutionCompleted *bool  `json:"execution_completed"`
+		Admission          string `json:"admission"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&rejection) != nil || decoder.Decode(new(any)) != io.EOF {
+		return nil
+	}
+	if rejection.Error == "" || rejection.ExecutionCompleted == nil || *rejection.ExecutionCompleted || rejection.Admission != "not_admitted" {
+		return nil
+	}
+	// The reason is classified by the same table as a worker failure text, so the
+	// caller sees the cause class instead of a bare status, and the proof that the
+	// statement never entered execution travels with it.
+	failure := &SQLRPCError{StatusCode: response.StatusCode, evidence: sqlcontract.EvidenceFromDirections(false, true, false)}
+	failure.workerFailure = rejection.Error
+	return failure
 }
 
 func sqlEndpoint(address string) (string, error) {

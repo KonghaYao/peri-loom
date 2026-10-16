@@ -46,6 +46,7 @@ const (
 	sqlOpenRequestValidation sqlOpenObservationReason = "request_validation"
 	sqlOpenTransportFailure  sqlOpenObservationReason = "transport"
 	sqlOpenHTTPStatus        sqlOpenObservationReason = "http_status"
+	sqlOpenAdmissionRejected sqlOpenObservationReason = "admission_rejected"
 	sqlOpenBody              sqlOpenObservationReason = "body"
 	sqlOpenStrictDecode      sqlOpenObservationReason = "strict_decode"
 	sqlOpenWorkerNegative    sqlOpenObservationReason = "worker_negative"
@@ -102,7 +103,7 @@ func observeSQLOpen(ctx context.Context, requestID string, stage sqlOpenObservat
 		return
 	}
 	switch reason {
-	case sqlOpenRequestValidation, sqlOpenTransportFailure, sqlOpenHTTPStatus, sqlOpenBody,
+	case sqlOpenRequestValidation, sqlOpenTransportFailure, sqlOpenHTTPStatus, sqlOpenAdmissionRejected, sqlOpenBody,
 		sqlOpenStrictDecode, sqlOpenWorkerNegative, sqlOpenWriterPresence, sqlOpenUpstreamResult,
 		sqlOpenReply, sqlOpenWriterBinding, sqlOpenPublicID, sqlOpenCollision:
 	default:

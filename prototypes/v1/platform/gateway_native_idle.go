@@ -6,8 +6,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	controller "peri-loom/controller"
 )
 
 const nativeSessionIdleTimeout = 5 * time.Minute
@@ -36,7 +34,10 @@ func (gateway *Gateway) expireNativeSessions(ctx context.Context, idle time.Dura
 		if !session.mu.TryLock() {
 			continue
 		}
-		expired := !session.closed && !session.hrana && !session.poisoned && !session.lastUsed.IsZero() && now.Sub(session.lastUsed) >= idle
+		// A session whose outcome is unknown is still due: its owner can no
+		// longer address it, and the close below is the only platform path that
+		// can take it and its quota to an accounted end.
+		expired := !session.closed && !session.hrana && !session.lastUsed.IsZero() && now.Sub(session.lastUsed) >= idle
 		session.mu.Unlock()
 		if expired {
 			due = append(due, session)
@@ -83,32 +84,19 @@ func (gateway *Gateway) expireNativeSession(ctx context.Context, session *gatewa
 		return nil
 	}
 	defer session.mu.Unlock()
-	if session.closed || session.hrana || session.poisoned || session.lastUsed.IsZero() || now.Sub(session.lastUsed) < idle {
+	if session.closed || session.hrana || session.lastUsed.IsZero() || now.Sub(session.lastUsed) < idle {
 		return nil
 	}
-	quota, err := sessionCleanupQuota(gateway.config.State, session)
-	if err != nil {
-		return err
-	}
-	permit, ok := gateway.admission.reserve(session.project, quota, false, true)
-	if !ok {
-		return errors.New("native session cleanup admission unavailable")
-	}
-	defer permit.finish()
-	requestID, err := controller.RandomID()
-	if err != nil {
-		return err
-	}
-	if err = gateway.closeTrackedSession(ctx, session, requestID, permit); err != nil {
-		var failure *SQLRPCError
-		if !errors.As(err, &failure) || failure.Ambiguous {
-			session.poisoned = true
-			permit.retain()
+	if err := sessionCleanupGate(session, now); err != nil {
+		// A spent account stays loud: the cleanup ledger reports the count, the
+		// age and the reason, and the sweeper's periodic log is the operator's
+		// trace that only the retirement path can finish this session.
+		if errors.Is(err, errSessionCleanupExhausted) {
+			return err
 		}
-		return err
+		return nil
 	}
-	gateway.removeSession(session)
-	return nil
+	return gateway.retireSession(ctx, session, now)
 }
 
 func (gateway *Gateway) runNativeSessionExpiry(ctx context.Context) error {

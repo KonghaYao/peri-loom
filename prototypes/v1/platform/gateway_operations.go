@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"time"
 
 	controller "peri-loom/controller"
 )
@@ -84,7 +85,7 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	if err != nil {
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)
-		result.finish, result.operationID, result.operationStage = finish, operationID, stage
+		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, stage, database
 	}
 	if result.code == "outcome_unknown" {
 		gateway.holdOperation(database, operationID, permit)
@@ -116,7 +117,7 @@ func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result
 	if err != nil {
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)
-		result.finish, result.operationID, result.operationStage = finish, operationID, pending.stage
+		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, pending.stage, pending.database
 	}
 	if result.code == "outcome_unknown" {
 		gateway.holdOperation(pending.database, operationID, permit)
@@ -162,10 +163,22 @@ func (gateway *Gateway) holdOperation(database controller.DatabaseID, operationI
 	gateway.operationMu.Lock()
 	defer gateway.operationMu.Unlock()
 	state, err := gateway.config.State.Snapshot()
-	if err == nil && state.Operations[operationKey(database, operationID)].LocalResourcesRetired {
-		releaseOperationPermit(permit)
-		return
+	if err == nil {
+		record := state.Operations[operationKey(database, operationID)]
+		if record.LocalResourcesRetired {
+			releaseOperationPermit(permit)
+			return
+		}
+		if record.Action == "close" {
+			// An unresolved close keeps its unknown but hands the project's
+			// session-close lane back, so the cleanup that resolves it — this
+			// session's retry, or any sibling's cleanup — can still reserve it.
+			permit.releaseLane()
+		}
 	}
+	// The moment an unresolved outcome starts keeping a namespace isolated is
+	// the moment its age starts, and the durable record cannot carry that fact.
+	gateway.cleanup.noteIsolation(operationKey(database, operationID), time.Now())
 	gateway.mu.Lock()
 	defer gateway.mu.Unlock()
 	gateway.operationHolds[operationKey(database, operationID)] = permit

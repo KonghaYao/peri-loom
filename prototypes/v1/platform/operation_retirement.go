@@ -145,12 +145,16 @@ func (gateway *Gateway) retireLocalResources(ctx context.Context, namespace cont
 			permit.gate.mu.Lock()
 			project := permit.gate.projects[permit.project]
 			project.unknown++
-			if permit.control {
-				project.control++
-			} else {
-				project.active++
-				if permit.owner {
-					project.ownerActive++
+			// The lane is restored only when the permit still held it: an
+			// unresolved close hands the session-close lane back on purpose.
+			if !permit.laneReleased {
+				if permit.control {
+					project.control++
+				} else {
+					project.active++
+					if permit.owner {
+						project.ownerActive++
+					}
 				}
 			}
 			if permit.session && !permit.keepSession {

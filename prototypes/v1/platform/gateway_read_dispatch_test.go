@@ -67,8 +67,11 @@ func TestSessionCleanupQuotaVisitsRegistryInsteadOfCloningIt(test *testing.T) {
 		Databases:  map[string]Database{database.Key(): {ID: database, Project: "project-a", State: "active"}},
 		Operations: map[string]OperationRecord{"op": {OperationStatus: OperationStatus{OperationID: "op", Database: database, State: "quarantined"}}},
 	}}}
-	if _, err := sessionCleanupQuota(quarantined, session); !errors.Is(err, ErrDatabaseQuarantined) {
-		test.Fatalf("quarantined database allowed session expiry: %v", err)
+	// Isolation refuses new work on the namespace, but it must not refuse the
+	// close of a session that is already open: this close is the only path that
+	// returns that session and its quota to an accounted end.
+	if resolved, err := sessionCleanupQuota(quarantined, session); err != nil || resolved != quota {
+		test.Fatalf("isolation blocked the quota of a registered session's cleanup: %+v %v", resolved, err)
 	}
 }
 

@@ -53,13 +53,17 @@ func (handler *hranaHTTP) expireStreamLocked(baton string, stream *hranaStream) 
 	handler.cleanupRetiredSession(stream.session, 0)
 }
 
+// cleanupRetiredSession drives the retirement of one stream's session to its
+// accounted end. The session's own ledger decides whether an attempt is due and
+// when the bounded account is spent, so this timer only wakes that account up:
+// a close_session carries no SQL, and abandoning it after one failure would
+// leave the session, its quota and its stream owed forever.
 func (handler *hranaHTTP) cleanupRetiredSession(session string, attempt int) {
 	cleanup, cancel := context.WithTimeout(context.Background(), hranaCleanupTimeout(handler.gateway.config.RequestTimeout))
 	defer cancel()
 	if err := handler.gateway.expireHranaSession(cleanup, session); err != nil {
 		log.Printf("Hrana session cleanup not proven: %v", err)
-		var failure *SQLRPCError
-		if errors.Is(err, errHranaSessionUnknown) || errors.Is(err, ErrDatabaseQuarantined) || errors.As(err, &failure) && failure.Ambiguous {
+		if errors.Is(err, errSessionCleanupExhausted) {
 			return
 		}
 		handler.gateway.mu.Lock()

@@ -15,6 +15,10 @@ type stateStore struct {
 	cost            stateCost
 	state           State
 	digestIndex     map[string]string
+	// checkpointed freezes the store once the shutdown checkpoint has materialized
+	// the operation view: a write that landed afterwards would leave the payload
+	// claiming a final view it no longer carries. Guarded by the state lock.
+	checkpointed bool
 }
 
 func OpenStateStore(directory string) (StateStore, error) {
@@ -91,6 +95,67 @@ func (store *stateStore) Snapshot() (State, error) {
 		return State{}, err
 	}
 	return cloneState(store.state)
+}
+
+// CheckpointOperations commits the operation view this store has joined into the
+// registry payload, so a reader of state.json alone sees the durable truth
+// without replaying the sidecar, and freezes both write paths afterwards so no
+// later mutation can invalidate that view.
+//
+// The payload only carries an operation view when a registry commit happens to
+// write one, and between commits the sidecar is the only writer, so a payload
+// read on its own can trail the durable log by an arbitrary number of
+// operations. The checkpoint names its own revision, and only this call writes a
+// nonzero value, so a payload whose operations_checkpoint equals its revision is
+// the materialized view and every other payload is not.
+//
+// It fails closed: an error here leaves the payload without a checkpoint and the
+// caller reports an unclean stop.
+func CheckpointOperations(store StateStore) error {
+	narrow, ok := store.(interface{ checkpointOperations() error })
+	if !ok {
+		return errors.New("operation checkpoint requires the durable state store")
+	}
+	return narrow.checkpointOperations()
+}
+
+// operationsCheckpointMaterialized reports whether this state is the payload a
+// shutdown checkpoint wrote: the checkpoint names the revision that commit
+// wrote, and any later commit leaves it behind. Absent or stale never counts as
+// materialized, so an older payload cannot be read as a final view.
+func operationsCheckpointMaterialized(state State) bool {
+	return state.OperationsCheckpoint != 0 && state.OperationsCheckpoint == state.Revision
+}
+
+func (store *stateStore) checkpointOperations() error {
+	defer store.lockState()()
+	if err := store.disk.available(); err != nil {
+		return err
+	}
+	if store.checkpointed {
+		return errors.New("operation checkpoint already recorded")
+	}
+	if store.state.OperationStorageVersion != 1 {
+		return errors.New("operation storage identity unavailable")
+	}
+	candidate, err := cloneState(store.state)
+	if err != nil {
+		return err
+	}
+	// commitLocked derives the committed revision by incrementing once, so the
+	// checkpoint can name the revision this commit lands on.
+	candidate.OperationsCheckpoint = candidate.Revision + 1
+	if err := store.commitLocked(candidate); err != nil {
+		return err
+	}
+	// The whole point of the checkpoint is that a reader may trust the payload
+	// without the sidecar, so freeze the store and verify the fact it claims
+	// instead of assuming it: a later writer would silently take it back.
+	store.checkpointed = true
+	if !operationsCheckpointMaterialized(store.state) {
+		return errors.New("operation checkpoint did not materialize the operation view")
+	}
+	return nil
 }
 
 func (store *stateStore) credentialByDigest(digest string) (APIKey, bool, error) {
@@ -175,6 +240,9 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	if err := store.disk.available(); err != nil {
 		return err
 	}
+	if store.checkpointed {
+		return ErrStateFrozen
+	}
 	if mutation == nil {
 		return errors.New("state mutation required")
 	}
@@ -185,6 +253,12 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	if err := mutation(&candidate); err != nil {
 		return err
 	}
+	return store.commitLocked(candidate)
+}
+
+// commitLocked validates and commits one candidate as the next revision. The
+// caller holds the state lock and has already decided the candidate's contents.
+func (store *stateStore) commitLocked(candidate State) error {
 	if candidate.Version != 1 || candidate.Revision != store.state.Revision || candidate.Revision == ^uint64(0) {
 		return errors.New("state revision/version cannot be changed or exhausted")
 	}

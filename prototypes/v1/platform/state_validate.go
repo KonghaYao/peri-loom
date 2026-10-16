@@ -23,6 +23,12 @@ func validateState(state State, previous *State) error {
 	if state.OperationStorageVersion > 1 || previous != nil && state.OperationStorageVersion < previous.OperationStorageVersion {
 		return errors.New("operation storage version cannot be reset")
 	}
+	// The checkpoint names a revision of this state, and it is a record of the
+	// past: it can be left behind by later commits but never invented ahead of
+	// them or taken back.
+	if state.OperationsCheckpoint > state.Revision || previous != nil && state.OperationsCheckpoint < previous.OperationsCheckpoint {
+		return errors.New("invalid operation checkpoint")
+	}
 	if (state.OwnedRunGeneration == "") != (state.OwnedRunBinding == "") || state.OwnedRunBinding != "" && !ownedProofToken(state.OwnedRunBinding) || previous != nil && previous.OwnedRunBinding != "" && state.OwnedRunBinding != previous.OwnedRunBinding {
 		return errors.New("owned run binding immutable")
 	}

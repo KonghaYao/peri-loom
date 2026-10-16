@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -11,11 +10,11 @@ func TestP5VerifyActualWorkerIdentityCannotFollowRegistryEndpointSwap(test *test
 	cluster := p5VerifyNewCluster(test)
 	ctx, cancel := p5VerifyContext()
 	defer cancel()
-	var actual struct {
-		WorkerID  string          `json:"worker_id"`
-		Databases json.RawMessage `json:"databases"`
-		Resources json.RawMessage `json:"resources"`
-	}
+	// The identity check reads the worker report through the same strict model the
+	// reconcile loop uses, so a worker field this build cannot verify fails here
+	// as well: a second, private shape would let the test pass while every real
+	// heartbeat was rejected.
+	var actual workerReport
 	if err := cluster.transport.Worker(ctx, cluster.workers["verify-a"].worker, "actual-worker-a", map[string]string{"command": "get_worker_state"}, &actual); err != nil {
 		test.Fatal(err)
 	}

@@ -88,8 +88,14 @@ type State struct {
 	Operations              map[string]OperationRecord `json:"operations,omitempty"`
 	OperationSequence       uint64                     `json:"operation_sequence,omitempty"`
 	OperationEvictions      uint64                     `json:"operation_evictions,omitempty"`
-	OwnedRunGeneration      string                     `json:"owned_run_generation,omitempty"`
-	OwnedRunBinding         string                     `json:"owned_run_binding,omitempty"`
+	// OperationsCheckpoint is the revision whose registry commit materialized the
+	// complete operation view into this payload. Only the shutdown checkpoint
+	// writes it, so a payload whose checkpoint equals its revision is a final
+	// view a reader may trust without the operation sidecar; absent or older than
+	// the revision means the payload may trail that sidecar.
+	OperationsCheckpoint uint64 `json:"operations_checkpoint,omitempty"`
+	OwnedRunGeneration   string `json:"owned_run_generation,omitempty"`
+	OwnedRunBinding      string `json:"owned_run_binding,omitempty"`
 }
 
 type StateStore interface {

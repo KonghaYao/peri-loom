@@ -16,6 +16,7 @@ import (
 var ErrStateLocked = errors.New("private state locked")
 var ErrStateClosed = errors.New("private state closed")
 var ErrStateUncertain = errors.New("private persistence uncertain; durable verification required")
+var ErrStateFrozen = errors.New("private state frozen by the operation checkpoint")
 
 // auditBatchMaximum bounds how many audit records one durable head commit
 // carries; recovery must accept exactly the revision gaps this permits.

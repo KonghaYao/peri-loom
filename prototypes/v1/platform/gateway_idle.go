@@ -3,24 +3,25 @@ package platform
 import (
 	"context"
 	"errors"
-
-	controller "peri-loom/controller"
+	"time"
 )
 
 var errHranaSessionBusy = errors.New("Hrana session is busy")
-var errHranaSessionUnknown = errors.New("Hrana session has an unresolved SQL outcome")
 var errSessionProjectUnavailable = errors.New("session project unavailable")
 
-// sessionCleanupQuota resolves the quota and quarantine state one session
-// expiry needs. Expiry runs on a one-second tick, so it visits the committed
-// registry under its own lock instead of cloning it: a full clone holds the
-// registry lock that in-flight read requests need before they touch the worker.
+// sessionCleanupQuota resolves the quota one session expiry needs. Expiry runs
+// on a one-second tick, so it visits the committed registry under its own lock
+// instead of cloning it: a full clone holds the registry lock that in-flight
+// read requests need before they touch the worker.
+//
+// Isolation is deliberately not consulted here. It refuses new work on the
+// namespace, but the caller is retiring a session that is already open, and that
+// close is the only path that can take the session and its quota to an accounted
+// end: refusing it would leave the platform holding a session it can never
+// release.
 func sessionCleanupQuota(store StateStore, session *gatewaySession) (Quotas, error) {
 	var quota Quotas
 	err := readOperationState(store, func(state State) error {
-		if _, blocked := isolatedOperation(state, session.database, true); blocked {
-			return ErrDatabaseQuarantined
-		}
 		project, exists := state.Projects[session.project]
 		if !exists {
 			return errSessionProjectUnavailable
@@ -48,30 +49,9 @@ func (gateway *Gateway) expireHranaSession(ctx context.Context, identifier strin
 	if session.closed {
 		return nil
 	}
-	if session.poisoned {
-		return errHranaSessionUnknown
-	}
-	quota, err := sessionCleanupQuota(gateway.config.State, session)
-	if err != nil {
+	now := time.Now()
+	if err := sessionCleanupGate(session, now); err != nil {
 		return err
 	}
-	permit, ok := gateway.admission.reserve(session.project, quota, false, true)
-	if !ok {
-		return errHranaSessionBusy
-	}
-	defer permit.finish()
-	requestID, err := controller.RandomID()
-	if err != nil {
-		return err
-	}
-	if err = gateway.closeTrackedSession(ctx, session, requestID, permit); err != nil {
-		var failure *SQLRPCError
-		if !errors.As(err, &failure) || failure.Ambiguous {
-			session.poisoned = true
-			permit.retain()
-		}
-		return err
-	}
-	gateway.removeSession(session)
-	return nil
+	return gateway.retireSession(ctx, session, now)
 }

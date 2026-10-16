@@ -83,6 +83,13 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 	if err := store.disk.available(); err != nil {
 		return err
 	}
+	// The shutdown checkpoint names the revision that materialized the operation
+	// view; an operation committed afterwards would make that name a lie, so the
+	// write is refused loudly instead of silently invalidating the payload a
+	// launcher reads.
+	if store.checkpointed {
+		return ErrStateFrozen
+	}
 	if change == nil {
 		return errors.New("operation mutation required")
 	}

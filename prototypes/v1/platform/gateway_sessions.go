@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -399,8 +400,41 @@ func (gateway *Gateway) unknown(session *gatewaySession, permit *admissionPermit
 	permit.retain()
 	if session != nil {
 		session.poisoned = true
+		noteUnowned(session, time.Now())
 	}
 	return gatewayResult{status: 502, code: "outcome_unknown", dispatched: true, session: session}
+}
+
+// logUnknownOutcome records the transition that poisons a session and isolates
+// its namespace. The 502 the caller sees lives for one request, and the refusals
+// that follow are the same isolation seen again, so without this line a single
+// unproven reply leaves an isolated namespace and no trace in the process log.
+// The caller holds the session lock that the result's finish releases.
+func logUnknownOutcome(requestID, action string, result *gatewayResult) {
+	database, session, worker := "", "", ""
+	switch {
+	case result.session != nil:
+		database, session, worker = result.session.database.Key(), result.session.public, result.session.worker.ID
+	case result.operationDatabase.Namespace.Tenant != "":
+		database = result.operationDatabase.Key()
+	}
+	// The worker's own verdict is what separates "it never entered execution" from
+	// "it may have committed", and its failure text is the only account of why the
+	// reply could not be used: the line that outlives the request is where an
+	// operator reconstructs both, so an absent verdict says so instead of leaving
+	// the fields empty.
+	rpc, observation := "none", "none"
+	if result.rpc != nil {
+		rpc = fmt.Sprintf("ambiguous=%t,rejected=%t,execution_completed=%t", result.rpc.Ambiguous, result.rpc.evidence.Rejected(), result.rpc.evidence.Executed())
+		switch {
+		case result.rpc.workerFailure != "":
+			observation = workerFailureLog(result.rpc.workerFailure)
+		case result.rpc.cause != nil:
+			observation = workerFailureLog(result.rpc.cause.Error())
+		}
+	}
+	log.Printf("SQL outcome unknown: request_id=%s action=%s stage=%s database=%s session=%s worker=%s rpc=%s observation=%s",
+		requestID, action, result.operationStage, database, session, worker, rpc, observation)
 }
 
 func (gateway *Gateway) upstreamFailure(err error, session *gatewaySession, permit *admissionPermit) (result gatewayResult) {

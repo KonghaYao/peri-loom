@@ -33,6 +33,9 @@ type admissionPermit struct {
 	keepSession bool
 	retained    bool
 	finished    bool
+	// laneReleased records that a retained permit handed its concurrency lane
+	// back while it keeps accounting for the unresolved outcome.
+	laneReleased bool
 }
 
 func quotaValid(quota Quotas) bool {
@@ -160,6 +163,39 @@ func (permit *admissionPermit) finishLocked() {
 	}
 	permit.finished = true
 	state := permit.gate.projects[permit.project]
+	if !permit.laneReleased {
+		if permit.control {
+			state.control--
+		} else {
+			state.active--
+			if permit.owner {
+				state.ownerActive--
+			}
+		}
+	}
+	if permit.session && !permit.keepSession {
+		state.sessions--
+	}
+}
+
+// releaseLane hands the concurrency lane of a retained permit back while the
+// permit keeps accounting for the unresolved outcome. The control lane is the
+// project's session-close lane, and an unresolved close is not running any more:
+// holding that lane would block every later close of the project — the cleanup
+// that resolves the unknown included — with no proof that anything is still
+// running. The unknown itself, the session seat and the durable record stay, so
+// nothing here releases an outcome without proof.
+func (permit *admissionPermit) releaseLane() {
+	if permit == nil {
+		return
+	}
+	permit.gate.mu.Lock()
+	defer permit.gate.mu.Unlock()
+	if !permit.retained || permit.laneReleased || permit.finished {
+		return
+	}
+	permit.laneReleased = true
+	state := permit.gate.projects[permit.project]
 	if permit.control {
 		state.control--
 	} else {
@@ -167,9 +203,6 @@ func (permit *admissionPermit) finishLocked() {
 		if permit.owner {
 			state.ownerActive--
 		}
-	}
-	if permit.session && !permit.keepSession {
-		state.sessions--
 	}
 }
 

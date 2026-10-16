@@ -20,6 +20,9 @@ type Gateway struct {
 	counters       *gatewayCounters
 	operationHolds map[string]*admissionPermit
 	operationMu    sync.Mutex
+	// cleanup is the in-process age account of the cleanup facts whose durable
+	// record carries no timestamp.
+	cleanup *cleanupLedger
 }
 
 type gatewaySession struct {
@@ -41,6 +44,10 @@ type gatewaySession struct {
 	writerSequence uint64
 	hrana          bool
 	lastUsed       time.Time
+	// cleanup is this session's bounded retirement account, and unownedAt marks
+	// when an unproven outcome stopped its owner from addressing it.
+	cleanup   sessionCleanup
+	unownedAt time.Time
 }
 
 type gatewayResult struct {
@@ -93,6 +100,14 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 	gate := &gatewayAdmission{projects: map[string]*projectAdmission{}, writerAdmission: config.WriterAdmission}
 	retainedSessions := map[string]bool{}
 	holds := map[string]*admissionPermit{}
+	// A quarantine that survived a restart was first watched when this process
+	// started, which is the age the cleanup account can honestly report.
+	isolated := map[string]bool{}
+	for key, record := range state.Operations {
+		if record.State == "quarantined" && record.ReleaseRequestID == "" {
+			isolated[key] = true
+		}
+	}
 	for _, record := range state.Operations {
 		if record.State == "terminal" || record.LocalResourcesRetired {
 			continue
@@ -103,9 +118,12 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 			gate.projects[record.Project] = project
 		}
 		project.unknown++
-		if record.Action == "close" {
-			project.control++
-		} else {
+		// A durable unresolved close keeps its unknown and its session but not the
+		// project's session-close lane, exactly as the running process leaves it:
+		// the cleanup that resolves the unknown has to be able to reserve that
+		// lane after a restart too.
+		laneReleased := record.Action == "close"
+		if !laneReleased {
 			project.active++
 			project.ownerActive++
 		}
@@ -118,9 +136,11 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 			retainedSessions[resource] = true
 			project.sessions++
 		}
-		holds[operationKey(record.Database, record.OperationID)] = &admissionPermit{gate: gate, project: record.Project, control: record.Action == "close", owner: record.Action != "close", session: countSession, retained: true}
+		holds[operationKey(record.Database, record.OperationID)] = &admissionPermit{gate: gate, project: record.Project, control: record.Action == "close", owner: record.Action != "close", session: countSession, retained: true, laneReleased: laneReleased}
 	}
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
+	ledger := &cleanupLedger{}
+	ledger.observe(isolated, time.Now())
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {
@@ -130,6 +150,15 @@ func gatewayFailure(status int, code string) gatewayResult {
 func (gateway *Gateway) Close(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("invalid shutdown context")
+	}
+	// The drain loops while a session stays locked by an in-flight handler or
+	// while its control lane is occupied, so an unbounded context here is a
+	// process that never exits and gets killed mid-teardown. Bound the loop even
+	// when the caller hands over a context without a deadline.
+	if _, bounded := ctx.Deadline(); !bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultServiceShutdownTimeout)
+		defer cancel()
 	}
 	gateway.mu.Lock()
 	gateway.closing = true
@@ -174,10 +203,10 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 				session.mu.Unlock()
 				return errors.New("gateway shutdown metadata unavailable")
 			}
-			if _, blocked := isolatedOperation(state, session.database, true); blocked {
-				session.mu.Unlock()
-				return ErrDatabaseQuarantined
-			}
+			// Isolation refuses new SQL, not the close of a session that is
+			// already registered: the drain has to be able to retire the
+			// sessions it still holds, or the process ends while a namespace it
+			// could have cleaned stays owed.
 			permit, ok := gateway.admission.reserve(session.project, state.Projects[session.project].Quotas, false, true)
 			if !ok {
 				session.mu.Unlock()
@@ -195,6 +224,7 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 					return errors.New("gateway shutdown upstream unavailable before SQL close")
 				}
 				session.poisoned = true
+				noteUnowned(session, time.Now())
 				permit.retain()
 				session.mu.Unlock()
 				return errors.New("gateway shutdown outcome unknown")
