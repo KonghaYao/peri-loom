@@ -1,9 +1,6 @@
 package platform
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"reflect"
 
@@ -51,6 +48,10 @@ type OperationStatus struct {
 
 type OperationRecord struct {
 	OperationStatus
+	// Digest is the identity of the frozen worker command this record authorizes,
+	// written as logical_command_v1:<sha256>. A bare 64-hex value is the legacy
+	// domain: the platform cannot prove which bytes it covered, so it is kept for
+	// history and must never be compared with a recomputed digest.
 	Digest               string `json:"digest"`
 	Session              string `json:"session,omitempty"`
 	RetirementPending    bool   `json:"retirement_pending,omitempty"`
@@ -179,11 +180,18 @@ func operationNeedsRecovery(record OperationRecord) bool {
 	return record.State == "in_flight" || record.State == "terminal" && record.Source == "gateway" && record.Action == "open" && record.CleanupOutcome == "pending"
 }
 
+// beginOperation records an operation under a caller-chosen identity. It is the
+// entry point of hand-built fixtures, which pass whatever command shape they
+// staged, and it freezes that shape through the same encoder dispatch uses.
 func beginOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session string, command any) error {
-	return beginCorrelatedOperation(store, database, requestID, requestID, source, action, stage, worker, session, command)
+	frozen, err := freezeCommandValue(command)
+	if err != nil {
+		return errors.New("operation registration unavailable")
+	}
+	return beginCorrelatedOperation(store, database, requestID, requestID, source, action, stage, worker, session, frozen)
 }
 
-func registerOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session string, command any) (string, error) {
+func registerOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session string, command frozenCommand) (string, error) {
 	operationID, err := controller.RandomID()
 	if err != nil {
 		return "", err
@@ -197,17 +205,6 @@ func registerOperation(store StateStore, database controller.DatabaseID, request
 func seedOperationRecord(edit *operationEdit, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session, digest string) OperationRecord {
 	registered, _ := edit.database(database.Key())
 	return OperationRecord{OperationStatus: OperationStatus{OperationID: operationID, RequestID: requestID, Database: database, Project: registered.Project, Worker: worker, Source: source, Action: action, Stage: stage, State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: digest, Session: session, RegistrationSequence: edit.advance()}
-}
-
-// operationCommandDigest binds a durable record to the exact worker command it
-// authorizes.
-func operationCommandDigest(command any) (string, error) {
-	encoded, err := json.Marshal(command)
-	if err != nil {
-		return "", errors.New("operation command not encodable")
-	}
-	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:]), nil
 }
 
 // nonCommittingOperation reports whether a gateway action provably cannot
@@ -297,7 +294,7 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 	if err != nil {
 		return "", err
 	}
-	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || !identifierPattern.MatchString(digest) {
+	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || !taggedCommandDigest(digest) {
 		return operationID, errors.New("operation registration unavailable")
 	}
 	unlock := lockOperationNamespace(database.Namespace)
@@ -319,11 +316,15 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 	return operationID, err
 }
 
-func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session string, command any) error {
+// beginCorrelatedOperation registers the durable intent of one operation and
+// binds it to the frozen command it authorizes. The digest comes from the frozen
+// bytes, so the record cannot describe a command other than the one that will be
+// sent after this returns.
+func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session string, command frozenCommand) error {
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
-	digest, err := operationCommandDigest(command)
-	if err != nil || store == nil || database.Validate() != nil || !sqlLabel(requestID) || source == "management" && !labelPattern.MatchString(requestID) {
+	digest := command.digest()
+	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || source == "management" && !labelPattern.MatchString(requestID) {
 		return errors.New("operation registration unavailable")
 	}
 	return updateOperationRecords(store, func(edit *operationEdit) error {
@@ -389,8 +390,7 @@ func validateOperationRecord(record OperationRecord, key string, databases map[s
 		return errors.New("invalid operation observation")
 	}
 	database, exists := databases[record.Database.Key()]
-	digest, err := hex.DecodeString(record.Digest)
-	if !exists || database.Project != record.Project || key != operationKey(record.Database, record.OperationID) || !sqlLabel(record.OperationID) || err != nil || len(digest) != 32 || record.RetryAllowed || (record.Source != "management" && record.Source != "gateway") || (record.State != "in_flight" && record.State != "terminal" && record.State != "quarantined") {
+	if !exists || database.Project != record.Project || key != operationKey(record.Database, record.OperationID) || !sqlLabel(record.OperationID) || !validCommandDigest(record.Digest) || record.RetryAllowed || (record.Source != "management" && record.Source != "gateway") || (record.State != "in_flight" && record.State != "terminal" && record.State != "quarantined") {
 		return errors.New("invalid durable operation")
 	}
 	if record.Decision != "" && (record.Decision != "retain_isolation_new_database_required" || record.State != "quarantined" || !labelPattern.MatchString(record.DecisionRequestID)) {

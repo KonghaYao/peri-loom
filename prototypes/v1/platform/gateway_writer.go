@@ -47,7 +47,10 @@ func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewa
 	return gatewayResult{}
 }
 
-func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command map[string]any, output any) error {
+// callSession sends the frozen command of one dispatch. It takes bytes, not a
+// mutable command, so the body that reaches the worker is the body the durable
+// record was settled against.
+func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command frozenCommand, output any) error {
 	if !session.writerProtocol {
 		return gateway.config.Upstream.Call(ctx, session.worker, requestID, command, output)
 	}
@@ -57,7 +60,7 @@ func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession
 	if !settled {
 		return err
 	}
-	if !session.acceptWriterState(state, binding) || command["command"] == "close_session" && state.Owner {
+	if !session.acceptWriterState(state, binding) || command.operationName() == "close_session" && state.Owner {
 		return &SQLRPCError{Ambiguous: true}
 	}
 	return err

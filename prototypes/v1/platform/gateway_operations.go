@@ -31,7 +31,10 @@ func (gateway *Gateway) isolatedSessionFailure(database controller.DatabaseID) g
 }
 
 func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewaySession, requestID string, permit *admissionPermit) error {
-	command := map[string]any{"command": "close_session", "session": session.upstream}
+	command, err := freezeCommand(map[string]any{"command": "close_session", "session": session.upstream})
+	if err != nil {
+		return &SQLRPCError{cause: err}
+	}
 	operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", "close", "close_session", session.worker.ID, session.upstream, command)
 	if err != nil {
 		return &SQLRPCError{cause: err}
@@ -91,7 +94,7 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 // beginDispatchOperation records the durable intent for one worker call. An
 // operation that provably cannot commit keeps no intent: its terminal record is
 // written once, after the call, by settlePendingOperation.
-func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, stage, requestID string, writeCursor bool, command any) (string, *pendingOperation, error) {
+func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, stage, requestID string, writeCursor bool, command frozenCommand) (string, *pendingOperation, error) {
 	if !nonCommittingOperation(action, writeCursor) {
 		operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", action, stage, session.worker.ID, session.upstream, command)
 		return operationID, nil, err
@@ -99,11 +102,7 @@ func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, 
 	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
 		return "", nil, err
 	}
-	digest, err := operationCommandDigest(command)
-	if err != nil {
-		return "", nil, err
-	}
-	return "", &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: digest}, nil
+	return "", &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: command.digest()}, nil
 }
 
 // settlePendingOperation writes the single terminal record of a dispatched

@@ -187,12 +187,19 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 			return nil, errors.New("native resource admission unavailable")
 		}
 	}
-	operationID, err = registerOperation(management.config.State, input.Database, input.RequestID, "management", nativeDiagnosticAction(path), stage, worker.ID, "", map[string]any{"path": path, "database": input.Database})
+	// The record binds the worker command this tool authorizes at registration -
+	// the session it opens - not the HTTP descriptor. One record still covers the
+	// whole open/tool/close sequence; the digest names the call that starts it.
+	openCommand, err := freezeCommand(map[string]any{"command": "open_session", "database": input.Database})
+	if err != nil {
+		return nil, err
+	}
+	operationID, err = registerOperation(management.config.State, input.Database, input.RequestID, "management", nativeDiagnosticAction(path), stage, worker.ID, "", openCommand)
 	if err != nil {
 		return nil, err
 	}
 	registered = true
-	if err := management.config.Upstream.Call(ctx, worker, input.RequestID+"-open", map[string]any{"command": "open_session", "database": input.Database}, &opened); err != nil {
+	if err := management.config.Upstream.Call(ctx, worker, input.RequestID+"-open", openCommand, &opened); err != nil {
 		return nil, err
 	}
 	if !upstreamSessionID(opened.Session) {

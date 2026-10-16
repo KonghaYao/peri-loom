@@ -94,6 +94,9 @@ type gatewayCall struct {
 	worker    controller.Worker
 	command   map[string]any
 	requestID string
+	// encoded keeps the bytes this call was handed, so a test can compare the
+	// durable record against what would have reached the worker.
+	encoded []byte
 }
 type gatewayTestUpstream struct {
 	mu       sync.Mutex
@@ -112,7 +115,7 @@ func (upstream *gatewayTestUpstream) Call(ctx context.Context, worker controller
 		return err
 	}
 	upstream.mu.Lock()
-	upstream.calls = append(upstream.calls, gatewayCall{worker, fields, requestID})
+	upstream.calls = append(upstream.calls, gatewayCall{worker, fields, requestID, encoded})
 	count := len(upstream.calls)
 	hook := upstream.hook
 	readonly := upstream.readonly

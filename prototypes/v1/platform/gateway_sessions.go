@@ -36,7 +36,11 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
-	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", map[string]any{"command": "open_session", "database": database})
+	openCommand, err := freezeCommand(map[string]any{"command": "open_session", "database": database})
+	if err != nil {
+		return operationAdmissionFailure(err)
+	}
+	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", openCommand)
 	if err != nil {
 		return operationAdmissionFailure(err)
 	}
@@ -67,10 +71,10 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		}
 		binding = currentBinding
 		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
-		writerState, err = gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
+		writerState, err = gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, worker, requestID, openCommand, &reply)
 	} else {
 		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
-		err = gateway.config.Upstream.Call(ctx, worker, requestID, map[string]any{"command": "open_session", "database": database}, &reply)
+		err = gateway.config.Upstream.Call(ctx, worker, requestID, openCommand, &reply)
 	}
 	if err != nil {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenUpstreamResult, gateway.upstreamFailure(err, nil, permit), err)
@@ -194,6 +198,9 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	if gateway.authorize(principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
+	// The worker command of this dispatch is assembled here, completely, before
+	// anything durable names it: the record registered below binds the bytes this
+	// switch produces, so no later branch may rewrite a field the digest covers.
 	command := map[string]any{"command": action, "session": session.upstream}
 	switch action {
 	case "cursor_open":
@@ -222,12 +229,35 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		if request.WriteCursor {
 			command["command"] = "close_write_cursor"
 		}
+	case "close":
+		command["command"] = "close_session"
+	case "session_state":
+		command["command"] = "session_autocommit"
+	case "statement":
+		args := request.Args
+		if args == nil {
+			args = []sqlArgument{}
+		}
+		namedArgs := request.NamedArgs
+		if namedArgs == nil {
+			namedArgs = []namedSQLArgument{}
+		}
+		command["args"] = args
+		command["named_args"] = namedArgs
+		// The row projection is always materialized as its effective value: the
+		// worker reads an absent want_rows as true, so omitting it would let one
+		// logical command carry two digests.
+		command["want_rows"] = request.WantRows == nil || *request.WantRows
 	}
 	stage := "tool_rpc"
 	if action == "close" {
 		stage = "close_session"
 	} else if action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open" {
 		command["sql"] = request.SQL
+	}
+	frozen, err := freezeCommand(command)
+	if err != nil {
+		return operationAdmissionFailure(err)
 	}
 	// A platform probe cannot commit and is not a client action, so it takes no
 	// operation record; the client request that needed the answer records its
@@ -237,7 +267,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return operationAdmissionFailure(err)
 		}
 	} else {
-		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, command)
+		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, frozen)
 		if err != nil {
 			return operationAdmissionFailure(err)
 		}
@@ -247,11 +277,10 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		}()
 	}
 	if action == "close" {
-		command["command"] = "close_session"
 		var reply struct {
 			Closed bool `json:"closed"`
 		}
-		err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
+		err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply)
 		if err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
@@ -263,7 +292,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	}
 	if action == "cursor_open" {
 		var reply json.RawMessage
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes || !validCursorOpenResult(reply) {
@@ -273,7 +302,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	}
 	if action == "cursor_fetch" {
 		var reply json.RawMessage
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes || !validCursorFetchResponse(reply, request.MaxRows, request.WriteCursor) {
@@ -285,7 +314,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		var reply struct {
 			Closed bool `json:"closed"`
 		}
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if !reply.Closed {
@@ -295,7 +324,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	}
 	if action == "describe" {
 		var reply json.RawMessage
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes {
@@ -307,11 +336,10 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: reply, dispatched: true}
 	}
 	if action == "session_state" {
-		command["command"] = "session_autocommit"
 		var reply struct {
 			Autocommit *bool `json:"autocommit"`
 		}
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if reply.Autocommit == nil {
@@ -320,21 +348,8 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: map[string]bool{"autocommit": *reply.Autocommit}, dispatched: true}
 	}
 	if action == "statement" {
-		args := request.Args
-		if args == nil {
-			args = []sqlArgument{}
-		}
-		command["args"] = args
-		namedArgs := request.NamedArgs
-		if namedArgs == nil {
-			namedArgs = []namedSQLArgument{}
-		}
-		command["named_args"] = namedArgs
-		if request.WantRows != nil {
-			command["want_rows"] = *request.WantRows
-		}
 		var reply json.RawMessage
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes {
@@ -349,7 +364,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		var reply struct {
 			Executed bool `json:"executed"`
 		}
-		err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
+		err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply)
 		if err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
@@ -359,7 +374,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: map[string]bool{"executed": true}, dispatched: true}
 	}
 	var reply json.RawMessage
-	err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply)
+	err = gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply)
 	if err != nil {
 		return gateway.upstreamFailure(err, session, permit)
 	}

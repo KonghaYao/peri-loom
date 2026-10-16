@@ -126,8 +126,8 @@ func operationViewState() State {
 }
 
 func operationViewRecord(identifier string, sequence uint64) OperationRecord {
-	digest, _ := operationCommandDigest(nil)
-	return OperationRecord{OperationStatus: OperationStatus{OperationID: identifier, RequestID: identifier, Database: securityDatabase(), Project: "alpha", Worker: "worker-a", Source: "gateway", Action: "execute", Stage: "tool_rpc", State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: digest, RegistrationSequence: sequence}
+	digest, _ := freezeCommandValue(nil)
+	return OperationRecord{OperationStatus: OperationStatus{OperationID: identifier, RequestID: identifier, Database: securityDatabase(), Project: "alpha", Worker: "worker-a", Source: "gateway", Action: "execute", Stage: "tool_rpc", State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: digest.digest(), RegistrationSequence: sequence}
 }
 
 func TestOperationEditDifferential(test *testing.T) {

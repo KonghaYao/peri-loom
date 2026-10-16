@@ -193,7 +193,7 @@ func TestOperationFullUnresolvedCapacityRefusesBeforeDispatch(test *testing.T) {
 	state, _ := fixture.state.Snapshot()
 	store := &retentionTestStore{state: state}
 	fixture.gateway.config.State = store
-	identifier, err := registerOperation(store, fixture.second, "protected", "gateway", "open", "open_session", "worker-tenant-b", "", nil)
+	identifier, err := registerOperation(store, fixture.second, "protected", "gateway", "open", "open_session", "worker-tenant-b", "", frozenTestCommand(test, nil))
 	if err != nil {
 		test.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestOperationLegacyRetentionMigrationPreservesUnknownAndOpen(test *testing.
 	if state.Operations[operationKey(database, "old_open")].State != "quarantined" || state.Operations[operationKey(database, "lost")].State != "quarantined" {
 		test.Fatal("migration retroactively proved unknown or Open cleanup")
 	}
-	_, err = registerOperation(reloaded, database, "new_correlation", "gateway", "execute", "tool_rpc", "worker-a", "", nil)
+	_, err = registerOperation(reloaded, database, "new_correlation", "gateway", "execute", "tool_rpc", "worker-a", "", frozenTestCommand(test, nil))
 	if !errors.Is(err, ErrDatabaseQuarantined) {
 		test.Fatal("migration reopened isolated namespace")
 	}
@@ -509,11 +509,11 @@ func TestOperationRegistryCommitSurvivesEvictedInflightSnapshot(test *testing.T)
 	}
 	for index := 0; index < operationKnownRetention+8; index++ {
 		identifier := fmt.Sprintf("describe_%04d", index)
-		digest, err := operationCommandDigest(map[string]any{"index": index})
+		frozen, err := freezeCommandValue(map[string]any{"index": index})
 		if err != nil {
 			test.Fatal(err)
 		}
-		if _, err := settleNonCommittingOperation(store, database, identifier, "gateway", "describe", "tool_rpc", "worker-a", "", digest, func(record *OperationRecord) {
+		if _, err := settleNonCommittingOperation(store, database, identifier, "gateway", "describe", "tool_rpc", "worker-a", "", frozen.digest(), func(record *OperationRecord) {
 			record.State, record.BusinessOutcome, record.ExecutionProven = "terminal", "completed", true
 		}); err != nil {
 			test.Fatal(err)

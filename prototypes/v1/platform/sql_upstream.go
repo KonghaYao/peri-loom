@@ -132,13 +132,25 @@ func (upstream *sqlHTTPUpstream) callVersion(ctx context.Context, worker control
 	return state, err
 }
 
+// sqlCommandBytes returns the exact body of one worker command. A frozen command
+// carries the bytes its durable digest covers, so the wire body and the record
+// cannot drift apart through a second encoding. The remaining callers - the
+// writer probe and hand-built fixtures - authorize nothing and carry no digest,
+// so they keep the generic encoding.
+func sqlCommandBytes(command any) ([]byte, error) {
+	if frozen, ok := command.(frozenCommand); ok {
+		return frozen.bytes(), nil
+	}
+	return json.Marshal(command)
+}
+
 func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker controller.Worker, requestID string, command any, output any, version uint32, state **SessionWriterState) error {
 	token, found := upstream.tokens[worker.ID]
 	endpoint, err := sqlEndpoint(worker.Address)
 	if !found || err != nil || ctx == nil || !sqlLabel(requestID) || !sqlOutput(output) {
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 	}
-	encoded, err := json.Marshal(command)
+	encoded, err := sqlCommandBytes(command)
 	var fields map[string]json.RawMessage
 	var operation string
 	if err != nil || json.Unmarshal(encoded, &fields) != nil || json.Unmarshal(fields["command"], &operation) != nil {
