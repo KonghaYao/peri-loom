@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="560" viewBox="0 0 1440 560" role="img" aria-labelledby="title desc">
+  <title id="title">peri-loom — SQL, untethered.</title>
+  <desc id="desc">Mint and blue data threads weave between independent compute nodes and layered storage on a midnight background. Your databases. Your storage. Your infrastructure.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101c2b"/>
+      <stop offset="1" stop-color="#080f1b"/>
+    </linearGradient>
+    <linearGradient id="thread" x2="1">
+      <stop stop-color="#70dfbe" stop-opacity="0.1"/>
+      <stop offset="0.4" stop-color="#70dfbe"/>
+      <stop offset="1" stop-color="#84aef5"/>
+    </linearGradient>
+    <linearGradient id="panel" x2="0.8" y2="1">
+      <stop stop-color="#263d4a"/>
+      <stop offset="1" stop-color="#142233"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#c1d9e8" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+  <rect width="1440" height="560" rx="20" fill="url(#background)"/>
+  <rect width="1440" height="560" rx="20" fill="url(#grid)"/>
+  <path d="M72 72h34m-34 0v34M1368 488h-34m34 0v-34" fill="none" stroke="#70dfbe" stroke-opacity="0.5" stroke-width="2"/>
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="88" y="144" font-size="14" letter-spacing="4" fill="#8aa5b9">THE DISKLESS DATABASE EXPERIMENT</text>
+    <text x="82" y="246" font-size="88" font-weight="700" letter-spacing="-5" fill="#f2f6f4">peri-loom</text>
+    <text x="88" y="311" font-size="38" font-weight="400" letter-spacing="-1" fill="#78e3c2">SQL, untethered.</text>
+    <text x="88" y="375" font-size="19" fill="#a8bbcd">Your databases. Your storage.</text>
+    <text x="88" y="405" font-size="19" fill="#a8bbcd">Your infrastructure.</text>
+    <text x="88" y="482" font-size="12" letter-spacing="2.5" fill="#728ba0">COMPUTE IS REPLACEABLE. DATA IS NOT.</text>
+  </g>
+  <g fill="none" stroke="url(#thread)" stroke-width="2">
+    <path d="M696 219C800 219 822 119 921 119H1234"/>
+    <path d="M696 235C815 235 836 135 937 135H1250"/>
+    <path d="M696 251C822 251 850 151 953 151H1266"/>
+    <path d="M696 267C830 267 863 167 969 167H1282"/>
+    <path d="M696 283C833 283 850 249 953 249H1282"/>
+    <path d="M696 299C833 299 850 265 953 265H1266"/>
+    <path d="M696 315C833 315 850 281 953 281H1250"/>
+    <path d="M696 331C833 331 850 297 953 297H1234"/>
+    <path d="M921 119C1050 119 1010 375 1138 375H1290"/>
+    <path d="M937 135C1066 135 1026 391 1154 391H1274"/>
+    <path d="M953 151C1082 151 1042 407 1170 407H1258"/>
+    <path d="M969 167C1098 167 1058 423 1186 423H1242"/>
+  </g>
+  <g fill="url(#panel)" stroke="#7bbfae" stroke-opacity="0.65">
+    <rect x="866" y="96" width="92" height="64" rx="12"/>
+    <rect x="1100" y="219" width="92" height="64" rx="12"/>
+    <rect x="1242" y="122" width="70" height="52" rx="10"/>
+  </g>
+  <g fill="#86e8c8">
+    <circle cx="884" cy="115" r="3"/>
+    <circle cx="1118" cy="238" r="3"/>
+    <circle cx="1258" cy="138" r="3"/>
+  </g>
+  <g stroke="#aac4d8" stroke-opacity="0.5" stroke-width="2">
+    <path d="M884 137h32m-32 7h50M1118 260h32m-32 7h50M1258 155h35"/>
+  </g>
+  <g fill="url(#panel)" stroke="#70dfbe" stroke-opacity="0.6">
+    <path d="m849 397 141-49 160 54-141 50z"/>
+    <path d="m849 378 141-49 160 54-141 50z"/>
+    <path d="m849 359 141-49 160 54-141 50z"/>
+  </g>
+  <path d="m878 359 112-39 130 44-111 40z" fill="none" stroke="#70dfbe" stroke-opacity="0.25"/>
+  <g fill="#f4b08a">
+    <circle cx="1006" cy="207" r="4"/>
+    <circle cx="1207" cy="391" r="4"/>
+    <circle cx="796" cy="274" r="3"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="11" letter-spacing="2" fill="#728ba0">
+    <text x="866" y="82">COMPUTE</text>
+    <text x="920" y="486">DURABLE STATE</text>
+  </g>
+</svg>
