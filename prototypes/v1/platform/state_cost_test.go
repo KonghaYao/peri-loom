@@ -6,8 +6,9 @@ import (
 )
 
 // The acceptance for local operation mutations is read from these counters: a commit
-// charges one barrier, waits on the shared lock for a measurable time, and does no
-// full-set work until the view is replaced wholesale.
+// charges one barrier, takes the shared lock twice (once for its edit and once to settle the
+// ordered append, with the barrier itself outside the lock), and does no full-set work until
+// the view is replaced wholesale.
 func TestStateOperationCostIsObservable(test *testing.T) {
 	store := operationDurableStore(test).(*stateStore)
 	defer store.Close()
@@ -32,8 +33,11 @@ func TestStateOperationCostIsObservable(test *testing.T) {
 	if counter("operation_journal_syncs_total")-syncs != 8 {
 		test.Fatalf("syncs = %d, want one barrier per commit", counter("operation_journal_syncs_total")-syncs)
 	}
-	if counter("state_lock_waits_total")-waits != 8 {
-		test.Fatalf("lock waits = %d, want one per commit", counter("state_lock_waits_total")-waits)
+	// Two acquisitions per commit: one applies the edit, the other settles the ordered
+	// append. Neither of them covers the barrier, so what this records is lock contention
+	// rather than flush latency.
+	if counter("state_lock_waits_total")-waits != 16 {
+		test.Fatalf("lock waits = %d, want two per commit (edit and settle)", counter("state_lock_waits_total")-waits)
 	}
 	if counter("operation_index_rebuilds_total")-rebuilds != 1 {
 		test.Fatalf("index rebuilds = %d, want the first commit only", counter("operation_index_rebuilds_total")-rebuilds)

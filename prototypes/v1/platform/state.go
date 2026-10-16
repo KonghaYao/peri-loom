@@ -19,6 +19,10 @@ type stateStore struct {
 	// the operation view: a write that landed afterwards would leave the payload
 	// claiming a final view it no longer carries. Guarded by the state lock.
 	checkpointed bool
+	// The edits applied to the view whose appended deltas are not durable yet, oldest
+	// first. Only the view lock touches it, so it is exactly the journal's queue and
+	// in-flight batches in the order they were applied.
+	unconfirmed []operationPendingEdit
 }
 
 func OpenStateStore(directory string) (StateStore, error) {
@@ -92,6 +96,11 @@ func OpenStateStore(directory string) (StateStore, error) {
 func (store *stateStore) Snapshot() (State, error) {
 	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
+		return State{}, err
+	}
+	// The snapshot carries operations, so it must not report an edit whose append was
+	// never confirmed: settle first, then answer the same uncertainty that append had.
+	if err := store.settleOperations(); err != nil {
 		return State{}, err
 	}
 	return cloneState(store.state)
@@ -246,6 +255,13 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	if mutation == nil {
 		return errors.New("state mutation required")
 	}
+	// The registry payload carries the complete operation view and becomes the base the
+	// log's next deltas bind to, so every ordered append has to be durable and published
+	// before the payload is cloned: an edit that only lives in the view would otherwise be
+	// recorded as though the log had acknowledged it.
+	if err := store.settleOperations(); err != nil {
+		return err
+	}
 	candidate, err := cloneState(store.state)
 	if err != nil {
 		return err
@@ -290,8 +306,17 @@ func (store *stateStore) commitLocked(candidate State) error {
 	return nil
 }
 
+// Close stops the commit queue first: a queued append that was never written fails, the
+// barrier already in flight still reports its own result, and only then does the registry
+// file close, so no acknowledged append can be left without its durable record. Closing also
+// settles what is left, so the final view keeps every confirmed record and drops only the
+// appends whose barrier refused them.
 func (store *stateStore) Close() error {
-	return errors.Join(store.operations.close(), store.disk.close())
+	operations := store.operations.close()
+	unlock := store.lockState()
+	settled := store.settleOperations()
+	unlock()
+	return errors.Join(operations, settled, store.disk.close())
 }
 
 func cloneState(state State) (State, error) {

@@ -212,11 +212,33 @@ type operationJournal struct {
 	snapshot     *operationSnapshot
 	appends      uint64
 	appendsTotal uint64
+	ordered      uint64
 	syncs        uint64
 	compactions  uint64
 	compactionNS uint64
 	closed       bool
 	poisoned     bool
+
+	// The ordered commit queue. The queue lock covers bookkeeping only, so a submitter
+	// never queues behind a barrier; write serializes the file itself and is held by the
+	// committer (and by a compaction) alone.
+	commits        []*operationCommit
+	committer      bool
+	writing        bool
+	write          sync.Mutex
+	committerGroup sync.WaitGroup
+	// Observed maxima, not the configured limits: a reader compares them with
+	// operation_journal_queue_limit and operation_journal_batch_limit.
+	queueMaximum int
+	batchMaximum int
+	coalesced    uint64
+	waitNS       uint64
+	waitMaxNS    uint64
+	// testPopGate holds the committer before it chooses a batch, and testWriteGate holds it
+	// inside one, so a test can make either side of the queue deterministic. Production
+	// leaves both nil; no request path observes them.
+	testPopGate   func()
+	testWriteGate func()
 }
 
 func journalWitnessLine(revision uint64, digest string) []byte {
@@ -558,63 +580,22 @@ func (journal *operationJournal) verifyPathIdentity() error {
 	return nil
 }
 
-// appendOperations records one durable delta and returns only after the record's
-// fsync. The caller holds the state lock, so the view and the delta describe the
-// same commit.
+// appendOperations records one durable delta and returns only after its barrier. It is the
+// synchronous single-commit form of submit, for callers that hold no view anyone else must
+// settle. The state store submits instead, because its in-place edit has to stay visible to
+// whoever settles the commit.
 func (journal *operationJournal) appendOperations(view State, delta operationDelta) error {
-	journal.mutex.Lock()
-	defer journal.mutex.Unlock()
-	if err := journal.available(); err != nil {
+	commit, err := journal.submit(view, delta)
+	if err != nil {
 		return err
 	}
-	if err := journal.verifyPathIdentity(); err != nil {
-		journal.poisoned = true
-		return ErrStateUncertain
-	}
-	if journal.revision == ^uint64(0) {
-		return ErrOperationCapacity
-	}
-	mutation := journalMutation{Version: operationJournalVersion, Revision: journal.revision + 1, BaseRevision: view.Revision, Previous: journal.digest, Sequence: view.OperationSequence, Evictions: view.OperationEvictions, Set: delta.Set, Remove: delta.Remove}
-	encoded, err := json.Marshal(mutation)
-	if err != nil || len(encoded) > operationJournalMaximumRecordBytes {
-		return errors.New("invalid operation mutation")
-	}
-	hash := digestHex(encoded)
-	line, err := json.Marshal(journalEntry{Payload: mutation, Hash: hash})
-	if err != nil {
-		return errors.New("invalid operation mutation")
-	}
-	line = append(line, '\n')
-	if _, err := journal.file.WriteAt(line, journal.size); err != nil {
-		journal.poisoned = true
-		return ErrStateUncertain
-	}
-	if err := journal.file.Sync(); err != nil {
-		journal.poisoned = true
-		return ErrStateUncertain
-	}
-	journal.syncs++
-	journal.size += int64(len(line))
-	journal.revision = mutation.Revision
-	journal.digest = hash
-	journal.records = append(journal.records, journalEntry{Payload: mutation, Hash: hash})
-	journal.appends++
-	journal.appendsTotal++
-	if err := journal.writeWitness(); err != nil {
-		journal.poisoned = true
-		return ErrStateUncertain
-	}
-	if journal.appends >= operationJournalCompactRecords || journal.size >= operationJournalMaximumBytes {
-		if err := journal.compact(view); err != nil {
-			journal.poisoned = true
-			return ErrStateUncertain
-		}
-	}
-	return nil
+	return journal.await(commit)
 }
 
-func (journal *operationJournal) writeWitness() error {
-	_, err := journal.file.WriteAt(journalWitnessLine(journal.revision, journal.digest), 0)
+// writeWitnessFor moves the rollback witness to the batch that was just made durable. It
+// describes the last record of that batch, never a revision the file has not reached.
+func (journal *operationJournal) writeWitnessFor(commit *operationCommit) error {
+	_, err := journal.file.WriteAt(journalWitnessLine(commit.revision, commit.hash), 0)
 	return err
 }
 
@@ -702,13 +683,31 @@ func applyJournalMutation(state *State, mutation journalMutation) {
 	state.OperationEvictions = mutation.Evictions
 }
 
+// close stops accepting appends, fails the ones that were never written, waits for the
+// barrier already in flight, and only then releases the file. A commit that was written
+// still reports its own result: its bytes are durable, and telling its caller otherwise
+// would claim a mutation it owns was lost.
 func (journal *operationJournal) close() error {
 	journal.mutex.Lock()
-	defer journal.mutex.Unlock()
 	if journal.closed {
+		journal.mutex.Unlock()
 		return nil
 	}
 	journal.closed = true
+	queued := journal.commits
+	journal.commits = nil
+	journal.mutex.Unlock()
+	for _, commit := range queued {
+		commit.err = ErrStateClosed
+		close(commit.settled)
+	}
+	journal.committerGroup.Wait()
+	// The committer is gone, so the file has no writer left but a compaction could still
+	// be in flight: the write lock is the boundary that says the file is ours to close.
+	journal.write.Lock()
+	defer journal.write.Unlock()
+	journal.mutex.Lock()
+	defer journal.mutex.Unlock()
 	if journal.file == nil {
 		return errors.Join(syscall.Flock(int(journal.lock.Fd()), syscall.LOCK_UN), journal.lock.Close())
 	}

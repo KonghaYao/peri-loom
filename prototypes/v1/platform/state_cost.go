@@ -82,15 +82,25 @@ func (store *stateStore) operationStats() map[string]any {
 	return stats
 }
 
-// The journal appends one record and fsyncs once per commit, so a reader divides syncs by
-// commits for the per-request barrier count. A snapshot replaces the whole chain, so its
-// frequency and cost stay visible separately.
+// The commit queue pays one barrier per batch, so a reader divides syncs by appends for the
+// barriers per request and reads coalesced_total for what the queue merged. A snapshot
+// replaces the whole chain, so its frequency and cost stay visible separately. Wait time is
+// what a caller or a settling reader spent waiting for a barrier it needed.
 func (journal *operationJournal) stats() map[string]uint64 {
 	journal.mutex.Lock()
 	defer journal.mutex.Unlock()
 	return map[string]uint64{
 		"operation_journal_appends_total":        journal.appendsTotal,
 		"operation_journal_syncs_total":          journal.syncs,
+		"operation_journal_ordered_total":        journal.ordered,
+		"operation_journal_coalesced_total":      journal.coalesced,
+		"operation_journal_batch_max":            uint64(journal.batchMaximum),
+		"operation_journal_queue_max":            uint64(journal.queueMaximum),
+		"operation_journal_batch_limit":          uint64(operationJournalBatchMaximum),
+		"operation_journal_queue_limit":          uint64(operationJournalQueueMaximum),
+		"operation_journal_queued":               uint64(len(journal.commits)),
+		"operation_journal_wait_ns_total":        journal.waitNS,
+		"operation_journal_wait_max_ns":          journal.waitMaxNS,
 		"operation_journal_records":              uint64(len(journal.records)),
 		"operation_journal_compactions_total":    journal.compactions,
 		"operation_journal_compaction_ns_total":  journal.compactionNS,

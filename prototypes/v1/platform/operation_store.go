@@ -65,8 +65,75 @@ func registryParentOperations(journal *operationJournal) func(*State) {
 	}
 }
 
-// readOperations visits the committed operation view without copying the rest
-// of the registry. The callback must not retain or mutate the state.
+// operationPendingEdit is an edit that is already applied to the live view while its delta
+// is only ordered in the journal. The view lock owns it: submit and settle are both called
+// with that lock held, so the queue order and the view order stay the same order.
+type operationPendingEdit struct {
+	commit *operationCommit
+	revert func()
+}
+
+// settleOperations confirms every edit that is applied to the view but not yet durable.
+// The caller holds the view lock. It waits for the journal's own barrier and nothing else -
+// the committer never takes the view lock - so no reader can deadlock against a flush. A
+// failed barrier rolls its edits back in reverse order and poisons the store, because an
+// uncertain append must never leave a confirmed-looking record behind.
+func (store *stateStore) settleOperations() error {
+	pending := store.unconfirmed
+	if len(pending) == 0 {
+		return nil
+	}
+	store.unconfirmed = nil
+	var failure error
+	for _, entry := range pending {
+		if err := store.operations.await(entry.commit); err != nil {
+			if failure == nil {
+				failure = err
+			}
+			continue
+		}
+	}
+	if failure == nil {
+		return nil
+	}
+	// Only an append that failed is rolled back. An append whose barrier returned is durable,
+	// and undoing it in the view would misreport what the log already holds; the store stays
+	// fail-closed either way, and a failed append can leave a later key at an earlier value
+	// only until the store is reopened.
+	for index := len(pending) - 1; index >= 0; index-- {
+		entry := pending[index]
+		if entry.commit.err == nil || entry.commit.applied {
+			continue
+		}
+		entry.commit.applied = true
+		entry.revert()
+	}
+	// A shutdown refusal proves the append never happened; only an uncertain append leaves
+	// persistence in doubt and poisons the store.
+	if !errors.Is(failure, ErrStateClosed) {
+		store.disk.poisoned = true
+	}
+	return failure
+}
+
+// compactOperationsLocked materializes the view once the log passed its append budget. The
+// caller holds the view lock and has settled every in-flight commit, so the view it passes
+// is the confirmed view and the journal can check that it still owns that revision.
+func (store *stateStore) compactOperationsLocked() error {
+	if len(store.unconfirmed) != 0 || !store.operations.compactionDue() {
+		return nil
+	}
+	if err := store.operations.compactConfirmed(store.state); err != nil {
+		store.operations.poison()
+		return err
+	}
+	return nil
+}
+
+// readOperations visits the committed operation view without copying the rest of the
+// registry. The callback must not retain or mutate the state. A visitor must not observe a
+// record whose append was never confirmed, so the read settles first and reports the same
+// uncertainty that append had.
 func (store *stateStore) readOperations(visit func(State) error) error {
 	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
@@ -75,12 +142,20 @@ func (store *stateStore) readOperations(visit func(State) error) error {
 	if visit == nil {
 		return errors.New("operation read requires a visitor")
 	}
+	if err := store.settleOperations(); err != nil {
+		return err
+	}
 	return visit(store.state)
 }
 
+// updateOperations applies one edit and returns only after its appended delta is durable.
+// The edit is applied under the view lock, so no reader observes an unconfirmed record; the
+// barrier itself runs outside that lock, so a flush no longer blocks authentication and the
+// other narrow reads that never look at operations.
 func (store *stateStore) updateOperations(change func(*operationEdit) error) error {
-	defer store.lockState()()
+	unlock := store.lockState()
 	if err := store.disk.available(); err != nil {
+		unlock()
 		return err
 	}
 	// The shutdown checkpoint names the revision that materialized the operation
@@ -91,11 +166,17 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 		return ErrStateFrozen
 	}
 	if change == nil {
+		unlock()
 		return errors.New("operation mutation required")
 	}
 	if store.state.OperationStorageVersion != 1 {
+		unlock()
 		return errors.New("operation storage identity unavailable")
 	}
+	// The edit is built on the view as it stands, including edits whose barrier is still
+	// outstanding. That is safe because the queue keeps them in submit order and a failure
+	// reverts them in reverse order, and it is what lets concurrent appends share one
+	// barrier: waiting here would serialize every commit behind the oldest one.
 	if store.operationsIndex == nil {
 		store.operationsIndex = newOperationIndex(store.state.Operations)
 		store.cost.observeIndexRebuild(len(store.operationsIndex.records))
@@ -103,24 +184,60 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 	edit := newOperationEdit(&store.state, store.operationsIndex)
 	if err := change(edit); err != nil {
 		edit.revert()
+		unlock()
 		return err
 	}
 	if err := edit.settleRetention(); err != nil {
 		edit.revert()
+		unlock()
 		return err
 	}
 	if err := edit.validate(); err != nil {
 		edit.revert()
+		unlock()
 		return err
 	}
 	delta := edit.delta()
-	if !delta.empty() || store.state.OperationSequence != edit.priorSequence || store.state.OperationEvictions != edit.evictions {
-		if err := store.operations.appendOperations(store.state, delta); err != nil {
-			store.disk.poisoned = true
-			edit.revert()
-			return err
-		}
+	if delta.empty() && store.state.OperationSequence == edit.priorSequence && store.state.OperationEvictions == edit.evictions {
+		// A mutation that changed nothing needs no barrier at all.
+		unlock()
+		return nil
 	}
+	commit, err := store.operations.submit(store.state, delta)
+	if err != nil {
+		// A full queue is a refusal this change introduced before any write, so it poisons
+		// nothing; every other registration refusal keeps the base behaviour of failing the
+		// store closed.
+		if !errors.Is(err, ErrOperationQueueFull) {
+			store.disk.poisoned = true
+		}
+		edit.revert()
+		unlock()
+		return err
+	}
+	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert})
 	store.cost.observeCommit()
+	unlock()
+	<-commit.settled
+	unlock = store.lockState()
+	// Another waiter may have settled this commit before us; settling again is what makes
+	// the outcome definite either way.
+	settleErr := store.settleOperations()
+	if settleErr == nil {
+		settleErr = store.compactOperationsLocked()
+	}
+	poisoned := store.disk.poisoned
+	unlock()
+	if settleErr != nil {
+		return settleErr
+	}
+	if commit.err != nil {
+		return commit.err
+	}
+	if poisoned {
+		// This delta is durable, but the log is now uncertain for another commit, so the
+		// caller must not treat the registration as usable.
+		return ErrStateUncertain
+	}
 	return nil
 }
