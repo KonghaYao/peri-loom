@@ -163,6 +163,7 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 	// write is refused loudly instead of silently invalidating the payload a
 	// launcher reads.
 	if store.checkpointed {
+		unlock()
 		return ErrStateFrozen
 	}
 	if change == nil {

@@ -147,6 +147,14 @@ func (store *stateStore) checkpointOperations() error {
 	if store.state.OperationStorageVersion != 1 {
 		return errors.New("operation storage identity unavailable")
 	}
+	// The view can carry edits whose appended delta is not durable yet: the commit queue
+	// applies them under this lock and only then waits for its barrier outside it, so a
+	// clone taken now could freeze the payload on a record the log has not accepted.
+	// Joining the in-flight commits first makes the clone exactly what the durable log
+	// holds; an append whose barrier refused it fails this checkpoint closed instead.
+	if err := store.settleOperations(); err != nil {
+		return err
+	}
 	candidate, err := cloneState(store.state)
 	if err != nil {
 		return err
