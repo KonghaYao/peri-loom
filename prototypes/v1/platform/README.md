@@ -220,6 +220,17 @@ checkpoint that cannot commit leaves the marker behind, keeps both write paths
 open and makes the process exit non-zero, so no clean-terminal proof can be
 recorded for that stop.
 
+v1.1.5 adds `payload.operations_checkpoint`, and it is additive in both
+directions: binaries released before it ignore the field, and a payload without
+it stays readable with the marker at 0. The launcher's reuse gate reads that 0 as
+"not materialized" and refuses the stop, so a run directory written before this
+release cannot be reused by the new launcher and is restarted with a fresh
+directory instead of being judged by the older criteria. The owned-session
+lifecycle and shutdown budget protocols are additive RPC as well: the Worker and
+the Authority advertise `lifecycle_protocol` and `shutdown_protocol` on
+`get_metrics`, a caller that does not send the new commands keeps the legacy
+`open_session` path, and the platform's own consumption of both is not wired yet.
+
 The whole teardown — HTTP shutdown, gateway drain, operation checkpoint and audit
 tail — shares one deadline, reported as `platform shutdown incomplete` when a step
 does not finish inside it, instead of waiting for a step that may never return.
