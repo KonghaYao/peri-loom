@@ -29,6 +29,11 @@ func TestGatewayClientCancellationDoesNotReleaseLateUpstreamWork(test *testing.T
 			_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"session": strings.Repeat("a", 64), "readonly": false}))
 			return
 		}
+		// The classification probe is a prepare, not the dispatch this test holds.
+		if envelope.Command["command"] == "describe" {
+			_ = json.NewEncoder(writer).Encode(sqlTestDescribeReply(envelope.RequestID))
+			return
+		}
 		close(entered)
 		select {
 		case <-request.Context().Done():

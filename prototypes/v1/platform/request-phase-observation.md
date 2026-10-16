@@ -114,3 +114,40 @@ Disabled-path micro-measurement (benchmark, not a system measurement):
    workstream.
 4. **Unaccounted share.** A large `unaccounted_ns` would mean the vocabulary is wrong, not that
    the cost is gone; the next step would be to add the missing segment rather than guess.
+
+## 6. Update: the read barrier, after the first measurement
+
+The measurement above answered hypothesis 1 (intent 4.30 ms, terminal 4.27 ms, audit 4.76 ms of
+an 18.98 ms read, against 5.55 ms of worker). Two changes were built on that reading; only the
+second is kept, and it is visible in this stream as a new segment:
+
+- **A statement the worker prepared as read-only carries no intent.** The verdict is the engine's
+  own `is_readonly` answer to a describe on the session about to execute the statement - never a
+  Go-side reading of the SQL text. It is asked inside the new `classify` segment, which therefore
+  reads as one describe round trip per statement the gateway has to prove read-only. A describe
+  that is refused, unusable or absent keeps the statement committing, so `intent` is present for
+  every statement the platform could not prove read-only, and absent for the reads it proved.
+
+  The cache behind this holds the *committing* verdict and nothing else: a statement text a worker
+  already proved committing is not asked about again, because skipping the describe only costs the
+  intent that statement was going to write anyway. The read-only verdict - the one that removes a
+  durable append - is never remembered, so every request that relies on it has asked the worker
+  that is about to execute the statement, in this request. A stale entry can therefore never be
+  the reason an intent is missing, which is what makes the cache safe to keep without a proof that
+  a verdict outlives a schema change, a worker restart or a new session: the only stale entry that
+  can exist is a committing verdict, and its consequence is a describe the gateway would otherwise
+  have skipped.
+
+- **The terminal record and the audit row were made to overlap, and that was rolled back.** The
+  version that overlapped them reported the audit row's `Outcome` from the dispatch result rather
+  than from the settled terminal record, which would have let a consumer read "the statement
+  succeeded" where the client got `outcome_unknown`, and it moved `Audit.Record` onto its own
+  goroutine, outside the recovery boundary the request handler already has. The overlap bought
+  about 0.5 ms of an 18 ms read and did not reproduce reliably on this device (the fsyncs of the
+  two files are effectively serialized here), which does not pay for either. `audit` and `terminal`
+  are therefore again two sequential barriers, `terminal` before `audit`, and the row reports the
+  outcome the reply reports.
+
+Net effect on the phases of one read query that the worker proved read-only: `intent` is gone,
+`classify` carries one describe round trip, and `terminal + audit` are unchanged. The two barriers
+the platform pays for a proven read are the terminal record and the audit row.

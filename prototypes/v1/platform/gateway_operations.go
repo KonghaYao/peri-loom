@@ -94,16 +94,34 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 
 // beginDispatchOperation records the durable intent for one worker call. An
 // operation that provably cannot commit keeps no intent: its terminal record is
-// written once, after the call, by settlePendingOperation.
-func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, stage, requestID string, writeCursor bool, command frozenCommand) (string, *pendingOperation, error) {
-	if !nonCommittingOperation(action, writeCursor) {
-		operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", action, stage, session.worker.ID, session.upstream, command)
-		return operationID, nil, err
+// written once, after the call, by settlePendingOperation. classify reports the
+// worker's own verdict on the statement about to be sent, never a guess from its
+// text, and may be nil for an action that has no statement to classify.
+func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, stage, requestID string, writeCursor bool, command frozenCommand, classify func() bool) (string, *pendingOperation, error) {
+	if nonCommittingOperation(action, writeCursor) {
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+			return "", nil, err
+		}
+		return "", pendingDispatchOperation(session, action, stage, requestID, command), nil
 	}
-	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
-		return "", nil, err
+	if classify != nil {
+		// Classifying is a prepare on the worker, so it is asked only after the
+		// admission rule an unregistered operation must pass: an isolated database
+		// or an exhausted capacity still refuses the request before any SQL reaches
+		// the worker, and that refusal is the same one the committing path reports.
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+			return "", nil, err
+		}
+		if classify() {
+			return "", pendingDispatchOperation(session, action, stage, requestID, command), nil
+		}
 	}
-	return "", &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: command.digest()}, nil
+	operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", action, stage, session.worker.ID, session.upstream, command)
+	return operationID, nil, err
+}
+
+func pendingDispatchOperation(session *gatewaySession, action, stage, requestID string, command frozenCommand) *pendingOperation {
+	return &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: command.digest()}
 }
 
 // settlePendingOperation writes the single terminal record of a dispatched

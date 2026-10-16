@@ -35,7 +35,8 @@ func securityGatewayFixture(test *testing.T) (StateStore, *Gateway, *gatewayTest
 		case "open_session":
 			return map[string]any{"session": strings.Repeat("a", 64), "readonly": false}, nil
 		case "describe":
-			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": true}, nil
+			sql, _ := command["sql"].(string)
+			return testDescribeVerdict(sql), nil
 		case "open_read_cursor":
 			return map[string]any{"cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}}, nil
 		case "fetch_read_cursor":

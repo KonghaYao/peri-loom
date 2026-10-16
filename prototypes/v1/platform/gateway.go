@@ -20,6 +20,9 @@ type Gateway struct {
 	counters       *gatewayCounters
 	operationHolds map[string]*admissionPermit
 	operationMu    sync.Mutex
+	// committingStatements remembers only the statements a worker proved
+	// committing, never the read-only verdict that would skip an intent.
+	committingStatements committingStatementCache
 	// cleanup is the in-process age account of the cleanup facts whose durable
 	// record carries no timestamp.
 	cleanup *cleanupLedger

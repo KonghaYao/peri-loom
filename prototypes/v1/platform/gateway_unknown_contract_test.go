@@ -430,7 +430,9 @@ func TestGatewayUnknownContractCompletedWithoutWriterProof(test *testing.T) {
 				if proof == "missing" {
 					return nil, completed
 				}
-				state.Sequence--
+				// The proof this worker answers is the one the open already produced:
+				// this session has passed it, whatever else was dispatched in between.
+				state.Sequence = 0
 				return state, completed
 			}
 			before := fixture.upstream.count("execute")

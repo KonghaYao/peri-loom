@@ -34,6 +34,7 @@ const (
 	requestPhaseState     requestPhase = "state_read" // narrow metadata read; may settle an ordered append
 	requestPhaseAdmission requestPhase = "admission"  // quota admission and classification
 	requestPhaseSession   requestPhase = "session"    // session lookup
+	requestPhaseClassify  requestPhase = "classify"   // worker describe that proves a statement read-only
 	requestPhaseIntent    requestPhase = "intent"     // durable intent append, including its barrier
 	requestPhaseWorker    requestPhase = "worker"     // worker call
 	requestPhaseTerminal  requestPhase = "terminal"   // durable terminal append, including its barrier

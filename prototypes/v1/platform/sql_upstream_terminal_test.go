@@ -108,6 +108,8 @@ func TestGatewayTerminalConstraintThenExplicitRollback(test *testing.T) {
 			_ = json.NewEncoder(writer).Encode(map[string]any{"version": 1, "request_id": envelope.RequestID, "ok": false, "result": nil, "error": "private constraint details", "execution_completed": true})
 		case "close_session":
 			_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"closed": true}))
+		case "describe":
+			_ = json.NewEncoder(writer).Encode(sqlTestDescribeReply(envelope.RequestID))
 		case "query":
 			if envelope.Command["session"] != strings.Repeat("a", 64) {
 				test.Error("query rebound native session after explicit rollback")

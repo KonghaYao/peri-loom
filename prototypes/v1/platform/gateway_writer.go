@@ -53,6 +53,14 @@ func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewa
 func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command frozenCommand, output any) error {
 	// Deferred: every refusal below still attributes its worker time to the worker segment.
 	defer requestPhaseSpan(ctx, requestPhaseWorker)()
+	return gateway.sendSession(ctx, session, binding, requestID, command, output)
+}
+
+// sendSession is the dispatch itself, without a phase of its own: the caller
+// names the phase, so a worker call that is not the client's statement - the
+// read-only classification - is attributed to its own segment instead of being
+// folded into the worker segment of the statement it classifies.
+func (gateway *Gateway) sendSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command frozenCommand, output any) error {
 	if !session.writerProtocol {
 		return gateway.config.Upstream.Call(ctx, session.worker, requestID, command, output)
 	}

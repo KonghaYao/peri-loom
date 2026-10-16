@@ -17,6 +17,7 @@ type gatewayWriterUpstream struct {
 	states       map[string]SessionWriterState
 	hook         func(map[string]any, *SessionWriterState, error) (*SessionWriterState, error)
 	writerCalls  int
+	operations   []string
 	profileError error
 	profileCalls int
 }
@@ -40,6 +41,8 @@ func (upstream *gatewayWriterUpstream) CallWriter(ctx context.Context, worker co
 	upstream.mu.Lock()
 	defer upstream.mu.Unlock()
 	upstream.writerCalls++
+	operation, _ := fields["command"].(string)
+	upstream.operations = append(upstream.operations, operation)
 	var state SessionWriterState
 	if fields["command"] == "open_session" && err == nil {
 		var reply struct {
@@ -71,6 +74,21 @@ func (upstream *gatewayWriterUpstream) CallWriter(ctx context.Context, worker co
 		return nil, err
 	}
 	return &state, err
+}
+
+// writerOperationCount counts the commands that travelled the writer protocol, so
+// a test can name the one it is about: a dispatch may also carry the read-only
+// classification probe of its statement.
+func (upstream *gatewayWriterUpstream) writerOperationCount(operation string) int {
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	count := 0
+	for _, seen := range upstream.operations {
+		if seen == operation {
+			count++
+		}
+	}
+	return count
 }
 
 func newWriterGatewayFixture(test *testing.T) (*gatewayFixture, *gatewayWriterUpstream) {

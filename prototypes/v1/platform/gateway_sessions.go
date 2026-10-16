@@ -276,8 +276,14 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return operationAdmissionFailure(err)
 		}
 	} else {
+		// A statement the worker proves read-only cannot commit, so it needs no
+		// durable intent; the terminal record of the dispatch is then its only record.
+		var classify func() bool
+		if readonlyStatementAction(action) && !request.WriteCursor {
+			classify = func() bool { return gateway.readonlyStatement(ctx, session, currentBinding, request.SQL) }
+		}
 		leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
-		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, frozen)
+		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, frozen, classify)
 		leaveIntent()
 		if err != nil {
 			return operationAdmissionFailure(err)

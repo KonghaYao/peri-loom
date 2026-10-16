@@ -112,6 +112,8 @@ func TestGatewaySQLFailureMapping(test *testing.T) {
 					_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"session": strings.Repeat("a", 64), "readonly": false}))
 				case "close_session":
 					_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"closed": true}))
+				case "describe":
+					_ = json.NewEncoder(writer).Encode(sqlTestDescribeReply(envelope.RequestID))
 				case "execute", "query":
 					reply := map[string]any{"version": 1, "request_id": envelope.RequestID, "ok": false, "result": nil, "error": row.text + " s3://bucket/objects/" + secret}
 					if row.executed || row.rejected {
@@ -187,6 +189,8 @@ func TestGatewaySQLFailureLeavesSuccessAndUnknownAlone(test *testing.T) {
 			_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"session": strings.Repeat("a", 64), "readonly": false}))
 		case "close_session":
 			_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"closed": true}))
+		case "describe":
+			_ = json.NewEncoder(writer).Encode(sqlTestDescribeReply(envelope.RequestID))
 		case "query":
 			calls++
 			if !unproven {

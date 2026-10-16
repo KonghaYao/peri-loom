@@ -76,6 +76,8 @@ func TestGatewayExactIntegerJSONAndNDJSON(test *testing.T) {
 					_, _ = fmt.Fprintf(writer, `{"version":1,"request_id":%q,"ok":true,"result":[[9223372036854775807,-9007199254740993]],"error":null}`, envelope.RequestID)
 				case "close_session":
 					_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"closed": true}))
+				case "describe":
+					_ = json.NewEncoder(writer).Encode(sqlTestDescribeReply(envelope.RequestID))
 				default:
 					test.Error("unexpected SQL operation")
 				}

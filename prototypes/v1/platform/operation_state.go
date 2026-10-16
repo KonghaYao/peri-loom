@@ -222,6 +222,17 @@ func nonCommittingOperation(action string, writeCursor bool) bool {
 	return false
 }
 
+// readonlyStatementAction reports whether an action sends a statement a worker
+// describe could classify. An action already in nonCommittingOperation needs no
+// classification, and one that carries no statement has nothing to classify.
+func readonlyStatementAction(action string) bool {
+	switch action {
+	case "execute", "query", "statement":
+		return true
+	}
+	return false
+}
+
 // operationAdmissionView is the projection the admission rule needs, so the committed
 // read path and an in-flight edit run the same rule instead of two copies of it.
 type operationAdmissionView interface {

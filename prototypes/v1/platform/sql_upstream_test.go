@@ -36,6 +36,22 @@ func sqlTestEnvelope(requestID string, result any) map[string]any {
 	return map[string]any{"version": 1, "request_id": requestID, "ok": true, "result": result, "error": nil}
 }
 
+// sqlTestDescribeReply is the worker's answer to the read-only classification
+// probe the gateway sends before a dispatched statement. These fixtures pin the
+// committing path of a dispatch, so the verdict they answer is "not read-only":
+// the statement and its operation records stay exactly what they were before the
+// probe existed.
+func sqlTestDescribeReply(requestID string) map[string]any {
+	return sqlTestEnvelope(requestID, map[string]any{"params": []any{}, "cols": []any{}, "is_explain": false, "is_readonly": false})
+}
+
+// testDescribeVerdict models the worker's read-only answer for a fixture: a
+// statement that reads is read-only, every other statement is not. The platform
+// never reads the statement text; this is the worker stand-in that does.
+func testDescribeVerdict(sql string) map[string]any {
+	return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sql)), "SELECT")}
+}
+
 func TestSQLUpstreamActualWireAndNoControlCapability(test *testing.T) {
 	token := sqlTestToken(test)
 	var calls atomic.Int32
@@ -230,6 +246,10 @@ func TestGatewayActualSQLWireLostCommitReply(test *testing.T) {
 		_ = json.NewDecoder(request.Body).Decode(&envelope)
 		if envelope.Command["command"] == "open_session" {
 			_ = json.NewEncoder(writer).Encode(sqlTestEnvelope(envelope.RequestID, map[string]any{"session": strings.Repeat("a", 64), "readonly": false}))
+			return
+		}
+		if envelope.Command["command"] == "describe" {
+			_ = json.NewEncoder(writer).Encode(sqlTestDescribeReply(envelope.RequestID))
 			return
 		}
 		if envelope.Command["command"] != "execute" {

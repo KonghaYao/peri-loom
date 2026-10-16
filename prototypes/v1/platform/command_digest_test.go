@@ -412,18 +412,13 @@ func TestOperationDigestKeepsCommandTextOutOfDurableEvidence(test *testing.T) {
 func TestOperationDigestCoversWriterProtocolStatement(test *testing.T) {
 	fixture, writer := newWriterGatewayFixture(test)
 	session := writerGatewaySession(test, fixture)
-	writer.mu.Lock()
-	before := writer.writerCalls
-	writer.mu.Unlock()
+	before := writer.writerOperationCount("statement")
 	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/statement", map[string]any{"session": session, "sql": "INSERT INTO records(id) VALUES(?)", "args": []any{map[string]any{"type": "integer", "value": "1"}}, "request_id": "writer_statement"})
 	if response.Code != 200 {
 		test.Fatalf("writer statement rejected: %d %s", response.Code, response.Body.String())
 	}
-	writer.mu.Lock()
-	writerCalls := writer.writerCalls
-	writer.mu.Unlock()
-	if writerCalls != before+1 {
-		test.Fatalf("statement did not travel the writer protocol path: %d calls", writerCalls-before)
+	if statements := writer.writerOperationCount("statement") - before; statements != 1 {
+		test.Fatalf("statement did not travel the writer protocol path: %d calls", statements)
 	}
 	record := operationByRequestID(test, fixture.state, "writer_statement")
 	sent := transmittedCommand(test, fixture.upstream, "statement")
