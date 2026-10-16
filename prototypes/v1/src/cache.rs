@@ -25,6 +25,10 @@ struct RamEntry {
 struct DiskEntry {
     size: u64,
     used: u64,
+    /// Identity of this registration. A reader that captured it before releasing the lock can
+    /// tell whether the entry it observed is still the one in the index when it comes back, so
+    /// a read that raced an eviction or a re-insert never edits the accounting of the new one.
+    token: u64,
 }
 
 #[derive(Default)]
@@ -32,7 +36,14 @@ struct State {
     ram: BTreeMap<String, RamEntry>,
     disk: BTreeMap<String, DiskEntry>,
     clock: u64,
+    tokens: u64,
     stats: CacheStats,
+}
+
+/// The disk residency one lookup observed before releasing the lock.
+struct DiskIdentity {
+    used: u64,
+    token: u64,
 }
 
 pub struct SegmentCache {
@@ -74,8 +85,7 @@ impl SegmentCache {
         for (_, hash, size) in existing {
             state.clock += 1;
             let used = state.clock;
-            state.stats.disk_bytes += size;
-            state.disk.insert(hash, DiskEntry { size, used });
+            cache.register_disk(&mut state, &hash, size, used);
         }
         cache.evict_disk(&mut state)?;
         drop(state);
@@ -88,54 +98,98 @@ impl SegmentCache {
 
     pub fn get(&self, hash: &str) -> Result<Option<Arc<Vec<u8>>>> {
         ensure!(valid_hash(hash), "invalid cache identifier");
-        let mut state = self.state();
-        state.clock += 1;
-        let used = state.clock;
-        if let Some(entry) = state.ram.get_mut(hash) {
-            entry.used = used;
-            let bytes = entry.bytes.clone();
-            state.stats.hits_ram += 1;
-            return Ok(Some(bytes));
-        }
-        if state.disk.contains_key(hash) {
-            match fs::read(self.path(hash)) {
-                Ok(bytes) if verify_segment(hash, &bytes).is_ok() => {
-                    state.disk.get_mut(hash).expect("disk entry exists").used = used;
-                    state.stats.hits_disk += 1;
-                    let bytes = Arc::new(bytes);
-                    self.insert_ram(&mut state, hash, bytes.clone());
-                    return Ok(Some(bytes));
+        // Identity, not bytes: the lookup only fixes which RAM or disk entry this call is about,
+        // and the file is read after the lock is released. Holding the lock across that read
+        // would put one reader's disk latency in front of every other cache access, including
+        // lookups of unrelated segments.
+        let observed = {
+            let mut state = self.state();
+            state.clock += 1;
+            let used = state.clock;
+            if let Some(entry) = state.ram.get_mut(hash) {
+                entry.used = used;
+                let bytes = entry.bytes.clone();
+                state.stats.hits_ram += 1;
+                return Ok(Some(bytes));
+            }
+            state.disk.get(hash).map(|entry| DiskIdentity {
+                used,
+                token: entry.token,
+            })
+        };
+        let Some(observed) = observed else {
+            let mut state = self.state();
+            state.stats.misses += 1;
+            return Ok(None);
+        };
+        let path = self.path(hash);
+        match fs::read(&path) {
+            // The digest is the identity check: bytes that verify against the requested hash are
+            // that object, whether or not the entry that pointed at them is still in the index.
+            Ok(bytes) if verify_segment(hash, &bytes).is_ok() => {
+                let bytes = Arc::new(bytes);
+                let mut state = self.state();
+                state.stats.hits_disk += 1;
+                if let Some(entry) = state.disk.get_mut(hash) {
+                    if entry.token == observed.token {
+                        entry.used = observed.used;
+                    }
                 }
-                _ => {
-                    let entry = state.disk.remove(hash).expect("disk entry exists");
-                    state.stats.disk_bytes -= entry.size;
-                    let _ = fs::remove_file(self.path(hash));
+                self.insert_ram(&mut state, hash, bytes.clone());
+                Ok(Some(bytes))
+            }
+            // A miss is a miss for the caller either way: the store is asked again and its copy
+            // is verified. The corrupt file is dropped only while the entry is still the one
+            // observed here, so a reader never evicts a registration it did not look at.
+            _ => {
+                let mut state = self.state();
+                state.stats.misses += 1;
+                let removed = match state.disk.get(hash) {
+                    Some(entry) if entry.token == observed.token => {
+                        let entry = state.disk.remove(hash).expect("disk entry exists");
+                        state.stats.disk_bytes -= entry.size;
+                        true
+                    }
+                    _ => false,
+                };
+                drop(state);
+                if removed {
+                    let _ = fs::remove_file(&path);
                 }
+                Ok(None)
             }
         }
-        state.stats.misses += 1;
-        Ok(None)
     }
 
     pub fn insert(&self, hash: &str, bytes: Arc<Vec<u8>>) -> Result<()> {
         ensure!(valid_hash(hash), "invalid cache identifier");
         verify_segment(hash, &bytes)?;
-        let mut state = self.state();
-        state.clock += 1;
-        self.insert_ram(&mut state, hash, bytes.clone());
-        if bytes.len() as u64 <= self.disk_limit {
+        let size = bytes.len() as u64;
+        let used = {
+            let mut state = self.state();
+            state.clock += 1;
+            let used = state.clock;
+            self.insert_ram(&mut state, hash, bytes.clone());
+            if size > self.disk_limit {
+                return Ok(());
+            }
             if let Some(previous) = state.disk.remove(hash) {
                 state.stats.disk_bytes -= previous.size;
             }
-            while state.stats.disk_bytes + bytes.len() as u64 > self.disk_limit {
+            // Room is reserved before the file is written, so a full disk is still discovered
+            // with the space already freed instead of after a failed write.
+            while state.stats.disk_bytes + size > self.disk_limit {
                 self.remove_oldest_disk(&mut state)?;
             }
-            fs::write(self.path(hash), bytes.as_slice())?;
-            let size = bytes.len() as u64;
-            let used = state.clock;
-            state.disk.insert(hash.to_owned(), DiskEntry { size, used });
-            state.stats.disk_bytes += size;
+            used
+        };
+        fs::write(self.path(hash), bytes.as_slice())?;
+        let mut state = self.state();
+        // Inserts that ran while this one was writing may have taken the space reserved above.
+        while state.stats.disk_bytes + size > self.disk_limit {
+            self.remove_oldest_disk(&mut state)?;
         }
+        self.register_disk(&mut state, hash, size, used);
         Ok(())
     }
 
@@ -165,6 +219,17 @@ impl SegmentCache {
                 used: state.clock,
             },
         );
+    }
+
+    /// Registers the disk residency of `hash`, taking the next entry token and accounting its
+    /// bytes in one place, so the size a reader sees always belongs to the registration it read.
+    fn register_disk(&self, state: &mut State, hash: &str, size: u64, used: u64) {
+        state.tokens += 1;
+        let token = state.tokens;
+        state
+            .disk
+            .insert(hash.to_owned(), DiskEntry { size, used, token });
+        state.stats.disk_bytes += size;
     }
 
     fn remove_oldest_disk(&self, state: &mut State) -> Result<()> {

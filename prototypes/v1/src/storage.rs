@@ -1,14 +1,20 @@
 use crate::cache::{CacheStats, SegmentCache};
+use crate::inflight::{self, Fetches};
 use crate::manifest::{
     digest, valid_hash, verify_segment, Head, Manifest, WalPosition, SEGMENT_SIZE,
 };
 use crate::namespace::Namespace;
 use crate::object_store::{ObjectStore, PutCondition};
 use crate::work_metrics::{LockDomain, LockWait, ObservedLock};
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+/// Attempts a read makes before it gives up on catching an image no concurrent mutation moved.
+/// A reader on the request path serializes with the writers through the IO gate, so the bound is
+/// only reached by a caller racing a mutation loop directly on the storage API.
+const READ_ATTEMPTS: usize = 8;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct StorageStats {
@@ -26,12 +32,19 @@ struct State {
     segments: BTreeMap<u64, String>,
     dirty: BTreeMap<u64, Vec<u8>>,
     segment_loads: u64,
+    /// Bumped by every mutation that can change what a read returns. A read captures it while
+    /// resolving identities under the lock and validates it before returning, so a read that
+    /// raced a mutation retries instead of returning a mixture of two images.
+    revision: u64,
 }
 
 pub struct RemoteStorage {
     store: Arc<dyn ObjectStore>,
     namespace: Namespace,
     cache: Arc<SegmentCache>,
+    /// One in-flight remote fetch per content address, for callers that miss the same object
+    /// while it is being fetched.
+    inflight: Fetches,
     state: Mutex<State>,
 }
 
@@ -126,6 +139,7 @@ impl RemoteStorage {
             store,
             namespace,
             cache,
+            inflight: Fetches::default(),
             state: Mutex::new(State {
                 size: manifest.logical_db_size,
                 segments: manifest.segments.clone(),
@@ -134,46 +148,119 @@ impl RemoteStorage {
                 head_etag: head.etag,
                 dirty: BTreeMap::new(),
                 segment_loads: 0,
+                revision: 0,
             }),
         }))
     }
 
+    /// Resolves a segment while the caller holds the storage lock. The write path needs the
+    /// bytes and the lock in the same critical section: it stages them over the image it read,
+    /// so a publication that moved the base underneath it would be a lost update.
     fn load(&self, state: &mut State, index: u64) -> Result<Arc<Vec<u8>>> {
-        if let Some(bytes) = state.dirty.get(&index) {
-            return Ok(Arc::new(bytes.clone()));
+        match resolve_segment(state, index) {
+            SegmentSource::Staged(bytes) => Ok(bytes),
+            SegmentSource::Zeros => Ok(Arc::new(vec![0; SEGMENT_SIZE])),
+            SegmentSource::Published(hash) => {
+                if let Some(bytes) = self.cache.get(&hash)? {
+                    return Ok(bytes);
+                }
+                let bytes = self.load_remote(&hash)?;
+                state.segment_loads += 1;
+                let _ = self.cache.insert(&hash, bytes.clone());
+                Ok(bytes)
+            }
         }
-        let Some(hash) = state.segments.get(&index) else {
-            return Ok(Arc::new(vec![0; SEGMENT_SIZE]));
-        };
-        if let Some(bytes) = self.cache.get(hash)? {
-            return Ok(bytes);
-        }
+    }
+
+    /// Fetches one immutable object and verifies it against its content address before anything
+    /// can use it. It never touches the storage lock, so the caller decides the lock domain: the
+    /// write path calls it with the lock held, the read path calls it with the lock released.
+    fn load_remote(&self, hash: &str) -> Result<Arc<Vec<u8>>> {
         let object = self
             .store
             .get(&self.namespace.key(&format!("segments/{hash}"))?)?
             .context("remote segment missing")?;
         verify_segment(hash, &object.bytes)?;
-        state.segment_loads += 1;
-        let bytes = Arc::new(object.bytes);
-        let _ = self.cache.insert(hash, bytes.clone());
-        Ok(bytes)
+        Ok(Arc::new(object.bytes))
+    }
+
+    /// Reads one segment for a caller that holds no storage lock: the identity of the index is
+    /// fixed under the lock, the bytes are read outside it, and `read_at` re-validates the image
+    /// revision before it returns them.
+    fn read_segment(&self, index: u64) -> Result<Arc<Vec<u8>>> {
+        let source = {
+            let state = self.state();
+            resolve_segment(&state, index)
+        };
+        match source {
+            SegmentSource::Staged(bytes) => Ok(bytes),
+            SegmentSource::Zeros => Ok(Arc::new(vec![0; SEGMENT_SIZE])),
+            SegmentSource::Published(hash) => self.fetch_segment(&hash),
+        }
+    }
+
+    /// One in-flight fetch per content address: callers that miss the same immutable object
+    /// while it is being fetched wait for the first caller's outcome instead of issuing their own
+    /// GET. The key is the hash, so two revisions of a page never share a fetch.
+    ///
+    /// The lookup above is the only cache probe this path makes, so a read of one segment is one
+    /// lookup whether it hits, merges or fetches.
+    fn fetch_segment(&self, hash: &str) -> Result<Arc<Vec<u8>>> {
+        if let Some(bytes) = self.cache.get(hash)? {
+            return Ok(bytes);
+        }
+        match self.inflight.join(hash) {
+            inflight::Joined::Waiter(waiter) => waiter.wait().map_err(anyhow::Error::msg),
+            inflight::Joined::Leader(leader) => {
+                let outcome = (|| -> Result<Arc<Vec<u8>>> {
+                    let bytes = self.load_remote(hash)?;
+                    {
+                        let mut state = self.state();
+                        state.segment_loads += 1;
+                    }
+                    let _ = self.cache.insert(hash, bytes.clone());
+                    Ok(bytes)
+                })();
+                leader.publish(
+                    outcome
+                        .as_ref()
+                        .map(Arc::clone)
+                        .map_err(|error| format!("{error:#}")),
+                );
+                outcome
+            }
+        }
     }
 
     pub fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<usize> {
         self.store.validate_local()?;
-        let mut state = self.state();
-        let count = state.size.saturating_sub(offset).min(out.len() as u64) as usize;
-        let mut completed = 0;
-        while completed < count {
-            let position = offset + completed as u64;
-            let index = position / SEGMENT_SIZE as u64;
-            let within = (position % SEGMENT_SIZE as u64) as usize;
-            let length = (SEGMENT_SIZE - within).min(count - completed);
-            let bytes = self.load(&mut state, index)?;
-            out[completed..completed + length].copy_from_slice(&bytes[within..within + length]);
-            completed += length;
+        for _ in 0..READ_ATTEMPTS {
+            // Identity, not bytes: the revision says which image this attempt is reading and the
+            // count fixes its extent. Bytes are read outside the lock below, and the revision is
+            // re-checked before anything is returned, because a mutation that landed in between
+            // would otherwise let this call return a mixture of two images.
+            let (revision, count) = {
+                let state = self.state();
+                (
+                    state.revision,
+                    state.size.saturating_sub(offset).min(out.len() as u64) as usize,
+                )
+            };
+            let mut completed = 0;
+            while completed < count {
+                let position = offset + completed as u64;
+                let index = position / SEGMENT_SIZE as u64;
+                let within = (position % SEGMENT_SIZE as u64) as usize;
+                let length = (SEGMENT_SIZE - within).min(count - completed);
+                let bytes = self.read_segment(index)?;
+                out[completed..completed + length].copy_from_slice(&bytes[within..within + length]);
+                completed += length;
+            }
+            if self.state().revision == revision {
+                return Ok(count);
+            }
         }
-        Ok(count)
+        bail!("read raced with {READ_ATTEMPTS} consecutive image mutations")
     }
 
     pub fn write_at(&self, offset: u64, data: &[u8]) -> Result<usize> {
@@ -203,6 +290,7 @@ impl RemoteStorage {
         }
         state.dirty.extend(staged);
         state.size = state.size.max(end);
+        state.revision += 1;
         Ok(data.len())
     }
 
@@ -228,6 +316,7 @@ impl RemoteStorage {
             state.segments.retain(|index, _| *index < keep);
         }
         state.size = len;
+        state.revision += 1;
         Ok(())
     }
 
@@ -289,6 +378,7 @@ impl RemoteStorage {
         state.manifest_id = identifier;
         state.head_etag = etag;
         state.dirty.clear();
+        state.revision += 1;
         Ok(())
     }
 
@@ -394,6 +484,32 @@ impl RemoteStorage {
             cache,
         }
     }
+
+    /// Test-only: the in-flight table must hold nothing once a fetch returned, so a later caller
+    /// starts a fresh fetch instead of reading a retired outcome.
+    #[cfg(test)]
+    pub(crate) fn inflight_entries(&self) -> usize {
+        self.inflight.len()
+    }
+}
+
+/// What one index resolves to under the storage lock: identity, not bytes. A published segment is
+/// named by its content address and read later; staged bytes are copied out inside the lock
+/// because they are the caller's only copy and can still change.
+enum SegmentSource {
+    Staged(Arc<Vec<u8>>),
+    Published(String),
+    Zeros,
+}
+
+fn resolve_segment(state: &State, index: u64) -> SegmentSource {
+    if let Some(bytes) = state.dirty.get(&index) {
+        return SegmentSource::Staged(Arc::new(bytes.clone()));
+    }
+    match state.segments.get(&index) {
+        Some(hash) => SegmentSource::Published(hash.clone()),
+        None => SegmentSource::Zeros,
+    }
 }
 
 fn put_immutable(store: &dyn ObjectStore, key: &str, bytes: &[u8]) -> Result<()> {
@@ -478,6 +594,44 @@ mod image_tests {
         );
         assert!(!storage.initial_image_replaced(probe)?);
         assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod read_path_tests {
+    use super::*;
+    use crate::object_store::MemoryObjectStore;
+
+    /// A fetch that returned — successfully or not — must leave no entry behind: a retired
+    /// outcome in the table would answer a caller that never asked for that object, and the table
+    /// would grow with every miss. A later revision is a different content address, so it is
+    /// fetched again rather than answered from the retired one.
+    #[test]
+    fn a_finished_fetch_leaves_no_entry_in_the_in_flight_table() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(MemoryObjectStore::default());
+        let namespace = Namespace::new("tenant", "database")?;
+        let cache = Arc::new(SegmentCache::new(directory.path(), 0, 0)?);
+        let storage = RemoteStorage::open(store.clone(), namespace.clone(), cache)?;
+        storage.write_at(0, &vec![5; SEGMENT_SIZE])?;
+        storage.publish(WalPosition::default(), 1)?;
+
+        let mut out = [0u8; 8];
+        storage.read_at(0, &mut out)?;
+        assert_eq!(out, [5; 8]);
+        assert_eq!(storage.inflight_entries(), 0);
+
+        storage.write_at(0, &vec![6; SEGMENT_SIZE])?;
+        storage.publish(WalPosition::default(), 2)?;
+        storage.read_at(0, &mut out)?;
+        assert_eq!(out, [6; 8]);
+        assert_eq!(storage.inflight_entries(), 0);
+
+        let hash = storage.manifest().segments[&0].clone();
+        store.delete(&namespace.key(&format!("segments/{hash}"))?, None)?;
+        assert!(storage.read_at(0, &mut out).is_err());
+        assert_eq!(storage.inflight_entries(), 0);
         Ok(())
     }
 }

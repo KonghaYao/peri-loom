@@ -11,6 +11,7 @@ pub mod gc;
 pub mod import_cli;
 pub mod import_control_cli;
 pub mod import_image;
+mod inflight;
 pub mod io;
 pub mod manifest;
 pub mod metrics;

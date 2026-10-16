@@ -4,8 +4,57 @@ use peri_loom_v1::manifest::{digest, Manifest, WalPosition, SEGMENT_SIZE};
 use peri_loom_v1::namespace::Namespace;
 use peri_loom_v1::object_store::{MemoryObjectStore, ObjectStore, PutCondition, StoredObject};
 use peri_loom_v1::storage::RemoteStorage;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+/// Slack a test gives the readers that share a held fetch to reach the in-flight entry for the
+/// same revision. Reaching it costs a mutex and a map lookup, so this is a scheduling window,
+/// not a measurement; the assertions it guards are on request counts, never on time.
+const JOIN_WINDOW: Duration = Duration::from_millis(500);
+
+/// A GET the test holds open, so it can decide what happens while a fetch is in flight.
+#[derive(Default)]
+struct Hold {
+    state: Mutex<HoldState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct HoldState {
+    entered: usize,
+    released: bool,
+}
+
+impl Hold {
+    fn enter(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.entered += 1;
+        self.changed.notify_all();
+        while !state.released {
+            state = self.changed.wait(state).unwrap();
+        }
+    }
+
+    fn wait_entered(&self, count: usize) {
+        let mut state = self.state.lock().unwrap();
+        while state.entered < count {
+            state = self.changed.wait(state).unwrap();
+        }
+    }
+
+    fn entered(&self) -> usize {
+        self.state.lock().unwrap().entered
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.released = true;
+        self.changed.notify_all();
+    }
+}
 
 #[derive(Default)]
 struct InstrumentedStore {
@@ -14,12 +63,47 @@ struct InstrumentedStore {
     fail_get: Mutex<Option<String>>,
     fail_put: Mutex<Option<String>>,
     fail_head: AtomicBool,
+    hold: Mutex<Option<(String, Arc<Hold>)>>,
+    panic_get: Mutex<Option<String>>,
+    on_get: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl InstrumentedStore {
+    /// Holds every GET of `key` open until the returned latch is released.
+    fn arm_hold(&self, key: &str) -> Arc<Hold> {
+        let hold = Arc::new(Hold::default());
+        *self.hold.lock().unwrap() = Some((key.to_owned(), hold.clone()));
+        hold
+    }
+
+    fn clear_hold(&self) {
+        *self.hold.lock().unwrap() = None;
+    }
+
+    /// Runs one side effect inside the next GET, from the thread that issues it.
+    fn arm_effect(&self, effect: impl FnOnce() + Send + 'static) {
+        *self.on_get.lock().unwrap() = Some(Box::new(effect));
+    }
 }
 
 impl ObjectStore for InstrumentedStore {
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         if key.contains("/segments/") {
             self.segment_gets.fetch_add(1, Ordering::Relaxed);
+        }
+        let effect = self.on_get.lock().unwrap().take();
+        if let Some(effect) = effect {
+            effect();
+        }
+        let held = self.hold.lock().unwrap().clone();
+        if let Some((held_key, hold)) = held {
+            if held_key == key {
+                hold.enter();
+            }
+        }
+        let armed = self.panic_get.lock().unwrap().clone();
+        if armed.as_deref() == Some(key) {
+            panic!("injected GET panic");
         }
         if self.fail_get.lock().unwrap().as_deref() == Some(key) {
             bail!("injected GET failure");
@@ -43,6 +127,50 @@ impl ObjectStore for InstrumentedStore {
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
         self.inner.list(prefix)
     }
+}
+
+/// One reader thread and the bounded channel its outcome arrives on. A test collects through
+/// [`collect`] instead of joining, so a waiter that is never woken fails the test within the
+/// deadline and leaves a parked thread behind instead of hanging the run.
+type Reader = Receiver<Option<Result<Vec<u8>>>>;
+
+fn spawn_reader(storage: &Arc<RemoteStorage>, start: &Arc<Barrier>, length: usize) -> Reader {
+    let (sender, receiver) = channel();
+    let storage = storage.clone();
+    let start = start.clone();
+    std::thread::spawn(move || {
+        start.wait();
+        let mut bytes = vec![0; length];
+        // A panic inside the fetch is a result of this test, not a failure of the harness: the
+        // abandonment case injects one to check what the other waiters observe.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            storage.read_at(0, &mut bytes).map(|count| {
+                bytes.truncate(count);
+                bytes
+            })
+        }))
+        .ok();
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn collect(readers: Vec<Reader>, within: Duration) -> Vec<Option<Result<Vec<u8>>>> {
+    let deadline = Instant::now() + within;
+    readers
+        .into_iter()
+        .map(|reader| {
+            reader
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("a reader never observed the outcome of the shared fetch")
+        })
+        .collect()
+}
+
+/// A cache with no capacity, so nothing between the store and the readers can serve a segment
+/// and every read has to reach the store unless the callers merge their miss.
+fn uncached(root: &std::path::Path) -> Result<Arc<SegmentCache>> {
+    Ok(Arc::new(SegmentCache::new(root, 0, 0)?))
 }
 
 fn namespace() -> Namespace {
@@ -391,5 +519,180 @@ fn invalid_namespace_cannot_initialize_remote_metadata() -> Result<()> {
     }
     assert!(store.list("")?.is_empty());
     assert!(store.get("tenant/db/../../escape").is_err());
+    Ok(())
+}
+
+/// Waits until every reader has looked in the cache, which is the last step before it joins the
+/// in-flight entry for this revision. The fetch releases the storage lock, so observing these
+/// counters cannot block on the GET the test is holding open — a reader that reaches its first
+/// lookup is at most one mutex and one map lookup away from joining.
+fn wait_for_lookups(storage: &Arc<RemoteStorage>, lookups: u64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while storage.stats().cache.misses < lookups {
+        assert!(
+            Instant::now() < deadline,
+            "readers never reached their cache lookup"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn publish_segment(
+    store: &Arc<InstrumentedStore>,
+    root: &std::path::Path,
+    value: u8,
+) -> Result<(Arc<RemoteStorage>, String)> {
+    let storage = RemoteStorage::open(store.clone(), namespace(), uncached(root)?)?;
+    storage.write_at(0, &vec![value; SEGMENT_SIZE])?;
+    storage.publish(WalPosition::default(), 1)?;
+    let key = namespace().key(&format!("segments/{}", storage.manifest().segments[&0]))?;
+    Ok((storage, key))
+}
+
+#[test]
+fn concurrent_misses_of_one_segment_request_the_store_once() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = Arc::new(InstrumentedStore::default());
+    let (storage, key) = publish_segment(&store, root.path(), 3)?;
+    let before = store.segment_gets.load(Ordering::Relaxed);
+
+    let hold = store.arm_hold(&key);
+    let start = Arc::new(Barrier::new(4));
+    let readers: Vec<Reader> = (0..4)
+        .map(|_| spawn_reader(&storage, &start, SEGMENT_SIZE))
+        .collect();
+    hold.wait_entered(1);
+    wait_for_lookups(&storage, 4);
+    std::thread::sleep(JOIN_WINDOW);
+    assert_eq!(hold.entered(), 1, "a second reader issued its own GET");
+    hold.release();
+    store.clear_hold();
+
+    for result in collect(readers, Duration::from_secs(10)) {
+        assert_eq!(
+            result.expect("reader did not finish")?,
+            vec![3; SEGMENT_SIZE]
+        );
+    }
+    assert_eq!(
+        store.segment_gets.load(Ordering::Relaxed),
+        before + 1,
+        "concurrent misses of one revision must share one request"
+    );
+
+    // The entry retires with the fetch, so the next read starts a fresh request instead of
+    // reading an outcome for an object it never asked for.
+    let mut bytes = vec![0; 4];
+    assert_eq!(storage.read_at(0, &mut bytes)?, 4);
+    assert_eq!(bytes, vec![3; 4]);
+    assert_eq!(store.segment_gets.load(Ordering::Relaxed), before + 2);
+    Ok(())
+}
+
+#[test]
+fn a_failed_shared_fetch_wakes_every_waiter() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = Arc::new(InstrumentedStore::default());
+    let (storage, key) = publish_segment(&store, root.path(), 4)?;
+    let before = store.segment_gets.load(Ordering::Relaxed);
+
+    let hold = store.arm_hold(&key);
+    *store.fail_get.lock().unwrap() = Some(key.clone());
+    let start = Arc::new(Barrier::new(4));
+    let readers: Vec<Reader> = (0..4)
+        .map(|_| spawn_reader(&storage, &start, SEGMENT_SIZE))
+        .collect();
+    hold.wait_entered(1);
+    wait_for_lookups(&storage, 4);
+    std::thread::sleep(JOIN_WINDOW);
+    assert_eq!(hold.entered(), 1, "a second reader issued its own GET");
+    hold.release();
+
+    for result in collect(readers, Duration::from_secs(10)) {
+        let error = result
+            .expect("reader did not finish")
+            .expect_err("the shared failure must reach every waiter");
+        assert!(
+            format!("{error:#}").contains("injected GET failure"),
+            "unexpected error: {error:#}"
+        );
+    }
+    assert_eq!(store.segment_gets.load(Ordering::Relaxed), before + 1);
+    Ok(())
+}
+
+/// The analogue of cancelling the caller that started a request: the owner disappears without
+/// publishing. Every waiter must still be released, and none of them may hang on a result that
+/// will never be published.
+#[test]
+fn an_abandoned_owner_wakes_every_waiter() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = Arc::new(InstrumentedStore::default());
+    let (storage, key) = publish_segment(&store, root.path(), 5)?;
+    let before = store.segment_gets.load(Ordering::Relaxed);
+
+    let hold = store.arm_hold(&key);
+    *store.panic_get.lock().unwrap() = Some(key.clone());
+    let start = Arc::new(Barrier::new(4));
+    let readers: Vec<Reader> = (0..4)
+        .map(|_| spawn_reader(&storage, &start, SEGMENT_SIZE))
+        .collect();
+    hold.wait_entered(1);
+    wait_for_lookups(&storage, 4);
+    std::thread::sleep(JOIN_WINDOW);
+    hold.release();
+
+    let results = collect(readers, Duration::from_secs(10));
+    assert_eq!(
+        results.iter().filter(|result| result.is_none()).count(),
+        1,
+        "only the owner may unwind"
+    );
+    for result in results.into_iter().flatten() {
+        let error = result.expect_err("an abandoned owner must wake its waiters");
+        assert!(
+            format!("{error:#}").contains("abandoned"),
+            "unexpected error: {error:#}"
+        );
+    }
+    assert_eq!(store.segment_gets.load(Ordering::Relaxed), before + 1);
+    Ok(())
+}
+
+/// A mutation that lands while a read is in flight must not be able to mix the two images: the
+/// read started on a two-segment image at one revision and must return the one-segment image the
+/// mutation published, bytes and extent included.
+#[test]
+fn a_read_racing_a_mutation_never_returns_the_old_image() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = Arc::new(InstrumentedStore::default());
+    let storage = RemoteStorage::open(store.clone(), namespace(), uncached(root.path())?)?;
+    storage.write_at(0, &vec![1; SEGMENT_SIZE])?;
+    storage.write_at(SEGMENT_SIZE as u64, &vec![2; SEGMENT_SIZE])?;
+    storage.publish(WalPosition::default(), 1)?;
+
+    // The mutation runs inside the first GET of the read, on the reader's own thread, and it
+    // rewrites the index the reader has already resolved.
+    let mutation: Arc<Mutex<Option<Result<()>>>> = Arc::new(Mutex::new(None));
+    let recorded = mutation.clone();
+    let mutating = storage.clone();
+    store.arm_effect(move || {
+        let outcome = (|| -> Result<()> {
+            mutating.write_at(0, &vec![9; SEGMENT_SIZE * 2])?;
+            mutating.truncate(SEGMENT_SIZE as u64)?;
+            mutating.publish(WalPosition::default(), 2)?;
+            Ok(())
+        })();
+        *recorded.lock().unwrap() = Some(outcome);
+    });
+
+    let mut out = vec![0u8; SEGMENT_SIZE * 2];
+    let count = storage.read_at(0, &mut out)?;
+    mutation.lock().unwrap().take().expect("the mutation ran")?;
+    assert_eq!(
+        count, SEGMENT_SIZE,
+        "the read returned the extent of the image it started on"
+    );
+    assert_eq!(&out[..count], vec![9u8; SEGMENT_SIZE].as_slice());
     Ok(())
 }
