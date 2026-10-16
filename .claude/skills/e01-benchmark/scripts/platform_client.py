@@ -6,12 +6,14 @@ cmd/peri/main.go、platform/README.md 与 sdk/README.md。
 传输失败/信封异常一律记为 outcome_unknown，不重试、不重开会话。
 """
 
+import http.client
 import ipaddress
 import json
 import os
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -91,21 +93,93 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class PlatformClient:
-    def __init__(self, endpoint, credential, ca_file=None, timeout=30.0):
+    """connection_mode 控制传输层连接生命周期：
+
+    - per-request（默认）：每个请求新建连接，保持既有语义；
+    - reuse：每个 worker 线程（= 每个会话）独占一条持久连接，必须读完整响应后才复用；
+      连接失活/半响应只影响"尚未派发的下一次操作"——它会新建连接，而已派发的请求
+      一律以 outcome_unknown 结束，绝不自动重发。
+    """
+
+    def __init__(self, endpoint, credential, ca_file=None, timeout=30.0, connection_mode="per-request"):
         self.endpoint = validate_endpoint(endpoint)
         if not CREDENTIAL_MIN <= len(credential) <= CREDENTIAL_MAX:
             raise PlatformFailure("invalid_credential")
+        if connection_mode not in ("per-request", "reuse"):
+            raise PlatformFailure("invalid_connection_mode")
         self._credential = credential
         self._timeout = timeout
+        self._mode = connection_mode
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._connections_created = 0
+        self._requests_sent = 0
+        self._parsed = urllib.parse.urlsplit(self.endpoint)
         context = ssl.create_default_context()
         if ca_file:
             context.load_verify_locations(cafile=ca_file)
         handlers = [_NoRedirect(), urllib.request.ProxyHandler({}),
                     urllib.request.HTTPSHandler(context=context)]
         self._opener = urllib.request.build_opener(*handlers)
+        self._context = context
 
     def __repr__(self):
-        return f"<PlatformClient {urllib.parse.urlsplit(self.endpoint).netloc}>"
+        return f"<PlatformClient {self._parsed.netloc} mode={self._mode}>"
+
+    def connection_stats(self):
+        """实际计数（不是按配置推断）：新建连接数与已派发请求数。"""
+        with self._lock:
+            return {"connection_mode": self._mode,
+                    "connections_created": self._connections_created,
+                    "requests_sent": self._requests_sent}
+
+    def _connection(self):
+        connection = getattr(self._local, "connection", None)
+        if connection is None:
+            host = self._parsed.hostname
+            port = self._parsed.port or (443 if self._parsed.scheme == "https" else 80)
+            if self._parsed.scheme == "https":
+                connection = http.client.HTTPSConnection(host, port, context=self._context,
+                                                         timeout=self._timeout)
+            else:
+                connection = http.client.HTTPConnection(host, port, timeout=self._timeout)
+            self._local.connection = connection
+            with self._lock:
+                self._connections_created += 1
+        return connection
+
+    def close_connections(self):
+        connection = getattr(self._local, "connection", None)
+        if connection is not None:
+            try:
+                connection.close()
+            finally:
+                self._local.connection = None
+
+    def _decode(self, raw, request_id, timings):
+        if len(raw) > RESPONSE_LIMIT:
+            raise PlatformFailure("outcome_unknown", timings=timings)
+        try:
+            reply = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise PlatformFailure("outcome_unknown", timings=timings)
+        if not isinstance(reply, dict) or reply.get("version") != 1 \
+                or reply.get("request_id") != request_id or "ok" not in reply:
+            raise PlatformFailure("outcome_unknown", timings=timings)
+        ok = reply.get("ok")
+        if not isinstance(ok, bool):
+            raise PlatformFailure("outcome_unknown", timings=timings)
+        if not ok:
+            failure = reply.get("error")
+            if "result" not in reply or reply["result"] is not None or not isinstance(failure, dict):
+                raise PlatformFailure("outcome_unknown", timings=timings)
+            flags = {name: failure.get(name) for name in ("execution_completed", "may_have_committed")
+                     if isinstance(failure.get(name), bool)}
+            raise PlatformFailure(str(failure.get("code", "remote_error"))[:64],
+                                   str(failure.get("message", "")), timings=timings, flags=flags)
+        if "result" not in reply:
+            raise PlatformFailure("outcome_unknown", timings=timings)
+        return reply["result"]
 
     def call(self, path, body):
         """返回 (result, timings)；失败抛 PlatformFailure，绝不重试。"""
@@ -119,6 +193,29 @@ class PlatformClient:
         request.add_header("Authorization", "Bearer " + self._credential)
         request.add_header("X-Request-ID", body["request_id"])
         dispatched = time.monotonic_ns()
+        with self._lock:
+            self._requests_sent += 1
+        if self._mode == "reuse":
+            headers = {"Content-Type": "application/json", "Accept": "application/json",
+                       "Authorization": "Bearer " + self._credential,
+                       "X-Request-ID": body["request_id"]}
+            try:
+                connection = self._connection()
+                connection.request("POST", path, body=payload, headers=headers)
+                response = connection.getresponse()
+                raw = response.read(RESPONSE_LIMIT + 1)
+            except (TimeoutError, http.client.HTTPException, OSError, ValueError) as error:
+                # 连接可能已失活：丢弃它，但绝不重发这次请求；下一次未派发的操作会新建连接。
+                self.close_connections()
+                raise PlatformFailure("outcome_unknown", timings={
+                    "planned_ns": planned, "dispatched_ns": dispatched,
+                    "completed_ns": time.monotonic_ns()},
+                    timed_out=isinstance(error, (TimeoutError, socket.timeout)))
+            completed = time.monotonic_ns()
+            return self._decode(raw, body["request_id"],
+                                {"planned_ns": planned, "dispatched_ns": dispatched,
+                                 "completed_ns": completed}), \
+                   {"planned_ns": planned, "dispatched_ns": dispatched, "completed_ns": completed}
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
                 raw = response.read(RESPONSE_LIMIT + 1)
@@ -138,29 +235,7 @@ class PlatformClient:
                 timed_out=isinstance(error, (TimeoutError, socket.timeout)))
         completed = time.monotonic_ns()
         timings = {"planned_ns": planned, "dispatched_ns": dispatched, "completed_ns": completed}
-        if len(raw) > RESPONSE_LIMIT:
-            raise PlatformFailure("outcome_unknown", timings=timings)
-        try:
-            reply = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise PlatformFailure("outcome_unknown", timings=timings)
-        if not isinstance(reply, dict) or reply.get("version") != 1 \
-                or reply.get("request_id") != body["request_id"] or "ok" not in reply:
-            raise PlatformFailure("outcome_unknown", timings=timings)
-        ok = reply.get("ok")
-        if not isinstance(ok, bool):
-            raise PlatformFailure("outcome_unknown", timings=timings)
-        if not ok:
-            failure = reply.get("error")
-            if "result" not in reply or reply["result"] is not None or not isinstance(failure, dict):
-                raise PlatformFailure("outcome_unknown", timings=timings)
-            flags = {name: failure.get(name) for name in ("execution_completed", "may_have_committed")
-                     if isinstance(failure.get(name), bool)}
-            raise PlatformFailure(str(failure.get("code", "remote_error"))[:64],
-                                   str(failure.get("message", "")), timings=timings, flags=flags)
-        if "result" not in reply:
-            raise PlatformFailure("outcome_unknown", timings=timings)
-        return reply["result"], timings
+        return self._decode(raw, body["request_id"], timings), timings
 
 
 def database_identity(database):

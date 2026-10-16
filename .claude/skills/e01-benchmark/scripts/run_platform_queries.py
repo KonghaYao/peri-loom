@@ -131,7 +131,7 @@ def run_workers(args, sessions, operations, labels, report):
     return events
 
 
-def close_sessions(sessions, timer, report):
+def close_sessions(sessions, timer, report, client=None):
     closed, failures = 0, []
     with timer.phase("close"):
         for index, session in enumerate(sessions):
@@ -140,6 +140,8 @@ def close_sessions(sessions, timer, report):
                 closed += 1
             except platform.PlatformFailure as failure:
                 failures.append({"index": index, "code": failure.code})
+        if client is not None:
+            client.close_connections()
     report["sessions_closed"] = closed
     report["close_failures"] = failures
 
@@ -161,7 +163,8 @@ def execute(args):
             raise platform.PlatformFailure("missing_endpoint")
         client = platform.PlatformClient(endpoint, platform.load_credential(),
                                          ca_file=os.environ.get("PERI_CA_FILE") or None,
-                                         timeout=args.timeout_seconds)
+                                         timeout=args.timeout_seconds,
+                                         connection_mode=args.connection_mode)
         operations = build_operations(manifest, args.binding)
         require(len(operations) <= args.request_budget, "request_budget_exceeded")
         labels = verify.labels(operations)
@@ -174,6 +177,7 @@ def execute(args):
         "manifest_sha256": manifest["manifest_sha256"], "manifest_scan": manifest["scan"],
         "ops": len(operations), "request_budget": args.request_budget,
         "concurrency": args.concurrency, "concurrency_source": "postgresql_typical_max_connections_reference",
+        "connection_mode": args.connection_mode,
         "rate_ops_per_second": args.rate, "max_seconds": args.max_seconds, "binding": args.binding,
         "timing_boundary": {"per_operation": "planned_ns->completed_ns",
                             "service": "dispatched_ns->completed_ns",
@@ -218,7 +222,7 @@ def execute(args):
             expected = by_id[event["op_id"]]["expected"]
             if event["rows"] != as_values(expected):
                 mismatched += 1
-    close_sessions(sessions, timer, report)
+    close_sessions(sessions, timer, report, client)
     counters = {}
     for event in events:
         counters[event["outcome"]] = counters.get(event["outcome"], 0) + 1
@@ -240,6 +244,11 @@ def execute(args):
                                    if overall and report["sessions_opened"] else None),
         "operation_counts": {"success": success, "attempted": len(events),
                              "planned": len(operations)}}
+    observed = client.connection_stats()
+    # per-request 模式走 urllib，无法可靠计数连接：如实报 null 而不是用请求数推断。
+    observed_connections = (observed["connections_created"]
+                            if observed["connection_mode"] == "reuse" else None)
+    observed_requests = observed["requests_sent"]
     report["resources"] = (json.loads(Path(args.resource_json).read_text())
                            if args.resource_json else
                            {"status": "NOT MEASURED",
@@ -255,6 +264,10 @@ def execute(args):
                              "ORACLE_VERIFIED")
     report["performance"] = "NOT MEASURED"
     report["capacity"] = "NOT MEASURED"
+    report["transport"] = {"declared_mode": args.connection_mode,
+                           "observed": {"connections_created": observed_connections,
+                                        "requests_sent": observed_requests,
+                                        "note": "per-request 模式不计数连接（urllib 路径），reuse 模式为真实计数"}}
     report["timing"] = timer.report()
     jsonio.write_lines_new(out_dir / "query-events.ndjson",
                            (json.dumps(redact(event), sort_keys=True) for event in events))
@@ -288,6 +301,7 @@ def main():
     parser.add_argument("--request-budget", type=int, default=DEFAULT_REQUEST_BUDGET)
     parser.add_argument("--resource-json", default=None, help="操作者采集的主机资源样本（可选）")
     parser.add_argument("--binding", default="literal", choices=("literal", "parameter"))
+    parser.add_argument("--connection-mode", default="per-request", choices=("per-request", "reuse"))
     parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument("--slo-approved", action="store_true")
     args = parser.parse_args()

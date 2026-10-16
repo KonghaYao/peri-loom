@@ -20,6 +20,91 @@ CREDENTIAL = "k" * 40
 DATABASE = "tenant/e01/branch"
 
 
+class ConnectionModeTests(unittest.TestCase):
+    """连接复用协议测试：真实统计连接创建/复用，而不是只看配置。"""
+
+    def setUp(self):
+        self.gateway = MockGateway(CREDENTIAL)
+
+    def tearDown(self):
+        self.gateway.close()
+
+    def run_calls(self, mode, count, threads=1):
+        import threading
+        client = platform.PlatformClient(self.gateway.endpoint, CREDENTIAL, connection_mode=mode)
+        errors = []
+        def worker(base):
+            try:
+                session, _ = platform.open_session(client, DATABASE, f"open-{base}")
+                for index in range(count):
+                    session.query("SELECT 1", f"q-{base}-{index}")
+            except platform.PlatformFailure as failure:
+                errors.append(failure.code)
+        workers = [threading.Thread(target=worker, args=(index,)) for index in range(threads)]
+        for item in workers:
+            item.start()
+        for item in workers:
+            item.join()
+        stats = client.connection_stats()
+        client.close_connections()
+        return stats, errors
+
+    def test_reuse_uses_one_connection_per_worker(self):
+        stats, errors = self.run_calls("reuse", 5, threads=1)
+        self.assertEqual(errors, [])
+        self.assertEqual(stats["connections_created"], 1)
+        self.assertEqual(stats["requests_sent"], 6)
+        self.assertEqual(self.gateway.accepted_connections, 1)
+
+    def test_reuse_does_not_share_a_stream_between_workers(self):
+        stats, errors = self.run_calls("reuse", 3, threads=4)
+        self.assertEqual(errors, [])
+        self.assertEqual(stats["connections_created"], 4)
+        self.assertEqual(self.gateway.accepted_connections, 4)
+
+    def test_per_request_mode_keeps_creating_connections(self):
+        stats, errors = self.run_calls("per-request", 3, threads=1)
+        self.assertEqual(errors, [])
+        self.assertEqual(stats["connections_created"], 0)  # urllib 路径不计数
+        self.assertGreaterEqual(self.gateway.accepted_connections, 4)
+
+    def test_server_closed_connection_yields_unknown_without_resend(self):
+        client = platform.PlatformClient(self.gateway.endpoint, CREDENTIAL, connection_mode="reuse")
+        session, _ = platform.open_session(client, DATABASE, "open-1")
+        session.query("SELECT 1", "q-0")
+        before = self.gateway.count("/v1/sql/query")
+        self.gateway.override("/v1/sql/query", lambda body: (_ for _ in ()).throw(RuntimeError("reset")))
+        with self.assertRaises(platform.PlatformFailure) as caught:
+            session.query("SELECT 1", "q-1")
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        self.assertEqual(self.gateway.count("/v1/sql/query"), before + 1)  # 未重发
+        # 会话已按契约停用：后续操作必须显式开新会话（并因此新建连接），不得复用旧会话。
+        self.assertTrue(session.unusable)
+        self.gateway.behaviours.clear()
+        created_before = client.connection_stats()["connections_created"]
+        fresh, _ = platform.open_session(client, DATABASE, "open-2")
+        fresh.query("SELECT 1", "q-2")
+        self.assertEqual(client.connection_stats()["connections_created"], created_before + 1)
+        client.close_connections()
+
+    def test_half_response_is_unknown_and_never_replayed(self):
+        client = platform.PlatformClient(self.gateway.endpoint, CREDENTIAL, connection_mode="reuse")
+        session, _ = platform.open_session(client, DATABASE, "open-1")
+        self.gateway.override("/v1/sql/query", lambda body: "half")
+        before = self.gateway.count("/v1/sql/query")
+        with self.assertRaises(platform.PlatformFailure) as caught:
+            session.query("SELECT 1", "q-1")
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        self.assertEqual(self.gateway.count("/v1/sql/query"), before + 1)
+
+    def test_close_connections_is_explicit_and_idempotent(self):
+        client = platform.PlatformClient(self.gateway.endpoint, CREDENTIAL, connection_mode="reuse")
+        platform.open_session(client, DATABASE, "open-1")
+        client.close_connections()
+        client.close_connections()
+        self.assertEqual(client.connection_stats()["connections_created"], 1)
+
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.gateway = MockGateway(CREDENTIAL)

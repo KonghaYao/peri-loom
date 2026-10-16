@@ -25,6 +25,7 @@ class MockGateway:
         self.closed_sessions = []
         self.rejected_opens = 0
         self._counter = 0
+        self.accepted_connections = 0
         self.requests = []
         self.behaviours = {}
         self.rows_for_sql = {}
@@ -86,9 +87,14 @@ class MockGateway:
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            gateway = self
 
             def log_message(self, *arguments):
                 pass
+
+            def setup(self):
+                Handler.gateway.accepted_connections += 1
+                super().setup()
 
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", "0"))
@@ -97,6 +103,13 @@ class MockGateway:
                     body = json.loads(raw)
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     body = {}
+                if body.get("sql") == "HALF":
+                    self.send_response(200)
+                    self.send_header("Content-Length", "200")
+                    self.end_headers()
+                    self.wfile.write(b"{\"version\":1")
+                    self.close_connection = True
+                    return
                 gateway.requests.append({
                     "path": self.path, "body": body,
                     "authorization": self.headers.get("Authorization"),
