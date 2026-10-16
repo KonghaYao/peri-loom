@@ -413,6 +413,49 @@ func TestReadOnlyVerdictIsNotRemembered(test *testing.T) {
 	}
 }
 
+// A read-only verdict answers for the request that obtained it and for nothing
+// else. The same text comes back committing here, which is the one flip that would
+// lose durable data if the earlier verdict had been remembered: the request must
+// ask the worker again and write the intent the statement needs.
+func TestReadOnlyVerdictFlipsToCommittingKeepsItsIntent(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	var hook *readonlyDescribeHook
+	hook = (&readonlyDescribeHook{verdict: func(sql string) (any, error) {
+		// The first describe proves the text read-only, every describe after it
+		// reports the same text committing.
+		return readonlyVerdict(hook.count() == 1)(sql)
+	}}).install(fixture)
+	store := newGatedStateStore(fixture.state)
+	fixture.gateway.config.State = store
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	opened := operationCommits(test, store)
+
+	proven := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT id FROM records", "request_id": "flip_proven_readonly"})
+	if proven.Code != 200 {
+		test.Fatalf("the proven read-only query failed: %d %s", proven.Code, proven.Body.String())
+	}
+	if commits := operationCommits(test, store) - opened; commits != 1 {
+		test.Fatalf("the proven read-only query did not take the intent-free path: %d commits", commits)
+	}
+	flipped := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT id FROM records", "request_id": "flip_committing"})
+	if flipped.Code != 200 {
+		test.Fatalf("the flipped query failed: %d %s", flipped.Code, flipped.Body.String())
+	}
+	if hook.count() != 2 {
+		test.Fatalf("a read-only verdict answered for the flipped statement: %d describes", hook.count())
+	}
+	if fixture.upstream.count("query") != 2 {
+		test.Fatal("the flipped statement did not reach the worker")
+	}
+	if commits := operationCommits(test, store) - opened; commits != 3 {
+		test.Fatalf("the flipped statement did not register an intent and settle a terminal record: %d commits", commits)
+	}
+	record := operationByRequestID(test, fixture.state, "flip_committing")
+	if record.State != "terminal" || record.BusinessOutcome != "completed" || !record.ExecutionProven {
+		test.Fatalf("the flipped statement kept no settled terminal record: %+v", record.OperationStatus)
+	}
+}
+
 // The committing cache is bounded by two generations, remembers every entry it
 // was asked to, and a dropped entry only costs one describe again.
 func TestCommittingStatementCacheIsBounded(test *testing.T) {
