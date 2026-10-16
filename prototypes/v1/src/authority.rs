@@ -1,6 +1,7 @@
 mod branch;
 mod catalog;
 mod codec;
+mod decode_cache;
 mod migration;
 pub mod ownership;
 mod ownership_view;
@@ -138,7 +139,10 @@ fn decode_head_with_digest(
     namespace: &Namespace,
     bytes: &[u8],
 ) -> Result<(CatalogRoot, String)> {
-    let (mut root, digest) = decode_with_digest(bytes)?;
+    let (root, digest) = decode_with_digest(bytes)?;
+    // The publication path attaches its store to the registries, so it needs a head of its
+    // own; readers share the decoded one.
+    let mut root = (*root).clone();
     root.attach(store.clone(), namespace.clone());
     root.validate_shape()?;
     Ok((root, digest))

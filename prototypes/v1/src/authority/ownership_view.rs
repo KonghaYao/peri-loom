@@ -36,17 +36,20 @@ impl Authority {
             "authority root identity mismatch"
         );
         migration::validate(&root)?;
-        let catalog = root.ownership.context("Fenced ownership missing")?;
+        let catalog = root
+            .ownership
+            .as_ref()
+            .context("Fenced ownership missing")?;
         Ok(OwnershipView {
-            namespace: root.namespace,
-            incarnation: root.incarnation,
+            namespace: root.namespace.clone(),
+            incarnation: root.incarnation.clone(),
             authority_term: catalog.authority_term,
             branches: catalog
                 .branches
-                .into_iter()
+                .iter()
                 .map(|(name, record)| {
-                    let incarnation = root.branches.get(&name).map(|branch| branch.incarnation);
-                    (name, (record, incarnation))
+                    let incarnation = root.branches.get(name).map(|branch| branch.incarnation);
+                    (name.clone(), (record.clone(), incarnation))
                 })
                 .collect(),
         })

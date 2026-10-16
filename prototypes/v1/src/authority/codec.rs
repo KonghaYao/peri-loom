@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -32,11 +34,27 @@ pub(super) fn encode_with_digest(root: &CatalogRoot) -> Result<(Vec<u8>, String)
     Ok((bytes, checksum))
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<CatalogRoot> {
+/// The decoded head, shared rather than copied: a reader that only inspects the head pays
+/// neither the parse nor a deep copy of a document it did not change. A caller that needs
+/// to own one — the publication path attaches the store to the registries — clones it.
+pub(super) fn decode(bytes: &[u8]) -> Result<Arc<CatalogRoot>> {
     Ok(decode_with_digest(bytes)?.0)
 }
 
-pub(super) fn decode_with_digest(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
+pub(super) fn decode_with_digest(bytes: &[u8]) -> Result<(Arc<CatalogRoot>, String)> {
+    // The digest is taken over the bytes as they were read, so a hit hands back the
+    // decode of this document and not of a document that happened to be here before it.
+    let digest = blake3::hash(bytes).to_hex().to_string();
+    if let Some((root, checksum)) = super::decode_cache::held(&digest) {
+        return Ok((root, checksum));
+    }
+    let (root, checksum) = parse(bytes)?;
+    let root = Arc::new(root);
+    super::decode_cache::remember(digest, checksum.clone(), root.clone(), bytes.len());
+    Ok((root, checksum))
+}
+
+fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
     #[cfg(test)]
     let _probe = super::scaling_probe::stage("decode", bytes.len());
     let envelope: Envelope<'_> =

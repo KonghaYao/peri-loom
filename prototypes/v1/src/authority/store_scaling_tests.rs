@@ -280,21 +280,17 @@ fn statement_sample(objects: usize) -> Result<Sample> {
     })
 }
 
-/// Runs the scaling gate again in a process that has no other test's statements in it,
-/// and carries the child's own output into the failure message: the GATE lines and the
+/// Runs one gate again in a process that has no other test's statements in it, and
+/// carries the child's own output into the failure message: the GATE lines and the
 /// assertion that tripped are what a reader needs, and they are printed only on failure.
-fn run_scaling_gate_isolated() -> Result<()> {
+fn run_gate_isolated(test: &str) -> Result<()> {
     let output = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "authority::store_scaling_tests::statement_cost_does_not_scale_with_catalog_size",
-            "--nocapture",
-        ])
+        .args(["--exact", test, "--nocapture"])
         .env("PERI_SCALING_GATE_CHILD", "1")
         .output()?;
     assert!(
         output.status.success(),
-        "the isolated scaling gate failed:\n{}\n{}",
+        "the isolated gate {test} failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -312,7 +308,9 @@ fn run_scaling_gate_isolated() -> Result<()> {
 #[test]
 fn statement_cost_does_not_scale_with_catalog_size() -> Result<()> {
     if std::env::var_os("PERI_SCALING_GATE_CHILD").is_none() {
-        return run_scaling_gate_isolated();
+        return run_gate_isolated(
+            "authority::store_scaling_tests::statement_cost_does_not_scale_with_catalog_size",
+        );
     }
     let small = statement_sample(100)?;
     let large = statement_sample(1_200)?;
@@ -1234,6 +1232,210 @@ fn lease_validation_costs_no_durable_write() -> Result<()> {
     );
     assert!(counts.root_writes == 0, "lease validation wrote the head");
     assert!(counts.gets > 0, "lease validation never read the head");
+    Ok(())
+}
+
+fn percentiles(mut samples: Vec<u128>) -> (u128, u128) {
+    samples.sort_unstable();
+    (samples[samples.len() / 2], samples[samples.len() * 9 / 10])
+}
+
+/// E1: what one lease validation pays, split between the head read, the head decode and
+/// the rest of the check, at three idempotency-ledger sizes. Every validation re-reads
+/// the whole head (`ownership_view`), and the ledger the command receipts live in is the
+/// largest part of that head and only ever grows, so a per-request cost that follows it
+/// is a cost that follows how long the namespace has been running. The decode is reused
+/// across validations of one unchanged head (`decode_cache`), which is why the curve
+/// reports a cold decode — a document this process has not parsed — next to the warm one.
+/// Prints one `LEASE_COST` line per size; asserts the structural facts the split rests
+/// on, never a wall-clock threshold.
+#[test]
+fn lease_validation_cost_curve() -> Result<()> {
+    const ITERATIONS: usize = 201;
+    const COLD_ITERATIONS: usize = 21;
+    for entries in [1usize, 200, 2000] {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Probe::open(directory.path())?);
+        let namespace = Namespace::new("scaling", "leasecost")?;
+        let control = OwnershipAuthority::new(store.clone(), Arc::new(Clock));
+        let root = Authority::open(store.clone(), namespace.clone())?;
+        let intent = GrantIntent {
+            database: DatabaseId::new(namespace.clone(), "main")?,
+            worker_id: "worker".into(),
+            epoch: 1,
+            expected_epoch: 0,
+            lease_id: "lease".into(),
+            ttl_ms: 10_000,
+            role: AccessRole::Writer,
+        };
+        let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+        let lease = control.grant(GrantRequest {
+            intent,
+            nonce,
+            request_id: "grant".into(),
+        })?;
+        let scoped = control.open_session(&lease.binding, AccessRole::Writer)?;
+
+        let mut document = root.snapshot()?.root;
+        let receipt = serde_json::to_value(&lease)?;
+        let catalog = document.ownership.as_mut().context("ownership missing")?;
+        // The grant that produced the binding already left its own receipt behind, so
+        // the ledger is grown to the target size rather than by a fixed number.
+        let additions = entries.saturating_sub(catalog.commands.len());
+        for index in 0..additions {
+            catalog.commands.insert(
+                format!("command-{index:016}"),
+                CommandReceipt {
+                    digest: blake3::hash(format!("payload-{index}").as_bytes())
+                        .to_hex()
+                        .to_string(),
+                    result: receipt.clone(),
+                },
+            );
+        }
+        ensure!(
+            document.ownership.as_ref().unwrap().commands.len() == entries,
+            "the ledger under measurement was not grown: {} vs {entries}",
+            document.ownership.as_ref().unwrap().commands.len()
+        );
+        let encoded = codec::encode(&document)?;
+        let key = namespace.key("authority/root")?;
+        store.put(&key, &encoded, PutCondition::Any)?;
+        let bytes = store.get(&key)?.context("authority root missing")?.bytes;
+        assert_eq!(bytes.len(), encoded.len());
+
+        let mut read = Vec::new();
+        let mut warm = Vec::new();
+        let mut validate = Vec::new();
+        let mut session = Vec::new();
+        for _ in 0..ITERATIONS {
+            let started = Instant::now();
+            store.get(&key)?;
+            read.push(started.elapsed().as_micros());
+            let started = Instant::now();
+            codec::decode(&bytes)?;
+            warm.push(started.elapsed().as_micros());
+            // The production shape: `SessionOperation::Validate` reaches the authority as
+            // this call, which reads the head once.
+            let started = Instant::now();
+            control.validate_lease(&lease.binding, AccessRole::Writer)?;
+            validate.push(started.elapsed().as_micros());
+            // The worker-store shape: a fenced session store validates the binding and
+            // then asks its own branch store, which reads the head again.
+            let started = Instant::now();
+            scoped.validate_session()?;
+            session.push(started.elapsed().as_micros());
+        }
+        // A document this process has not parsed, one revision apart from the last so the
+        // bytes differ: the only way to see what the decode costs without the reuse.
+        let mut cold = Vec::new();
+        let mut cold_bytes = Vec::new();
+        for index in 0..COLD_ITERATIONS {
+            document.revision = 1_000_000 + index as u64;
+            cold_bytes.push(codec::encode(&document)?);
+        }
+        for encoded in &cold_bytes {
+            let started = Instant::now();
+            codec::decode(encoded)?;
+            cold.push(started.elapsed().as_micros());
+        }
+
+        let (read_p50, read_p90) = percentiles(read);
+        let (warm_p50, warm_p90) = percentiles(warm);
+        let (cold_p50, cold_p90) = percentiles(cold);
+        let (validate_p50, validate_p90) = percentiles(validate);
+        let (session_p50, session_p90) = percentiles(session);
+        eprintln!(
+            "LEASE_COST entries={entries} head_bytes={} raw_bytes={} receipt_bytes={} read_p50_us={read_p50} read_p90_us={read_p90} decode_cold_p50_us={cold_p50} decode_cold_p90_us={cold_p90} decode_warm_p50_us={warm_p50} decode_warm_p90_us={warm_p90} validate_p50_us={validate_p50} validate_p90_us={validate_p90} session_p50_us={session_p50} session_p90_us={session_p90}",
+            encoded.len(),
+            serde_json::to_string(&document)?.len(),
+            serde_json::to_vec(&receipt)?.len()
+        );
+        ensure!(
+            validate_p50 > 0 && cold_p50 > 0,
+            "the curve was measured below the clock resolution"
+        );
+    }
+    Ok(())
+}
+
+fn decode_calls(stages: BTreeMap<String, scaling_probe::Sample>) -> usize {
+    stages
+        .iter()
+        .filter(|(path, _)| path.rsplit('/').next() == Some("decode"))
+        .map(|(_, sample)| sample.calls)
+        .sum()
+}
+
+/// Every lease validation re-reads the head, and the worker asks for one per request, so
+/// the decode of an unchanged document is paid once and then reused (`decode_cache`).
+/// Deterministic counters only; the stage probe counts process-wide, so this measures in a
+/// child process of its own like the catalog gate does.
+#[test]
+fn a_head_is_decoded_once_per_document() -> Result<()> {
+    if std::env::var_os("PERI_SCALING_GATE_CHILD").is_none() {
+        return run_gate_isolated(
+            "authority::store_scaling_tests::a_head_is_decoded_once_per_document",
+        );
+    }
+    const VALIDATIONS: usize = 64;
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let namespace = Namespace::new("scaling", "decoded")?;
+    let control = OwnershipAuthority::new(store.clone(), Arc::new(Clock));
+    let root = Authority::open(store.clone(), namespace.clone())?;
+    let intent = GrantIntent {
+        database: DatabaseId::new(namespace.clone(), "main")?,
+        worker_id: "worker".into(),
+        epoch: 1,
+        expected_epoch: 0,
+        lease_id: "lease".into(),
+        ttl_ms: 10_000,
+        role: AccessRole::Writer,
+    };
+    let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+    let lease = control.grant(GrantRequest {
+        intent,
+        nonce,
+        request_id: "grant".into(),
+    })?;
+    let key = namespace.key("authority/root")?;
+    let mut document = root.snapshot()?.root;
+
+    // Warm: the head this process has already decoded. Every later validation of the same
+    // document must serve that decode rather than parse it again.
+    control.validate_lease(&lease.binding, AccessRole::Writer)?;
+    scaling_probe::start();
+    for _ in 0..VALIDATIONS {
+        control.validate_lease(&lease.binding, AccessRole::Writer)?;
+    }
+    let unchanged = decode_calls(scaling_probe::finish());
+    assert_eq!(
+        unchanged, 0,
+        "an unchanged head was decoded {unchanged} times across {VALIDATIONS} validations"
+    );
+
+    // A head that moved is a document this process has not decoded, and the memo must not
+    // answer with the one it replaced: exactly one decode, for the document now in the
+    // store.
+    document.revision += 1;
+    store.put(&key, &codec::encode(&document)?, PutCondition::Any)?;
+    scaling_probe::start();
+    for _ in 0..VALIDATIONS {
+        control.validate_lease(&lease.binding, AccessRole::Writer)?;
+    }
+    let changed = decode_calls(scaling_probe::finish());
+    assert_eq!(
+        changed, 1,
+        "a moved head was decoded {changed} times across {VALIDATIONS} validations"
+    );
+
+    // A document that does not decode is reported as one: the memo holds decodes, never a
+    // substitute for reading the store.
+    store.put(&key, b"{ not an envelope", PutCondition::Any)?;
+    assert!(control
+        .validate_lease(&lease.binding, AccessRole::Writer)
+        .is_err());
     Ok(())
 }
 
