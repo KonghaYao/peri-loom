@@ -197,7 +197,7 @@ impl Authority {
 
     pub fn snapshot(&self) -> Result<RootSnapshot> {
         #[cfg(test)]
-        let _probe = scaling_probe::stage_of(&self.store, "snapshot", 0);
+        let _probe = scaling_probe::stage("snapshot", 0);
         self.check(MutationStage::Read)?;
         let key = self.namespace.key("authority/root")?;
         let object = self
@@ -294,7 +294,7 @@ impl Authority {
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
         #[cfg(test)]
-        let _probe = scaling_probe::stage_of(&self.store, "transact", 0);
+        let _probe = scaling_probe::stage("transact", 0);
         let _reads = request_reads::Scope::enter();
         let operation = unique_id()?;
         for _ in 0..128 {

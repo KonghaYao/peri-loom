@@ -16,7 +16,7 @@ pub(super) struct OwnershipView {
 impl Authority {
     pub(super) fn ownership_view(&self) -> Result<OwnershipView> {
         #[cfg(test)]
-        let _probe = super::scaling_probe::stage_of(&self.store, "ownership_view", 0);
+        let _probe = super::scaling_probe::stage("ownership_view", 0);
         self.check(MutationStage::Read)?;
         let object = self
             .store

@@ -170,7 +170,7 @@ impl Authority {
     /// paths pay for this once; statements never do.
     pub(super) fn verify_deep(&self, root: &CatalogRoot) -> Result<()> {
         #[cfg(test)]
-        let _probe = super::scaling_probe::stage_of(&self.store, "verify_deep", 0);
+        let _probe = super::scaling_probe::stage("verify_deep", 0);
         self.validate_head(root)?;
         for (blob, entry) in root.blobs.entries()? {
             validate_entry(&entry)?;
