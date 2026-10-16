@@ -1,19 +1,24 @@
 use anyhow::Result;
 use peri_loom_v1::object_store::{
-    LocalObjectStore, MemoryObjectStore, ObjectStore, PreconditionFailed, PutCondition,
+    GroupWrite, LocalObjectStore, MemoryObjectStore, ObjectStore, PreconditionFailed, PutCondition,
     S3ObjectStore,
 };
+use sha2::{Digest, Sha256};
 use std::{
-    net::TcpListener,
+    io::Write,
+    net::{TcpListener, TcpStream},
     process::Command,
-    sync::{Arc, Barrier},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier, Mutex,
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[path = "../src/object_store/http_mock.rs"]
 mod http_mock;
-use http_mock::{config, mock, read_request, reply, verify_signature};
+use http_mock::{config, mock, mock_with_retries, read_request, reply, verify_signature};
 
 #[path = "../src/object_store/error_tests.rs"]
 mod error_tests;
@@ -323,6 +328,423 @@ fn s3_timeout_and_secret_redaction() -> Result<()> {
     let error = S3ObjectStore::new(settings)?.get("db/HEAD").unwrap_err();
     assert!(error.to_string().contains("timeout"));
     assert!(!format!("{error:?}").contains("never-log-this-secret"));
+    worker.join().unwrap();
+    Ok(())
+}
+
+/// Accept one mock connection, giving the client `idle` to open it first. Tests use it
+/// to bound a server thread by observed traffic instead of guessing a request count.
+fn accept_with_timeout(listener: &TcpListener, idle: Duration) -> Option<TcpStream> {
+    let deadline = Instant::now() + idle;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("mock accept failed: {error}"),
+        }
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn group_bodies(count: usize) -> Vec<GroupWrite> {
+    (0..count)
+        .map(|index| {
+            GroupWrite::absent(
+                format!("group/body/{index}"),
+                format!("body-{index}").into_bytes(),
+            )
+        })
+        .collect()
+}
+
+fn group_root() -> GroupWrite {
+    GroupWrite::new(
+        "group/root",
+        b"root-body".to_vec(),
+        PutCondition::Match("\"old-commit\"".into()),
+    )
+}
+
+#[test]
+fn s3_group_uploads_immutable_bodies_with_bounded_parallelism() -> Result<()> {
+    const BODIES: usize = 9;
+    const LIMIT: usize = 4;
+    let inflight = Arc::new(AtomicUsize::new(0));
+    let max_inflight = Arc::new(AtomicUsize::new(0));
+    let bodies_acked = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server = (
+        inflight.clone(),
+        max_inflight.clone(),
+        bodies_acked.clone(),
+        seen.clone(),
+    );
+    let (store, worker) = mock(move |listener| {
+        let (inflight, max_inflight, bodies_acked, seen) = server;
+        listener.set_nonblocking(true).unwrap();
+        let mut handlers = Vec::new();
+        while handlers.len() < BODIES + 1 {
+            let Some(stream) = accept_with_timeout(&listener, Duration::from_secs(5)) else {
+                break;
+            };
+            let inflight = inflight.clone();
+            let max_inflight = max_inflight.clone();
+            let bodies_acked = bodies_acked.clone();
+            let seen = seen.clone();
+            handlers.push(thread::spawn(move || {
+                let active = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_inflight.fetch_max(active, Ordering::SeqCst);
+                let mut stream = stream;
+                let request = read_request(&mut stream);
+                verify_signature(&request);
+                assert_eq!(request.method, "PUT");
+                seen.lock().unwrap().push(request.target.clone());
+                if request.target == "/bucket/group/root" {
+                    assert_eq!(request.headers["if-match"], "\"old-commit\"");
+                    assert_eq!(request.body, b"root-body");
+                    // Every body was confirmed before the client could send this CAS.
+                    assert_eq!(bodies_acked.load(Ordering::SeqCst), BODIES);
+                    inflight.fetch_sub(1, Ordering::SeqCst);
+                    reply(&mut stream, 200, &[("ETag", "\"root\"")], b"");
+                    return;
+                }
+                let index: usize = request
+                    .target
+                    .strip_prefix("/bucket/group/body/")
+                    .expect("unexpected group target")
+                    .parse()
+                    .expect("invalid body index");
+                let body = format!("body-{index}");
+                assert_eq!(request.body, body.as_bytes());
+                assert_eq!(request.headers["if-none-match"], "*");
+                assert_eq!(
+                    request.headers["x-amz-meta-peri-sha256"],
+                    sha256_hex(body.as_bytes())
+                );
+                // Hold this connection until the batch of bodies the client still owes is
+                // connected. A serialized upload never gets there, so the peak below is
+                // exactly the client's own bound and not a timing artefact. The expected
+                // batch follows from the bodies already answered, not from the order in
+                // which these handler threads happened to start.
+                let expected =
+                    LIMIT.min(BODIES.saturating_sub(bodies_acked.load(Ordering::SeqCst)));
+                // Strictly below the client's own request timeout, so a serialized
+                // implementation fails on the peak assertion instead of on a timeout.
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while inflight.load(Ordering::SeqCst) < expected && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                // Decrement before replying: the next connection of this worker can only
+                // start after the reply reaches it, so the peak stays a real bound.
+                inflight.fetch_sub(1, Ordering::SeqCst);
+                bodies_acked.fetch_add(1, Ordering::SeqCst);
+                let etag = format!("\"body-{index}\"");
+                reply(&mut stream, 200, &[("ETag", &etag)], b"");
+            }));
+        }
+        for handler in handlers {
+            handler.join().unwrap();
+        }
+        assert_eq!(max_inflight.load(Ordering::SeqCst), LIMIT);
+    });
+    let mut writes = group_bodies(BODIES);
+    writes.push(group_root());
+    let etags = store.put_group(&writes)?;
+    let expected: Vec<String> = (0..BODIES)
+        .map(|index| format!("\"body-{index}\""))
+        .chain([String::from("\"root\"")])
+        .collect();
+    assert_eq!(etags, expected);
+    assert!(store.put_group(&[])?.is_empty());
+    worker.join().unwrap();
+    let mut targets = seen.lock().unwrap().clone();
+    targets.sort();
+    targets.dedup();
+    assert_eq!(targets.len(), BODIES + 1);
+    Ok(())
+}
+
+#[test]
+fn s3_group_dependent_bodies_keep_serial_order() -> Result<()> {
+    let observed = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let server = observed.clone();
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let observed = server;
+        listener.set_nonblocking(true).unwrap();
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            observed.lock().unwrap().push((
+                request.target.clone(),
+                String::from_utf8_lossy(&request.body).into_owned(),
+            ));
+            let etag = format!("\"{}\"", String::from_utf8_lossy(&request.body));
+            match request.target.as_str() {
+                "/bucket/group/dup" => {
+                    assert_eq!(request.headers["if-none-match"], "*");
+                    reply(&mut stream, 200, &[("ETag", &etag)], b"");
+                }
+                "/bucket/group/cas" => {
+                    assert_eq!(request.headers["if-match"], "\"v0\"");
+                    reply(
+                        &mut stream,
+                        412,
+                        &[],
+                        b"<Error><Code>PreconditionFailed</Code></Error>",
+                    );
+                }
+                "/bucket/group/root" => {
+                    assert_eq!(request.headers["if-match"], "\"old\"");
+                    reply(&mut stream, 200, &[("ETag", "\"root\"")], b"");
+                }
+                other => panic!("unexpected group target {other}"),
+            }
+        }
+    });
+    // A repeated key is order-sensitive even when both writes are immutable bodies: the
+    // adapter must not reorder it, and the etags stay aligned with `writes`.
+    let writes = [
+        GroupWrite::absent("group/dup", b"first".to_vec()),
+        GroupWrite::absent("group/dup", b"second".to_vec()),
+        GroupWrite::new(
+            "group/root",
+            b"root-body".to_vec(),
+            PutCondition::Match("\"old\"".into()),
+        ),
+    ];
+    let etags = store.put_group(&writes)?;
+    assert_eq!(etags, vec!["\"first\"", "\"second\"", "\"root\""]);
+    // A conditional body is not independent: the serial path stops at it, so the later
+    // body and the visible write are never attempted.
+    let writes = [
+        GroupWrite::new(
+            "group/cas",
+            b"cas-body".to_vec(),
+            PutCondition::Match("\"v0\"".into()),
+        ),
+        GroupWrite::absent("group/body/0", b"body-0".to_vec()),
+        GroupWrite::new(
+            "group/root",
+            b"root-body".to_vec(),
+            PutCondition::Match("\"old\"".into()),
+        ),
+    ];
+    let error = store.put_group(&writes).unwrap_err();
+    assert!(error.is::<PreconditionFailed>(), "{error}");
+    worker.join().unwrap();
+    let observed = observed.lock().unwrap().clone();
+    let targets: Vec<&str> = observed.iter().map(|(target, _)| target.as_str()).collect();
+    assert_eq!(
+        targets,
+        [
+            "/bucket/group/dup",
+            "/bucket/group/dup",
+            "/bucket/group/root",
+            "/bucket/group/cas",
+        ],
+        "{observed:?}"
+    );
+    let bodies: Vec<&str> = observed.iter().map(|(_, body)| body.as_str()).collect();
+    assert_eq!(
+        bodies,
+        ["first", "second", "root-body", "cas-body"],
+        "{observed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn s3_group_root_condition_conflict_is_typed_and_not_atomic() -> Result<()> {
+    const BODIES: usize = 3;
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server = observed.clone();
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let observed = server;
+        listener.set_nonblocking(true).unwrap();
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            observed.lock().unwrap().push(request.target.clone());
+            if request.target == "/bucket/group/root" {
+                assert_eq!(request.headers["if-match"], "\"old-commit\"");
+                reply(
+                    &mut stream,
+                    412,
+                    &[],
+                    b"<Error><Code>PreconditionFailed</Code></Error>",
+                );
+            } else {
+                assert!(request.target.starts_with("/bucket/group/body/"));
+                reply(&mut stream, 200, &[("ETag", "\"body\"")], b"");
+            }
+        }
+    });
+    // The adapter never claims group atomicity on S3, and a caller must be able to keep
+    // relying on that declaration.
+    assert!(!store.group_rejection_publishes_nothing());
+    let mut writes = group_bodies(BODIES);
+    writes.push(group_root());
+    let error = store.put_group(&writes).unwrap_err();
+    assert!(error.is::<PreconditionFailed>(), "{error}");
+    worker.join().unwrap();
+    let observed = observed.lock().unwrap().clone();
+    // Every body was attempted exactly once before the CAS was refused: a rejected group
+    // leaves the refused CAS unpublished, not untouched bodies.
+    assert_eq!(observed.len(), BODIES + 1, "{observed:?}");
+    assert_eq!(
+        observed.last().map(String::as_str),
+        Some("/bucket/group/root")
+    );
+    Ok(())
+}
+
+#[test]
+fn s3_group_single_write_is_one_conditional_put() -> Result<()> {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server = requests.clone();
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let requests = server;
+        listener.set_nonblocking(true).unwrap();
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            requests.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.target, "/bucket/group/root");
+            assert_eq!(request.headers["if-match"], "\"old-commit\"");
+            assert_eq!(request.body, b"root-body");
+            reply(&mut stream, 200, &[("ETag", "\"root\"")], b"");
+        }
+    });
+    let etags = store.put_group(&[group_root()])?;
+    assert_eq!(etags, vec!["\"root\""]);
+    worker.join().unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
+fn s3_group_body_failure_never_publishes_root() -> Result<()> {
+    const BODIES: usize = 3;
+    let attempts = Arc::new(Mutex::new(Vec::<String>::new()));
+    let roots = Arc::new(AtomicUsize::new(0));
+    let server = (attempts.clone(), roots.clone());
+    // No retries: a repeated key would be visible as an extra connection below.
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let (attempts, roots) = server;
+        listener.set_nonblocking(true).unwrap();
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            if request.target == "/bucket/group/root" {
+                // The mock accepts a root publish; only the client's own fail-closed
+                // behaviour keeps an unconfirmed body out of the group.
+                roots.fetch_add(1, Ordering::SeqCst);
+                reply(&mut stream, 200, &[("ETag", "\"root\"")], b"");
+                continue;
+            }
+            assert!(request.target.starts_with("/bucket/group/body/"));
+            assert_eq!(request.headers["if-none-match"], "*");
+            let first = {
+                let mut attempts = attempts.lock().unwrap();
+                let first = attempts.is_empty();
+                attempts.push(request.target.clone());
+                first
+            };
+            if first {
+                reply(
+                    &mut stream,
+                    500,
+                    &[],
+                    b"<Error><Code>InternalError</Code></Error>",
+                );
+            } else {
+                reply(&mut stream, 200, &[("ETag", "\"body\"")], b"");
+            }
+        }
+        assert_eq!(roots.load(Ordering::SeqCst), 0);
+    });
+    let mut writes = group_bodies(BODIES);
+    writes.push(group_root());
+    let error = store.put_group(&writes).unwrap_err();
+    assert!(error.to_string().contains("500"), "{error}");
+    let recorded: Vec<String> = attempts.lock().unwrap().clone();
+    // `retries == 0` and one write per key: more attempts would mean the group issued a
+    // write the configured policy never allowed. Fewer is the intended early stop.
+    assert!(!recorded.is_empty());
+    assert!(recorded.len() <= BODIES, "{recorded:?}");
+    let mut distinct = recorded.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), recorded.len(), "{recorded:?}");
+    worker.join().unwrap();
+    Ok(())
+}
+
+#[test]
+fn s3_group_unknown_body_response_fails_closed() -> Result<()> {
+    const BODIES: usize = 3;
+    let attempts = Arc::new(Mutex::new(Vec::<String>::new()));
+    let roots = Arc::new(AtomicUsize::new(0));
+    let server = (attempts.clone(), roots.clone());
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let (attempts, roots) = server;
+        listener.set_nonblocking(true).unwrap();
+        let mut truncated = false;
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            if request.target == "/bucket/group/root" {
+                roots.fetch_add(1, Ordering::SeqCst);
+                reply(&mut stream, 200, &[("ETag", "\"root\"")], b"");
+                continue;
+            }
+            attempts.lock().unwrap().push(request.target.clone());
+            if !truncated {
+                truncated = true;
+                // Partial reply: the headers promise 64 bytes and the socket delivers 7
+                // before closing, so the body read is an Unknown outcome, not a success.
+                write!(
+                    stream,
+                    "HTTP/1.1 200 Mock\r\nContent-Length: 64\r\nConnection: close\r\n\r\npartial"
+                )
+                .unwrap();
+                drop(stream);
+                continue;
+            }
+            reply(&mut stream, 200, &[("ETag", "\"body\"")], b"");
+        }
+        assert_eq!(roots.load(Ordering::SeqCst), 0);
+    });
+    let mut writes = group_bodies(BODIES);
+    writes.push(group_root());
+    let error = store.put_group(&writes).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("network") || message.contains("timeout"),
+        "{message}"
+    );
+    let recorded: Vec<String> = attempts.lock().unwrap().clone();
+    assert!(!recorded.is_empty());
+    assert!(recorded.len() <= BODIES, "{recorded:?}");
+    let mut distinct = recorded.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), recorded.len(), "{recorded:?}");
     worker.join().unwrap();
     Ok(())
 }

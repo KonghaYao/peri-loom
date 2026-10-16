@@ -1,5 +1,5 @@
 use super::{
-    signing, transport::Response, validate_key, validate_prefix, xml, ObjectStore,
+    signing, transport::Response, validate_key, validate_prefix, xml, GroupWrite, ObjectStore,
     PreconditionFailed, PutCondition, StoredObject,
 };
 use anyhow::{anyhow, ensure, Result};
@@ -8,8 +8,21 @@ use reqwest::{blocking::Client, header::HeaderValue, Method, StatusCode, Url};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex,
+    },
+    thread,
     time::Duration,
 };
+
+/// Upper bound on concurrent `put` calls issued for one `put_group` body set.
+///
+/// Deliberately conservative: the group bodies are already-written payloads waiting on
+/// network round trips, so a handful of connections hides most of the RTT without
+/// turning one commit into a burst of sockets. The whole group is bounded by this, no
+/// matter how many writes it carries.
+const GROUP_UPLOAD_PARALLELISM: usize = 4;
 
 #[derive(Clone)]
 pub struct S3Config {
@@ -221,6 +234,108 @@ impl ObjectStore for S3ObjectStore {
         )?)?)
     }
 
+    /// Upload the immutable bodies concurrently, then publish the final write alone.
+    ///
+    /// S3 has no cross-object conditional write, so a group cannot become one atomic
+    /// request. This adapter therefore executes the group itself: the writes before the
+    /// last one go out concurrently — bounded by [`GROUP_UPLOAD_PARALLELISM`], and only
+    /// when [`group_bodies_are_independent`] proves they cannot change each other's
+    /// outcome — and the final write is then issued by this thread, after every body has
+    /// been confirmed. The caller's ordering contract ("the write that makes the group
+    /// visible comes last") is what that serialized final step upholds: the group's
+    /// visible write never goes out while a body it could reference is unconfirmed.
+    ///
+    /// Failures stay fail-closed: a body error stops handing out new work, joins the
+    /// bodies already dispatched, and returns the error, so an Unknown network outcome is
+    /// never reported as success and the final write is not attempted. On error an
+    /// arbitrary subset of the independent bodies may have landed; they are
+    /// content-addressed and idempotent, and
+    /// [`ObjectStore::group_rejection_publishes_nothing`] stays `false` because a rejected
+    /// group does not prove that nothing became visible. Nothing is retried beyond
+    /// `S3Config::retries`.
+    fn put_group(&self, writes: &[GroupWrite]) -> Result<Vec<String>> {
+        let Some((root, bodies)) = writes.split_last() else {
+            return Ok(Vec::new());
+        };
+        if bodies.is_empty() {
+            return Ok(vec![self.put(
+                &root.key,
+                &root.bytes,
+                root.condition.clone(),
+            )?]);
+        }
+        if !group_bodies_are_independent(root, bodies) {
+            // A conditional body, a repeated key, or a body sharing the CAS key can make
+            // one write's outcome depend on another. Those groups keep the trait's
+            // serial, order-preserving behaviour instead of a reordering nobody checked.
+            return writes
+                .iter()
+                .map(|write| self.put(&write.key, &write.bytes, write.condition.clone()))
+                .collect();
+        }
+
+        let next = AtomicUsize::new(0);
+        let failed = AtomicBool::new(false);
+        let errors = Mutex::new(None);
+        let etags = Mutex::new(vec![None; bodies.len()]);
+        let worker_count = bodies.len().min(GROUP_UPLOAD_PARALLELISM);
+
+        thread::scope(|scope| {
+            let mut workers = Vec::with_capacity(worker_count);
+            for _ in 0..worker_count {
+                workers.push(scope.spawn(|| -> Result<()> {
+                    loop {
+                        if failed.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
+                        let index = next.fetch_add(1, Ordering::AcqRel);
+                        let Some(write) = bodies.get(index) else {
+                            return Ok(());
+                        };
+                        match self.put(&write.key, &write.bytes, write.condition.clone()) {
+                            Ok(etag) => {
+                                etags.lock().expect("S3 group etag lock poisoned")[index] =
+                                    Some(etag);
+                            }
+                            Err(error) => {
+                                failed.store(true, Ordering::Release);
+                                let mut first =
+                                    errors.lock().expect("S3 group error lock poisoned");
+                                if first.is_none() {
+                                    *first = Some(error);
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
+                }));
+            }
+            for worker in workers {
+                if worker.join().is_err() {
+                    failed.store(true, Ordering::Release);
+                    let mut first = errors.lock().expect("S3 group error lock poisoned");
+                    if first.is_none() {
+                        *first = Some(anyhow!("S3 group upload worker panicked"));
+                    }
+                }
+            }
+        });
+
+        if let Some(error) = errors.lock().expect("S3 group error lock poisoned").take() {
+            return Err(error);
+        }
+        let body_etags = etags
+            .into_inner()
+            .expect("S3 group etag lock poisoned")
+            .into_iter()
+            .map(|etag| etag.expect("successful S3 group upload missing ETag"))
+            .collect::<Vec<_>>();
+        let root_etag = self.put(&root.key, &root.bytes, root.condition.clone())?;
+        let mut result = body_etags;
+        result.push(root_etag);
+        Ok(result)
+    }
+
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
         validate_key(key)?;
         let mut headers = BTreeMap::new();
@@ -283,6 +398,29 @@ impl ObjectStore for S3ObjectStore {
         }
         Ok(keys.into_iter().collect())
     }
+}
+
+/// Whether the writes before a group's final one may be published concurrently.
+///
+/// The group contract expects every earlier write to be an immutable, content-addressed
+/// body that is harmless to publish on its own, but a store adapter cannot verify that
+/// from key and bytes alone. What it *can* check is that no body can change another
+/// write's outcome: a body carries no condition that depends on the object state (`Any` /
+/// `Absent` only), no two writes of the group target the same key, and no body targets
+/// the key the final write owns. Groups that fail the check stay on the serial path, so
+/// no caller that relied on write order can be reordered by this adapter.
+fn group_bodies_are_independent(root: &GroupWrite, bodies: &[GroupWrite]) -> bool {
+    let mut keys = BTreeSet::new();
+    keys.insert(root.key.as_str());
+    for write in bodies {
+        if !matches!(write.condition, PutCondition::Any | PutCondition::Absent) {
+            return false;
+        }
+        if !keys.insert(write.key.as_str()) {
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_etag(etag: &str) -> Result<()> {

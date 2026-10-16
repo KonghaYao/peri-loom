@@ -83,10 +83,19 @@ pub(super) fn config(endpoint: String) -> S3Config {
 pub(super) fn mock(
     handler: impl FnOnce(TcpListener) + Send + 'static,
 ) -> (S3ObjectStore, thread::JoinHandle<()>) {
+    mock_with_retries(1, handler)
+}
+
+pub(super) fn mock_with_retries(
+    retries: usize,
+    handler: impl FnOnce(TcpListener) + Send + 'static,
+) -> (S3ObjectStore, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let mut config = config(endpoint);
+    config.retries = retries;
     let worker = thread::spawn(move || handler(listener));
-    (S3ObjectStore::new(config(endpoint)).unwrap(), worker)
+    (S3ObjectStore::new(config).unwrap(), worker)
 }
 
 pub(super) fn verify_signature(request: &Request) {
