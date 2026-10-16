@@ -239,14 +239,19 @@ mod tests {
         });
         let started = Instant::now();
         acceptor.park()?;
-        assert!(connected.load(Ordering::SeqCst) == 1);
+        let parked = started.elapsed();
+        // The kernel queues the connection and reports the listener readable before
+        // the connector thread runs the increment after `connect`, so the parked
+        // path may only assert on what is settled by then. Take and join first; the
+        // assertions below then read state no concurrent thread can still change.
         let stream = acceptor.take()?;
-        assert!(stream.is_some(), "queued connection was not accepted");
-        assert!(
-            started.elapsed() < SUPERVISION_PERIOD,
-            "accept did not happen on readiness"
-        );
         drop(connector.join().expect("connector thread"));
+        assert!(
+            parked < SUPERVISION_PERIOD,
+            "accept did not happen on readiness: {parked:?}"
+        );
+        assert!(stream.is_some(), "queued connection was not accepted");
+        assert_eq!(connected.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
