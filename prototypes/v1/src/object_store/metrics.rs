@@ -130,7 +130,7 @@ mod group_tests {
         let bars = crate::object_store::local::barrier_count() - before;
 
         assert_eq!(etags.len(), 6);
-        assert_eq!(bars, 7, "group must reach the store as one group");
+        assert_eq!(bars, 1, "group must reach the store as one durability group");
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.put.total, 6, "each write still counted");
         assert_eq!(

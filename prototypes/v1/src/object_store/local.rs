@@ -35,10 +35,11 @@ impl LocalObjectStore {
             root: root.canonicalize()?,
         };
         let _guard = store.lock()?;
-        sync_directory(&store.root)?;
+        flush_directory(&store.root)?;
         if let Some(parent) = store.root.parent() {
-            sync_directory(parent)?;
+            flush_directory(parent)?;
         }
+        publish_directory_barrier(&store.root)?;
         Ok(store)
     }
 
@@ -98,9 +99,9 @@ impl LocalObjectStore {
 }
 
 thread_local! {
-    /// Durability barriers issued by the current thread. `sync_file` and
-    /// `sync_directory` are the only paths that reach the filesystem with a
-    /// durability request, so this counter is the barrier count a commit pays.
+    /// Hardware barriers issued by the current thread. `publish_barrier` is the only
+    /// path that asks the platform to push the device cache to media, so this counter
+    /// is the barrier count a publication pays.
     static BARRIERS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -116,15 +117,73 @@ fn note_barrier() {
     BARRIERS.with(|count| count.set(count.get().saturating_add(1)));
 }
 
-fn sync_file(file: &File) -> std::io::Result<()> {
-    note_barrier();
-    file.sync_all()
+/// Bytes reached the device. Cheap, and never a media flush: the publication still
+/// needs its `publish_barrier`.
+fn flush_file(file: &File) -> std::io::Result<()> {
+    barrier::flush(file)
 }
 
-fn sync_directory(path: &Path) -> Result<()> {
-    note_barrier();
-    File::open(path)?.sync_all()?;
+fn flush_directory(path: &Path) -> Result<()> {
+    barrier::flush(&File::open(path)?)?;
     Ok(())
+}
+
+/// The one hardware barrier a publication pays, after every write and rename it
+/// flushed. `F_FULLFSYNC` is device-wide on macOS, so one call covers the whole
+/// publication: without this split a group of N objects pays N media flushes, which
+/// is what made one committing statement cost tens of milliseconds of pure barrier.
+fn publish_barrier(file: &File) -> std::io::Result<()> {
+    note_barrier();
+    barrier::durable(file)
+}
+
+fn publish_directory_barrier(path: &Path) -> Result<()> {
+    let directory = File::open(path)?;
+    publish_barrier(&directory)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+mod barrier {
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::AsRawFd;
+
+    /// `File::sync_all` and `File::sync_data` both reach `F_FULLFSYNC` on macOS, so a
+    /// group of writes pays one media flush per object. A publication wants the opposite
+    /// order instead: cheap `fsync(2)` per object to order bytes into the device cache,
+    /// then one device-wide flush at the end.
+    pub(super) fn flush(file: &File) -> io::Result<()> {
+        if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    pub(super) fn durable(file: &File) -> io::Result<()> {
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            Ok(())
+        } else {
+            // A volume that cannot flush its own cache still needs the write ordered.
+            flush(file)
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod barrier {
+    use std::fs::File;
+    use std::io;
+
+    /// `fsync` is already the media barrier on these platforms.
+    pub(super) fn flush(file: &File) -> io::Result<()> {
+        file.sync_all()
+    }
+
+    pub(super) fn durable(_file: &File) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn reject_symlink(path: &Path) -> Result<()> {
@@ -189,9 +248,10 @@ impl ObjectStore for LocalObjectStore {
                 );
             }
             file.write_all(&encoded)?;
-            sync_file(&file)?;
+            flush_file(&file)?;
             fs::rename(&temporary, self.path(key))?;
-            sync_directory(&self.root)?;
+            flush_directory(&self.root)?;
+            publish_barrier(&file)?;
             Ok(())
         })();
         if result.is_err() {
@@ -209,12 +269,12 @@ impl ObjectStore for LocalObjectStore {
         Ok(etag)
     }
 
-    /// Group publish with one directory barrier for the whole group.
+    /// Group publish that reaches media with one barrier.
     ///
-    /// Each body still syncs its own data (the group must be durable, not just
-    /// visible), but the rename step costs a single directory sync instead of
-    /// one per write. Barrier count: `writes.len() + 1` instead of
-    /// `2 * writes.len()`.
+    /// Each body flushes its own data (the group must be durable, not just visible) and
+    /// the rename step costs a single directory flush, but the media barrier is paid
+    /// once for the whole group: `F_FULLFSYNC` is device-wide, so it covers every body
+    /// and rename the group already flushed. Barrier count: 1, whatever the group size.
     fn put_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<String>> {
         if writes.is_empty() {
             return Ok(Vec::new());
@@ -252,18 +312,21 @@ impl ObjectStore for LocalObjectStore {
                     .write(true)
                     .create_new(true)
                     .open(&temporary)?;
-                staged.push((temporary, self.path(&write.key)));
                 file.write_all(&serde_json::to_vec(&envelope)?)?;
-                sync_file(&file)?;
+                flush_file(&file)?;
+                staged.push((temporary, self.path(&write.key), file));
             }
-            for (temporary, target) in &staged {
+            for (temporary, target, _file) in &staged {
                 fs::rename(temporary, target)?;
             }
-            sync_directory(&self.root)?;
+            flush_directory(&self.root)?;
+            if let Some((_temporary, _target, file)) = staged.first() {
+                publish_barrier(file)?;
+            }
             Ok(())
         })();
         if result.is_err() {
-            for (temporary, _) in &staged {
+            for (temporary, _, _file) in &staged {
                 let _ = fs::remove_file(temporary);
             }
         }
@@ -281,7 +344,8 @@ impl ObjectStore for LocalObjectStore {
             ensure!(current.etag == expected, PreconditionFailed);
         }
         fs::remove_file(self.path(key))?;
-        sync_directory(&self.root)?;
+        flush_directory(&self.root)?;
+        publish_directory_barrier(&self.root)?;
         Ok(())
     }
 
@@ -320,7 +384,7 @@ mod group_tests {
     use crate::object_store::GroupWrite;
 
     #[test]
-    fn group_publish_pays_one_directory_barrier_for_the_whole_group() {
+    fn group_publish_pays_one_media_barrier_for_the_whole_group() {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
         let writes: Vec<GroupWrite> = (0..6)
@@ -344,8 +408,8 @@ mod group_tests {
         let sequential = barrier_count() - before;
 
         assert_eq!(etags.len(), 6);
-        assert_eq!(grouped, 7, "6 body syncs + 1 directory sync");
-        assert_eq!(sequential, 12, "2 barriers per write");
+        assert_eq!(grouped, 1, "the whole group reaches media with one barrier");
+        assert_eq!(sequential, 6, "one barrier per single write");
         for (write, etag) in writes.iter().zip(etags) {
             let stored = store.get(&write.key).unwrap().unwrap();
             assert_eq!(stored.bytes, write.bytes);
