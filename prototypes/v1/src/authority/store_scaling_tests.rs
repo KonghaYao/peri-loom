@@ -1444,10 +1444,44 @@ struct CommitSample {
     scanned_bytes: u64,
     copied_bytes: u64,
     scan_calls: u64,
+    /// T0 group A: the same commits read through the opt-in workload counters, which is the
+    /// only view that also carries the WAL bytes and the commit-position resolution.
+    work: crate::work_metrics::WalWorkload,
     gets: usize,
     puts: usize,
     groups: usize,
     page_gets: usize,
+}
+
+/// Workload-counter deltas for one sample. Both sides are `None` while the switch is off, so
+/// an unmeasured run prints zeros instead of a wrong number.
+fn work_delta(
+    before: Option<crate::work_metrics::WorkMetricsSnapshot>,
+    after: Option<crate::work_metrics::WorkMetricsSnapshot>,
+) -> crate::work_metrics::WalWorkload {
+    let (before, after) = (before.unwrap_or_default(), after.unwrap_or_default());
+    let (before, after) = (before.wal_workload, after.wal_workload);
+    let counters = |before: &std::collections::BTreeMap<&'static str, u64>,
+                    after: &std::collections::BTreeMap<&'static str, u64>| {
+        after
+            .iter()
+            .map(|(name, value)| (*name, value - before.get(name).copied().unwrap_or(0)))
+            .collect()
+    };
+    crate::work_metrics::WalWorkload {
+        append_calls: after.append_calls - before.append_calls,
+        native_bytes: after.native_bytes - before.native_bytes,
+        delta_bytes: after.delta_bytes - before.delta_bytes,
+        position_frames: after.position_frames - before.position_frames,
+        scan_calls: after.scan_calls - before.scan_calls,
+        scanned_bytes: after.scanned_bytes - before.scanned_bytes,
+        scanned_frames: after.scanned_frames - before.scanned_frames,
+        copied_bytes: after.copied_bytes - before.copied_bytes,
+        scan_ns: after.scan_ns - before.scan_ns,
+        scan_resets: counters(&before.scan_resets, &after.scan_resets),
+        scan_stops: counters(&before.scan_stops, &after.scan_stops),
+        append_position: counters(&before.append_position, &after.append_position),
+    }
 }
 
 fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Result<CommitSample> {
@@ -1461,6 +1495,7 @@ fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Resu
     arm.store.reset();
     crate::recovery::reset_recovery_observations();
     let before = crate::recovery::recovery_observations();
+    let work_before = crate::work_metrics::snapshot();
     let started = Instant::now();
     for _ in 0..commits {
         arm.commit_one()?;
@@ -1468,12 +1503,14 @@ fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Resu
     let wall_us = started.elapsed().as_micros();
     let counters = arm.store.snapshot();
     let observed = crate::recovery::recovery_observations();
+    let work = work_delta(work_before, crate::work_metrics::snapshot());
     Ok(CommitSample {
         wall_us,
         scan_us: u128::from((observed.scan_nanos - before.scan_nanos) / 1_000),
         scanned_bytes: observed.scanned_bytes - before.scanned_bytes,
         copied_bytes: observed.copied_bytes - before.copied_bytes,
         scan_calls: observed.scan_calls - before.scan_calls,
+        work,
         gets: counters.gets,
         puts: counters.puts,
         groups: counters.groups,
@@ -1508,7 +1545,11 @@ fn commit_incremental_scan_paired_curve() -> Result<()> {
                 eprintln!(
                     "COMMIT_BENCH tier_rows={tier} arm={} round={round} commits={commits} \
                      wall_us={} per_commit_us={} scan_us={} scanned_bytes={} copied_bytes={} \
-                     scan_calls={} gets={} puts={} groups={} page_gets={}",
+                     scan_calls={} gets={} puts={} groups={} page_gets={} \
+                     work_appends={} work_native_bytes={} work_delta_bytes={} \
+                     work_scanned_frames={} work_position_reused={} work_position_fallback={} \
+                     work_reset_write={} work_reset_header={} work_reset_truncate={} \
+                     work_reset_forced={}",
                     if incremental {
                         "incremental"
                     } else {
@@ -1524,6 +1565,18 @@ fn commit_incremental_scan_paired_curve() -> Result<()> {
                     sample.puts,
                     sample.groups,
                     sample.page_gets,
+                    sample.work.append_calls,
+                    sample.work.native_bytes,
+                    sample.work.delta_bytes,
+                    sample.work.scanned_frames,
+                    sample.work.append_position["reused"],
+                    sample.work.append_position["unscanned"]
+                        + sample.work.append_position["unchanged"]
+                        + sample.work.append_position["not_covered"],
+                    sample.work.scan_resets["write_in_prefix"],
+                    sample.work.scan_resets["header_changed"],
+                    sample.work.scan_resets["truncate_in_prefix"],
+                    sample.work.scan_resets["forced_whole_image"],
                 );
             }
         }

@@ -397,6 +397,14 @@ impl Authority {
             candidate.tombstones.publish(&publishing)?;
             candidate.seal()?;
             let (encoded, digest) = encode_with_digest(&candidate)?;
+            crate::work_metrics::observe_root_publish(
+                encoded.len(),
+                candidate
+                    .pins
+                    .values()
+                    .fold(0usize, |total, entries| total.saturating_add(entries.len())),
+                candidate.receipts.len(),
+            );
             if let Some(guard) = &self.guard {
                 guard.validate_root(&current.root, &candidate)?;
             }
@@ -472,6 +480,9 @@ impl Authority {
                         return Ok(observed);
                     }
                     if error.is::<PreconditionFailed>() && expected_revision.is_none() {
+                        // The head moved under this attempt, so the next loop iteration is a
+                        // retry of the same publication.
+                        crate::work_metrics::observe_root_publish_retry();
                         continue;
                     }
                     return Err(error);

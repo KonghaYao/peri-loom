@@ -28,4 +28,5 @@ pub mod session;
 mod shutdown_budget;
 pub mod storage;
 pub mod wal;
+pub(crate) mod work_metrics;
 pub mod worker_rpc;

@@ -18,16 +18,31 @@ const WAL_MAGIC_BIG_ENDIAN: u32 = 0x377f_0683;
 /// Counters are per thread, like `request_reads`: the commit that pays the cost is the one
 /// that reads it. A reader on another thread sees zeros until aggregation exists, and this
 /// module does not add any: the scan updates the counters once per call, never per byte, so
-/// the cost of keeping them is one thread-local read plus four additions per scan. Every
+/// the cost of keeping them is one thread-local read plus a few additions per scan. Every
 /// field saturates instead of wrapping, because a diagnostic counter that wraps would
 /// report a smaller cost than the work it measured.
+///
+/// The reset and stop counters name the reasons a verified prefix was abandoned or a scan
+/// could not advance. They sit on the rare paths (a reset follows a mutation the prefix
+/// cannot describe), so they cost one thread-local read each; the process-wide copy of every
+/// count lives in [`crate::work_metrics`], which is off unless asked for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecoveryObservations {
     pub scanned_bytes: u64,
     pub copied_bytes: u64,
     pub scan_calls: u64,
     pub scan_nanos: u64,
+    /// Frames the checksum chain walked, as opposed to the header and frame bytes counted
+    /// by `scanned_bytes`.
+    pub scanned_frames: u64,
+    /// Resets per [`crate::work_metrics::ScanReset`] discriminant.
+    pub scan_resets: [u64; RESET_REASONS],
+    /// Stops per [`crate::work_metrics::ScanStop`] discriminant.
+    pub scan_stops: [u64; STOP_REASONS],
 }
+
+const RESET_REASONS: usize = 6;
+const STOP_REASONS: usize = 3;
 
 impl RecoveryObservations {
     const ZERO: Self = Self {
@@ -35,6 +50,9 @@ impl RecoveryObservations {
         copied_bytes: 0,
         scan_calls: 0,
         scan_nanos: 0,
+        scanned_frames: 0,
+        scan_resets: [0; RESET_REASONS],
+        scan_stops: [0; STOP_REASONS],
     };
 }
 
@@ -51,18 +69,40 @@ pub fn reset_recovery_observations() {
     OBSERVATIONS.with(|observations| observations.set(RecoveryObservations::ZERO));
 }
 
-fn observed_scan(scanned: usize, elapsed: Duration) {
+fn observed_scan(scanned: usize, frames: usize, elapsed: Duration) {
     OBSERVATIONS.with(|observations| {
         let counters = observations.get();
         observations.set(RecoveryObservations {
             scanned_bytes: counters.scanned_bytes.saturating_add(scanned as u64),
-            copied_bytes: counters.copied_bytes,
             scan_calls: counters.scan_calls.saturating_add(1),
             scan_nanos: counters
                 .scan_nanos
                 .saturating_add(elapsed.as_nanos() as u64),
+            scanned_frames: counters.scanned_frames.saturating_add(frames as u64),
+            ..counters
         });
     });
+    crate::work_metrics::observe_scan(scanned, frames, elapsed);
+}
+
+fn observed_reset(reason: crate::work_metrics::ScanReset) {
+    OBSERVATIONS.with(|observations| {
+        let mut counters = observations.get();
+        counters.scan_resets[reason as usize] =
+            counters.scan_resets[reason as usize].saturating_add(1);
+        observations.set(counters);
+    });
+    crate::work_metrics::observe_scan_reset(reason);
+}
+
+fn observed_stop(reason: crate::work_metrics::ScanStop) {
+    OBSERVATIONS.with(|observations| {
+        let mut counters = observations.get();
+        counters.scan_stops[reason as usize] =
+            counters.scan_stops[reason as usize].saturating_add(1);
+        observations.set(counters);
+    });
+    crate::work_metrics::observe_scan_stop(reason);
 }
 
 fn observed_copy(bytes: usize) {
@@ -73,6 +113,7 @@ fn observed_copy(bytes: usize) {
             ..counters
         });
     });
+    crate::work_metrics::observe_copy(bytes);
 }
 
 #[cfg(test)]
@@ -85,12 +126,17 @@ mod tests;
 pub fn committed_position(bytes: &[u8]) -> Result<Option<WalPosition>> {
     let started = Instant::now();
     let mut scanned = 0;
-    let result = committed_position_of(bytes, &mut scanned);
-    observed_scan(scanned, started.elapsed());
+    let mut frames = 0;
+    let result = committed_position_of(bytes, &mut scanned, &mut frames);
+    observed_scan(scanned, frames, started.elapsed());
     result
 }
 
-fn committed_position_of(bytes: &[u8], scanned: &mut usize) -> Result<Option<WalPosition>> {
+fn committed_position_of(
+    bytes: &[u8],
+    scanned: &mut usize,
+    frames: &mut usize,
+) -> Result<Option<WalPosition>> {
     if bytes.len() < WAL_HEADER {
         return Ok(None);
     }
@@ -120,6 +166,7 @@ fn committed_position_of(bytes: &[u8], scanned: &mut usize) -> Result<Option<Wal
     let mut position = None;
     for (frame_index, frame) in bytes[WAL_HEADER..].chunks_exact(frame_size).enumerate() {
         *scanned += frame_size;
+        *frames += 1;
         if word(frame, 0) == 0 || [word(frame, 8), word(frame, 12)] != salts {
             return Ok(None);
         }
@@ -168,30 +215,42 @@ impl WalFrameScan {
         *self = Self::default();
     }
 
+    /// Records why the prefix had to go, then rebuilds the state.
+    fn reset_for(&mut self, reason: crate::work_metrics::ScanReset) {
+        observed_reset(reason);
+        self.reset();
+    }
+
     /// Equivalent of [`committed_position`] for an image whose examined bytes the caller
     /// left untouched since the previous call.
     fn position(&mut self, bytes: &[u8]) -> Result<Option<WalPosition>> {
         let started = Instant::now();
         let mut scanned = 0;
-        let result = self.advance(bytes, &mut scanned);
-        observed_scan(scanned, started.elapsed());
+        let mut frames = 0;
+        let result = self.advance(bytes, &mut scanned, &mut frames);
+        observed_scan(scanned, frames, started.elapsed());
         result
     }
 
-    fn advance(&mut self, bytes: &[u8], scanned: &mut usize) -> Result<Option<WalPosition>> {
+    fn advance(
+        &mut self,
+        bytes: &[u8],
+        scanned: &mut usize,
+        frames: &mut usize,
+    ) -> Result<Option<WalPosition>> {
         // A shrink below what was examined is a mutation the caller did not report, and the
         // prefix cannot survive it.
         if bytes.len() < self.examined {
-            self.reset();
+            self.reset_for(crate::work_metrics::ScanReset::Shrink);
         }
         if bytes.len() < WAL_HEADER {
-            self.reset();
+            self.reset_for(crate::work_metrics::ScanReset::ShortImage);
             return Ok(None);
         }
         *scanned += WAL_HEADER;
         let header: [u8; WAL_HEADER] = bytes[..WAL_HEADER].try_into().expect("header length");
         if self.header != Some(header) {
-            self.reset();
+            self.reset_for(crate::work_metrics::ScanReset::HeaderChanged);
             self.derive(&header)?;
             self.header = Some(header);
             self.examined = WAL_HEADER;
@@ -202,9 +261,13 @@ impl WalFrameScan {
         let available = bytes.len() - WAL_HEADER;
         let complete = available / self.frame_size;
         if complete > self.verified_frames {
-            self.extend(bytes, complete, scanned);
+            self.extend(bytes, complete, scanned, frames);
         }
-        if self.stopped || !available.is_multiple_of(self.frame_size) {
+        if self.stopped {
+            return Ok(None);
+        }
+        if !available.is_multiple_of(self.frame_size) {
+            observed_stop(crate::work_metrics::ScanStop::IncompleteTail);
             return Ok(None);
         }
         Ok(self.position)
@@ -238,13 +301,15 @@ impl WalFrameScan {
 
     /// Frames the checksum chain already covers are never re-read: the loop resumes at the
     /// first unverified frame and stops where [`committed_position`] would.
-    fn extend(&mut self, bytes: &[u8], complete: usize, scanned: &mut usize) {
+    fn extend(&mut self, bytes: &[u8], complete: usize, scanned: &mut usize, frames: &mut usize) {
         for index in self.verified_frames..complete {
             let start = WAL_HEADER + index * self.frame_size;
             let frame = &bytes[start..start + self.frame_size];
             self.examined = start + self.frame_size;
             *scanned += self.frame_size;
+            *frames += 1;
             if word(frame, 0) == 0 || [word(frame, 8), word(frame, 12)] != self.salts {
+                observed_stop(crate::work_metrics::ScanStop::SaltMismatch);
                 self.stopped = true;
                 return;
             }
@@ -254,6 +319,7 @@ impl WalFrameScan {
                 self.big_endian,
             );
             if next != [word(frame, 16), word(frame, 20)] {
+                observed_stop(crate::work_metrics::ScanStop::ChecksumMismatch);
                 self.stopped = true;
                 return;
             }
@@ -272,13 +338,13 @@ impl WalFrameScan {
     /// A write that starts inside the examined prefix replaces bytes the chain covers.
     fn note_write(&mut self, offset: usize) {
         if offset < self.examined {
-            self.reset();
+            self.reset_for(crate::work_metrics::ScanReset::WriteInPrefix);
         }
     }
 
     fn note_truncate(&mut self, size: usize) {
         if size < self.examined {
-            self.reset();
+            self.reset_for(crate::work_metrics::ScanReset::TruncateInPrefix);
         }
     }
 }
@@ -354,7 +420,8 @@ impl WalImage {
     pub(crate) fn committed_position(&mut self) -> Result<Option<WalPosition>> {
         #[cfg(test)]
         if self.whole_image {
-            self.scan.reset();
+            self.scan
+                .reset_for(crate::work_metrics::ScanReset::ForcedWholeImage);
         }
         self.scan.position(&self.bytes)
     }

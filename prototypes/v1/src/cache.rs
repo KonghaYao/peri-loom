@@ -1,4 +1,5 @@
 use crate::manifest::{valid_hash, verify_segment};
+use crate::work_metrics::{LockDomain, LockWait, ObservedLock};
 use anyhow::{ensure, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -42,6 +43,13 @@ pub struct SegmentCache {
 }
 
 impl SegmentCache {
+    /// Every index access in this type goes through here, so the cache lock's wait and hold
+    /// time is one domain rather than one number per call site.
+    fn state(&self) -> ObservedLock<'_, State> {
+        let wait = LockWait::begin(LockDomain::Cache);
+        wait.acquired(self.state.lock().expect("cache mutex poisoned"))
+    }
+
     pub fn new(root: impl AsRef<Path>, ram_limit: usize, disk_limit: u64) -> Result<Self> {
         fs::create_dir_all(root.as_ref())?;
         let cache = Self {
@@ -50,7 +58,7 @@ impl SegmentCache {
             disk_limit,
             state: Mutex::new(State::default()),
         };
-        let mut state = cache.state.lock().expect("cache mutex poisoned");
+        let mut state = cache.state();
         let mut existing = Vec::new();
         for entry in fs::read_dir(&cache.root)? {
             let entry = entry?;
@@ -80,7 +88,7 @@ impl SegmentCache {
 
     pub fn get(&self, hash: &str) -> Result<Option<Arc<Vec<u8>>>> {
         ensure!(valid_hash(hash), "invalid cache identifier");
-        let mut state = self.state.lock().expect("cache mutex poisoned");
+        let mut state = self.state();
         state.clock += 1;
         let used = state.clock;
         if let Some(entry) = state.ram.get_mut(hash) {
@@ -112,7 +120,7 @@ impl SegmentCache {
     pub fn insert(&self, hash: &str, bytes: Arc<Vec<u8>>) -> Result<()> {
         ensure!(valid_hash(hash), "invalid cache identifier");
         verify_segment(hash, &bytes)?;
-        let mut state = self.state.lock().expect("cache mutex poisoned");
+        let mut state = self.state();
         state.clock += 1;
         self.insert_ram(&mut state, hash, bytes.clone());
         if bytes.len() as u64 <= self.disk_limit {
@@ -185,10 +193,6 @@ impl SegmentCache {
     }
 
     pub fn stats(&self) -> CacheStats {
-        self.state
-            .lock()
-            .expect("cache mutex poisoned")
-            .stats
-            .clone()
+        self.state().stats.clone()
     }
 }

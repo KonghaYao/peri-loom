@@ -4,6 +4,7 @@ use crate::manifest::{
 };
 use crate::namespace::Namespace;
 use crate::object_store::{ObjectStore, PutCondition};
+use crate::work_metrics::{LockDomain, LockWait, ObservedLock};
 use anyhow::{ensure, Context, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -35,10 +36,21 @@ pub struct RemoteStorage {
 }
 
 impl RemoteStorage {
+    /// Every manifest access in this type goes through here, so the storage lock's wait and
+    /// hold time is one domain rather than one number per call site.
+    fn state(&self) -> ObservedLock<'_, State> {
+        let wait = LockWait::begin(LockDomain::Storage);
+        wait.acquired(self.state.lock().expect("storage mutex poisoned"))
+    }
+
     pub(crate) fn resource_usage(&self) -> Result<crate::resources::ResourceUsage> {
+        // This site reports poison instead of panicking, so it keeps its own acquisition and
+        // only joins the storage lock's measurement.
+        let wait = LockWait::begin(LockDomain::Storage);
         let state = self
             .state
             .lock()
+            .map(|guard| wait.acquired(guard))
             .map_err(|_| anyhow::anyhow!("storage mutex poisoned"))?;
         let cache = self.cache.stats();
         let segment_cache_hits = cache.hits_ram.saturating_add(cache.hits_disk);
@@ -149,7 +161,7 @@ impl RemoteStorage {
 
     pub fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<usize> {
         self.store.validate_local()?;
-        let mut state = self.state.lock().expect("storage mutex poisoned");
+        let mut state = self.state();
         let count = state.size.saturating_sub(offset).min(out.len() as u64) as usize;
         let mut completed = 0;
         while completed < count {
@@ -172,7 +184,7 @@ impl RemoteStorage {
         if data.is_empty() {
             return Ok(0);
         }
-        let mut state = self.state.lock().expect("storage mutex poisoned");
+        let mut state = self.state();
         let mut staged = BTreeMap::new();
         let mut completed = 0;
         while completed < data.len() {
@@ -195,12 +207,12 @@ impl RemoteStorage {
     }
 
     pub fn size(&self) -> u64 {
-        self.state.lock().expect("storage mutex poisoned").size
+        self.state().size
     }
 
     pub fn truncate(&self, len: u64) -> Result<()> {
         self.check_local_writer()?;
-        let mut state = self.state.lock().expect("storage mutex poisoned");
+        let mut state = self.state();
         if len < state.size {
             let boundary = len / SEGMENT_SIZE as u64;
             let within = (len % SEGMENT_SIZE as u64) as usize;
@@ -221,7 +233,7 @@ impl RemoteStorage {
 
     pub fn publish(&self, position: WalPosition, applied_lsn: u64) -> Result<()> {
         self.check_writer()?;
-        let mut state = self.state.lock().expect("storage mutex poisoned");
+        let mut state = self.state();
         ensure!(
             applied_lsn >= state.manifest.applied_lsn,
             "applied LSN cannot regress"
@@ -332,7 +344,7 @@ impl RemoteStorage {
         F: FnOnce() -> Result<Arc<dyn ObjectStore>>,
     {
         let manifest_id = {
-            let state = self.state.lock().expect("storage mutex poisoned");
+            let state = self.state();
             if state.manifest.generation != 0
                 || state.manifest.logical_db_size != 0
                 || !state.manifest.segments.is_empty()
@@ -373,7 +385,7 @@ impl RemoteStorage {
     }
 
     pub fn stats(&self) -> StorageStats {
-        let state = self.state.lock().expect("storage mutex poisoned");
+        let state = self.state();
         let cache = self.cache.stats();
         StorageStats {
             segment_loads: state.segment_loads,

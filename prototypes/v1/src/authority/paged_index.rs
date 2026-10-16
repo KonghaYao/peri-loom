@@ -377,6 +377,7 @@ impl<'a> PagedIndex<'a> {
         let key = self.page_key(hash)?;
         let backend = self.store as *const dyn ObjectStore as *const () as usize;
         let buffered = self.pending.and_then(|pending| pending.borrow().page(hash));
+        crate::work_metrics::observe_index_page_read();
         let bytes = match buffered {
             Some(bytes) => bytes,
             None => match request_reads::get_page(backend, &key) {
@@ -448,6 +449,7 @@ impl<'a> PagedIndex<'a> {
         ensure!(bytes.len() <= PAGE_BYTES, "index page byte budget exceeded");
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let key = self.page_key(&hash)?;
+        crate::work_metrics::observe_index_page_write(bytes.len());
         if let Some(pending) = self.pending {
             // Content-addressed bodies are idempotent, so they carry no condition: the
             // group stays condition-checked exactly once, by the head CAS that ends it.

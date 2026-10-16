@@ -4,7 +4,7 @@ mod native;
 mod native_file;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{ensure, Context, Result};
 use turso_core::io::clock::{Clock, MonotonicInstant, WallClockInstant};
@@ -21,6 +21,7 @@ use crate::recovery::{batch_covers_position, WalImage};
 use crate::resources::ResourceUsage;
 use crate::storage::RemoteStorage;
 use crate::wal::{DurableWal, RemoteWal, WalBatch};
+use crate::work_metrics::{AppendPosition, LockDomain, LockWait, ObservedLock};
 use files::RemoteFile;
 use lock::DirectoryLock;
 use native::NativeIoGate;
@@ -127,12 +128,9 @@ impl RemoteIO {
     /// arms — or two tests running in parallel — cannot switch each other's scan.
     #[cfg(test)]
     pub(crate) fn force_whole_image_scan(&self) {
-        self.shared
-            .gate
-            .lock()
-            .expect("remote IO mutex poisoned")
-            .image
-            .force_whole_image();
+        let wait = LockWait::begin(LockDomain::State);
+        let mut state = wait.acquired(self.shared.gate.lock().expect("remote IO mutex poisoned"));
+        state.image.force_whole_image();
     }
 
     pub(crate) fn retirement_token(
@@ -145,11 +143,9 @@ impl RemoteIO {
         self.path.clone()
     }
     pub fn wal_lsn(&self) -> u64 {
-        self.shared
-            .gate
-            .lock()
-            .expect("remote IO mutex poisoned")
-            .lsn
+        let wait = LockWait::begin(LockDomain::State);
+        let state = wait.acquired(self.shared.gate.lock().expect("remote IO mutex poisoned"));
+        state.lsn
     }
 
     pub fn resources(&self) -> Result<ResourceUsage> {
@@ -270,9 +266,11 @@ impl Shared {
         self.storage.store().validate_session()
     }
 
-    fn lock(&self) -> turso_core::Result<MutexGuard<'_, State>> {
+    fn lock(&self) -> turso_core::Result<ObservedLock<'_, State>> {
+        let wait = LockWait::begin(LockDomain::State);
         self.gate
             .lock()
+            .map(|guard| wait.acquired(guard))
             .map_err(|_| adapter_error("remote IO mutex poisoned"))
     }
 
@@ -307,11 +305,21 @@ impl Shared {
         // The scan resumes at the frames the pending batch added: bytes an earlier commit
         // verified are never re-read, and a write inside them already reset the state.
         let scanned = state.image.committed_position().ok().flatten();
-        let position = scanned
-            .filter(|position| Some(*position) != state.last_commit)
-            .filter(|position| {
-                batch_covers_position(&state.batch, state.image.bytes(), *position).unwrap_or(false)
-            });
+        // The filter chain this replaced dropped the position silently. A dropped position
+        // sends the append without a commit position, which makes the authority re-derive
+        // the whole WAL index, so the reason is named instead of inferred.
+        let resolution = match scanned {
+            None => AppendPosition::Unscanned,
+            Some(position) if Some(position) == state.last_commit => AppendPosition::Unchanged,
+            Some(position) => {
+                match batch_covers_position(&state.batch, state.image.bytes(), position) {
+                    Ok(true) => AppendPosition::Reused,
+                    // The cover check either said no or failed; both leave the position unusable.
+                    Ok(false) | Err(_) => AppendPosition::NotCovered,
+                }
+            }
+        };
+        let position = scanned.filter(|_| resolution == AppendPosition::Reused);
         let bytes = state
             .batch
             .operations
@@ -322,6 +330,12 @@ impl Shared {
                 }
                 crate::wal::WalOperation::Truncate { .. } => total,
             });
+        crate::work_metrics::observe_append(
+            resolution,
+            state.image.len(),
+            bytes,
+            position.map_or(0, |position| position.frame_count),
+        );
         let started = std::time::Instant::now();
         let appended =
             self.wal

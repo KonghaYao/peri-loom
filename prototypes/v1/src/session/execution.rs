@@ -589,6 +589,7 @@ fn run(
     } = *context;
     let mut permit: Option<Permit> = None;
     let mut terminal = false;
+    let executed = crate::work_metrics::ExecuteTimer::begin();
     let result = run_steps(
         context,
         &mut statement,
@@ -602,6 +603,7 @@ fn run(
     match result {
         Ok((rows, _)) => {
             let steps = prior_steps.saturating_add(statement.metrics().vm_steps);
+            executed.finish(Some(steps));
             drop(statement);
             if let Some(permit) = permit {
                 permit.settle(writer(connection))?;
@@ -612,6 +614,10 @@ fn run(
             Ok((steps, rows))
         }
         Err(error) => {
+            // The engine step count of a failed execution is not reported: the abort path
+            // can retire the statement, and a counter that reads state a retired statement
+            // may already have released is worse than a missing number.
+            executed.finish(None);
             #[cfg(test)]
             database.before_native_abort();
             let stopped = if terminal {

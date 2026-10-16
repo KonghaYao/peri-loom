@@ -64,6 +64,13 @@ pub struct MetricsSnapshot {
     pub cold_open: OperationMetrics,
     pub measurement_scopes: MeasurementScopes,
     pub latency_bounds_ns: [u64; 6],
+    /// Optional workload counters, filled from [`crate::work_metrics`]. Omitted from the
+    /// payload entirely while the switch is off, so a diagnostics response is byte-identical
+    /// to the one this crate answered before the counters existed. Crate-visible rather than
+    /// public because its type lives in a crate-private module; the JSON name is what
+    /// consumers read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) work_metrics: Option<crate::work_metrics::WorkMetricsSnapshot>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -107,6 +114,7 @@ impl Metrics {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         snapshot.latency_bounds_ns = LATENCY_BOUNDS_NS;
+        snapshot.work_metrics = crate::work_metrics::snapshot();
         snapshot
     }
 

@@ -225,9 +225,11 @@ impl RemoteWal {
         etag: Option<String>,
     ) -> Result<()> {
         self.check_writer()?;
+        let encoded = serde_json::to_vec(metadata)?;
+        crate::work_metrics::observe_wal_index_commit(encoded.len(), metadata.receipts.len());
         self.store.put(
             &namespace.key("wal/index")?,
-            &serde_json::to_vec(metadata)?,
+            &encoded,
             etag.map_or(PutCondition::Absent, PutCondition::Match),
         )?;
         Ok(())
@@ -242,7 +244,7 @@ impl RemoteWal {
             match self.commit(namespace, &index, etag.clone()) {
                 Ok(()) => return Ok(()),
                 Err(error) if self.index(namespace)?.1 == etag => return Err(error),
-                Err(_) => {}
+                Err(_) => crate::work_metrics::observe_wal_index_retry(),
             }
         }
         bail!("WAL fencing CAS contention")
@@ -341,6 +343,9 @@ impl RemoteWal {
                     if current_etag == etag {
                         return Err(error);
                     }
+                    // The conditional write lost to another appender, so this attempt is
+                    // rebuilt from the index that won.
+                    crate::work_metrics::observe_wal_index_retry();
                 }
             }
         }

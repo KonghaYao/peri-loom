@@ -570,3 +570,108 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
     assert_eq!(chained.image.bytes(), cold.image.bytes());
     Ok(())
 }
+
+/// Which reason abandoned a verified prefix, and which check stopped a scan, must be
+/// attributable: a review reads these counters to tell a removed growth term from one that
+/// only moved. The thread-local counts are exact because they belong to this test's thread;
+/// the process-wide totals are lower-bounded because other tests in the binary may record
+/// into the same sink once the switch is on.
+#[test]
+fn scan_fallback_reasons_are_counted() -> Result<()> {
+    use crate::work_metrics::{ScanReset, ScanStop};
+
+    crate::work_metrics::set_enabled(true);
+    let global_before = crate::work_metrics::snapshot();
+    let mut builder = WalBuilder::new([21, 22]);
+    let mut image = started(&builder)?;
+    for page in 1..=4 {
+        let frame = builder.frame(page, if page == 4 { PAGE_SIZE as u32 } else { 0 });
+        image.apply(&write_at(image.len(), &frame))?;
+    }
+    assert_matches_full_scan(&mut image)?;
+
+    // A write into the verified prefix, then the header the fresh scan does not belong to.
+    reset_recovery_observations();
+    image.apply(&write_at(0, &builder.header()))?;
+    assert_eq!(
+        recovery_observations().scan_resets[ScanReset::WriteInPrefix as usize],
+        1
+    );
+    assert_matches_full_scan(&mut image)?;
+    assert_eq!(
+        recovery_observations().scan_resets[ScanReset::HeaderChanged as usize],
+        1
+    );
+
+    // A truncate into the prefix, and the frame-aligned and unaligned tails it leaves.
+    reset_recovery_observations();
+    image.resize(WAL_HEADER + FRAME_SIZE)?;
+    assert_eq!(
+        recovery_observations().scan_resets[ScanReset::TruncateInPrefix as usize],
+        1
+    );
+    reset_recovery_observations();
+    image.resize(WAL_HEADER + FRAME_SIZE - 8)?;
+    assert_eq!(assert_matches_full_scan(&mut image)?, None);
+    let tail = recovery_observations();
+    assert_eq!(tail.scan_stops[ScanStop::IncompleteTail as usize], 1);
+
+    // A frame whose salt no longer matches the header, and one whose checksum no longer
+    // matches its payload. Each gets a fresh state so the prefix cannot answer for it.
+    // Each image starts from its own header: a builder continues the checksum chain of the
+    // frames it already produced, so a fresh image must come from a fresh builder.
+    let mut salted = WalBuilder::new([23, 24]).image(3);
+    salted[WAL_HEADER + FRAME_SIZE + 8] ^= 0xff;
+    let mut salted_scan = WalFrameScan::default();
+    assert_eq!(salted_scan.position(&salted)?, None);
+    assert_eq!(
+        recovery_observations().scan_stops[ScanStop::SaltMismatch as usize],
+        1
+    );
+    let mut corrupt = WalBuilder::new([25, 26]).image(3);
+    corrupt[WAL_HEADER + 2 * FRAME_SIZE + 32] ^= 0xff;
+    let mut corrupt_scan = WalFrameScan::default();
+    assert_eq!(corrupt_scan.position(&corrupt)?, None);
+    assert_eq!(
+        recovery_observations().scan_stops[ScanStop::ChecksumMismatch as usize],
+        1
+    );
+
+    // A shrink and an image below a full header are reachable only through the scan type:
+    // the image API reports every mutation, so these are the defensive branches.
+    let whole = WalBuilder::new([27, 28]).image(2);
+    let mut shrink_scan = WalFrameScan::default();
+    assert!(shrink_scan.position(&whole)?.is_some());
+    assert_eq!(shrink_scan.position(&whole[..WAL_HEADER + 4])?, None);
+    assert_eq!(
+        recovery_observations().scan_resets[ScanReset::Shrink as usize],
+        1
+    );
+    assert_eq!(shrink_scan.position(&whole[..8])?, None);
+    let defensive = recovery_observations();
+    assert_eq!(defensive.scan_resets[ScanReset::Shrink as usize], 2);
+    assert_eq!(defensive.scan_resets[ScanReset::ShortImage as usize], 1);
+
+    // The same work reaches the process-wide sink the diagnostics endpoint exports. The
+    // totals are lower-bounded: the delta covers this thread's increments plus any other
+    // test recording into the same sink.
+    let observed = recovery_observations();
+    let global = crate::work_metrics::snapshot().context("enabled snapshot")?;
+    let before = global_before.unwrap_or_default();
+    assert!(
+        global.wal_workload.scanned_frames - before.wal_workload.scanned_frames
+            >= observed.scanned_frames
+    );
+    for reason in [
+        "write_in_prefix",
+        "header_changed",
+        "truncate_in_prefix",
+        "shrink",
+    ] {
+        assert!(
+            global.wal_workload.scan_resets[reason] >= 1,
+            "reason {reason} never reached the exported sink"
+        );
+    }
+    Ok(())
+}
