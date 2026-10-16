@@ -50,6 +50,9 @@ var sqlFailurePhrases = []struct {
 	{"attempt to write a readonly database", sqlFailureReadOnly},
 	{"query duration budget exceeded", sqlFailureDeadline},
 	{"writer admission deadline", sqlFailureDeadline},
+	// A cold load has its own budget, so it must not answer with a statement deadline:
+	// the statement never entered execution, and the caller may retry it unchanged.
+	{"database load budget exceeded", sqlFailureRefused},
 	{"VM step budget exceeded", sqlFailureComputeBudget},
 	{"result row budget exceeded", sqlFailureResultBudget},
 	{"result byte budget exceeded", sqlFailureResultBudget},

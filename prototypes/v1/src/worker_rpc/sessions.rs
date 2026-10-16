@@ -108,7 +108,13 @@ impl Sessions {
             max_sessions,
             idle: duration_env("PERI_WORKER_SESSION_IDLE_MS", 900_000)?,
             max_age: duration_env("PERI_WORKER_SESSION_MAX_AGE_MS", 3_600_000)?,
-            database_idle: duration_env("PERI_WORKER_DB_IDLE_UNLOAD_MS", 1_000)?,
+            // A failed open keeps its instance resident (`WorkerRuntime::release` only frees
+            // the session slot of a non-draining entry); what drops the instance is the sweep
+            // that reads this window, and that sweep is what made a cold database unopenable
+            // when it ran a second after the last session closed. The window therefore has to
+            // cover the load budget (`PERI_WORKER_LOAD_MS`, never below 60 s), so a database
+            // that just loaded is still resident for the retry that follows it.
+            database_idle: duration_env("PERI_WORKER_DB_IDLE_UNLOAD_MS", 60_000)?,
         })
     }
 
@@ -686,6 +692,19 @@ mod tests {
         let replacement = locks.for_database(&a)?;
         assert_eq!(locks.0.lock().unwrap().len(), 2);
         assert!(replacement.try_lock().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn an_idle_database_is_kept_longer_than_a_cold_load_may_take() -> anyhow::Result<()> {
+        let (sessions, _cache) = sessions_with(Vec::new())?;
+        // Unloading on a shorter timer makes the next request pay a cold load, and the load
+        // budget (`PERI_WORKER_LOAD_MS`, never below 60 s) is the shortest that load can be.
+        assert!(
+            sessions.database_idle >= Duration::from_secs(60),
+            "{}",
+            sessions.database_idle.as_secs()
+        );
         Ok(())
     }
 

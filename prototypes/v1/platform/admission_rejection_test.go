@@ -261,6 +261,31 @@ func TestGatewayRefusalReasonsAtTheRefusalSite(test *testing.T) {
 		}
 		assertRefusedReason(test, fixture.gateway, rejectionDeadline)
 	})
+	test.Run("cold load over budget is not a deadline refusal", func(test *testing.T) {
+		fixture := newGatewayFixture(test)
+		session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+		fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+			if command["command"] == "execute" {
+				return nil, testRPCError(false, true, SQLRPCError{workerFailure: "SQL execution not entered: database load budget exceeded (PERI_WORKER_LOAD_MS)"})
+			}
+			return nil, nil
+		})
+		response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/execute", map[string]any{"session": session, "sql": "UPDATE t SET a = 1"})
+		if response.Code != 503 || gatewayCode(test, response) != "sql_unavailable" {
+			test.Fatalf("load budget refusal: %d %s", response.Code, response.Body.String())
+		}
+		// The load has a budget of its own, so the statement was never given a deadline:
+		// filing this as a deadline refusal would tell an operator the platform turned work
+		// away for overloading, and tell the caller to expect a statement timeout.
+		if counts := gatewayMetricCounts(test, fixture.gateway, "rejection_reasons_total"); len(counts) != 0 {
+			test.Fatalf("load budget refusal entered the refusal account: %v", counts)
+		}
+		// The worker proved the statement never entered execution, so the caller must not be
+		// left with the unknown outcome a missing verdict would produce.
+		if !strings.Contains(response.Body.String(), `"execution_completed":false`) || !strings.Contains(response.Body.String(), `"may_have_committed":false`) {
+			test.Fatalf("load budget refusal lost its evidence: %s", response.Body.String())
+		}
+	})
 	test.Run("deadline after execution is not a refusal", func(test *testing.T) {
 		fixture := newGatewayFixture(test)
 		session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)

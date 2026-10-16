@@ -114,11 +114,25 @@ pub(crate) struct RequestDeadline {
 
 impl RequestDeadline {
     pub fn scope(end: Instant) -> DeadlineScope {
+        Self::replaced(Some(end))
+    }
+
+    /// Suspends the ambient request deadline for the duration of the scope, so the work
+    /// inside it is bounded by its own budgets instead of by the window the request's
+    /// statements were given. A cold load pays one authority round trip per WAL chunk and
+    /// is not a statement: clamped by the request deadline it answers with a statement
+    /// deadline it never had.
+    pub fn suspend() -> DeadlineScope {
+        Self::replaced(None)
+    }
+
+    fn replaced(end: Option<Instant>) -> DeadlineScope {
         DeadlineScope {
-            previous: RPC_DEADLINE.replace(Some(end)),
+            previous: RPC_DEADLINE.replace(end),
             thread: std::marker::PhantomData,
         }
     }
+
     pub fn until(deadline: Instant) -> Self {
         Self {
             end: deadline,

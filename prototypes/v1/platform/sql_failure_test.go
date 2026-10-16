@@ -34,6 +34,7 @@ var sqlFailureEvidence = []struct {
 	{"parse error", "/v1/sql/execute", "SQL execution not entered: prepare remote query: Parse error: no such table: missing", 400, "sql_error", false, true},
 	{"writer conflict", "/v1/sql/execute", "SQL execution not entered: writer admission conflict", 409, "sql_conflict", false, true},
 	{"admission queue full", "/v1/sql/execute", "SQL execution not entered: writer admission queue full", 503, "sql_unavailable", false, true},
+	{"cold load over budget", "/v1/sql/execute", "SQL execution not entered: database load budget exceeded (PERI_WORKER_LOAD_MS)", 503, "sql_unavailable", false, true},
 	{"ownership fence", "/v1/sql/execute", "SQL execution not entered: local ownership revoked or detached", 503, "sql_unavailable", false, true},
 	{"read only", "/v1/sql/execute", "SQL execution settled: attempt to write a readonly database", 403, "readonly_session", true, false},
 	{"unclassified settled", "/v1/sql/execute", "SQL execution settled: private constraint details", 400, "sql_error", true, false},

@@ -4,6 +4,8 @@ mod health;
 mod memory;
 mod quarantine;
 mod registry;
+#[cfg(test)]
+mod tests;
 pub mod types;
 
 pub use handle::DatabaseHandle;
@@ -13,7 +15,8 @@ pub use types::{
 
 use crate::database::RemoteDatabase;
 use crate::maintenance::MaintenanceScheduler;
-use anyhow::{anyhow, ensure, Result};
+use crate::session::{Budget, RequestDeadline, SqlEvidence};
+use anyhow::{anyhow, ensure, Context, Result};
 use registry::{Entry, Instance, Loaded, Loading, Registry};
 use std::{
     path::{Path, PathBuf},
@@ -21,12 +24,29 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A cold load pays one authority round trip per WAL chunk, so the time it needs is set by
+/// the remote store and not by a statement: `PERI_WORKER_LOAD_MS` overrides the budget, and
+/// the default is the larger of the statement wall budget and this floor.
+///
+/// The budget is not held below the client-visible request timeout. A load executes no
+/// statement: the open path has nothing to run, and the statement path re-checks the request
+/// deadline after the reload it may trigger (`worker_rpc::sessions::Sessions::begin`), so a
+/// load that still finishes only makes the retry that follows it fast — which the retained
+/// instance is what delivers. It must stay below the time the database is leasable: a load
+/// that outlives the lease is fenced by the storage authority, which is the bound that
+/// matters. The measured cold load behind this floor took 16.6 s for 100k rows.
+const MIN_LOAD_BUDGET: Duration = Duration::from_secs(60);
+const LOAD_BUDGET_ENV: &str = "PERI_WORKER_LOAD_MS";
+
 pub struct WorkerRuntime {
     key_provider: Option<Arc<dyn crate::encryption::DatabaseKeyProvider>>,
     provider: Arc<dyn DatabaseProvider>,
     cache_root: PathBuf,
     limits: WorkerLimits,
     memory_reservation_budget: Option<usize>,
+    /// Configured override; the effective budget is resolved per open, because the
+    /// statement budget it falls back to may be set after this runtime exists.
+    load_budget: Option<Duration>,
     registry: Mutex<Registry>,
     native_instances: Mutex<Vec<(DatabaseId, std::sync::Weak<RemoteDatabase>)>>,
     /// Scheduler for the units that must not run in a request. It owns the process-wide
@@ -70,13 +90,48 @@ impl WorkerRuntime {
             cache_root: cache_root.as_ref().to_path_buf(),
             limits,
             memory_reservation_budget: memory::cgroup_reservation_budget(),
+            load_budget: load_budget_setting()?,
             registry: Mutex::new(Registry::default()),
             native_instances: Mutex::new(Vec::new()),
             maintenance: Arc::new(MaintenanceScheduler::configured()?),
         }))
     }
 
+    /// `PERI_WORKER_LOAD_MS` overrides the load budget. Without it the budget follows the
+    /// configured statement wall budget and is resolved per open, so a budget set after this
+    /// runtime exists still reaches the opens that follow it.
+    fn load_budget(&self) -> Duration {
+        self.load_budget.unwrap_or_else(|| {
+            Budget::trusted_default()
+                .wall_duration()
+                .max(MIN_LOAD_BUDGET)
+        })
+    }
+
+    /// Opens a session on a loaded instance.
+    ///
+    /// The load is not a statement: it runs with the request deadline suspended and its
+    /// duration is checked against `load_budget` instead, which is what `PERI_WORKER_LOAD_MS`
+    /// overrides. The session is anchored after the load returns, so neither phase inherits a
+    /// deadline the other one has already spent.
     pub fn open(self: &Arc<Self>, identifier: DatabaseId, epoch: u64) -> Result<DatabaseHandle> {
+        let database = self.load_instance(identifier.clone(), epoch)?;
+        let _session_budget =
+            RequestDeadline::scope(Instant::now() + Budget::trusted_default().wall_duration());
+        self.make_handle(identifier, database)
+    }
+
+    fn load_instance(
+        self: &Arc<Self>,
+        identifier: DatabaseId,
+        epoch: u64,
+    ) -> Result<Arc<Instance>> {
+        // Suspended rather than narrowed to the load budget: `RequestDeadline::new` takes the
+        // smaller of the ambient deadline and its own wall budget, so a load scope that the
+        // load has already overrun would make the internal call below report a statement
+        // deadline again. The budget is checked where the load ends because the load cannot be
+        // interrupted: its cost is the per-chunk WAL replay, which takes no deadline at all.
+        let _load_budget = RequestDeadline::suspend();
         identifier.validate()?;
         loop {
             let mut registry = self.lock()?;
@@ -112,7 +167,7 @@ impl WorkerRuntime {
                         loaded.idle_since = None;
                         registry.sessions += 1;
                         drop(registry);
-                        return self.make_handle(identifier, database);
+                        return Ok(database);
                     }
                 }
             }
@@ -132,9 +187,11 @@ impl WorkerRuntime {
                 .insert(identifier.clone(), Entry::Loading(loading));
             registry.sessions += 1;
             drop(registry);
+            let load_started = Instant::now();
             let opened = self
                 .load(&identifier, epoch)
                 .and_then(|database| Instance::new(database, self, identifier.clone(), epoch));
+            let loaded_for = load_started.elapsed();
             let mut registry = self.lock()?;
             let draining = matches!(registry.entries.get(&identifier), Some(Entry::Loading(loading)) if loading.draining);
             match opened {
@@ -151,7 +208,15 @@ impl WorkerRuntime {
                     );
                     drop(registry);
                     completion.finish(Ok(()));
-                    return self.make_handle(identifier, database);
+                    if loaded_for > self.load_budget() {
+                        // The load itself succeeded and only overran its budget. The instance
+                        // stays resident, so the next open reuses it instead of paying the
+                        // load again, and the failure is reported as the load overrun rather
+                        // than as a statement deadline the load never had.
+                        self.release(&identifier);
+                        return Err(load_budget_exceeded());
+                    }
+                    return Ok(database);
                 }
                 outcome => {
                     if outcome.is_ok() {
@@ -248,6 +313,9 @@ impl WorkerRuntime {
                 session,
             )),
             Err(error) => {
+                // Only the session slot is released. The instance stays resident, so an open
+                // that failed after a successful load does not charge the next attempt for a
+                // second cold load; the idle sweep still retires it.
                 drop(database);
                 self.release(&identifier);
                 Err(error)
@@ -527,4 +595,31 @@ impl WorkerRuntime {
             None => Ok(()),
         }
     }
+}
+
+fn load_budget_setting() -> Result<Option<Duration>> {
+    match std::env::var(LOAD_BUDGET_ENV) {
+        Ok(value) => configured_load_budget(Some(&value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn configured_load_budget(value: Option<&str>) -> Result<Option<Duration>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let millis = value.parse::<u64>().context("invalid worker load budget")?;
+    ensure!(
+        millis > 0 && millis <= 86_400_000,
+        "invalid worker load budget"
+    );
+    Ok(Some(Duration::from_millis(millis)))
+}
+
+/// A load that overran its budget failed before any statement ran, and the reply has to say
+/// so: the platform answers an unproven worker failure with an unknown outcome, which is
+/// indistinguishable from a write that may have committed.
+fn load_budget_exceeded() -> anyhow::Error {
+    anyhow!("database load budget exceeded ({LOAD_BUDGET_ENV})").context(SqlEvidence::NotExecuted)
 }
