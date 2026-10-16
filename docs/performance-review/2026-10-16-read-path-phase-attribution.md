@@ -63,7 +63,7 @@
 | **A** | terminal 与 audit 两道屏障**重叠等待**（两者都在回复前确认，各自 fsync 语义不变） | 无 | −0 … −4.3 ms | 两文件互不依赖，目前是同一 goroutine 串行等待 |
 | **B** | 语句被 **worker 面证只读**（`describe` 的 `is_readonly=true`，引擎判定）时跳过 intent，保留 terminal + audit | 无数据语义变化：不可能提交的操作本就不需要对账对象；无法面证时 fail-closed 回退 | −4.3 ms | 探针证实跳过 intent 的路径已存在且有效（0.03 ms） |
 | **C** | 可证明只读的请求连**操作台账终态记录**也省掉（只留 audit），在内存台账里体现 | **改变读操作的持久化台账语义**，需明确批准 | 再 −4.3 ms | terminal 对非提交型的唯一作用是对账与在途清点 |
-| **D** | Authority 侧：`ownership_view()` 按 root 摘要**免掉重复解码**（每次校验仍读 root、仍验租约） | 无：租约校验与 fencing 语义不变，只是不再对同一份文档重复解析与哈希 | −1…−4 ms（待实测剖分），且**随运行时长增长的部分被截断** | root 文档 68% 是幂等台账、随续期增长；`admitted::holds` 已有"按摘要只验一次"的先例（`authority.rs:261-272`） |
+| **D** | Authority 侧：`ownership_view()` 按 root 摘要**免掉重复解码**（每次校验仍读 root、仍验租约） | 无：租约校验与 fencing 语义不变，只是不再对同一份文档重复解析与哈希 | **实测 −0.4 ms/次校验**（head 95 KB：validate 613 → 196 µs；head 945 KB：6,058 → 1,782 µs）。原估「−1…−4 ms」被实测否掉 | root 文档 68% 是幂等台账、随续期增长；`admitted::holds` 已有"按摘要只验一次"的先例（`authority.rs:261-272`） |
 
 A+B 预计把读查询从 18.98 ms 降到约 10.4 ms（−45%，折算约 91 ops/s）；
 A+B+C 约 6.1 ms（−68%，约 155 ops/s）。**这些是投影，不是实测。**
@@ -97,6 +97,20 @@ worktree `perf/worker-readpath-3d5e9b21`）：**那 4–5ms 里几乎全部与 S
 占 **76,638 B = 68%**；栈空转期间该台账仍随租约续期增长（稍后再读已是 **160,338 B / 147 条**）。
 即：**每请求固定成本随运行时长与命令条数单调增长**，属于算法/缓存问题（同一 root 摘要无需重复解码），
 而不是 fencing 语义所必需。这条与既有的 root 内嵌结构只增不减（`pins`/`WalMetadata`）是同一类问题。
+
+**实测剖分（后续补做，release、`LocalObjectStore`、p50 µs，见 `perf/authority-ownership-6b1f4e02`
+提交 `0d95202`）**：
+
+| head bytes | read | decode(冷) | decode(摘要命中) | validate | session（worker 形状，读两次 head） |
+|---|---|---|---|---|---|
+| 1,446 | 18 | 8 | 1 | 22 | 45 |
+| 95,374 | 128 | 485 | 57 | 196 | 570 |
+| 944,974 | 1,151 | 4,907 | 564 | 1,782 | 5,484 |
+
+两个更正：① 增长性成立——head 每长 10 倍，校验成本约长 9 倍，decode 在未做复用时是最大项
+（约为 read 的 4 倍）；② **量级不成立**——Authority 侧一次校验在生产文档尺寸下只有约 0.2 ms，
+不是上面 4.05 ms 的来源。那 4 ms 应在 worker↔authority 的 RPC 往返与 worker 自身（本测量不含网络），
+下一步要测的是那一段；解码复用把 decode 降到约 1/12 之后，read 成为 Authority 侧的主导项。
 
 被否定的假设（同样重要）：**读路径并不是每次去对象存储拉整段**。数据集实际是 10 个
 3.5–7.1 MB 的 WAL blob，worker 在 `open` 时把整幅 WAL 重放进内存镜像

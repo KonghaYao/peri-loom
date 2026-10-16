@@ -109,9 +109,18 @@ E01 的 4000 个 C1 操作只渲染出 **2059 条唯一 SQL 文本**（`point` 9
 
 ## 5. 下一步
 
-- **D（Authority 侧）**：`perf/authority-ownership-6b1f4e02` 派出的实测（root 读 / blake3+解码 / RPC 往返
-  按 1/200/2000 条台账三档剖分）**因子代理侧 LLM 传输失败中断**，任务未完成、无结论；需重新派。
-  它现在占读查询的约 4.6 ms（约 32%），是 terminal+audit 之外最大的一块。
+- **D（Authority 侧）已完成实测剖分**：`perf/authority-ownership-6b1f4e02`，提交 `0d95202`。
+  release、`LocalObjectStore`、p50：head 1,446 B → read 18 µs / decode(冷) 8 µs / validate 22 µs；
+  head 95,374 B → 128 / 485 / 196 µs；head 944,974 B → 1,151 / 4,907 / 1,782 µs。
+  **结论与开工时的假设相反**：Authority 侧整个租约校验在生产文档尺寸（约 95 KB）下只有约 0.2 ms，
+  **不是**读查询里那 4–5 ms 的来源。decode 复用（已实现并以确定性计数器验证：同一 head 64 次校验
+  0 次解码、head 前进一版后恰好 1 次）把 decode 项降到约 1/12（95 KB：485 → 57 µs；
+  945 KB：4,907 → 564 µs），但 memo 之后 read 又成为主导项（两种尺寸下都约 65%）。
+  因此下一步该测的是 **worker↔authority 的 RPC 往返**（本次测量不含网络），而不是继续优化这里的解码。
+- **台账无界已被实测证实**：head 随 `ownership.commands` 从 1.4 KB 长到 95 KB 再到 945 KB 时，
+  每次校验的成本近似线性上升（22 → 196 → 1,782 µs）。decode 复用只削掉其中 decode 那一半斜率，
+  read 那一半（worker 路径每请求读两次 head）仍在。改它要动 root 文档结构或保留策略，
+  属于需要你裁决的设计变更，本轮未动。
 - **规模放大（1M / 8M）**等 D 的结论合并后再做，按 §6 第 3 条盯三类成本与 §3.3 的命中率。
   本轮结论只适用于单机 loopback、开发 CA、单 Authority、且观察器开启的配置。
 - 已知的额外 describe 来源（未做，列在此备查）：Hrana 高层 execute 的只读语句会被分类两次
