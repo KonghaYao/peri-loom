@@ -850,3 +850,94 @@ fn s3_group_body_sharing_the_cas_key_keeps_serial_order() -> Result<()> {
     assert_eq!(observed, vec!["body", "root-body"], "{observed:?}");
     Ok(())
 }
+
+#[test]
+fn s3_group_parallel_body_failures_report_every_key() -> Result<()> {
+    const BODIES: usize = 6;
+    // One body per worker: the batch the client has in flight before it can observe a
+    // reply, and therefore the failures its early stop cannot avoid collecting.
+    const BATCH: usize = 4;
+    let failed_keys = Arc::new(Mutex::new(Vec::<String>::new()));
+    let roots = Arc::new(AtomicUsize::new(0));
+    let server = (failed_keys.clone(), roots.clone());
+    // No retries: a re-attempt would land in the tail loop below, be answered 200, and
+    // turn a body recorded here into a success. Each body must fail exactly once for the
+    // keys below to be the failures the error has to name.
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let (failed_keys, roots) = server;
+        listener.set_nonblocking(true).unwrap();
+        // Hold the first batch unanswered so that no body can fail — and stop the group —
+        // before the whole batch is in flight. One deadline for the batch, well below the
+        // client's own 2 s request timeout, so an implementation that serializes its
+        // bodies fails on the count below instead of on a request timeout.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut held = Vec::new();
+        while held.len() < BATCH {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(mut stream) = accept_with_timeout(&listener, remaining) else {
+                break;
+            };
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            assert!(
+                request.target.starts_with("/bucket/group/body/"),
+                "group write issued before the bodies: {}",
+                request.target
+            );
+            held.push((stream, request.target));
+        }
+        assert_eq!(
+            held.len(),
+            BATCH,
+            "client did not keep a full batch in flight"
+        );
+        for (mut stream, target) in held {
+            failed_keys.lock().unwrap().push(target);
+            // Every body in the batch fails, so the group has several failures to report
+            // and none of them may be dropped from the error it returns.
+            reply(
+                &mut stream,
+                500,
+                &[],
+                b"<Error><Code>InternalError</Code></Error>",
+            );
+        }
+        // Anything arriving now is a write the failed group must not have issued.
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            if request.target == "/bucket/group/root" {
+                roots.fetch_add(1, Ordering::SeqCst);
+            } else {
+                failed_keys.lock().unwrap().push(request.target.clone());
+            }
+            reply(&mut stream, 200, &[("ETag", "\"late\"")], b"");
+        }
+        assert_eq!(roots.load(Ordering::SeqCst), 0);
+    });
+    let mut writes = group_bodies(BODIES);
+    writes.push(group_root());
+    let error = store.put_group(&writes).unwrap_err();
+    worker.join().unwrap();
+
+    // Fail-closed: the visible write of the group was never attempted, and the error does
+    // not claim otherwise.
+    assert_eq!(roots.load(Ordering::SeqCst), 0);
+    // Early stop kept the group to the batch already dispatched: bodies beyond it were
+    // never handed out, so they cannot appear below either.
+    let failed = failed_keys.lock().unwrap().clone();
+    assert_eq!(failed.len(), BATCH, "{failed:?}");
+    // Every failed body is named in the error chain...
+    let chain: Vec<String> = error.chain().map(|cause| cause.to_string()).collect();
+    let reported = chain.join(" | ");
+    for target in &failed {
+        let key = target.strip_prefix("/bucket/").expect("body target");
+        assert!(reported.contains(key), "{key} missing from {chain:?}");
+    }
+    // ...while the first failure is still the error the backend produced, not a wrapper
+    // around several of them.
+    assert!(reported.contains("500"), "{chain:?}");
+    assert!(!reported.contains("group/root"), "{chain:?}");
+    Ok(())
+}

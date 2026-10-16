@@ -18,11 +18,31 @@ use std::{
 
 /// Upper bound on concurrent `put` calls issued for one `put_group` body set.
 ///
+/// The bound is **per group and only per group**: nothing in this adapter counts bodies,
+/// worker threads or connections across groups, so N groups committing at the same time
+/// run up to N·4 workers and put up to N·4 body PUTs on the wire. Callers that fan groups
+/// out own that fan-out bound; a global in-flight limit would have to be admission
+/// control in front of the store, which this adapter deliberately does not implement.
+///
 /// Deliberately conservative: the group bodies are already-written payloads waiting on
 /// network round trips, so a handful of connections hides most of the RTT without
 /// turning one commit into a burst of sockets. The whole group is bounded by this, no
 /// matter how many writes it carries.
 const GROUP_UPLOAD_PARALLELISM: usize = 4;
+
+/// Idle keep-alive connections this client parks per S3 host.
+///
+/// Bounds socket *retention*, not concurrency: reqwest's default is `usize::MAX`, which
+/// lets a long-lived store keep a socket for every group it has ever published. Four
+/// groups' worth keeps a burst's sockets warm without hoarding. Hitting this limit never
+/// blocks a request; the surplus connection is simply closed instead of pooled.
+const POOL_MAX_IDLE_PER_HOST: usize = 4 * GROUP_UPLOAD_PARALLELISM;
+
+/// How long an idle connection is reused before it is closed.
+///
+/// Shorter than reqwest's 90 s default, so the sockets of one burst are released while the
+/// store is idle, and long enough that consecutive groups still reuse them.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct S3Config {
@@ -112,6 +132,8 @@ impl S3ObjectStore {
             .retry(reqwest::retry::never())
             .timeout(config.timeout)
             .connect_timeout(config.timeout)
+            .pool_max_idle_per_host(POOL_MAX_IDLE_PER_HOST)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Self {
@@ -245,14 +267,20 @@ impl ObjectStore for S3ObjectStore {
     /// visible comes last") is what that serialized final step upholds: the group's
     /// visible write never goes out while a body it could reference is unconfirmed.
     ///
+    /// That bound is per group: it caps *this* call's bodies, and no accounting is shared
+    /// between calls, so N groups committing at once hold up to N·4 worker threads and
+    /// N·4 unconfirmed body PUTs. Concurrent fan-out over groups is the caller's to
+    /// bound — a global in-flight limit belongs in admission control above the store, not
+    /// inside one group's fan-out.
+    ///
     /// Failures stay fail-closed: a body error stops handing out new work, joins the
     /// bodies already dispatched, and returns the error, so an Unknown network outcome is
-    /// never reported as success and the final write is not attempted. On error an
-    /// arbitrary subset of the independent bodies may have landed; they are
-    /// content-addressed and idempotent, and
-    /// [`ObjectStore::group_rejection_publishes_nothing`] stays `false` because a rejected
-    /// group does not prove that nothing became visible. Nothing is retried beyond
-    /// `S3Config::retries`.
+    /// never reported as success and the final write is not attempted. Every failure is
+    /// reported, not just the first: see [`group_upload_error`]. On error an arbitrary
+    /// subset of the independent bodies may have landed; they are content-addressed and
+    /// idempotent, and [`ObjectStore::group_rejection_publishes_nothing`] stays `false`
+    /// because a rejected group does not prove that nothing became visible. Nothing is
+    /// retried beyond `S3Config::retries`.
     fn put_group(&self, writes: &[GroupWrite]) -> Result<Vec<String>> {
         let Some((root, bodies)) = writes.split_last() else {
             return Ok(Vec::new());
@@ -276,7 +304,7 @@ impl ObjectStore for S3ObjectStore {
 
         let next = AtomicUsize::new(0);
         let failed = AtomicBool::new(false);
-        let errors = Mutex::new(None);
+        let failures = Mutex::new(Vec::new());
         let etags = Mutex::new(vec![None; bodies.len()]);
         let worker_count = bodies.len().min(GROUP_UPLOAD_PARALLELISM);
 
@@ -299,11 +327,13 @@ impl ObjectStore for S3ObjectStore {
                             }
                             Err(error) => {
                                 failed.store(true, Ordering::Release);
-                                let mut first =
-                                    errors.lock().expect("S3 group error lock poisoned");
-                                if first.is_none() {
-                                    *first = Some(error);
-                                }
+                                failures
+                                    .lock()
+                                    .expect("S3 group failure lock poisoned")
+                                    .push(GroupFailure {
+                                        key: Some(write.key.clone()),
+                                        error,
+                                    });
                                 return Ok(());
                             }
                         }
@@ -313,15 +343,22 @@ impl ObjectStore for S3ObjectStore {
             for worker in workers {
                 if worker.join().is_err() {
                     failed.store(true, Ordering::Release);
-                    let mut first = errors.lock().expect("S3 group error lock poisoned");
-                    if first.is_none() {
-                        *first = Some(anyhow!("S3 group upload worker panicked"));
-                    }
+                    failures
+                        .lock()
+                        .expect("S3 group failure lock poisoned")
+                        .push(GroupFailure {
+                            key: None,
+                            error: anyhow!("S3 group upload worker panicked"),
+                        });
                 }
             }
         });
 
-        if let Some(error) = errors.lock().expect("S3 group error lock poisoned").take() {
+        if let Some(error) = group_upload_error(
+            failures
+                .into_inner()
+                .expect("S3 group failure lock poisoned"),
+        ) {
             return Err(error);
         }
         let body_etags = etags
@@ -421,6 +458,44 @@ fn group_bodies_are_independent(root: &GroupWrite, bodies: &[GroupWrite]) -> boo
         }
     }
     true
+}
+
+/// One failure recorded while a group's bodies were in flight.
+struct GroupFailure {
+    /// The body whose `put` failed; `None` when a worker died without reporting one.
+    key: Option<String>,
+    error: anyhow::Error,
+}
+
+/// Fold every failure of one group upload into the single error [`ObjectStore::put_group`]
+/// returns; `None` means the group had no failure at all.
+///
+/// A lone failure is returned untouched: its own type and message are what the caller must
+/// see, so a typed failure such as `PreconditionFailed` stays recognisable through
+/// `downcast`. Several failures are collapsed onto the first one — keeping it as the root
+/// preserves that typed lookup for it — with a context naming all of them, because the
+/// failures of a partly dispatched group are exactly what a caller needs to decide which
+/// bodies it must re-check. A worker panic is recorded like a body failure precisely so
+/// that it survives a group that already reported an error.
+fn group_upload_error(failures: Vec<GroupFailure>) -> Option<anyhow::Error> {
+    let mut failures = failures.into_iter();
+    let first = failures.next()?;
+    let rest: Vec<GroupFailure> = failures.collect();
+    if rest.is_empty() {
+        return Some(first.error);
+    }
+    let described = std::iter::once(&first)
+        .chain(rest.iter())
+        .map(|failure| match &failure.key {
+            Some(key) => format!("{key}: {:#}", failure.error),
+            None => format!("{:#}", failure.error),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(first.error.context(format!(
+        "S3 group upload failed for {} writes: {described}",
+        rest.len() + 1
+    )))
 }
 
 fn validate_etag(etag: &str) -> Result<()> {
