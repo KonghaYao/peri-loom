@@ -177,6 +177,20 @@ retries; the audit outage itself remains a fail-closed service error. A genuinel
 ambiguous native outcome remains quarantined. This does not solve disk-space
 exhaustion or prove that the client received an earlier reply.
 
+Two durable operation formats upgrade one way, and both refuse before serving
+rather than after: a compacted operation snapshot now carries an envelope version
+and a digest of its own content, and durable command digests are written as
+`logical_command_v1:<hex>`. Binaries released before v1.1.4 do not know either
+field vocabulary and refuse to open such a state directory at startup. Rolling
+back therefore needs an operator who removes the operation snapshot (which drops
+the operations it materialized) or restores a pre-upgrade copy. In the other
+direction the upgrade is one way: a snapshot written by an older release stays
+readable and is re-sealed in place on its first open, while earlier binaries
+refuse this field vocabulary at open. Because the snapshot has no anchor outside
+its own directory, an edited snapshot that keeps a legal chain position is only
+detectable through its content digest: a writer who can rewrite the directory can
+also recompute that digest.
+
 ## Build, test, and SDKs
 
 ```sh
