@@ -33,6 +33,9 @@ func (database DatabaseID) Validate() error {
 }
 
 type Options struct {
+	// ConnectionReuse 显式启用外部连接复用（默认 false：逐请求新建连接）。
+	// 复用只改变连接存活期；传输层失败仍以 outcome_unknown 结束，绝不自动重发。
+	ConnectionReuse bool
 	Timeout          time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64

@@ -58,7 +58,14 @@ func NewClient(endpoint, credential string, options Options) (*Client, error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DisableKeepAlives = true
+	transport.DisableKeepAlives = !options.ConnectionReuse
+	if options.ConnectionReuse {
+		transport.MaxIdleConns = 64
+		transport.MaxIdleConnsPerHost = 16
+		// 外部网关 http.Server IdleTimeout=30s（service.go），客户端保守取 20s：
+		// 低于服务端上限，避免复用被服务端先关闭的连接；不照搬内部 Gateway→Worker 的 5s。
+		transport.IdleConnTimeout = 20 * time.Second
+	}
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: options.RootCAs}
 	client := &http.Client{Transport: transport, Timeout: options.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &Client{endpoint: strings.TrimSuffix(parsed.String(), "/"), credential: credential, http: client, requestLimit: options.MaxRequestBytes, responseLimit: options.MaxResponseBytes}, nil
@@ -79,6 +86,8 @@ func (client *Client) call(ctx context.Context, path, identifier string, input a
 	if err != nil {
 		return &Error{Code: "invalid_request", RequestID: identifier}
 	}
+	// 禁止标准库隐式重发：Body 不可重放（GetBody=nil、Body 非 nil）时
+	// http.Transport 的 isReplayable 为 false，任何已写出的请求都不会被自动重试。
 	request.GetBody = nil
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
