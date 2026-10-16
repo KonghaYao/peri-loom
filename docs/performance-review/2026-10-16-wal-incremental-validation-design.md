@@ -108,11 +108,14 @@ cargo test --test p4_runtime        26 passed
 append/部分尾帧/无提交帧/覆盖重写/truncate/salts 与 header 改变/checksum 损坏后 stopped 与恢复/
 `clear` 与零填充增长/200 步随机混合突变逐点对照；另有两个测试证明对照臂确实做整幅工作且仍与参考一致。
 
-## 6. 配对基准（已就绪，未计时）
+## 6. 配对基准（已执行，结果见测量报告）
 
 两个基准都在**同一二进制**上交替运行两臂，唯一差异是 `INCREMENTAL_SCAN`，因此差值只能归因于
 扫描状态；夹具（镜像与追加帧）在计时外生成，每样本结束时校验两臂结论与整幅扫描一致。
-**默认 ignored**，避免与其它 owner 的测量互相污染。建议在 release 下运行（默认 test profile 未优化）：
+默认 ignored，避免与其它 owner 的测量互相污染。release 构建下已按冻结配置执行：
+扫描级 2000/16000/65536 帧 × 3 轮，commit 级 1000/4000/12000 行 × 3 与 9 轮。
+原始每轮值、中位与范围、计数与异常见
+[配对测量](./2026-10-16-wal-incremental-scan-measurement.md)。
 
 ```
 # 扫描级：固定追加帧数，累计 WAL 多档，≥3 轮交替
@@ -127,8 +130,8 @@ PERI_COMMIT_BENCH_ROWS=1000,4000,12000 PERI_COMMIT_BENCH_COMMITS=16 PERI_COMMIT_
   authority::store_scaling_tests::commit_incremental_scan_paired_curve --nocapture --test-threads=1
 ```
 
-- 预算估算（未实测）：扫描级默认档位在 release 下约 1–2 分钟；commit 级随档位增长，12000 行档位
-  的两臂夹具加测量约 3–8 分钟（单线程、独占机器）。跑前建议确认无其它编译/基准并发。
+- 实测预算：release 构建 232 s（首次，单独报告）；扫描级测量 < 1 s，commit 级 3 轮 17 s、
+  9 轮 32 s；测量总计约 1 分钟（共享主机、非独占）。
 - 输出字段：`scan_us`/`scanned_bytes`/`per_append_scan_bytes`/`scan_calls`/`copied_bytes`（机制项），
   commit 级另有 `wall_us`/`per_commit_us`、store `gets/puts/groups/page_gets`（提交总量与持久写入），
   以及 `COMMIT_BENCH_VERIFY`（两臂 lsn 与帧数一致）。
@@ -136,15 +139,12 @@ PERI_COMMIT_BENCH_ROWS=1000,4000,12000 PERI_COMMIT_BENCH_COMMITS=16 PERI_COMMIT_
   单机提交耗时，且**仍不等于平台端到端**（不含 Gateway、Go 侧、网络与并发）。
   若 `wall_us` 差异小于档位噪声，应报告“机制项改善、提交总耗时未区分”，不得反向宣称。
 
-### 冒烟记录（非证据）
-
-debug 构建、64 帧档、4 次追加、60 行档各跑通一次：增量臂 568 B/追加，对照臂 35676 B/追加；
-commit 级 `copied_bytes` 两臂相同，`gets/puts/groups` 两臂相同，两臂 `lsn`/帧数一致。
-这些数字只用于确认 harness 可用，不作为收益证据。
-
 ## 7. 未验证 / 边界
 
-- **性能未实测（NOT MEASURED）**：只有结构、字节计数与冒烟输出；无冻结环境的基线/候选计时，
-  无并发与公平性数据，单测耗时不能当收益证据。
+- **扫描级已实测（成立）**：1.07–35.1 MB 镜像上，单次追加的扫描由 O(镜像) 降为 O(新增帧)，
+  中位 31→5506 / 10→50847 / 8→174723 µs（见配对测量报告）。
+- **提交级未证明**：1000/4000/12000 行档位上，每提交总耗时两臂不可区分（方向随档位翻转、
+  范围重叠）；该规模下机制项占比约 2% 或更低。E01（570k 行 / 8M 目标）规模的提交级与端到端
+  仍未测，不得据此宣称突破。
 - 未跑 Go 平台测试、未跑全栈、未跑 E01 基准；无端到端结论。
 - 剩余已知增长项：镜像复制；WAL index 单文档 O(条目数) 的解码/序列化/上传。
