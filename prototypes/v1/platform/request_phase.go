@@ -19,7 +19,10 @@ import (
 const (
 	requestPhaseMaxDepth = 8
 	requestPhaseMaxSpans = 16
-	requestPhaseLimit    = 64
+	// The bound covers one import-and-query slice so the phases of a data load and the
+	// phases of the reads against that data come from the same process. It stays a
+	// bound: past it the stream drops records and says so instead of growing.
+	requestPhaseLimit = 8192
 )
 
 type requestPhase string
