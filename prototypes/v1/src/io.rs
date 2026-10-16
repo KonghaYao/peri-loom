@@ -17,10 +17,10 @@ use crate::metrics::{Metrics, Operation};
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
 use crate::ownership::types::AccessRole;
-use crate::recovery::{batch_covers_position, committed_position};
+use crate::recovery::{batch_covers_position, WalImage};
 use crate::resources::ResourceUsage;
 use crate::storage::RemoteStorage;
-use crate::wal::{apply_batch, DurableWal, RemoteWal, WalBatch};
+use crate::wal::{DurableWal, RemoteWal, WalBatch};
 use files::RemoteFile;
 use lock::DirectoryLock;
 use native::NativeIoGate;
@@ -45,7 +45,7 @@ struct Shared {
 
 #[derive(Default)]
 struct State {
-    bytes: Vec<u8>,
+    image: WalImage,
     batch: WalBatch,
     lsn: u64,
     dirty: bool,
@@ -86,10 +86,10 @@ impl RemoteIO {
             ..State::default()
         };
         wal.for_each_record(&namespace, 0, |record| {
-            apply_batch(&mut state.bytes, &record.batch)?;
+            state.image.apply(&record.batch)?;
             Ok(())
         })?;
-        state.last_commit = committed_position(&state.bytes).ok().flatten();
+        state.last_commit = state.image.committed_position().ok().flatten();
         let path = root
             .join("database")
             .to_str()
@@ -142,7 +142,7 @@ impl RemoteIO {
     pub fn resources(&self) -> Result<ResourceUsage> {
         let state = self.shared.lock()?;
         let mut usage = self.shared.storage.resource_usage()?;
-        usage.wal_bytes = state.bytes.len();
+        usage.wal_bytes = state.image.len();
         usage.pending_wal_bytes =
             state
                 .batch
@@ -174,7 +174,7 @@ impl RemoteIO {
                 && !state.wal_failed
                 && state.position.is_none()
                 && state.batch.operations.is_empty()
-                && state.bytes.len() <= 32
+                && state.image.len() <= 32
                 && state.lsn == self.shared.storage.applied_lsn(),
             "database open has uncommitted WAL or an unsettled publication"
         );
@@ -196,7 +196,7 @@ impl RemoteIO {
         let mut state = self.shared.lock()?;
         self.shared.allow_reset(&state)?;
         ensure!(
-            state.bytes.is_empty(),
+            state.image.is_empty(),
             "WAL compaction requires a successful native truncate-checkpoint"
         );
         let before = state
@@ -276,7 +276,7 @@ impl Shared {
             "WAL reset cannot discard pending writes"
         );
         ensure!(
-            state.bytes.len() <= 32 || self.storage.applied_lsn() >= state.lsn,
+            state.image.len() <= 32 || self.storage.applied_lsn() >= state.lsn,
             "WAL reset cannot discard an uncheckpointed durable tail"
         );
         Ok(())
@@ -291,12 +291,13 @@ impl Shared {
         if state.batch.operations.is_empty() {
             return Ok(());
         }
-        let position = committed_position(&state.bytes)
-            .ok()
-            .flatten()
+        // The scan resumes at the frames the pending batch added: bytes an earlier commit
+        // verified are never re-read, and a write inside them already reset the state.
+        let scanned = state.image.committed_position().ok().flatten();
+        let position = scanned
             .filter(|position| Some(*position) != state.last_commit)
             .filter(|position| {
-                batch_covers_position(&state.batch, &state.bytes, *position).unwrap_or(false)
+                batch_covers_position(&state.batch, state.image.bytes(), *position).unwrap_or(false)
             });
         let bytes = state
             .batch
@@ -353,7 +354,7 @@ impl Shared {
             "database publication requires durable WAL"
         );
         ensure!(
-            !state.dirty || state.position.is_some() || state.bytes.len() <= 32,
+            !state.dirty || state.position.is_some() || state.image.len() <= 32,
             "live WAL publication requires native checkpoint position"
         );
         let position = state
@@ -417,7 +418,7 @@ impl IO for RemoteIO {
                 self.shared.check_local_writer().map_err(adapter_error)?;
                 let mut state = self.shared.lock()?;
                 self.shared.allow_reset(&state).map_err(adapter_error)?;
-                state.bytes.clear();
+                state.image.clear();
                 state
                     .batch
                     .operations

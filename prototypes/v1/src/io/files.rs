@@ -6,7 +6,7 @@ use turso_core::io::{Buffer, Completion, File, FileSyncType};
 use super::{finish, Shared};
 use crate::manifest::WalPosition;
 use crate::recovery::committed_position;
-use crate::wal::{apply_batch, WalBatch, WalOperation};
+use crate::wal::{WalBatch, WalOperation};
 
 pub(super) struct RemoteFile {
     pub(super) shared: Arc<Shared>,
@@ -50,7 +50,7 @@ impl RemoteFile {
             }
             operations.push(WalOperation::Write { offset: pos, bytes });
             let batch = WalBatch { operations };
-            apply_batch(&mut state.bytes, &batch)?;
+            state.image.apply(&batch)?;
             if resetting {
                 state.last_commit = None;
             }
@@ -88,10 +88,11 @@ impl File for RemoteFile {
             buffer.as_mut_slice().fill(0);
             if self.wal {
                 let pos = usize::try_from(pos)?;
-                let count = buffer.len().min(state.bytes.len().saturating_sub(pos));
+                let image = state.image.bytes();
+                let count = buffer.len().min(image.len().saturating_sub(pos));
                 buffer.as_mut_slice().fill(0);
                 if count > 0 {
-                    buffer.as_mut_slice()[..count].copy_from_slice(&state.bytes[pos..pos + count]);
+                    buffer.as_mut_slice()[..count].copy_from_slice(&image[pos..pos + count]);
                 }
                 Ok(count)
             } else {
@@ -145,7 +146,7 @@ impl File for RemoteFile {
             .map_err(super::adapter_error)?;
         let state = self.shared.lock()?;
         Ok(if self.wal {
-            state.bytes.len() as u64
+            state.image.len() as u64
         } else {
             self.shared.storage.size()
         })
@@ -159,11 +160,7 @@ impl File for RemoteFile {
             if self.wal {
                 self.shared.allow_reset(&state)?;
                 let size = usize::try_from(len)?;
-                if size > state.bytes.len() {
-                    let additional = size - state.bytes.len();
-                    state.bytes.try_reserve(additional)?;
-                }
-                state.bytes.resize(size, 0);
+                state.image.resize(size)?;
                 state
                     .batch
                     .operations

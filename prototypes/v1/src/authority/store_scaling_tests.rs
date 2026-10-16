@@ -1298,3 +1298,255 @@ fn paged_receipt_lookup_and_update_do_not_enumerate_store() -> Result<()> {
     );
     Ok(())
 }
+
+/// Cumulative committed rows to measure, and the fixed statement a measured commit runs.
+const COMMIT_BENCH_ROWS_ENV: &str = "PERI_COMMIT_BENCH_ROWS";
+const COMMIT_BENCH_ROUNDS_ENV: &str = "PERI_COMMIT_BENCH_ROUNDS";
+const COMMIT_BENCH_COMMITS_ENV: &str = "PERI_COMMIT_BENCH_COMMITS";
+const COMMIT_BENCH_BATCH_ENV: &str = "PERI_COMMIT_BENCH_BATCH";
+const COMMIT_BENCH_DEFAULT_ROWS: &str = "1000,4000,12000";
+const COMMIT_BENCH_DEFAULT_ROUNDS: usize = 3;
+const COMMIT_BENCH_DEFAULT_COMMITS: usize = 16;
+const COMMIT_BENCH_DEFAULT_BATCH: usize = 200;
+
+fn commit_bench_tiers() -> Vec<usize> {
+    std::env::var(COMMIT_BENCH_ROWS_ENV)
+        .unwrap_or_else(|_| COMMIT_BENCH_DEFAULT_ROWS.into())
+        .split(',')
+        .filter_map(|value| value.trim().parse().ok())
+        .collect()
+}
+
+fn commit_bench_setting(name: &str, default: usize, floor: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+        .max(floor)
+}
+
+fn commit_bench_median(values: &mut [u128]) -> u128 {
+    values.sort_unstable();
+    values[values.len() / 2]
+}
+
+/// One arm of the paired commit benchmark: its own store, session, database and row
+/// counter, so a measurement never depends on the other arm's state.
+struct CommitArm {
+    _objects: tempfile::TempDir,
+    _cache: tempfile::TempDir,
+    store: Arc<Probe>,
+    /// The fenced session the engine writes through: the logical `wal/index` key resolves
+    /// through it, so verification reads exactly what the database published.
+    session: Arc<dyn ObjectStore>,
+    database: RemoteDatabase,
+    next_id: u64,
+}
+
+impl CommitArm {
+    fn open() -> Result<Self> {
+        let objects = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        let store = Arc::new(Probe::open(objects.path())?);
+        let namespace = Namespace::new("scaling", "sql")?;
+        let (control, _root) = authority(store.clone())?;
+        let intent = GrantIntent {
+            database: DatabaseId::new(namespace.clone(), "main")?,
+            worker_id: "worker".into(),
+            epoch: 1,
+            expected_epoch: 0,
+            lease_id: "lease".into(),
+            ttl_ms: 10000,
+            role: AccessRole::Writer,
+        };
+        let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+        let lease = control.grant(GrantRequest {
+            intent,
+            nonce,
+            request_id: "grant".into(),
+        })?;
+        let session = control.open_session(&lease.binding, AccessRole::Writer)?;
+        let database = RemoteDatabase::open(session.clone(), namespace, cache.path(), 1)?;
+        database.execute("CREATE TABLE bench(id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")?;
+        Ok(Self {
+            _objects: objects,
+            _cache: cache,
+            store,
+            session,
+            database,
+            next_id: 1,
+        })
+    }
+
+    /// Grows the table to `rows` with batched statements: the tier is fixture, not the
+    /// measured transaction, and every measured commit below keeps the same statement size.
+    fn grow_to(&mut self, rows: usize, batch: usize) -> Result<()> {
+        while (self.next_id as usize) <= rows {
+            let size = batch.min(rows - self.next_id as usize + 1);
+            let values = (0..size)
+                .map(|offset| format!("({},'{}')", self.next_id + offset as u64, "g".repeat(64)))
+                .collect::<Vec<_>>()
+                .join(",");
+            self.database
+                .execute(&format!("INSERT INTO bench(id,payload) VALUES {values}"))?;
+            self.next_id += size as u64;
+        }
+        Ok(())
+    }
+
+    /// The fixed transaction every measured commit runs: one row, so each commit appends
+    /// the same frames whatever the tier.
+    fn commit_one(&mut self) -> Result<()> {
+        self.database.execute(&format!(
+            "INSERT INTO bench(id,payload) VALUES ({},'{}')",
+            self.next_id,
+            "x".repeat(64)
+        ))?;
+        self.next_id += 1;
+        Ok(())
+    }
+
+    /// The accumulated WAL must still end in a commit marker, and a cold replay of the same
+    /// index must reach the same marker: the two arms must not disagree on durability.
+    fn verify(&self) -> Result<crate::wal::WalCommit> {
+        let namespace = Namespace::new("scaling", "sql")?;
+        let index = self
+            .session
+            .get(&namespace.key("wal/index")?)?
+            .context("missing WAL index")?
+            .bytes;
+        let load = |key: &str| -> Result<Vec<u8>> {
+            Ok(self
+                .session
+                .get(key)?
+                .context("missing committed chunk")?
+                .bytes)
+        };
+        let commit = crate::recovery::validate_index_commit(&index, &namespace, load)?
+            .context("index lost its commit marker")?;
+        assert!(
+            commit.position.frame_count > 0,
+            "commit marker without frames"
+        );
+        let cold = crate::recovery::validate_index_state(&index, &namespace, load)?;
+        assert_eq!(
+            cold.commit(),
+            Some(commit),
+            "cold replay disagrees with the validated index"
+        );
+        Ok(commit)
+    }
+}
+
+struct CommitSample {
+    wall_us: u128,
+    scan_us: u128,
+    scanned_bytes: u64,
+    copied_bytes: u64,
+    scan_calls: u64,
+    gets: usize,
+    puts: usize,
+    groups: usize,
+    page_gets: usize,
+}
+
+fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Result<CommitSample> {
+    crate::recovery::INCREMENTAL_SCAN.store(incremental, Ordering::Relaxed);
+    arm.store.reset();
+    crate::recovery::reset_recovery_observations();
+    let before = crate::recovery::recovery_observations();
+    let started = Instant::now();
+    for _ in 0..commits {
+        arm.commit_one()?;
+    }
+    let wall_us = started.elapsed().as_micros();
+    let counters = arm.store.snapshot();
+    let observed = crate::recovery::recovery_observations();
+    crate::recovery::INCREMENTAL_SCAN.store(true, Ordering::Relaxed);
+    Ok(CommitSample {
+        wall_us,
+        scan_us: u128::from((observed.scan_nanos - before.scan_nanos) / 1_000),
+        scanned_bytes: observed.scanned_bytes - before.scanned_bytes,
+        copied_bytes: observed.copied_bytes - before.copied_bytes,
+        scan_calls: observed.scan_calls - before.scan_calls,
+        gets: counters.gets,
+        puts: counters.puts,
+        groups: counters.groups,
+        page_gets: counters.page_gets,
+    })
+}
+
+/// Paired commit benchmark. Both arms run the same statements against their own database
+/// and differ only in the scan switch, so the reported difference is the scan state. The
+/// wall time is a single-node commit through `RemoteIO` and the Authority — it is not a
+/// statement latency, a platform end-to-end figure or a capacity result.
+#[test]
+#[ignore = "commit 增量扫描对照基准：显式运行时才计时，避免与其它 owner 的测量重叠"]
+fn commit_incremental_scan_paired_curve() -> Result<()> {
+    let rounds = commit_bench_setting(COMMIT_BENCH_ROUNDS_ENV, COMMIT_BENCH_DEFAULT_ROUNDS, 3);
+    let commits = commit_bench_setting(COMMIT_BENCH_COMMITS_ENV, COMMIT_BENCH_DEFAULT_COMMITS, 1);
+    let batch = commit_bench_setting(COMMIT_BENCH_BATCH_ENV, COMMIT_BENCH_DEFAULT_BATCH, 1);
+    for tier in commit_bench_tiers() {
+        let mut arms = [CommitArm::open()?, CommitArm::open()?];
+        for arm in &mut arms {
+            arm.grow_to(tier, batch)?;
+        }
+        let mut samples: [Vec<u128>; 2] = [Vec::new(), Vec::new()];
+        for round in 1..=rounds {
+            // Alternating arm order, so a trend in the machine cannot favour one arm.
+            let order = if round % 2 == 1 { [0, 1] } else { [1, 0] };
+            for index in order {
+                let incremental = index == 0;
+                let sample = commit_sample(&mut arms[index], commits, incremental)?;
+                samples[index].push(sample.wall_us);
+                eprintln!(
+                    "COMMIT_BENCH tier_rows={tier} arm={} round={round} commits={commits} \
+                     wall_us={} per_commit_us={} scan_us={} scanned_bytes={} copied_bytes={} \
+                     scan_calls={} gets={} puts={} groups={} page_gets={}",
+                    if incremental {
+                        "incremental"
+                    } else {
+                        "whole-image"
+                    },
+                    sample.wall_us,
+                    sample.wall_us / commits as u128,
+                    sample.scan_us,
+                    sample.scanned_bytes,
+                    sample.copied_bytes,
+                    sample.scan_calls,
+                    sample.gets,
+                    sample.puts,
+                    sample.groups,
+                    sample.page_gets,
+                );
+            }
+        }
+        for (index, values) in samples.iter_mut().enumerate() {
+            eprintln!(
+                "COMMIT_BENCH_SUMMARY tier_rows={tier} arm={} rounds={rounds} median_wall_us={} \
+                 median_per_commit_us={}",
+                if index == 0 {
+                    "incremental"
+                } else {
+                    "whole-image"
+                },
+                commit_bench_median(values),
+                commit_bench_median(values) / commits as u128,
+            );
+        }
+        for (index, arm) in arms.iter().enumerate() {
+            let commit = arm.verify()?;
+            eprintln!(
+                "COMMIT_BENCH_VERIFY tier_rows={tier} arm={} lsn={} frames={}",
+                if index == 0 {
+                    "incremental"
+                } else {
+                    "whole-image"
+                },
+                commit.lsn,
+                commit.position.frame_count,
+            );
+        }
+    }
+    Ok(())
+}

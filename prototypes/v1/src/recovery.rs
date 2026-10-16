@@ -1,19 +1,114 @@
 use anyhow::{ensure, Context, Result};
+use std::time::{Duration, Instant};
 
 use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::wal::{apply_batch, WalBatch, WalCommit, WalMetadata, WalOperation, WalRecord};
 
+const WAL_HEADER: usize = 32;
+const WAL_FORMAT: u32 = 3_007_000;
+const WAL_MAGIC_LITTLE_ENDIAN: u32 = 0x377f_0682;
+const WAL_MAGIC_BIG_ENDIAN: u32 = 0x377f_0683;
+
+/// Work the recovery path does that the `wal_durability` timer deliberately excludes: the
+/// frame scans it runs before and after each append, and the image copies a validated WAL
+/// extension pays. Kept separately observable so a review can tell a removed growth term
+/// from one that merely moved out of the timer.
+///
+/// Counters are per thread, like `request_reads`: the commit that pays the cost is the one
+/// that reads it. A reader on another thread sees zeros until aggregation exists, and this
+/// module does not add any: the scan updates the counters once per call, never per byte, so
+/// the cost of keeping them is one thread-local read plus four additions per scan. Every
+/// field saturates instead of wrapping, because a diagnostic counter that wraps would
+/// report a smaller cost than the work it measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryObservations {
+    pub scanned_bytes: u64,
+    pub copied_bytes: u64,
+    pub scan_calls: u64,
+    pub scan_nanos: u64,
+}
+
+/// Test-only: whether a scan may reuse the prefix a previous scan verified. `false`
+/// reproduces the whole-image scan this change replaced, on the same binary and the same
+/// fixture, so a paired measurement attributes the difference to the scan state alone
+/// rather than to the fixture or the store.
+#[cfg(test)]
+pub(crate) static INCREMENTAL_SCAN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+impl RecoveryObservations {
+    const ZERO: Self = Self {
+        scanned_bytes: 0,
+        copied_bytes: 0,
+        scan_calls: 0,
+        scan_nanos: 0,
+    };
+}
+
+thread_local! {
+    static OBSERVATIONS: std::cell::Cell<RecoveryObservations> =
+        const { std::cell::Cell::new(RecoveryObservations::ZERO) };
+}
+
+pub fn recovery_observations() -> RecoveryObservations {
+    OBSERVATIONS.with(std::cell::Cell::get)
+}
+
+pub fn reset_recovery_observations() {
+    OBSERVATIONS.with(|observations| observations.set(RecoveryObservations::ZERO));
+}
+
+fn observed_scan(scanned: usize, elapsed: Duration) {
+    OBSERVATIONS.with(|observations| {
+        let counters = observations.get();
+        observations.set(RecoveryObservations {
+            scanned_bytes: counters.scanned_bytes.saturating_add(scanned as u64),
+            copied_bytes: counters.copied_bytes,
+            scan_calls: counters.scan_calls.saturating_add(1),
+            scan_nanos: counters
+                .scan_nanos
+                .saturating_add(elapsed.as_nanos() as u64),
+        });
+    });
+}
+
+fn observed_copy(bytes: usize) {
+    OBSERVATIONS.with(|observations| {
+        let counters = observations.get();
+        observations.set(RecoveryObservations {
+            copied_bytes: counters.copied_bytes.saturating_add(bytes as u64),
+            ..counters
+        });
+    });
+}
+
+#[cfg(test)]
+mod bench;
+#[cfg(test)]
+mod fixture;
+#[cfg(test)]
+mod tests;
+
 pub fn committed_position(bytes: &[u8]) -> Result<Option<WalPosition>> {
-    if bytes.len() < 32 {
+    let started = Instant::now();
+    let mut scanned = 0;
+    let result = committed_position_of(bytes, &mut scanned);
+    observed_scan(scanned, started.elapsed());
+    result
+}
+
+fn committed_position_of(bytes: &[u8], scanned: &mut usize) -> Result<Option<WalPosition>> {
+    if bytes.len() < WAL_HEADER {
         return Ok(None);
     }
+    *scanned += WAL_HEADER;
     let magic = word(bytes, 0);
     ensure!(
-        matches!(magic, 0x377f0682 | 0x377f0683),
+        matches!(magic, WAL_MAGIC_LITTLE_ENDIAN | WAL_MAGIC_BIG_ENDIAN),
         "invalid WAL magic"
     );
-    ensure!(word(bytes, 4) == 3007000, "unsupported WAL format");
+    ensure!(word(bytes, 4) == WAL_FORMAT, "unsupported WAL format");
     let page_size = word(bytes, 8) as usize;
     ensure!(
         (512..=65536).contains(&page_size) && page_size.is_power_of_two(),
@@ -26,12 +121,13 @@ pub fn committed_position(bytes: &[u8]) -> Result<Option<WalPosition>> {
         "WAL header checksum mismatch"
     );
     let frame_size = page_size + 24;
-    if !(bytes.len() - 32).is_multiple_of(frame_size) {
+    if !(bytes.len() - WAL_HEADER).is_multiple_of(frame_size) {
         return Ok(None);
     }
     let salts = [word(bytes, 16), word(bytes, 20)];
     let mut position = None;
-    for (frame_index, frame) in bytes[32..].chunks_exact(frame_size).enumerate() {
+    for (frame_index, frame) in bytes[WAL_HEADER..].chunks_exact(frame_size).enumerate() {
+        *scanned += frame_size;
         if word(frame, 0) == 0 || [word(frame, 8), word(frame, 12)] != salts {
             return Ok(None);
         }
@@ -52,6 +148,214 @@ pub fn committed_position(bytes: &[u8]) -> Result<Option<WalPosition>> {
     Ok(position)
 }
 
+/// Frame-level state of a WAL image as [`committed_position`] reads it. A commit that only
+/// appends frames reuses the verified prefix instead of re-deriving the checksum chain over
+/// the whole image; a caller that rewrites or truncates bytes the prefix covers resets it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WalFrameScan {
+    /// Header the verified prefix belongs to. A different header means the image was
+    /// restarted or rewritten, so the prefix describes bytes that no longer exist.
+    header: Option<[u8; WAL_HEADER]>,
+    frame_size: usize,
+    big_endian: bool,
+    salts: [u32; 2],
+    /// Checksum chain after the `verified_frames` frames.
+    rolling: [u32; 2],
+    verified_frames: usize,
+    /// Header plus every frame examined, including the frame a stop was decided on. Only a
+    /// mutation that leaves the first `examined` bytes untouched may keep this state.
+    examined: usize,
+    position: Option<WalPosition>,
+    /// The scan stopped on a frame that cannot yield a position; further appends cannot
+    /// change that answer until the bytes it examined do.
+    stopped: bool,
+}
+
+impl WalFrameScan {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Equivalent of [`committed_position`] for an image whose examined bytes the caller
+    /// left untouched since the previous call.
+    fn position(&mut self, bytes: &[u8]) -> Result<Option<WalPosition>> {
+        #[cfg(test)]
+        if !INCREMENTAL_SCAN.load(std::sync::atomic::Ordering::Relaxed) {
+            self.reset();
+        }
+        let started = Instant::now();
+        let mut scanned = 0;
+        let result = self.advance(bytes, &mut scanned);
+        observed_scan(scanned, started.elapsed());
+        result
+    }
+
+    fn advance(&mut self, bytes: &[u8], scanned: &mut usize) -> Result<Option<WalPosition>> {
+        // A shrink below what was examined is a mutation the caller did not report, and the
+        // prefix cannot survive it.
+        if bytes.len() < self.examined {
+            self.reset();
+        }
+        if bytes.len() < WAL_HEADER {
+            self.reset();
+            return Ok(None);
+        }
+        *scanned += WAL_HEADER;
+        let header: [u8; WAL_HEADER] = bytes[..WAL_HEADER].try_into().expect("header length");
+        if self.header != Some(header) {
+            self.reset();
+            self.derive(&header)?;
+            self.header = Some(header);
+            self.examined = WAL_HEADER;
+        }
+        if self.stopped {
+            return Ok(None);
+        }
+        let available = bytes.len() - WAL_HEADER;
+        let complete = available / self.frame_size;
+        if complete > self.verified_frames {
+            self.extend(bytes, complete, scanned);
+        }
+        if self.stopped || !available.is_multiple_of(self.frame_size) {
+            return Ok(None);
+        }
+        Ok(self.position)
+    }
+
+    /// Header checks of [`committed_position`], plus the constants its frame loop needs.
+    fn derive(&mut self, header: &[u8; WAL_HEADER]) -> Result<()> {
+        let magic = word(header, 0);
+        ensure!(
+            matches!(magic, WAL_MAGIC_LITTLE_ENDIAN | WAL_MAGIC_BIG_ENDIAN),
+            "invalid WAL magic"
+        );
+        ensure!(word(header, 4) == WAL_FORMAT, "unsupported WAL format");
+        let page_size = word(header, 8) as usize;
+        ensure!(
+            (512..=65536).contains(&page_size) && page_size.is_power_of_two(),
+            "invalid WAL page size"
+        );
+        let big_endian = magic & 1 != 0;
+        let rolling = checksum(&header[..24], [0, 0], big_endian);
+        ensure!(
+            rolling == [word(header, 24), word(header, 28)],
+            "WAL header checksum mismatch"
+        );
+        self.frame_size = page_size + 24;
+        self.big_endian = big_endian;
+        self.salts = [word(header, 16), word(header, 20)];
+        self.rolling = rolling;
+        Ok(())
+    }
+
+    /// Frames the checksum chain already covers are never re-read: the loop resumes at the
+    /// first unverified frame and stops where [`committed_position`] would.
+    fn extend(&mut self, bytes: &[u8], complete: usize, scanned: &mut usize) {
+        for index in self.verified_frames..complete {
+            let start = WAL_HEADER + index * self.frame_size;
+            let frame = &bytes[start..start + self.frame_size];
+            self.examined = start + self.frame_size;
+            *scanned += self.frame_size;
+            if word(frame, 0) == 0 || [word(frame, 8), word(frame, 12)] != self.salts {
+                self.stopped = true;
+                return;
+            }
+            let next = checksum(
+                &frame[24..],
+                checksum(&frame[..8], self.rolling, self.big_endian),
+                self.big_endian,
+            );
+            if next != [word(frame, 16), word(frame, 20)] {
+                self.stopped = true;
+                return;
+            }
+            self.rolling = next;
+            self.verified_frames = index + 1;
+            // Assigned for every frame, exactly as the whole-image scan does it: a frame
+            // that does not commit leaves the image without a committed boundary, so a
+            // trailing uncommitted frame must clear the position rather than keep it.
+            self.position = (word(frame, 4) != 0).then_some(WalPosition {
+                salts: self.salts,
+                frame_count: index as u64 + 1,
+            });
+        }
+    }
+
+    /// A write that starts inside the examined prefix replaces bytes the chain covers.
+    fn note_write(&mut self, offset: usize) {
+        if offset < self.examined {
+            self.reset();
+        }
+    }
+
+    fn note_truncate(&mut self, size: usize) {
+        if size < self.examined {
+            self.reset();
+        }
+    }
+}
+
+/// The replayed WAL image together with the scan state describing its verified prefix.
+/// Every mutation goes through this type, so the prefix can never describe bytes the caller
+/// replaced.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WalImage {
+    bytes: Vec<u8>,
+    scan: WalFrameScan,
+}
+
+impl WalImage {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Applies a WAL batch, keeping the verified prefix when every operation lands beyond
+    /// it. The bytes themselves are still written by `wal::apply_batch`, the single
+    /// implementation of write and truncate semantics.
+    pub(crate) fn apply(&mut self, batch: &WalBatch) -> Result<()> {
+        for operation in &batch.operations {
+            match operation {
+                WalOperation::Write { offset, .. } => {
+                    self.scan.note_write(usize::try_from(*offset)?);
+                }
+                WalOperation::Truncate { size } => {
+                    self.scan.note_truncate(usize::try_from(*size)?);
+                }
+            }
+        }
+        apply_batch(&mut self.bytes, batch)
+    }
+
+    pub(crate) fn resize(&mut self, size: usize) -> Result<()> {
+        if size > self.bytes.len() {
+            self.bytes.try_reserve(size - self.bytes.len())?;
+        }
+        self.scan.note_truncate(size);
+        self.bytes.resize(size, 0);
+        Ok(())
+    }
+
+    /// Drops the image: a verified prefix cannot outlive the bytes it described.
+    pub(crate) fn clear(&mut self) {
+        self.bytes.clear();
+        self.scan.reset();
+    }
+
+    /// Position of the last commit frame, verifying only the frames added since the
+    /// previous call.
+    pub(crate) fn committed_position(&mut self) -> Result<Option<WalPosition>> {
+        self.scan.position(&self.bytes)
+    }
+}
+
 pub fn validate_index_commit(
     index_bytes: &[u8],
     namespace: &Namespace,
@@ -62,7 +366,7 @@ pub fn validate_index_commit(
 
 pub struct ValidatedWal {
     index: WalMetadata,
-    bytes: Vec<u8>,
+    image: WalImage,
 }
 
 impl ValidatedWal {
@@ -79,14 +383,14 @@ pub fn validate_index_state(
     namespace.key("wal/index")?;
     let index: WalMetadata = serde_json::from_slice(index_bytes)?;
     validate_layout(&index)?;
-    let mut bytes = Vec::new();
+    let mut image = WalImage::default();
     let mut last_record_commit = None;
     for entry_index in 0..index.entries.len() {
         last_record_commit = validate_record(
             &index,
             namespace,
             entry_index,
-            &mut bytes,
+            &mut image,
             &mut load_chunk,
             false,
         )?;
@@ -95,7 +399,7 @@ pub fn validate_index_state(
         last_record_commit == index.commit,
         "index and final record commit disagree"
     );
-    Ok(ValidatedWal { index, bytes })
+    Ok(ValidatedWal { index, image })
 }
 
 pub fn validate_index_append(
@@ -129,20 +433,18 @@ pub fn validate_index_append(
                 .all(|(id, digest)| index.receipt_digests.get(id) == Some(digest)),
         "WAL append changed validated index prefix or receipts"
     );
-    let mut bytes = previous.bytes.clone();
-    let commit = validate_record(
-        &index,
-        namespace,
-        old.entries.len(),
-        &mut bytes,
-        &mut load_chunk,
-        true,
-    )?;
+    let record = load_record(&index, namespace, old.entries.len(), &mut load_chunk, true)?;
+    // The candidate extends the accepted image, so it starts as a copy: an append that is
+    // rejected must leave the cached state describing exactly the accepted bytes. The scan
+    // is what makes the extension cheap: only the frames this record adds are verified.
+    let mut image = previous.image.clone();
+    observed_copy(image.len());
+    let commit = apply_record(&record, &mut image)?;
     ensure!(
         commit == index.commit,
         "index and final record commit disagree"
     );
-    Ok(ValidatedWal { index, bytes })
+    Ok(ValidatedWal { index, image })
 }
 
 fn validate_layout(index: &WalMetadata) -> Result<()> {
@@ -188,10 +490,24 @@ fn validate_record(
     index: &WalMetadata,
     namespace: &Namespace,
     entry_index: usize,
-    bytes: &mut Vec<u8>,
+    image: &mut WalImage,
     load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
     require_digest: bool,
 ) -> Result<Option<WalCommit>> {
+    let record = load_record(index, namespace, entry_index, load_chunk, require_digest)?;
+    apply_record(&record, image)
+}
+
+/// Loads the record an index entry names and checks its identity, receipt and replay
+/// baseline, leaving the replay image untouched: a caller that extends a validated image
+/// decides from the loaded batch whether it may reuse that image's verified frames.
+fn load_record(
+    index: &WalMetadata,
+    namespace: &Namespace,
+    entry_index: usize,
+    load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
+    require_digest: bool,
+) -> Result<WalRecord> {
     let entry = &index.entries[entry_index];
     let chunk = load_chunk(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?;
     ensure!(
@@ -233,18 +549,22 @@ fn validate_record(
             );
         }
     }
-    apply_batch(bytes, &record.batch)?;
+    Ok(record)
+}
+
+fn apply_record(record: &WalRecord, image: &mut WalImage) -> Result<Option<WalCommit>> {
+    image.apply(&record.batch)?;
     if let Some(commit) = record.commit {
         ensure!(
             commit.lsn == record.lsn && commit.position.frame_count > 0,
             "invalid record commit LSN"
         );
         ensure!(
-            committed_position(bytes)? == Some(commit.position),
+            image.committed_position()? == Some(commit.position),
             "commit does not match replayed WAL boundary"
         );
         ensure!(
-            batch_covers_position(&record.batch, bytes, commit.position)?,
+            batch_covers_position(&record.batch, image.bytes(), commit.position)?,
             "commit frame was not written by this record"
         );
     }
