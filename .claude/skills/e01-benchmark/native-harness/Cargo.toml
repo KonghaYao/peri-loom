@@ -1,0 +1,16 @@
+[package]
+name = "e01-native-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "E01 native TursoDB executor for frozen SQL plans (skill-local, not part of peri-loom)"
+
+[workspace]
+
+[dependencies]
+# 与被测 peri-loom 相同的本地 TursoDB fork 提交，仅启用文件持久化所需特性。
+turso_core = { path = "../../../../prototypes/p0/turso/core", default-features = false, features = ["fs", "uuid", "json", "encryption"] }
+serde_json = "1"
+
+[profile.dev]
+debug = 1
