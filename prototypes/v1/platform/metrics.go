@@ -43,5 +43,15 @@ func (gateway *Gateway) Metrics() map[string]any {
 			workers[identifier] = map[string]any{"observed_load": worker.Load, "healthy": worker.Healthy, "last_heartbeat_ms": worker.LastHeartbeatMS}
 		}
 	}
-	return map[string]any{"actions_total": actions, "errors_total": failures, "action_latency_ns_total": latency, "execute_latency_semantics": "execute_not_all_commits", "projects": projects, "active_permits": active, "unknown_held_permits": unknown, "observed_workers": workers, "cold_load_instrumentation": "not_exposed_by_worker_sql_protocol", "streaming_semantics": "bounded_worker_response_then_ndjson", "quota_scope": "single_gateway_process", "unknown_recovery": "operator_worker_terminal_proof_required_no_automatic_release", "request_id_semantics": "correlation_only_not_sql_deduplication"}
+	return map[string]any{"actions_total": actions, "errors_total": failures, "action_latency_ns_total": latency, "execute_latency_semantics": "execute_not_all_commits", "projects": projects, "active_permits": active, "unknown_held_permits": unknown, "observed_workers": workers, "cold_load_instrumentation": "not_exposed_by_worker_sql_protocol", "streaming_semantics": "bounded_worker_response_then_ndjson", "quota_scope": "single_gateway_process", "unknown_recovery": "operator_worker_terminal_proof_required_no_automatic_release", "request_id_semantics": "correlation_only_not_sql_deduplication", "state_operation_cost": stateOperationCost(gateway.config.State)}
+}
+
+// stateOperationCost exposes the shared lock and operation log cost of a commit, which
+// otherwise lands on requests that never see it in their own latency.
+func stateOperationCost(state StateStore) map[string]any {
+	provider, ok := state.(interface{ operationStats() map[string]any })
+	if !ok {
+		return nil
+	}
+	return provider.operationStats()
 }

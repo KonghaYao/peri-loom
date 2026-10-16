@@ -58,20 +58,22 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
 	result.operationID, result.operationStage = operationID, stage
-	err := updateOperationRecords(gateway.config.State, func(state *State) error {
+	err := updateOperationRecords(gateway.config.State, func(edit *operationEdit) error {
 		key := operationKey(database, operationID)
-		record, exists := state.Operations[key]
+		record, exists := edit.record(key)
 		if !exists || record.State != "in_flight" {
 			return ErrOperationExists
 		}
 		applyOperationOutcome(&record, *result, stage)
-		state.Operations[key] = record
+		edit.put(key, record)
 		if stage == "close_session" && result.code == "" {
-			for openedKey, opened := range state.Operations {
-				if opened.Source == "gateway" && opened.Action == "open" && opened.State == "terminal" && opened.Session == record.Session && opened.Worker == record.Worker && opened.Database == record.Database && opened.CleanupOutcome == "pending" {
-					opened.CleanupOutcome = "completed"
-					state.Operations[openedKey] = opened
-				}
+			keys := edit.matching(func(_ string, opened OperationRecord) bool {
+				return opened.Source == "gateway" && opened.Action == "open" && opened.State == "terminal" && opened.Session == record.Session && opened.Worker == record.Worker && opened.Database == record.Database && opened.CleanupOutcome == "pending"
+			})
+			for _, openedKey := range keys {
+				opened, _ := edit.record(openedKey)
+				opened.CleanupOutcome = "completed"
+				edit.put(openedKey, opened)
 			}
 		}
 		return nil

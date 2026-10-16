@@ -89,22 +89,14 @@ func journalReopen(test *testing.T, directory string) (*stateStore, error) {
 func TestOperationJournalAppendsOnlyTheDelta(test *testing.T) {
 	store, path := journalFixture(test)
 	database := securityDatabase()
-	seed := &retentionTestStore{state: store.state}
 	for index := 0; index < operationKnownRetention; index++ {
 		identifier := fmt.Sprintf("seed_%04d", index)
-		if err := beginOperation(seed, database, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
+		if err := beginOperation(store, database, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
 			test.Fatal(err)
 		}
-		if err := finishOperation(seed, database, identifier, nil, true); err != nil {
+		if err := finishOperation(store, database, identifier, nil, true); err != nil {
 			test.Fatal(err)
 		}
-	}
-	if err := store.updateOperations(func(state *State) error {
-		state.Operations = seed.state.Operations
-		state.OperationSequence = seed.state.OperationSequence
-		return nil
-	}); err != nil {
-		test.Fatal(err)
 	}
 	before, err := os.Stat(path)
 	if err != nil {

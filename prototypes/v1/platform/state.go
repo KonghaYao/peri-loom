@@ -9,10 +9,12 @@ import (
 )
 
 type stateStore struct {
-	disk        *durableFile
-	operations  *operationJournal
-	state       State
-	digestIndex map[string]string
+	disk            *durableFile
+	operations      *operationJournal
+	operationsIndex *operationIndex
+	cost            stateCost
+	state           State
+	digestIndex     map[string]string
 }
 
 func OpenStateStore(directory string) (StateStore, error) {
@@ -84,8 +86,7 @@ func OpenStateStore(directory string) (StateStore, error) {
 }
 
 func (store *stateStore) Snapshot() (State, error) {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return State{}, err
 	}
@@ -93,8 +94,7 @@ func (store *stateStore) Snapshot() (State, error) {
 }
 
 func (store *stateStore) credentialByDigest(digest string) (APIKey, bool, error) {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return APIKey{}, false, err
 	}
@@ -107,8 +107,7 @@ func (store *stateStore) credentialByDigest(digest string) (APIKey, bool, error)
 }
 
 func (store *stateStore) authorizationState(keyID, projectID string, database controller.DatabaseID) (State, error) {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return State{}, err
 	}
@@ -145,8 +144,7 @@ func readAuthorizationState(store StateStore, keyID, projectID string, database 
 }
 
 func (store *stateStore) gatewayRequestState(projectID string, database *controller.DatabaseID) (State, error) {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return State{}, err
 	}
@@ -173,8 +171,7 @@ func readGatewayRequestState(store StateStore, projectID string, database *contr
 }
 
 func (store *stateStore) Update(mutation func(*State) error) error {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return err
 	}
@@ -213,6 +210,9 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 		}
 	}
 	store.state = committed
+	// Only Update and opening replace the whole view; only those paths invalidate
+	// the derived index. Operation-only commits retain the same map.
+	store.operationsIndex = nil
 	return nil
 }
 

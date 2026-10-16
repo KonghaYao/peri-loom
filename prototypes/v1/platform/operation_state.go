@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"sort"
 
 	controller "peri-loom/controller"
 )
@@ -126,58 +125,31 @@ func removeKnownDatabaseOperations(state *State, database controller.DatabaseID)
 	return nil
 }
 
-func compactKnownOperations(state *State, eligible map[string]bool) error {
-	keys := []string{}
-	known := 0
-	for key, record := range state.Operations {
-		if operationKnownTerminal(record) {
-			known++
-			if eligible[key] {
-				keys = append(keys, key)
-			}
-		}
+func updateOperationRecords(store StateStore, change func(*operationEdit) error) error {
+	if change == nil {
+		change = func(*operationEdit) error { return nil }
 	}
-	if known <= operationKnownRetention {
-		return nil
-	}
-	sort.Slice(keys, func(first, second int) bool {
-		firstSequence, secondSequence := state.Operations[keys[first]].RegistrationSequence, state.Operations[keys[second]].RegistrationSequence
-		if firstSequence == secondSequence {
-			return keys[first] < keys[second]
-		}
-		return firstSequence < secondSequence
-	})
-	remove := known - operationKnownRetention
-	if remove > len(keys) || state.OperationEvictions > ^uint64(0)-uint64(remove) {
-		return ErrOperationCapacity
-	}
-	for _, key := range keys[:remove] {
-		delete(state.Operations, key)
-	}
-	state.OperationEvictions += uint64(remove)
-	return nil
-}
-
-func updateOperationRecords(store StateStore, change func(*State) error) error {
-	update := store.Update
 	if narrow, ok := store.(interface {
-		updateOperations(func(*State) error) error
+		updateOperations(func(*operationEdit) error) error
 	}); ok {
-		update = narrow.updateOperations
+		return narrow.updateOperations(change)
 	}
-	return update(func(state *State) error {
-		eligible := map[string]bool{}
-		for key, record := range state.Operations {
-			if operationKnownTerminal(record) {
-				eligible[key] = true
-			}
+	return store.Update(func(state *State) error {
+		edit := newOperationEdit(state, newOperationIndex(state.Operations))
+		if err := change(edit); err != nil {
+			edit.revert()
+			return err
 		}
-		if change != nil {
-			if err := change(state); err != nil {
-				return err
-			}
+		if err := edit.settleRetention(); err != nil {
+			edit.revert()
+			return err
 		}
-		return compactKnownOperations(state, eligible)
+		// Test stores may not validate State, so enforce the same online checks.
+		if err := edit.validate(); err != nil {
+			edit.revert()
+			return err
+		}
+		return nil
 	})
 }
 
@@ -222,12 +194,9 @@ func registerOperation(store StateStore, database controller.DatabaseID, request
 
 // seedOperationRecord stores the in-flight record of a new operation and returns
 // it, so a caller either leaves it open for settlement or settles it at once.
-func seedOperationRecord(state *State, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session, digest string) OperationRecord {
-	if state.Operations == nil {
-		state.Operations = map[string]OperationRecord{}
-	}
-	state.OperationSequence++
-	return OperationRecord{OperationStatus: OperationStatus{OperationID: operationID, RequestID: requestID, Database: database, Project: state.Databases[database.Key()].Project, Worker: worker, Source: source, Action: action, Stage: stage, State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: digest, Session: session, RegistrationSequence: state.OperationSequence}
+func seedOperationRecord(edit *operationEdit, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session, digest string) OperationRecord {
+	registered, _ := edit.database(database.Key())
+	return OperationRecord{OperationStatus: OperationStatus{OperationID: operationID, RequestID: requestID, Database: database, Project: registered.Project, Worker: worker, Source: source, Action: action, Stage: stage, State: "in_flight", BusinessOutcome: "not_proven", CleanupOutcome: "not_applicable"}, Digest: digest, Session: session, RegistrationSequence: edit.advance()}
 }
 
 // operationCommandDigest binds a durable record to the exact worker command it
@@ -248,7 +217,7 @@ func operationCommandDigest(command any) (string, error) {
 // terminal record is the acknowledgement.
 func nonCommittingOperation(action string, writeCursor bool) bool {
 	switch action {
-	case "describe":
+	case "describe", "session_state":
 		return true
 	case "cursor_open", "cursor_fetch", "cursor_close":
 		return !writeCursor
@@ -256,15 +225,40 @@ func nonCommittingOperation(action string, writeCursor bool) bool {
 	return false
 }
 
+// operationAdmissionView is the projection the admission rule needs, so the committed
+// read path and an in-flight edit run the same rule instead of two copies of it.
+type operationAdmissionView interface {
+	isolation(database controller.DatabaseID, includePending bool) (OperationStatus, bool)
+	counts() (known, unresolved int)
+	database(key string) (Database, bool)
+	sequence() uint64
+}
+
+// stateAdmissionView adapts a committed view to the admission projection.
+type stateAdmissionView struct{ state State }
+
+func (view stateAdmissionView) isolation(database controller.DatabaseID, includePending bool) (OperationStatus, bool) {
+	return isolatedOperation(view.state, database, includePending)
+}
+
+func (view stateAdmissionView) counts() (known, unresolved int) { return operationCounts(view.state) }
+
+func (view stateAdmissionView) database(key string) (Database, bool) {
+	database, exists := view.state.Databases[key]
+	return database, exists
+}
+
+func (view stateAdmissionView) sequence() uint64 { return view.state.OperationSequence }
+
 // operationAdmission is the admission rule shared by registration and by the
 // pre-dispatch check of an unregistered operation: an isolated database and an
 // exhausted capacity refuse every new record.
-func operationAdmission(state State, database controller.DatabaseID, source string) error {
-	if _, blocked := isolatedOperation(state, database, source == "management"); blocked {
+func operationAdmission(view operationAdmissionView, database controller.DatabaseID, source string) error {
+	if _, blocked := view.isolation(database, source == "management"); blocked {
 		return ErrDatabaseQuarantined
 	}
-	_, unresolved := operationCounts(state)
-	if _, exists := state.Databases[database.Key()]; !exists || unresolved >= operationCapacity || state.OperationSequence == ^uint64(0) {
+	_, unresolved := view.counts()
+	if _, exists := view.database(database.Key()); !exists || unresolved >= operationCapacity || view.sequence() == ^uint64(0) {
 		return ErrOperationCapacity
 	}
 	return nil
@@ -291,7 +285,7 @@ func verifyNonCommittingAdmission(store StateStore, database controller.Database
 		return errors.New("operation registration unavailable")
 	}
 	return readOperationState(store, func(state State) error {
-		return operationAdmission(state, database, source)
+		return operationAdmission(stateAdmissionView{state: state}, database, source)
 	})
 }
 
@@ -308,18 +302,18 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 	}
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
-	err = updateOperationRecords(store, func(state *State) error {
-		if _, exists := state.Operations[operationKey(database, operationID)]; exists {
+	err = updateOperationRecords(store, func(edit *operationEdit) error {
+		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
-		if err := operationAdmission(*state, database, source); err != nil {
+		if err := operationAdmission(edit, database, source); err != nil {
 			return err
 		}
-		record := seedOperationRecord(state, database, operationID, requestID, source, action, stage, worker, session, digest)
+		record := seedOperationRecord(edit, database, operationID, requestID, source, action, stage, worker, session, digest)
 		if change != nil {
 			change(&record)
 		}
-		state.Operations[operationKey(database, operationID)] = record
+		edit.put(operationKey(database, operationID), record)
 		return nil
 	})
 	return operationID, err
@@ -332,14 +326,14 @@ func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, 
 	if err != nil || store == nil || database.Validate() != nil || !sqlLabel(requestID) || source == "management" && !labelPattern.MatchString(requestID) {
 		return errors.New("operation registration unavailable")
 	}
-	return updateOperationRecords(store, func(state *State) error {
-		if _, exists := state.Operations[operationKey(database, operationID)]; exists {
+	return updateOperationRecords(store, func(edit *operationEdit) error {
+		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
-		if err := operationAdmission(*state, database, source); err != nil {
+		if err := operationAdmission(edit, database, source); err != nil {
 			return err
 		}
-		state.Operations[operationKey(database, operationID)] = seedOperationRecord(state, database, operationID, requestID, source, action, stage, worker, session, digest)
+		edit.put(operationKey(database, operationID), seedOperationRecord(edit, database, operationID, requestID, source, action, stage, worker, session, digest))
 		return nil
 	})
 }
@@ -347,14 +341,14 @@ func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, 
 func updateOperation(store StateStore, database controller.DatabaseID, requestID string, change func(*OperationRecord)) error {
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
-	return updateOperationRecords(store, func(state *State) error {
+	return updateOperationRecords(store, func(edit *operationEdit) error {
 		key := operationKey(database, requestID)
-		record, exists := state.Operations[key]
+		record, exists := edit.record(key)
 		if !exists || record.State != "in_flight" {
 			return ErrOperationExists
 		}
 		change(&record)
-		state.Operations[key] = record
+		edit.put(key, record)
 		return nil
 	})
 }
@@ -386,6 +380,71 @@ func finishOperation(store StateStore, database controller.DatabaseID, requestID
 	})
 }
 
+func validateOperationRecord(record OperationRecord, key string, databases map[string]Database) error {
+	validStage := record.Stage == "open_session" || record.Stage == "tool_rpc" || record.Stage == "close_session"
+	validAction := record.Source == "management" && nativeDiagnosticAction("/v1/databases/"+record.Action) != "" || record.Source == "gateway" && (record.Action == "open" || record.Action == "execute" || record.Action == "query" || record.Action == "statement" || record.Action == "describe" || record.Action == "session_state" || record.Action == "cursor_open" || record.Action == "cursor_fetch" || record.Action == "cursor_close" || record.Action == "close")
+	validBusiness := record.BusinessOutcome == "not_proven" || record.BusinessOutcome == "unknown" || record.BusinessOutcome == "completed" || record.BusinessOutcome == "not_executed" || record.BusinessOutcome == "not_applicable"
+	validCleanup := record.CleanupOutcome == "not_applicable" || record.CleanupOutcome == "pending" || record.CleanupOutcome == "unknown" || record.CleanupOutcome == "completed"
+	if !validStage || !validAction || !validBusiness || !validCleanup || !identifierPattern.MatchString(record.Worker) || record.Session != "" && !upstreamSessionID(record.Session) {
+		return errors.New("invalid operation observation")
+	}
+	database, exists := databases[record.Database.Key()]
+	digest, err := hex.DecodeString(record.Digest)
+	if !exists || database.Project != record.Project || key != operationKey(record.Database, record.OperationID) || !sqlLabel(record.OperationID) || err != nil || len(digest) != 32 || record.RetryAllowed || (record.Source != "management" && record.Source != "gateway") || (record.State != "in_flight" && record.State != "terminal" && record.State != "quarantined") {
+		return errors.New("invalid durable operation")
+	}
+	if record.Decision != "" && (record.Decision != "retain_isolation_new_database_required" || record.State != "quarantined" || !labelPattern.MatchString(record.DecisionRequestID)) {
+		return errors.New("unsafe operator decision")
+	}
+	if record.LocalResourcesRetired && (record.State != "quarantined" || record.Decision == "" || !labelPattern.MatchString(record.RetirementRequestID)) {
+		return errors.New("unsafe local retirement")
+	}
+	if record.RetirementPending && (record.State != "quarantined" || record.Decision == "" || record.LocalResourcesRetired) {
+		return errors.New("unsafe pending retirement")
+	}
+	if record.ReleaseRequestID != "" && (record.State != "quarantined" || record.Decision == "" || !record.LocalResourcesRetired || record.RetirementPending || !labelPattern.MatchString(record.ReleaseRequestID) || !fencedAuthorityMode(record.ReleaseAuthorityMode)) {
+		return errors.New("unsafe isolation release")
+	}
+	return nil
+}
+
+func validateOperationTransition(old, record OperationRecord) error {
+	if !old.LocalResourcesRetired && record.LocalResourcesRetired && !old.RetirementPending {
+		return errors.New("retirement must follow durable pending intent")
+	}
+	if record.RegistrationSequence != old.RegistrationSequence || record.Database != old.Database || record.Project != old.Project || record.OperationID != old.OperationID || record.RequestID != old.RequestID || record.Source != old.Source || record.Action != old.Action || record.Digest != old.Digest || record.Worker != old.Worker {
+		return errors.New("operation identity and history immutable")
+	}
+	if old.State != "in_flight" {
+		normalized := record
+		normalized.Decision, normalized.DecisionRequestID = old.Decision, old.DecisionRequestID
+		normalized.LocalResourcesRetired, normalized.RetirementRequestID = old.LocalResourcesRetired, old.RetirementRequestID
+		normalized.RetirementPending = old.RetirementPending
+		normalized.ReleaseRequestID, normalized.ReleaseAuthorityMode, normalized.ReleaseEpoch = old.ReleaseRequestID, old.ReleaseAuthorityMode, old.ReleaseEpoch
+		if old.State == "terminal" && old.Source == "gateway" && old.Action == "open" && old.CleanupOutcome == "pending" && (record.State == "terminal" && record.CleanupOutcome == "completed" || record.State == "quarantined" && record.CleanupOutcome == "unknown") {
+			normalized.State, normalized.CleanupOutcome, normalized.MayHaveCommitted = old.State, old.CleanupOutcome, old.MayHaveCommitted
+		}
+		if old.ReleaseRequestID != "" {
+			// A recorded release is immutable: no path may rewrite or drop it.
+			if record.ReleaseRequestID != old.ReleaseRequestID || record.ReleaseAuthorityMode != old.ReleaseAuthorityMode || record.ReleaseEpoch != old.ReleaseEpoch {
+				return errors.New("isolation release immutable")
+			}
+		} else if record.ReleaseRequestID != "" {
+			// A release may only be recorded once, on a quarantine whose local
+			// retirement already completed, and it never coexists with a pending
+			// retirement intent.
+			if !old.LocalResourcesRetired || old.RetirementPending || record.RetirementPending || record.LocalResourcesRetired != old.LocalResourcesRetired {
+				return errors.New("isolation release must follow completed local retirement")
+			}
+			normalized.ReleaseRequestID, normalized.ReleaseAuthorityMode, normalized.ReleaseEpoch = "", "", 0
+		}
+		if !reflect.DeepEqual(normalized, old) || old.Decision != "" && (record.Decision != old.Decision || record.DecisionRequestID != old.DecisionRequestID) || old.LocalResourcesRetired && (!record.LocalResourcesRetired || record.RetirementRequestID != old.RetirementRequestID) {
+			return errors.New("terminal outcome or quarantine immutable")
+		}
+	}
+	return nil
+}
+
 func validateOperations(state State, previous *State) error {
 	known, unresolved := operationCounts(state)
 	if unresolved > operationCapacity || known > operationKnownRetention && (previous != nil || state.OperationSequence != 0) || len(state.Operations) > operationCapacity+operationKnownRetention {
@@ -402,29 +461,8 @@ func validateOperations(state State, previous *State) error {
 		if record.RegistrationSequence != 0 {
 			sequences[record.RegistrationSequence] = true
 		}
-		validStage := record.Stage == "open_session" || record.Stage == "tool_rpc" || record.Stage == "close_session"
-		validAction := record.Source == "management" && nativeDiagnosticAction("/v1/databases/"+record.Action) != "" || record.Source == "gateway" && (record.Action == "open" || record.Action == "execute" || record.Action == "query" || record.Action == "statement" || record.Action == "describe" || record.Action == "cursor_open" || record.Action == "cursor_fetch" || record.Action == "cursor_close" || record.Action == "close")
-		validBusiness := record.BusinessOutcome == "not_proven" || record.BusinessOutcome == "unknown" || record.BusinessOutcome == "completed" || record.BusinessOutcome == "not_executed" || record.BusinessOutcome == "not_applicable"
-		validCleanup := record.CleanupOutcome == "not_applicable" || record.CleanupOutcome == "pending" || record.CleanupOutcome == "unknown" || record.CleanupOutcome == "completed"
-		if !validStage || !validAction || !validBusiness || !validCleanup || !identifierPattern.MatchString(record.Worker) || record.Session != "" && !upstreamSessionID(record.Session) {
-			return errors.New("invalid operation observation")
-		}
-		database, exists := state.Databases[record.Database.Key()]
-		digest, err := hex.DecodeString(record.Digest)
-		if !exists || database.Project != record.Project || key != operationKey(record.Database, record.OperationID) || !sqlLabel(record.OperationID) || err != nil || len(digest) != 32 || record.RetryAllowed || (record.Source != "management" && record.Source != "gateway") || (record.State != "in_flight" && record.State != "terminal" && record.State != "quarantined") {
-			return errors.New("invalid durable operation")
-		}
-		if record.Decision != "" && (record.Decision != "retain_isolation_new_database_required" || record.State != "quarantined" || !labelPattern.MatchString(record.DecisionRequestID)) {
-			return errors.New("unsafe operator decision")
-		}
-		if record.LocalResourcesRetired && (record.State != "quarantined" || record.Decision == "" || !labelPattern.MatchString(record.RetirementRequestID)) {
-			return errors.New("unsafe local retirement")
-		}
-		if record.RetirementPending && (record.State != "quarantined" || record.Decision == "" || record.LocalResourcesRetired) {
-			return errors.New("unsafe pending retirement")
-		}
-		if record.ReleaseRequestID != "" && (record.State != "quarantined" || record.Decision == "" || !record.LocalResourcesRetired || record.RetirementPending || !labelPattern.MatchString(record.ReleaseRequestID) || !fencedAuthorityMode(record.ReleaseAuthorityMode)) {
-			return errors.New("unsafe isolation release")
+		if err := validateOperationRecord(record, key, state.Databases); err != nil {
+			return err
 		}
 	}
 	if previous != nil {
@@ -436,38 +474,8 @@ func validateOperations(state State, previous *State) error {
 				}
 				return errors.New("unresolved operation and isolation history immutable")
 			}
-			if !old.LocalResourcesRetired && record.LocalResourcesRetired && !old.RetirementPending {
-				return errors.New("retirement must follow durable pending intent")
-			}
-			if record.RegistrationSequence != old.RegistrationSequence || record.Database != old.Database || record.Project != old.Project || record.OperationID != old.OperationID || record.RequestID != old.RequestID || record.Source != old.Source || record.Action != old.Action || record.Digest != old.Digest || record.Worker != old.Worker {
-				return errors.New("operation identity and history immutable")
-			}
-			if old.State != "in_flight" {
-				normalized := record
-				normalized.Decision, normalized.DecisionRequestID = old.Decision, old.DecisionRequestID
-				normalized.LocalResourcesRetired, normalized.RetirementRequestID = old.LocalResourcesRetired, old.RetirementRequestID
-				normalized.RetirementPending = old.RetirementPending
-				normalized.ReleaseRequestID, normalized.ReleaseAuthorityMode, normalized.ReleaseEpoch = old.ReleaseRequestID, old.ReleaseAuthorityMode, old.ReleaseEpoch
-				if old.State == "terminal" && old.Source == "gateway" && old.Action == "open" && old.CleanupOutcome == "pending" && (record.State == "terminal" && record.CleanupOutcome == "completed" || record.State == "quarantined" && record.CleanupOutcome == "unknown") {
-					normalized.State, normalized.CleanupOutcome, normalized.MayHaveCommitted = old.State, old.CleanupOutcome, old.MayHaveCommitted
-				}
-				if old.ReleaseRequestID != "" {
-					// A recorded release is immutable: no path may rewrite or drop it.
-					if record.ReleaseRequestID != old.ReleaseRequestID || record.ReleaseAuthorityMode != old.ReleaseAuthorityMode || record.ReleaseEpoch != old.ReleaseEpoch {
-						return errors.New("isolation release immutable")
-					}
-				} else if record.ReleaseRequestID != "" {
-					// A release may only be recorded once, on a quarantine whose local
-					// retirement already completed, and it never coexists with a pending
-					// retirement intent.
-					if !old.LocalResourcesRetired || old.RetirementPending || record.RetirementPending || record.LocalResourcesRetired != old.LocalResourcesRetired {
-						return errors.New("isolation release must follow completed local retirement")
-					}
-					normalized.ReleaseRequestID, normalized.ReleaseAuthorityMode, normalized.ReleaseEpoch = "", "", 0
-				}
-				if !reflect.DeepEqual(normalized, old) || old.Decision != "" && (record.Decision != old.Decision || record.DecisionRequestID != old.DecisionRequestID) || old.LocalResourcesRetired && (!record.LocalResourcesRetired || record.RetirementRequestID != old.RetirementRequestID) {
-					return errors.New("terminal outcome or quarantine immutable")
-				}
+			if err := validateOperationTransition(old, record); err != nil {
+				return err
 			}
 		}
 	}

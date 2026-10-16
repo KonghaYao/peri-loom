@@ -29,23 +29,14 @@ func TestWritePathCost(test *testing.T) {
 			defer service.Close()
 			store := service.(*stateStore)
 			database := securityDatabase()
-			// Build the retained set in memory, then persist it through the real path.
-			seed := &retentionTestStore{state: store.state}
 			for index := 0; index < retained; index++ {
 				identifier := fmt.Sprintf("seed_%04d", index)
-				if err := beginOperation(seed, database, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
+				if err := beginOperation(store, database, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
 					test.Fatal(err)
 				}
-				if err := finishOperation(seed, database, identifier, nil, true); err != nil {
+				if err := finishOperation(store, database, identifier, nil, true); err != nil {
 					test.Fatal(err)
 				}
-			}
-			if err := store.updateOperations(func(state *State) error {
-				state.Operations = seed.state.Operations
-				state.OperationSequence = seed.state.OperationSequence
-				return nil
-			}); err != nil {
-				test.Fatal(err)
 			}
 			start := journalBytes(test, store)
 			var register, settle time.Duration
@@ -69,7 +60,8 @@ func TestWritePathCost(test *testing.T) {
 					test.Fatal(err)
 				}
 			}
-			test.Logf("retained=%d register_mean_ms=%.3f settle_mean_ms=%.3f registry_mean_ms=%.3f journal_bytes_per_request=%.0f journal_bytes=%d", retained, float64(register)/12e6, float64(settle)/12e6, float64(time.Since(registry))/12e6, float64(appended)/12, journalBytes(test, store))
+			cost := store.operationStats()
+			test.Logf("retained=%d register_mean_ms=%.3f settle_mean_ms=%.3f registry_mean_ms=%.3f journal_bytes_per_request=%.0f journal_bytes=%d appends=%v syncs=%v index_rebuilds=%v index_entries=%v lock_waits=%v lock_wait_ns=%v", retained, float64(register)/12e6, float64(settle)/12e6, float64(time.Since(registry))/12e6, float64(appended)/12, journalBytes(test, store), cost["operation_journal_appends_total"], cost["operation_journal_syncs_total"], cost["operation_index_rebuilds_total"], cost["operation_index_entries_total"], cost["state_lock_waits_total"], cost["state_lock_wait_ns_total"])
 		})
 	}
 }

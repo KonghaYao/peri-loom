@@ -68,8 +68,7 @@ func registryParentOperations(journal *operationJournal) func(*State) {
 // readOperations visits the committed operation view without copying the rest
 // of the registry. The callback must not retain or mutate the state.
 func (store *stateStore) readOperations(visit func(State) error) error {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return err
 	}
@@ -79,41 +78,42 @@ func (store *stateStore) readOperations(visit func(State) error) error {
 	return visit(store.state)
 }
 
-func (store *stateStore) updateOperations(change func(*State) error) error {
-	store.disk.mutex.Lock()
-	defer store.disk.mutex.Unlock()
+func (store *stateStore) updateOperations(change func(*operationEdit) error) error {
+	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return err
 	}
 	if change == nil {
 		return errors.New("operation mutation required")
 	}
-	// The private operation mutation may read catalog maps, but only changes
-	// operation records and counters. Copy that bounded portion of the State.
-	candidate := store.state
-	candidate.Operations = make(map[string]OperationRecord, len(store.state.Operations))
-	for key, record := range store.state.Operations {
-		candidate.Operations[key] = record
+	if store.state.OperationStorageVersion != 1 {
+		return errors.New("operation storage identity unavailable")
 	}
-	if err := change(&candidate); err != nil {
+	if store.operationsIndex == nil {
+		store.operationsIndex = newOperationIndex(store.state.Operations)
+		store.cost.observeIndexRebuild(len(store.operationsIndex.records))
+	}
+	edit := newOperationEdit(&store.state, store.operationsIndex)
+	if err := change(edit); err != nil {
+		edit.revert()
 		return err
 	}
-	if candidate.Revision != store.state.Revision || candidate.OperationStorageVersion != 1 {
-		return errors.New("operation mutation changed registry identity")
-	}
-	if err := validateOperations(candidate, &store.state); err != nil {
+	if err := edit.settleRetention(); err != nil {
+		edit.revert()
 		return err
 	}
-	delta := operationDeltaBetween(store.state.Operations, candidate.Operations)
-	if !delta.empty() || candidate.OperationSequence != store.state.OperationSequence || candidate.OperationEvictions != store.state.OperationEvictions {
-		// One append carries the whole commit; the registry rewrite is reserved for
-		// catalog changes, so an operation-only commit never pays for the bounded
-		// set it did not change.
-		if err := store.operations.appendOperations(candidate, delta); err != nil {
+	if err := edit.validate(); err != nil {
+		edit.revert()
+		return err
+	}
+	delta := edit.delta()
+	if !delta.empty() || store.state.OperationSequence != edit.priorSequence || store.state.OperationEvictions != edit.evictions {
+		if err := store.operations.appendOperations(store.state, delta); err != nil {
 			store.disk.poisoned = true
+			edit.revert()
 			return err
 		}
 	}
-	store.state = candidate
+	store.cost.observeCommit()
 	return nil
 }
