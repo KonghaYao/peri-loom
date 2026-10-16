@@ -193,6 +193,10 @@ impl RemoteWal {
                         .is_none_or(|commit| commit.lsn > 0 && commit.lsn == index.last_lsn),
                     "invalid WAL index commit LSN"
                 );
+                crate::work_metrics::observe_wal_index_read(
+                    object.bytes.len(),
+                    index.entries.len(),
+                );
                 Ok((index, Some(object.etag)))
             }
             None => Ok((WalMetadata::default(), None)),

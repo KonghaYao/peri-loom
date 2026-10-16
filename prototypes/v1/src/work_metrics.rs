@@ -75,6 +75,20 @@ fn named(names: &[&'static str], counters: &[AtomicU64]) -> BTreeMap<&'static st
         .collect()
 }
 
+/// Same as [`named`], but the labels come from the enum that owns the counters, so a renamed
+/// or reordered variant cannot silently mislabel a count.
+fn report<T: Copy>(
+    items: &[T],
+    name: impl Fn(T) -> &'static str,
+    counters: &[AtomicU64],
+) -> BTreeMap<&'static str, u64> {
+    items
+        .iter()
+        .zip(counters)
+        .map(|(item, counter)| (name(*item), load(counter)))
+        .collect()
+}
+
 // --- A. WAL workload ---------------------------------------------------------------------
 
 /// Why a verified prefix was dropped. Each reason names the mutation that made the prefix
@@ -397,6 +411,83 @@ impl ExecuteTimer {
     }
 }
 
+// --- D. maintenance ----------------------------------------------------------------------
+
+// The names and the counters come from the maintenance enums themselves, so reordering or
+// renaming a reason cannot silently mislabel a counter. `MaintenanceLane::index`,
+// `BlockReason as usize` and `BudgetDenied as usize` are the array positions, and the unit
+// test in this module's test file pins each enum's discriminant against its position.
+
+static UNIT_CALLS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_NANOS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_BACKFILL_BYTES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_FAILURES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+static BLOCKS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static DENIED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+static WAL_INDEX_READS: AtomicU64 = AtomicU64::new(0);
+static WAL_INDEX_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+static WAL_INDEX_READ_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+/// Timer for one maintenance unit. Disabled, it carries no clock, so a process with the
+/// switch off reads no time it would not have read anyway.
+pub(crate) struct MaintenanceTimer {
+    lane: crate::maintenance::MaintenanceLane,
+    started: Option<Instant>,
+}
+
+impl MaintenanceTimer {
+    pub(crate) fn begin(lane: crate::maintenance::MaintenanceLane) -> Self {
+        Self {
+            lane,
+            started: enabled().then(Instant::now),
+        }
+    }
+
+    /// One maintenance unit: the backfill volume it acted on, the wall time inside it, and
+    /// whether it completed. Both the admin entry points and the scheduler's units report
+    /// through here, so the two triggers are measured on one caliber.
+    pub(crate) fn finish(self, backfill_bytes: u64, completed: bool) {
+        let Some(started) = self.started else {
+            return;
+        };
+        let index = self.lane.index();
+        add(&UNIT_CALLS[index], 1);
+        add(&UNIT_BACKFILL_BYTES[index], backfill_bytes);
+        add(&UNIT_NANOS[index], nanos(started.elapsed()));
+        if !completed {
+            add(&UNIT_FAILURES[index], 1);
+        }
+    }
+}
+
+pub(crate) fn observe_maintenance_blocked(reason: crate::maintenance::BlockReason) {
+    if !enabled() {
+        return;
+    }
+    add(&BLOCKS[reason as usize], 1);
+}
+
+pub(crate) fn observe_maintenance_refused(denied: crate::maintenance::BudgetDenied) {
+    if !enabled() {
+        return;
+    }
+    add(&DENIED[denied as usize], 1);
+}
+
+/// One read of the branch's `wal/index` document. The read happens on paths that already
+/// needed the index, so this counts structure that was fetched rather than fetching it to
+/// measure it — which is why the index entry count is here and not in the periodic probe.
+pub(crate) fn observe_wal_index_read(encoded_bytes: usize, entries: usize) {
+    if !enabled() {
+        return;
+    }
+    add(&WAL_INDEX_READS, 1);
+    add(&WAL_INDEX_READ_BYTES, encoded_bytes as u64);
+    add(&WAL_INDEX_READ_ENTRIES, entries as u64);
+}
+
 // --- snapshot ----------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -461,11 +552,55 @@ pub(crate) struct ExecutionWork {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct UnitTotals {
+    /// Units that reached execution.
+    pub calls: u64,
+    pub ns: u64,
+    /// Backfill volume the units were charged for, in bytes.
+    pub backfill_bytes: u64,
+    /// Units that executed and did not complete, including a blocked compaction.
+    pub failures: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct MaintenanceWork {
+    /// Per lane, in `MaintenanceLane::ALL` order.
+    pub units: BTreeMap<&'static str, UnitTotals>,
+    /// Why a unit did not complete, counted where the reason was decided.
+    pub blocked: BTreeMap<&'static str, u64>,
+    /// Budget refusals, by the budget that ran out. A refusal is a skip.
+    pub refused: BTreeMap<&'static str, u64>,
+    /// `wal/index` reads that happened on paths which already needed the index.
+    pub wal_index_reads: u64,
+    pub wal_index_read_bytes: u64,
+    pub wal_index_read_entries: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct WorkMetricsSnapshot {
     pub wal_workload: WalWorkload,
     pub metadata: MetadataWork,
     pub locks: BTreeMap<&'static str, LockTotals>,
     pub execution: ExecutionWork,
+    pub maintenance: MaintenanceWork,
+}
+
+fn units() -> BTreeMap<&'static str, UnitTotals> {
+    crate::maintenance::MaintenanceLane::ALL
+        .iter()
+        .map(|lane| {
+            let index = lane.index();
+            (
+                lane.name(),
+                UnitTotals {
+                    calls: load(&UNIT_CALLS[index]),
+                    ns: load(&UNIT_NANOS[index]),
+                    backfill_bytes: load(&UNIT_BACKFILL_BYTES[index]),
+                    failures: load(&UNIT_FAILURES[index]),
+                },
+            )
+        })
+        .collect()
 }
 
 fn locks() -> BTreeMap<&'static str, LockTotals> {
@@ -526,6 +661,22 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             native_execute_calls: load(&EXECUTE_CALLS),
             native_execute_ns: load(&EXECUTE_NANOS),
             native_execute_steps: load(&EXECUTE_STEPS),
+        },
+        maintenance: MaintenanceWork {
+            units: units(),
+            blocked: report(
+                &crate::maintenance::BlockReason::ALL,
+                crate::maintenance::BlockReason::name,
+                &BLOCKS,
+            ),
+            refused: report(
+                &crate::maintenance::BudgetDenied::ALL,
+                crate::maintenance::BudgetDenied::name,
+                &DENIED,
+            ),
+            wal_index_reads: load(&WAL_INDEX_READS),
+            wal_index_read_bytes: load(&WAL_INDEX_READ_BYTES),
+            wal_index_read_entries: load(&WAL_INDEX_READ_ENTRIES),
         },
     })
 }

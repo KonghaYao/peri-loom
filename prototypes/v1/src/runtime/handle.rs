@@ -145,6 +145,7 @@ impl DatabaseHandle {
             "applied_lsn": manifest.applied_lsn,
             "applied_wal_position": manifest.applied_wal_position,
             "resources": database.resources()?,
+            "maintenance": database.maintenance_ledger().counters(),
             "snapshot_consistency": "diagnostic_only_not_authority"
         }))
     }

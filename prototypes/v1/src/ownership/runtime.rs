@@ -183,6 +183,13 @@ impl OwnershipRuntime {
         })
     }
 
+    /// Schedules maintenance for every open database. Kept off the request path by the same
+    /// rule as the revocation sweep: the worker watchdog calls it, and the units it picks run
+    /// on the maintenance scheduler's thread rather than here.
+    pub fn maintenance_tick(&self) -> Result<()> {
+        self.worker.maintenance_tick()
+    }
+
     pub fn sweep_revocations(&self) -> Result<()> {
         let contexts: Vec<_> = self
             .contexts

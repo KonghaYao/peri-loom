@@ -12,6 +12,9 @@ use turso_core::{
 };
 
 use crate::io::RemoteIO;
+use crate::maintenance::{
+    BlockReason, MaintenanceLane, MaintenanceLedger, MaintenanceSignals, MaintenanceTarget,
+};
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
 use crate::ownership::types::AccessRole;
@@ -32,6 +35,7 @@ pub struct RemoteDatabase {
     lane: Arc<SessionLane>,
     lanes: Mutex<Vec<Weak<SessionLane>>>,
     reclamation: reclamation::Reclamation,
+    maintenance: MaintenanceLedger,
     pending: Mutex<Vec<turso_core::Statement>>,
     cleanup: AtomicBool,
     engine: Mutex<Option<Arc<Database>>>,
@@ -136,6 +140,7 @@ impl RemoteDatabase {
             lane,
             lanes,
             reclamation: reclamation::Reclamation::default(),
+            maintenance: MaintenanceLedger::default(),
             pending: Mutex::new(Vec::new()),
             cleanup: AtomicBool::new(false),
             engine: Mutex::new(Some(database)),
@@ -172,9 +177,18 @@ impl RemoteDatabase {
         self.lane.query(self, sql, &Budget::trusted_default())
     }
 
+    /// Full checkpoint. This is the only entry point for the unit, so the admin RPC, the CLI
+    /// and the scheduled lane all take the same path and the same admission, fencing and
+    /// deadline checks. The unit records its own start, which is what makes "a commit
+    /// checkpointed" observable: no request path may move that counter.
     pub fn checkpoint(&self) -> Result<()> {
         let _reads = crate::authority::request_reads::Scope::enter();
+        self.maintenance
+            .record_execution(MaintenanceLane::Checkpoint);
+        let timer = crate::work_metrics::MaintenanceTimer::begin(MaintenanceLane::Checkpoint);
+        let charge = self.maintenance_charge();
         let result = self.checkpoint_once();
+        timer.finish(charge, result.is_ok());
         self.finish_maintenance(result)
     }
 
@@ -225,10 +239,31 @@ impl RemoteDatabase {
         self.lane.is_readonly(self)
     }
 
+    /// Compaction entry point, shared by the admin RPC, the CLI and the scheduled lane. The
+    /// preconditions are the ones this method always applied: a complete native truncate
+    /// backfill and no unconfirmed WAL. A precondition that fails here records why and
+    /// returns before `compact_wal` touches the WAL index, so the old references stay.
     pub fn compact_wal(&self) -> Result<()> {
         let _reads = crate::authority::request_reads::Scope::enter();
+        self.maintenance
+            .record_execution(MaintenanceLane::IndexCompact);
+        let timer = crate::work_metrics::MaintenanceTimer::begin(MaintenanceLane::IndexCompact);
+        let charge = self.maintenance_charge();
         let result = self.compact_wal_once();
+        timer.finish(charge, result.is_ok());
         self.finish_maintenance(result)
+    }
+
+    /// The backfill volume a unit is acting on, read only when the counters are on. The probe
+    /// is an in-memory read, but gating it keeps the switch-off path free of both the read
+    /// and the clock.
+    fn maintenance_charge(&self) -> u64 {
+        if !crate::work_metrics::enabled() {
+            return 0;
+        }
+        self.io
+            .maintenance_signals()
+            .map_or(0, |signals| signals.backfill_bytes())
     }
 
     fn finish_maintenance(&self, result: Result<()>) -> Result<()> {
@@ -269,9 +304,15 @@ impl RemoteDatabase {
             })
             .context("truncate-checkpoint remote WAL")
             .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))?;
-        Self::require_complete_backfill(
-            checkpoint.wal_max_frame == checkpoint.wal_total_backfilled,
-        )?;
+        let complete = checkpoint.wal_max_frame == checkpoint.wal_total_backfilled;
+        if !complete {
+            // A partial backfill is the long-read case: some frame in the WAL is still needed
+            // by a reader, so the checkpoint cannot advance past it. Recording it here, before
+            // `require_complete_backfill` returns, is what makes the block visible; the WAL
+            // index is not truncated afterwards, so the old references are kept.
+            self.record_maintenance_block(BlockReason::PartialBackfill);
+        }
+        Self::require_complete_backfill(complete)?;
         self.io
             .compact_wal()
             .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))?;
@@ -349,6 +390,44 @@ impl RemoteDatabase {
     }
     pub fn io(&self) -> Arc<RemoteIO> {
         self.io.clone()
+    }
+
+    /// Records why a unit did not complete. The counter and the ledger entry are the same
+    /// fact in two places: the process-wide export and this database's own history.
+    pub(crate) fn record_maintenance_block(&self, reason: BlockReason) {
+        self.maintenance.record_block(reason, None);
+        crate::work_metrics::observe_maintenance_blocked(reason);
+    }
+
+    pub(crate) fn maintenance_ledger(&self) -> &MaintenanceLedger {
+        &self.maintenance
+    }
+}
+
+/// The scheduler's view of this database. Everything it needs is a cheap in-process read or
+/// one of the two existing unit entry points, so the scheduling rules never reach past this
+/// implementation into the native engine.
+impl MaintenanceTarget for RemoteDatabase {
+    fn identity(&self) -> String {
+        self.io.storage().namespace().prefix()
+    }
+
+    fn ledger(&self) -> &MaintenanceLedger {
+        &self.maintenance
+    }
+
+    fn signals(&self) -> Result<MaintenanceSignals> {
+        let mut signals = self.io.maintenance_signals()?;
+        signals.oldest_reader_ms =
+            crate::maintenance::millis(self.oldest_reader_age(std::time::Instant::now()));
+        Ok(signals)
+    }
+
+    fn run_maintenance(&self, lane: MaintenanceLane) -> Result<()> {
+        match lane {
+            MaintenanceLane::Checkpoint => self.checkpoint(),
+            MaintenanceLane::IndexCompact => self.compact_wal(),
+        }
     }
 }
 

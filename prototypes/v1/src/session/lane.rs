@@ -22,6 +22,8 @@ pub(crate) struct SessionLane {
     database: Mutex<Option<Arc<RemoteDatabase>>>,
     closed: AtomicBool,
     retired_unsettled: AtomicBool,
+    /// When this session opened. Used as an upper bound for the maintenance reader age.
+    opened: std::time::Instant,
 }
 
 impl SessionLane {
@@ -34,6 +36,24 @@ impl SessionLane {
             control: admission.register()?,
             closed: AtomicBool::new(false),
             retired_unsettled: AtomicBool::new(false),
+            opened: std::time::Instant::now(),
+        })
+    }
+
+    pub(crate) fn opened(&self) -> std::time::Instant {
+        self.opened
+    }
+
+    /// Whether this session currently holds a native read lock. The connection guard is
+    /// released between calls, but an open transaction keeps the pager's read lock, which is
+    /// exactly the reader a truncate checkpoint cannot backfill past. A busy lane is reported
+    /// as not holding one: it is executing, so it cannot be the long reader a maintenance unit
+    /// would be blocked by, and reporting it would make the age meaningless.
+    pub(crate) fn holds_read_lock(&self) -> bool {
+        self.connection.try_lock().is_ok_and(|connection| {
+            connection
+                .as_ref()
+                .is_some_and(|connection| connection.get_pager().holds_read_lock())
         })
     }
 

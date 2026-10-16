@@ -12,6 +12,7 @@ pub use types::{
 };
 
 use crate::database::RemoteDatabase;
+use crate::maintenance::MaintenanceScheduler;
 use anyhow::{anyhow, ensure, Result};
 use registry::{Entry, Instance, Loaded, Loading, Registry};
 use std::{
@@ -28,6 +29,9 @@ pub struct WorkerRuntime {
     memory_reservation_budget: Option<usize>,
     registry: Mutex<Registry>,
     native_instances: Mutex<Vec<(DatabaseId, std::sync::Weak<RemoteDatabase>)>>,
+    /// Scheduler for the units that must not run in a request. It owns the process-wide
+    /// budget and the driver thread; a worker with the switch off never starts either.
+    maintenance: Arc<MaintenanceScheduler>,
 }
 
 impl WorkerRuntime {
@@ -68,6 +72,7 @@ impl WorkerRuntime {
             memory_reservation_budget: memory::cgroup_reservation_budget(),
             registry: Mutex::new(Registry::default()),
             native_instances: Mutex::new(Vec::new()),
+            maintenance: Arc::new(MaintenanceScheduler::configured()?),
         }))
     }
 
@@ -479,5 +484,47 @@ impl WorkerRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         registry.finish_retiring(identifier);
+    }
+
+    /// One scheduling pass over every database this worker has open.
+    ///
+    /// This is the only trigger for scheduled maintenance, and its caller is the worker
+    /// watchdog — a thread that serves no request. Nothing here runs a unit: the pass only
+    /// reads in-process figures, records decisions and queues work for the scheduler's own
+    /// thread, so even a slow checkpoint cannot delay the sweep that follows it.
+    ///
+    /// With `PERI_MAINTENANCE_SCHEDULE` unset this is one static read per loaded database.
+    pub(crate) fn maintenance_tick(&self) -> Result<()> {
+        if !self.maintenance.enabled() {
+            return Ok(());
+        }
+        // The executor exists only once the scheduler is on, and it starts here rather than
+        // from a scheduling pass so a pass always runs against a known executor.
+        self.maintenance.start()?;
+        let instances: Vec<_> = {
+            let mut observers = self
+                .native_instances
+                .lock()
+                .map_err(|_| crate::session::AdmissionError::Quarantine)?;
+            observers.retain(|(_, database)| database.strong_count() != 0);
+            observers
+                .iter()
+                .filter_map(|(_, database)| database.upgrade())
+                .collect()
+        };
+        let now = Instant::now();
+        let mut first_error = None;
+        for database in instances {
+            let target: Arc<dyn crate::maintenance::MaintenanceTarget> = database;
+            if let Err(error) = self.maintenance.observe(&target, now) {
+                // One database that cannot be probed must not stop the sweep for the others.
+                // The error is kept and returned, not swallowed.
+                first_error.get_or_insert(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }

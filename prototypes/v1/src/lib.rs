@@ -13,6 +13,7 @@ pub mod import_control_cli;
 pub mod import_image;
 mod inflight;
 pub mod io;
+pub mod maintenance;
 pub mod manifest;
 pub mod metrics;
 pub mod namespace;

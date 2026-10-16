@@ -208,6 +208,13 @@ impl WorkerServer {
                         if let Err(error) = watchdog_state.runtime.sweep_revocations() {
                             failure.get_or_insert(error);
                         }
+                        // Maintenance is scheduled from this thread and executed on the
+                        // scheduler's own, so a checkpoint cannot delay the sweep above. A
+                        // failed pass is reported but never takes the worker down: a blocked
+                        // unit is recorded against its database and retried after its backoff.
+                        if let Err(error) = watchdog_state.runtime.maintenance_tick() {
+                            eprintln!("maintenance outcome=pass_failed reason={error:#}");
+                        }
                     }
                     Err(error) => {
                         failure.get_or_insert(error);

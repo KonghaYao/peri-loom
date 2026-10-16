@@ -169,10 +169,53 @@ impl RemoteIO {
         Ok(usage)
     }
 
+    /// The maintenance inputs this layer owns, taken under the state lock the request path
+    /// already uses and against no object-store request.
+    ///
+    /// `unconfirmed_wal` is a conservative reading of the WAL reset precondition: it is set
+    /// whenever the durable LSN and the published baseline disagree, or the state is dirty or
+    /// failed. A false reading here only means the compaction lane stays ineligible; a true
+    /// reading can never make a compaction pass a precondition it would otherwise fail,
+    /// because `compact_wal_once` still applies them itself.
+    pub(crate) fn maintenance_signals(&self) -> Result<crate::maintenance::MaintenanceSignals> {
+        let state = self.shared.lock()?;
+        let usage = self.shared.storage.resource_usage()?;
+        let pending_wal_bytes =
+            state
+                .batch
+                .operations
+                .iter()
+                .try_fold(0u64, |total, operation| {
+                    let bytes = match operation {
+                        crate::wal::WalOperation::Write { bytes, .. } => bytes.len() as u64,
+                        crate::wal::WalOperation::Truncate { .. } => 0,
+                    };
+                    total
+                        .checked_add(bytes)
+                        .context("pending WAL payload overflow")
+                })?;
+        let applied = self.shared.storage.applied_lsn();
+        let wal_bytes = state.image.len() as u64;
+        Ok(crate::maintenance::MaintenanceSignals {
+            wal_bytes,
+            pending_wal_bytes,
+            delta_count: state.batch.operations.len() as u64,
+            // Only the part of the mirror the publication does not cover is replayed by a
+            // cold start; a current baseline means there is nothing left to apply.
+            replay_bytes: if state.lsn > applied { wal_bytes } else { 0 },
+            dirty_segment_bytes: usage.dirty_segment_bytes,
+            oldest_reader_ms: 0,
+            unconfirmed_wal: state.lsn != applied
+                || state.dirty
+                || state.wal_failed
+                || state.publication_failed
+                || !state.batch.operations.is_empty(),
+        })
+    }
+
     pub(crate) fn check_writer(&self) -> Result<()> {
         self.shared.check_writer()
     }
-
     pub(crate) fn publish_open_header(&self) -> Result<()> {
         let mut state = self.shared.lock()?;
         if !state.dirty {
