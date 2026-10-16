@@ -24,6 +24,19 @@ type SQLOpenObserver struct {
 	attempts atomic.Uint64
 	events   atomic.Uint64
 	queue    chan SQLOpenObservation
+	// phases carries the request phase stream of the same private diagnostic profile. It stays
+	// nil everywhere except the service profile that enables it, so a fixture that only wants
+	// the open observer cannot turn phase recording on by accident.
+	phases *requestPhaseObserver
+}
+
+// requestPhases is nil-safe: the gateway asks for it on every request, and a gateway built
+// without the profile must observe no trace at all.
+func (observer *SQLOpenObserver) requestPhases() *requestPhaseObserver {
+	if observer == nil {
+		return nil
+	}
+	return observer.phases
 }
 
 type sqlOpenObservationKey struct{}

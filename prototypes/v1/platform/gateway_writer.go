@@ -51,6 +51,8 @@ func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewa
 // mutable command, so the body that reaches the worker is the body the durable
 // record was settled against.
 func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command frozenCommand, output any) error {
+	// Deferred: every refusal below still attributes its worker time to the worker segment.
+	defer requestPhaseSpan(ctx, requestPhaseWorker)()
 	if !session.writerProtocol {
 		return gateway.config.Upstream.Call(ctx, session.worker, requestID, command, output)
 	}

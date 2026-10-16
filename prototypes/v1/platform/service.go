@@ -304,6 +304,7 @@ type serviceSQLOpenObservation struct {
 	stopping chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+	phases   *serviceRequestPhaseSink
 }
 
 type serviceSQLOpenRecord struct {
@@ -351,17 +352,30 @@ func startServiceSQLOpenObservation(ctx context.Context, directory, enabled stri
 	}
 	observation := &serviceSQLOpenObservation{observer: NewSQLOpenObserver(), stream: hex.EncodeToString(streamBytes), stopping: make(chan struct{}), done: make(chan struct{})}
 	go observation.consume(ctx, file)
+	// The phase stream is a second sink of this same profile, so enabling the profile enables
+	// both and disabling it leaves neither. Its observer is created here and nowhere else, so a
+	// fixture that only wants the open observer cannot turn phase recording on. A sink that
+	// cannot open is fatal like the first, so a profile is never silently half on.
+	observation.observer.phases = newRequestPhaseObserver()
+	phases, err := phaseSink(ctx, observation.observer.requestPhases(), directory)
+	if err != nil {
+		file.Close()
+		close(observation.done)
+		return nil, err
+	}
+	observation.phases = phases
 	return observation, nil
 }
 
 func (observation *serviceSQLOpenObservation) stop() bool {
 	observation.stopOnce.Do(func() { close(observation.stopping) })
+	complete := true
 	select {
 	case <-observation.done:
-		return true
 	case <-time.After(100 * time.Millisecond):
-		return false
+		complete = false
 	}
+	return observation.phases.stop() && complete
 }
 
 func (observation *serviceSQLOpenObservation) consume(ctx context.Context, output io.WriteCloser) {

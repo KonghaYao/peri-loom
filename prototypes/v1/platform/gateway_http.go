@@ -95,6 +95,8 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), timeout)
 	defer cancel()
+	// Off by default: with no observer bound this is a nil check and the trace stays nil.
+	ctx, phases := beginRequestPhases(ctx, gateway.config.OpenObserver.requestPhases(), identifier, action, started)
 	_ = http.NewResponseController(writer).SetReadDeadline(time.Now().Add(10 * time.Second))
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal
@@ -115,9 +117,13 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			defer permit.finish()
 		}
 		if result.operationPending {
+			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
 			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
+			leaveTerminal()
 		} else if result.operationDeferred != nil {
+			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
 			gateway.settlePendingOperation(result.operationDeferred, &result, permit)
+			leaveTerminal()
 		}
 		outcome := result.code
 		if outcome == "" {
@@ -134,7 +140,10 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			if result.session != nil {
 				event.Database = result.session.database.Key()
 			}
-			if auditErr := gateway.config.Audit.Record(event); auditErr != nil {
+			leaveAudit := requestPhaseSpan(ctx, requestPhaseAudit)
+			auditErr := gateway.config.Audit.Record(event)
+			leaveAudit()
+			if auditErr != nil {
 				if result.code != "outcome_unknown" {
 					result.auditExecutionCompleted = result.dispatched && sqlExecutedOutcome(result)
 					result.code = "audit_unavailable"
@@ -155,7 +164,14 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		if result.code == "outcome_unknown" && result.dispatched {
 			logUnknownOutcome(identifier, action, &result)
 		}
+		leaveRespond := requestPhaseSpan(ctx, requestPhaseRespond)
 		gateway.writeResponse(writer, identifier, result)
+		leaveRespond()
+		status := result.status
+		if status == 0 {
+			status = 200
+		}
+		phases.finish(identifier, outcome, status)
 	}()
 	if !correlationValid || request.Method != "POST" || action == "invalid" || request.URL.RawQuery != "" {
 		return
@@ -166,7 +182,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	credential := strings.TrimPrefix(values[0], "Bearer ")
+	leaveAuth := requestPhaseSpan(ctx, requestPhaseAuth)
 	principal, err = gateway.config.Identity.Authenticate(credential)
+	leaveAuth()
 	if err != nil || principal.Subject == "" || principal.Project == "" || (principal.ExpiresMS > 0 && principal.ExpiresMS <= time.Now().UnixMilli()) {
 		principal = Principal{}
 		result = gatewayFailure(401, "unauthenticated")
@@ -203,7 +221,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			principal.Project = session.project
 		}
 	}
+	leaveState := requestPhaseSpan(ctx, requestPhaseState)
 	state, err := readGatewayRequestState(gateway.config.State, principal.Project, database)
+	leaveState()
 	if err != nil {
 		result = gatewayFailure(503, "metadata_unavailable")
 		return
@@ -221,6 +241,16 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(403, "forbidden")
 		return
 	}
+	// The admission span is deferred, so a refusal inside it still closes it: an open span
+	// would otherwise swallow every later span as its child.
+	var releaseClassification func()
+	leaveAdmission := requestPhaseSpan(ctx, requestPhaseAdmission)
+	defer func() { leaveAdmission() }()
+	defer func() {
+		if releaseClassification != nil {
+			releaseClassification()
+		}
+	}()
 	gateway.mu.Lock()
 	if gateway.closing {
 		gateway.mu.Unlock()
@@ -236,7 +266,6 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		result = gatewayFailure(429, "quota_exceeded")
 		return
 	}
-	var releaseClassification func()
 	if deferredAdmission {
 		var ok bool
 		releaseClassification, ok = gateway.admission.classify(principal.Project, project.Quotas)
@@ -244,7 +273,6 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			result = gatewayFailure(429, "quota_exceeded")
 			return
 		}
-		defer releaseClassification()
 	}
 	limit := sqlWireLimit
 	if project.Quotas.MaxSQLBytes <= (sqlWireLimit-8192)/6 {
@@ -295,6 +323,8 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 }
 
 func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gatewayRequest, bool) {
+	// Deferred, so every early refusal closes its own span instead of leaving it open.
+	defer requestPhaseSpan(ctx, requestPhaseDecode)()
 	var request gatewayRequest
 	if !utf8.Valid(body) {
 		return request, false

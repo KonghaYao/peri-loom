@@ -41,7 +41,9 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if err != nil {
 		return operationAdmissionFailure(err)
 	}
+	leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
 	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", openCommand)
+	leaveIntent()
 	if err != nil {
 		return operationAdmissionFailure(err)
 	}
@@ -53,7 +55,11 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		Session  string `json:"session"`
 		Readonly *bool  `json:"readonly"`
 	}
+	// The worker span covers the open call on both protocol branches; it is deferred so every
+	// refusal below still attributes its time to the worker.
 	var writerState *SessionWriterState
+	leaveWorker := requestPhaseSpan(ctx, requestPhaseWorker)
+	defer leaveWorker()
 	writerProtocol := gateway.admission.eligible(quota)
 	if writerProtocol {
 		probeID, probeErr := controller.RandomID()
@@ -108,9 +114,11 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 }
 
 func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool) gatewayResult {
+	leaveSession := requestPhaseSpan(ctx, requestPhaseSession)
 	gateway.mu.Lock()
 	session := gateway.sessions[request.Session]
 	gateway.mu.Unlock()
+	leaveSession()
 	if session == nil || session.subject != principal.Subject || session.project != principal.Project || session.keyID != principal.KeyID {
 		return gatewayFailure(403, "invalid_session")
 	}
@@ -268,7 +276,9 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return operationAdmissionFailure(err)
 		}
 	} else {
+		leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
 		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, frozen)
+		leaveIntent()
 		if err != nil {
 			return operationAdmissionFailure(err)
 		}
