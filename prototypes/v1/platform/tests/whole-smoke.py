@@ -92,7 +92,10 @@ def main():
         denial_client.open(denied_request, timeout=15).close()
     except urllib.error.HTTPError as error:
         denied = json.loads(error.read(1024*1024))
-        assert error.code == 400 and denied["request_id"] == denied_id and denied["error"]["code"] == "sql_error" and denied["error"]["execution_completed"] is True
+        # The worker settles the statement and refuses it by placement, so the platform
+        # answers with the graded readonly_session code, not a bare sql_error, and keeps
+        # the execution evidence the client needs to tell refusal from a lost reply.
+        assert error.code == 403 and denied["request_id"] == denied_id and denied["error"]["code"] == "readonly_session" and denied["error"]["execution_completed"] is True
     else:
         raise RuntimeError("read-only clone accepted SQL write")
     assert query(session, f"SELECT id,balance FROM {table}", reader_token) == [[1,9223372036854775807]]
