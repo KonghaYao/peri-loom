@@ -1,9 +1,10 @@
 # 数据库重新打开停滞：症状、归因与修复边界（Rust 数据面 + Go 失败契约）
 
-日期：2026-10-17。状态：**已定位并复现；归因基于一次有效的 native 采样与离线对象普查；其中一条修复（WAL 并发预取）已落地并有单变量对照，见 §4**
+日期：2026-10-17。状态：**已定位、已复现、已定案到失败产生点；加载预算的结构性修复已落地（§3），
+另有一项"并发预取 WAL chunk"的修复经单变量对照验证有效、但**未落地**（§4 记录了回退理由）**
 范围：`prototypes/v1/src` 的 Worker 加载路径与 `prototypes/v1/platform` 的 SQL 失败分类。
 基线：main `0ecb117`；§1–§3 的观测全部来自该基线的 debug 二进制（run3/run4：sha256 `9c73a5e38b83eee4…`，
-run3 本身的启动输出未记录 sha，见 §5）；§4 的对照还用了含 `2f729e2` 的二进制（sha256 `e226b37dc1b0b151…`）。
+run3 本身的启动输出未记录 sha，见 §5）；§4 的对照还用了含预取的二进制（sha256 `e226b37dc1b0b151…`）。
 相关研究文档：`peri-loom-tuning-research-2026-10-16.md` 的 W2（"已加载句柄的生命周期"）与 W5（读路径）。
 
 **本文不宣称任何性能或容量结论。** 文中所有耗时都是单次观测，且实验期间主机负载为 17–24（其他 worktree 正在构建），
@@ -97,21 +98,22 @@ let end = RPC_DEADLINE.get().map_or(end, |outer| outer.min(end));
 于是无论语句自身的预算是多少，**这次打开的可用时间都不超过"请求受理时刻 + 10 s"**，
 而加载需要 16.1–16.6 s。
 
-**失败发生在加载之后的"执行前"判定**，这一点由报文确定：worker 文本是
-`SQL execution not entered: writer admission deadline`，平台记为 `rejected=true, executed=false`，
-即确实**带** `SqlEvidence::NotExecuted`。**但具体产生点未能由现有产物确定**，遗留一处未解释的矛盾：
+**产生点已定案（2026-10-17 补）：失败来自加载路径自己发的那条语句。**
+`RemoteDatabase::open_configured` 在非只读打开时执行
+`database.query("SELECT name FROM sqlite_master LIMIT 1")`（`src/database.rs:152`），
+它走 `SessionLane::query`（`src/session/lane.rs:167`）→ `RequestDeadline::new(budget)`（`:174`）→
+`deadline.check()`（`src/session/budget.rs:147`）→ `AdmissionError::Deadline`；
+而 `lane.rs:177` 的 `.map_err(|error| deadline.evidence.failure(error))` 会在语句
+`entered == false` 时补上 `SqlEvidence::NotExecuted`（`src/session/evidence.rs:44-57`）。
+这条链一次解释了此前两组不自洽的事实：
 
-- `RemoteDatabase::session()` / `operation_until` 内的 `deadline.check()` 会给出同一句文本
-  （`src/session/admission.rs:25`，非测试代码里至少有 9 个产生点），但它**不带** `NotExecuted`；
-  平台对缺证据的失败判 `ambiguous` 并打印 `SQL outcome unknown`，与实测的 504 / `rejected=true` 不自洽。
-- 能同时给出 `NotExecuted` 与该文本的 `src/worker_rpc/server.rs:469`（`prepared` 闭包失败）与
-  `:538-540`（dispatch 之前的截止点检查）都在加载之前求值，与"同一请求已花 16 s 加载"冲突。
+- 为什么文本是 `SQL execution not entered: writer admission deadline`（带证据前缀）——
+  因为失败点是一次**从未进入执行**的语句检查，而不是 `RemoteDatabase::session()` 的会话判定；
+- 为什么它发生在"同一请求已经花了 16 s"之后——那 16 s 花在**同一函数体内**的 WAL 回放上，
+  回放完成后才轮到这条 open 期语句，此时请求级截止点（受理 + 10 s）早已过期。
 
-采样侧只能确认这 16 s 的加载确实发生在这个请求里（栈是
-`State::serve → State::handle → State::dispatch → Sessions::open → OwnershipRuntime::open_session →
-WorkerRuntime::open → load → load_native`，2775 个样本），且响应之后该连接只进入等待，没有第二个请求。
-**定案需要 worker 侧带证据链的日志或一次带 trace 的复现**；本文不替它圆场，
-也不把站点写进结论——下面只沿用"执行前被截止点判掉、且确定未提交"这一可观测结论。
+（此前本节把它记为"未解释矛盾"，依据是"`RemoteDatabase::session()` 的 `deadline.check()` 不带证据"。
+那个否证本身成立，缺的是**加载路径内部也有一条取截止点的语句**这一环。）
 
 ### 2.2 Go 平台把它报成了语句超时
 
@@ -182,7 +184,8 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 - 采样窗口里最大的那份回复体 17.8 MB，**未触及** `MAX_RPC_BYTES`（见 §2.6）。
 
 这解释了 §2.3 里两遍 `from_slice` 各占约 19%。`RemoteWal::for_each_record` 在该基线上对
-`wal/index` 的每条 entry 各发一次**同步** `Get`、没有批量取回；当前 HEAD 已改为有界并发预取，见 §4。
+`wal/index` 的每条 entry 各发一次**同步** `Get`、没有批量取回（该基线与当前 HEAD 都是如此：
+曾经落地的并发预取已按 §4.1 回退）。
 
 ### 2.5 放大：空闲清扫反复驱逐实例（失败路径本身不丢弃它）
 
@@ -231,24 +234,35 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 
 ## 3. 需要改什么（与不需要改什么）
 
-按证据，缺口分布在三处，且互相独立：
+按证据，缺口分布在三处，且互相独立（第三处已落地，见下）：
 
 | 缺口 | 位置 | 为什么必须单独处理 |
 |---|---|---|
 | 加载没有独立界限，且加载后的预算没有重新锚定 | `worker_rpc/server.rs` 的截止点作用域、`database.rs` 的会话预算 | 只有它能让"加载慢"不再等价于"语句超时" |
-| 字节负载的线格式放大 3.36 倍，且同一份字节被反序列化三遍 | `authority_rpc/protocol.rs`、`object_store.rs`、`authority_rpc/client.rs`、`authority_rpc/provider.rs` | 它决定加载本身的代价；改它不动任何语义（预取已把"串行 RTT"这一层拿走，见 §4） |
-| 空闲卸载默认 1000 ms 与 W2 的验收场景冲突 | `worker_rpc/sessions.rs:111` | 它决定"什么时候要付这份代价" |
+| 字节负载的线格式放大 3.36 倍，且同一份字节被反序列化三遍 | `authority_rpc/protocol.rs`、`object_store.rs`、`authority_rpc/client.rs`、`authority_rpc/provider.rs` | 它决定加载本身的代价；改它不动任何语义 |
+
+**已落地**（不改变任何语义，只改编码与界限）：
+
+- `perf(authority_rpc)：对象字节改走 base64`（`be7d0dc`）——`Put.bytes`、`UploadSegments.segments`、
+  `StoredObject.bytes` 三处复用既有的 `object_store::payload` 约定，读方向继续接受旧整数数组。
+  实测同一负载的 JSON 文本：4 MiB 对象 14,977,748 → 5,592,489 字节；16 × 128 KiB 段批次
+  7,490,140 → 2,796,316 字节（单元测试打印，不是抓包）。
+- `fix(worker)：冷加载独立预算并在加载后重新锚定语句预算`（`4761183`）——加载段用
+  `RequestDeadline::suspend()` 摘掉请求级截止点，加载界限改为 `PERI_WORKER_LOAD_MS`
+  （默认 `max(2×语句墙钟预算, 60 s)`，非法值 fail-closed），加载后重新锚定语句预算；
+  超预算报 `database load budget exceeded (PERI_WORKER_LOAD_MS)` 且带 `SqlEvidence::NotExecuted`，
+  平台侧归入 **503 `sql_unavailable`**；`PERI_WORKER_DB_IDLE_UNLOAD_MS` 默认 1000 → 60000 ms。
 
 **不需要改**：`writer admission deadline` 对**语句执行**超预算的映射仍然正确；`rejected=true`
 表示确定未提交，客户端可以安全重发，这个契约不能动。
 
 ---
 
-## 4. 已落地的一处修复与单变量对照：WAL 并发预取（`2f729e2`）
+## 4. 已验证但**未落地**的修复：WAL 并发预取
 
-`RemoteWal::for_each_record` 在该基线上是**同步串行**的：13 个 chunk 就是 13 次串行往返。
-`2f729e2` 引入有界预取窗口（`PERI_WORKER_WAL_PREFETCH`，默认 4、上限 8、`=1` 退化为串行、
-非法值 fail-closed），仍然按 lsn 顺序投递。
+`RemoteWal::for_each_record` 在基线上是**同步串行**的：13 个 chunk 就是 13 次串行往返。
+曾一度移植了一个有界预取窗口（`PERI_WORKER_WAL_PREFETCH`，默认 4、上限 8、`=1` 退化为串行、
+非法值 fail-closed，仍按 lsn 顺序投递），实测有效，但**已从 main 回退**——原因见本节末。
 
 对照设计：**两个二进制只差这一个提交**（`git diff --name-only 0ecb117 2f729e2 -- prototypes/` 只列出
 `prototypes/v1/src/wal.rs`（+489/−18）；区间内另一个提交 `f8f036f` 只加 markdown），
@@ -268,8 +282,36 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 于是同一序列从 2/2 失败变成 2/2 成功（同侧散布 1.1–2.4 s，未出现跨侧交叉）。
 **不能说的**：这不是延迟基线，**不支持任何加速倍数或百分比**（单次观测、每臂仅 2 次、
 主机自报负载 6.2–14.6），也不能外推到其他 WAL 长度、其他规模、其他 `sql_max_duration_ms`、
-真实 S3 后端或并发场景；它没有触碰"加载与语句预算共用请求级截止点"这个结构问题——
-预取只是让这一次加载**恰好**落在界限内。四轮关栈均已 `clean` / 终态证明落盘，端口与进程无残留。
+真实 S3 后端或并发场景。四轮关栈均已 `clean` / 终态证明落盘，端口与进程无残留。
+
+### 4.1 为什么回退
+
+预取本身不违反顺序、也不改变错误归属（按 index 顺序 join、按 lsn 交付，注释与用例都在），
+但那版实现把**在途块数**从 1 提到 `window`（默认 4、上限 8），而"回放不在访问者结束前抓取下一条 chunk"
+是 `2ed2e2d`（"replay cold records without collecting all chunks"）刻意钉住的内存上界，
+由 `tests/remote_database.rs:177` 的 `wal_replay_visits_a_record_before_fetching_the_next_chunk`
+断言。带着预取的 main 上该用例实际失败：
+
+```
+---- wal_replay_visits_a_record_before_fetching_the_next_chunk stdout ----
+Error: replay fetched later records before the visitor finished
+test result: FAILED. 14 passed; 1 failed
+```
+
+这不是可以顺手改测试的细节：每块原始上限是 `MAX_RPC_BYTES / 2` = 16 MiB，
+`window` 块的在途量意味着最坏 128 MiB；而 F06
+（`docs/performance-review/implementation-status.md:12`）本身还写着"**需完成固定缓冲预算**"——
+这条路径的内存账本尚未建立，在账本缺席时放宽上界，方向是反的。
+
+更关键的是：**它修的故障已经被 §3 的结构性修复取代**。加载有了独立预算、加载后重新锚定语句预算、
+空闲卸载默认 1 s → 60 s 之后，"空闲后重开"不再每次重付冷加载，预取的收益只剩"真冷加载更快"，
+不再是"能不能打开"。所以这是**用一条已量化的延迟收益换取一条未记账的内存上界**，
+在账本补齐前不值得。
+
+**重新落地的条件**（写在这里以免下次又从"扫一遍代码"开始）：先把 F06 的有界缓冲预算做出来
+（窗口按字节而不是按块数计，块大小从索引或首次读取处获得），再把该用例改成断言
+"在途条数与字节 ≤ 预算 + 顺序 + 提前停止不抓完整历史"，而不是回退成"恰好 1 条"。
+在此之前，预取保留在分支 `perf/wal-prefetch-20261017`（`5fd8be1`）与本次回退提交之前的 `2f729e2` 上。
 
 ---
 
@@ -285,6 +327,7 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 - §2.6 的上限风险只有常量与倍率的算术，没有构造越界用例。
 - §2.5 的"失败路径不丢弃实例、约 1.0–1.1 s 空闲后由清扫驱逐"来自代码路径与常量；
   由此推出的"失败后 1 s 内重开可复用驻留实例"**尚未实测**，不能当作重试建议的依据。
-- §2.1 的**失败产生点未定案**（报文带 `NotExecuted` 与已知产生点冲突），这是本文唯一遗留的未解释矛盾；
-  run3 也没有记录当时二进制的 sha256（该次构建已被 07:20 的重建覆盖）。
+- §2.1 的产生点由代码链与一次变异复现（摘掉加载段的 `RequestDeadline::suspend()` 后单测重现
+  同一文本）定案，**没有**来自生产运行的 worker 内部日志；run3 也没有记录当时二进制的 sha256
+  （该次构建已被 07:20 的重建覆盖）。
 - 容量、公平性、SLO 一律 **NOT MEASURED**。
