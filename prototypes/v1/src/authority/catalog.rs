@@ -12,6 +12,7 @@ impl Authority {
         previous: &CatalogRoot,
         next: &mut CatalogRoot,
         deletion: Option<&str>,
+        bodies: &[super::PublicationBody<'_>],
     ) -> Result<()> {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("prepare", 0);
@@ -53,7 +54,7 @@ impl Authority {
         self.prepare_objects(previous, next)?;
         self.prepare_tombstones(previous, next, deletion)?;
         self.prepare_uploads(previous, next, &published)?;
-        self.validate_changed_references(previous, next)?;
+        self.validate_changed_references(previous, next, bodies)?;
         // Additions are validated against the change set. A removal can invalidate a
         // reference held by state this transaction never touched, and there is no reverse
         // index to prove otherwise cheaply, so removals fall back to the full walk. That

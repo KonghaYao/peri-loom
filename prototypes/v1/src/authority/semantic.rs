@@ -275,28 +275,37 @@ impl Authority {
     /// of the head in hand is decided one level up: a head this process did not verify is
     /// resolved by `verify_deep` before a statement trusts it, so the change-scoped path
     /// never sees a head whose references were never registered.
-    pub(super) fn validate_references(&self, root: &CatalogRoot) -> Result<()> {
+    pub(super) fn validate_references(
+        &self,
+        root: &CatalogRoot,
+        bodies: &[super::PublicationBody<'_>],
+    ) -> Result<()> {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("validate_refs", 0);
         for (name, branch) in &root.branches {
             validate_name(name)?;
-            self.validate_head_ref(root, branch.head.as_ref())?;
-            self.validate_wal_ref(root, branch.wal.as_ref())?;
+            self.validate_head_ref(root, branch.head.as_ref(), bodies)?;
+            self.validate_wal_ref(root, branch.wal.as_ref(), bodies)?;
         }
         for (name, point) in &root.snapshots {
             validate_name(name)?;
-            self.validate_head_ref(root, point.head.as_ref())?;
-            self.validate_wal_ref(root, point.wal.as_ref())?;
+            self.validate_head_ref(root, point.head.as_ref(), bodies)?;
+            self.validate_wal_ref(root, point.wal.as_ref(), bodies)?;
         }
         Ok(())
     }
 
-    fn validate_head_ref(&self, root: &CatalogRoot, head: Option<&ObjectEntry>) -> Result<()> {
+    fn validate_head_ref(
+        &self,
+        root: &CatalogRoot,
+        head: Option<&ObjectEntry>,
+        bodies: &[super::PublicationBody<'_>],
+    ) -> Result<()> {
         let Some(head) = head else {
             return Ok(());
         };
         registered(root, head)?;
-        let decoded: Head = serde_json::from_slice(&self.read_metadata_blob(head)?)?;
+        let decoded: Head = serde_json::from_slice(&self.metadata_bytes(bodies, head)?)?;
         ensure!(
             valid_hash(&decoded.manifest),
             "invalid HEAD manifest digest"
@@ -310,18 +319,37 @@ impl Authority {
             "HEAD manifest digest mismatch"
         );
         registered(root, &manifest)?;
-        let manifest: Manifest = serde_json::from_slice(&self.read_metadata_blob(&manifest)?)?;
+        let manifest: Manifest = serde_json::from_slice(&self.metadata_bytes(bodies, &manifest)?)?;
         manifest.validate()?;
         Ok(())
     }
 
-    fn validate_wal_ref(&self, root: &CatalogRoot, wal: Option<&ObjectEntry>) -> Result<()> {
+    fn validate_wal_ref(
+        &self,
+        root: &CatalogRoot,
+        wal: Option<&ObjectEntry>,
+        bodies: &[super::PublicationBody<'_>],
+    ) -> Result<()> {
         let Some(wal) = wal else {
             return Ok(());
         };
         registered(root, wal)?;
-        index(&self.read_metadata_blob(wal)?)?;
+        index(&self.metadata_bytes(bodies, wal)?)?;
         Ok(())
+    }
+
+    /// Metadata bytes for a reference of the candidate root. A body this publication has
+    /// staged wins over the store, because the group that installs it has not been
+    /// written yet; everything else is read normally.
+    fn metadata_bytes(
+        &self,
+        bodies: &[super::PublicationBody<'_>],
+        entry: &ObjectEntry,
+    ) -> Result<Vec<u8>> {
+        match super::staged_body(bodies, entry) {
+            Some(bytes) => Ok(bytes.to_vec()),
+            None => self.read_metadata_blob(entry),
+        }
     }
 
     /// Change-scoped reference validation: a branch, snapshot or logical object this
@@ -331,10 +359,11 @@ impl Authority {
         &self,
         previous: &CatalogRoot,
         root: &CatalogRoot,
+        bodies: &[super::PublicationBody<'_>],
     ) -> Result<()> {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("validate_refs", 0);
-        let mut walker = Walker::new(self, root, false);
+        let mut walker = Walker::new(self, root, false).staged(bodies);
         for (name, branch) in &root.branches {
             let admitted = previous.branches.get(name);
             if admitted.is_some_and(|old| old.unchanged_refs(branch)) {
@@ -423,6 +452,10 @@ impl Authority {
 struct Walker<'a> {
     authority: &'a Authority,
     root: &'a CatalogRoot,
+    /// Bodies the candidate root references that the publication group has not written
+    /// yet. Validation runs before the group is written, so without these the walker
+    /// would reject the publication that is about to install them.
+    staged: &'a [super::PublicationBody<'a>],
     verified: BTreeSet<String>,
     verified_order: VecDeque<String>,
     collect_reachable: bool,
@@ -436,11 +469,17 @@ impl<'a> Walker<'a> {
         Self {
             authority,
             root,
+            staged: &[],
             verified: BTreeSet::new(),
             verified_order: VecDeque::new(),
             collect_reachable,
             reachable: BTreeSet::new(),
         }
+    }
+
+    fn staged(mut self, bodies: &'a [super::PublicationBody<'a>]) -> Self {
+        self.staged = bodies;
+        self
     }
 
     fn direct(&mut self, entry: &ObjectEntry) -> Result<()> {
@@ -453,6 +492,9 @@ impl<'a> Walker<'a> {
 
     fn bytes(&mut self, entry: &ObjectEntry) -> Result<Vec<u8>> {
         self.direct(entry)?;
+        if let Some(bytes) = super::staged_body(self.staged, entry) {
+            return Ok(bytes.to_vec());
+        }
         self.authority.read_metadata_blob(entry)
     }
 

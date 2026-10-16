@@ -179,12 +179,18 @@ fn expired_native_writer_aborts_without_flushing_and_cold_recovers_acknowledged_
     Ok(())
 }
 
+/// An instant past any lease deadline this test can grant.
+const EXPIRED_MS: u64 = 1_000_000;
+
 struct ExpiringAppendBackend {
     local: LocalObjectStore,
     clock: Arc<FakeClock>,
     blob_puts: AtomicU64,
     root_puts: AtomicU64,
-    expire_final_read: std::sync::atomic::AtomicBool,
+    root_gets: AtomicU64,
+    /// Zero disables the hook. A nonzero value expires the lease on that catalog read,
+    /// counted from the start of the append.
+    expire_on_root_get: AtomicU64,
 }
 
 impl ObjectStore for ExpiringAppendBackend {
@@ -193,9 +199,14 @@ impl ObjectStore for ExpiringAppendBackend {
     }
     fn get(&self, key: &str) -> Result<Option<crate::object_store::StoredObject>> {
         let result = self.local.get(key)?;
-        if key.ends_with("/authority/root") && self.expire_final_read.swap(false, Ordering::SeqCst)
-        {
-            self.clock.0.store(1000, Ordering::SeqCst);
+        if key.ends_with("/authority/root") {
+            let seen = self.root_gets.fetch_add(1, Ordering::SeqCst) + 1;
+            let target = self.expire_on_root_get.load(Ordering::SeqCst);
+            if target != 0 && seen >= target {
+                // Any deadline the lease could hold is behind this instant, so the jump
+                // expires it whatever the grant clock was when the counter was armed.
+                self.clock.0.store(EXPIRED_MS, Ordering::SeqCst);
+            }
         }
         Ok(result)
     }
@@ -206,8 +217,8 @@ impl ObjectStore for ExpiringAppendBackend {
         condition: crate::object_store::PutCondition,
     ) -> Result<String> {
         let result = self.local.put(key, bytes, condition)?;
-        if key.contains("/authority/blobs/") && self.blob_puts.fetch_add(1, Ordering::SeqCst) == 1 {
-            self.expire_final_read.store(true, Ordering::SeqCst);
+        if key.contains("/authority/blobs/") {
+            self.blob_puts.fetch_add(1, Ordering::SeqCst);
         }
         if key.ends_with("/authority/root") {
             self.root_puts.fetch_add(1, Ordering::SeqCst);
@@ -233,7 +244,11 @@ fn append_expiry_on_final_fresh_catalog_read_publishes_zero_wal_prefix() -> Resu
         clock: clock.clone(),
         blob_puts: AtomicU64::new(0),
         root_puts: AtomicU64::new(0),
-        expire_final_read: std::sync::atomic::AtomicBool::new(false),
+        root_gets: AtomicU64::new(0),
+        // Armed by the test for the append alone: the hook must not fire while the
+        // bootstrap grants the lease, or the lease would be granted against the expired
+        // clock and stay live for its whole term.
+        expire_on_root_get: AtomicU64::new(0),
     });
     let authority = OwnershipAuthority::new(backend.clone(), clock);
     let database = DatabaseId::new(Namespace::new("append", "expiry")?, "main")?;
@@ -256,6 +271,11 @@ fn append_expiry_on_final_fresh_catalog_read_publishes_zero_wal_prefix() -> Resu
     })?;
     let store = authority.open_session(&lease.binding, AccessRole::Writer)?;
     let before = backend.root_puts.load(Ordering::SeqCst);
+    // Arm for the append alone, and count its catalog reads from zero: the append
+    // resolves the WAL index on one read and decides on the head with the next, so the
+    // expiry lands on the read the publication is decided on.
+    backend.root_gets.store(0, Ordering::SeqCst);
+    backend.expire_on_root_get.store(2, Ordering::SeqCst);
     let request = crate::wal::WalAppendRequest {
         namespace: database.namespace.clone(),
         epoch: 1,
@@ -266,8 +286,11 @@ fn append_expiry_on_final_fresh_catalog_read_publishes_zero_wal_prefix() -> Resu
     };
     let error = store.append_wal(&request).unwrap_err();
     assert!(format!("{error:#}").contains("LeaseExpired"));
-    assert_eq!(backend.blob_puts.load(Ordering::SeqCst), 2);
-    assert_eq!(backend.root_puts.load(Ordering::SeqCst), before + 1);
+    // One group carries the instances, the registrations and the head CAS, so a
+    // publication that never reaches the store leaves nothing behind: no physical
+    // instance, no head revision and no upload intent.
+    assert_eq!(backend.blob_puts.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.root_puts.load(Ordering::SeqCst), before);
     let object = backend
         .local
         .get(&database.namespace.key("authority/root")?)?
@@ -275,9 +298,9 @@ fn append_expiry_on_final_fresh_catalog_read_publishes_zero_wal_prefix() -> Resu
     let envelope: serde_json::Value = serde_json::from_slice(&object.bytes)?;
     let root: crate::authority::CatalogRoot = serde_json::from_value(envelope["root"].clone())?;
     assert!(root.branches["main"].wal.is_none());
-    assert_eq!(root.uploads.len(), 2);
+    assert_eq!(root.uploads.len(), 0);
     assert!(root.objects.is_empty());
-    eprintln!("APPEND_FINAL_EXPIRY physical_terminal=2 reservation=1 final_catalog_publications=0 uploads_retained=2 wal_prefix_published=false");
+    eprintln!("APPEND_FINAL_EXPIRY physical_instances=0 publications=0 uploads_retained=0 wal_prefix_published=false");
     drop(store);
     Ok(())
 }

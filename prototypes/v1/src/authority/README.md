@@ -27,6 +27,16 @@ readback. Publication settles its intent in the same root CAS that installs
 logical objects or branch/recovery references. `blobs` keeps all known physical
 instances, including overwritten HEAD/WAL blobs and unreachable catalog slots.
 
+A WAL append does not pay that two-step protocol. Its chunk and index instances
+ride in the publication group itself: the bodies are written between the staged
+pages and the head CAS, so the instances, the registrations that reach them and
+the head stay one durable publication and a commit publishes the head once.
+Nothing references a body before the group lands, validation reads a staged body
+from the group buffer the way it reads a staged page, and a torn group can only
+leave bytes that nothing points at — the same cost page bodies already accept.
+Because the reservation and its discharge happen in one revision, the durable
+head never carries an open intent whose bytes already landed with it.
+
 Failed or unresolved publication intents remain conservatively retained. Even
 when PUT appeared complete, this implementation does not expose an abandonment
 operation claiming that no dispatched retry can arrive later. Known catalog

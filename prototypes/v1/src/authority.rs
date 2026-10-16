@@ -107,6 +107,30 @@ const RETAINED_RECOVERY_POINTS: usize = 32;
 static GROUP_COMMIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 const RECEIPT_ARCHIVE_BATCH: usize = 64;
 
+/// A physical instance whose bytes ride in the caller's publication group instead of a
+/// separate conditional put. The instance, the logical registration that makes it
+/// reachable and the head CAS become one durable publication, so no intent has to be
+/// reserved in an earlier revision. Instances that are published this way are never
+/// referenced before the group lands, and a torn group can only leave bytes nothing
+/// points at — the same cost the paged registry already accepts for page bodies.
+pub(super) struct PublicationBody<'a> {
+    pub entry: &'a ObjectEntry,
+    pub bytes: &'a [u8],
+}
+
+/// The bytes of a body this publication has staged but not written. Validation runs
+/// before the group lands, so a candidate that references one of its own bodies reads it
+/// from the group buffer instead of rejecting the publication that installs it.
+pub(super) fn staged_body<'b>(
+    bodies: &'b [PublicationBody<'_>],
+    entry: &ObjectEntry,
+) -> Option<&'b [u8]> {
+    bodies
+        .iter()
+        .find(|body| body.entry.blob == entry.blob)
+        .map(|body| body.bytes)
+}
+
 /// Decode a stored head and give its registries a store handle. A hand-decoded root
 /// keeps no handle and can only serve inline content, which fails closed for pages.
 fn decode_head_with_digest(
@@ -191,7 +215,7 @@ impl Authority {
         admitted::remember(key, &root.incarnation, digest);
     }
 
-    fn check(&self, stage: MutationStage) -> Result<()> {
+    pub(super) fn check(&self, stage: MutationStage) -> Result<()> {
         if let Some(guard) = &self.guard {
             guard.validate(stage)?;
         }
@@ -218,7 +242,7 @@ impl Authority {
         let (root, digest) = decode_head_with_digest(&self.store, &self.namespace, &object.bytes)?;
         if admitted::holds(&key, &root.incarnation, &digest) {
             self.validate_head(&root)?;
-            self.validate_references(&root)?;
+            self.validate_references(&root, &[])?;
         } else {
             // The head is not one this process verified, so the references it inherits may
             // have been replaced behind the authority's back: an envelope checksum proves
@@ -292,7 +316,21 @@ impl Authority {
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
-        self.transact_inner(expected_revision, mutation, None)
+        self.transact_inner(expected_revision, mutation, None, &[])
+    }
+
+    /// Publish a mutation whose group also carries new physical instances. The bodies
+    /// are written before the head CAS, so a reader that sees the registration always
+    /// sees the bytes; see `PublicationBody` for why no intent precedes them.
+    pub(super) fn transact_with_bodies<F>(
+        &self,
+        bodies: &[PublicationBody<'_>],
+        mutation: F,
+    ) -> Result<RootSnapshot>
+    where
+        F: FnMut(&mut CatalogRoot) -> Result<()>,
+    {
+        self.transact_inner(None, mutation, None, bodies)
     }
 
     fn transact_inner<F>(
@@ -300,6 +338,7 @@ impl Authority {
         expected_revision: Option<u64>,
         mut mutation: F,
         deletion: Option<&str>,
+        bodies: &[PublicationBody<'_>],
     ) -> Result<RootSnapshot>
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
@@ -325,7 +364,7 @@ impl Authority {
                 current.root.clone()
             };
             mutation(&mut candidate)?;
-            self.prepare(&current.root, &mut candidate, deletion)?;
+            self.prepare(&current.root, &mut candidate, deletion, bodies)?;
             candidate.revision = current
                 .root
                 .revision
@@ -333,7 +372,7 @@ impl Authority {
                 .context("authority revision overflow")?;
             self.record_receipt(&mut candidate, operation.clone(), &publishing)?;
             self.validate_head_with(&candidate, Some(&pending))?;
-            self.validate_references(&candidate)?;
+            self.validate_references(&candidate, bodies)?;
             candidate.blobs.publish(&publishing)?;
             candidate.objects.publish(&publishing)?;
             candidate.uploads.publish(&publishing)?;
@@ -345,6 +384,17 @@ impl Authority {
             }
             self.check(MutationStage::RootPublish)?;
             let mut writes = pending.borrow().writes().to_vec();
+            // Bodies are instances this group itself introduces, so they carry no
+            // condition: the group stays condition-checked exactly once, by the head CAS
+            // that ends it. The keys are fixed before the first attempt, so a retry
+            // rewrites identical bytes and the last write stays the fence.
+            for body in bodies {
+                writes.push(crate::object_store::GroupWrite::new(
+                    self.physical_key(&body.entry.blob)?,
+                    body.bytes.to_vec(),
+                    PutCondition::Any,
+                ));
+            }
             writes.push(crate::object_store::GroupWrite::new(
                 self.namespace.key("authority/root")?,
                 encoded,
@@ -374,6 +424,14 @@ impl Authority {
                             Arc::as_ptr(&self.store) as *const () as usize,
                             write.key.clone(),
                             &write.bytes,
+                        );
+                    }
+                    for body in bodies {
+                        request_reads::remember(
+                            Arc::as_ptr(&self.store) as *const () as usize,
+                            self.physical_key(&body.entry.blob)?,
+                            body.entry,
+                            body.bytes,
                         );
                     }
                     // This attempt built the head from a verified one and validated the
@@ -482,43 +540,13 @@ impl Authority {
         Ok(())
     }
 
-    fn upload_entry(bytes: &[u8]) -> Result<ObjectEntry> {
+    pub(super) fn upload_entry(bytes: &[u8]) -> Result<ObjectEntry> {
         Ok(ObjectEntry {
             blob: unique_id()?,
             hash: blake3::hash(bytes).to_hex().to_string(),
             etag: unique_id()?,
             created_ms: now_ms()?,
         })
-    }
-
-    pub(super) fn upload_wal_pair<Verify>(
-        &self,
-        chunk_bytes: &[u8],
-        index_bytes: &[u8],
-        mut verify: Verify,
-    ) -> Result<(ObjectEntry, ObjectEntry)>
-    where
-        Verify: FnMut(&CatalogRoot) -> Result<()>,
-    {
-        self.check(MutationStage::Upload)?;
-        let chunk = Self::upload_entry(chunk_bytes)?;
-        let index = Self::upload_entry(index_bytes)?;
-        self.transact(None, |root| {
-            verify(root)?;
-            for entry in [&chunk, &index] {
-                ensure!(
-                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
-                    "physical instance collision"
-                );
-                root.blobs.insert(entry.blob.clone(), entry.clone())?;
-                root.uploads.insert(entry.blob.clone(), entry.clone())?;
-            }
-            Ok(())
-        })?;
-        Ok((
-            self.finish_upload(chunk, chunk_bytes)?,
-            self.finish_upload(index, index_bytes)?,
-        ))
     }
 
     fn finish_upload(&self, entry: ObjectEntry, bytes: &[u8]) -> Result<ObjectEntry> {
@@ -573,7 +601,7 @@ impl Authority {
         Ok(bytes)
     }
 
-    fn physical_key(&self, blob: &str) -> Result<String> {
+    pub(super) fn physical_key(&self, blob: &str) -> Result<String> {
         ensure!(
             crate::manifest::valid_hash(blob),
             "invalid physical blob identifier"
@@ -637,6 +665,7 @@ impl Authority {
                 Ok(())
             },
             Some(blob),
+            &[],
         )?;
         Ok(())
     }

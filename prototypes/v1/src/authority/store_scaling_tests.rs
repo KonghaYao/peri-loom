@@ -1163,14 +1163,14 @@ fn engine_commits_publish_through_the_backend_group() -> Result<()> {
     Ok(())
 }
 
-/// R2 evidence: one commit publishes the authority head exactly twice, and both are the
-/// same invariant seen from two sides. The first reservation makes the upload intent
-/// durable before any physical blob exists ("intent precedes put"); the second registers
-/// the uploaded blobs as published objects and advances the branch WAL. Merging them
-/// would mean writing a physical blob before its intent is durable, which is the ordering
-/// the fence depends on, so this gate pins the count instead of the merge.
+/// R2 evidence: one commit publishes the authority head exactly once. The WAL pair's
+/// bodies ride in that same group, so the instances, the registrations that make them
+/// reachable and the head CAS become one durable publication instead of an intent
+/// revision followed by a registration revision. Nothing is referenced before the group
+/// lands, and the write order inside the group keeps the head CAS last, so a reader can
+/// never see a registration whose bytes are missing.
 #[test]
-fn a_commit_publishes_the_intent_head_then_the_registration_head() -> Result<()> {
+fn a_commit_publishes_the_head_once() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
     let store = Arc::new(Probe::open(directory.path())?);
@@ -1179,10 +1179,15 @@ fn a_commit_publishes_the_intent_head_then_the_registration_head() -> Result<()>
     for _ in 0..3 {
         store.reset();
         db.execute("INSERT INTO items(value) VALUES('fixed')")?;
+        let counts = store.snapshot();
         assert_eq!(
-            store.snapshot().root_writes,
-            2,
-            "commit head writes changed; re-derive the intent/registration split"
+            counts.root_writes, 1,
+            "commit head writes changed; re-derive the publication split"
+        );
+        assert_eq!(
+            counts.puts + counts.groups,
+            1,
+            "a commit published more than its own group"
         );
     }
     Ok(())

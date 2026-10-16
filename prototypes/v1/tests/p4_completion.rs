@@ -1070,11 +1070,13 @@ fn append_wal_one_rpc_and_lost_receipt_never_falls_back_or_replays() -> Result<(
 
 #[test]
 fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Result<()> {
+    // The append publishes the pair, its registrations and the head CAS as one group,
+    // so a commit has two body writes and one root write. There is no reservation
+    // revision to hold, which is what these phases pin down.
     for (target, ordinal, stage) in [
         (Target::Blob, 1, "chunk-blob"),
         (Target::Blob, 2, "index-blob"),
-        (Target::Root, 1, "reservation-root"),
-        (Target::Root, 2, "final-root"),
+        (Target::Root, 1, "head-cas"),
     ] {
         let mut fixture = Fixture::new(false)?;
         let (lease, old_session) = fixture.baseline()?;
@@ -1103,15 +1105,21 @@ fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Res
                 _ => unreachable!(),
             };
             assert_eq!(physical[category]["backend_terminal"], ordinal);
-            if stage == "final-root" {
+            // An append reserves nothing in a revision that outlives it: the intent that
+            // `prepare_blobs` demands is inserted and discharged inside the group.
+            assert!(during.uploads.is_empty());
+            if stage == "head-cas" {
+                // The CAS that ends the group is the commit, and both bodies were written
+                // before it, so the durable head already names them.
                 assert_eq!(physical["PUT/blob"]["backend_terminal"], 2);
-                assert!(during.uploads.is_empty());
                 assert_ne!(
                     during.branches["main"].wal.as_ref().unwrap().hash,
                     before.branches["main"].wal.as_ref().unwrap().hash
                 );
             } else {
-                assert_eq!(during.uploads.len(), 2);
+                // A held body is still in the group buffer and the group is written in
+                // order, so nothing of this commit is durable and the CAS has not started.
+                assert!(physical["PUT/root"].is_null());
                 assert_eq!(
                     during.branches["main"].wal.as_ref().unwrap().hash,
                     before.branches["main"].wal.as_ref().unwrap().hash

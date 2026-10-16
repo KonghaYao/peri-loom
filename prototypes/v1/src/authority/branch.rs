@@ -2,11 +2,13 @@
 mod publication;
 
 use super::{
-    now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint,
+    now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, PublicationBody,
+    RecoveryPoint,
 };
 use crate::{
     manifest::{Head, Manifest},
     object_store::{ObjectStore, PreconditionFailed, PutCondition, StoredObject},
+    ownership::types::MutationStage,
     recovery::{validate_index_append, validate_index_state, ValidatedWal},
 };
 use anyhow::{ensure, Context, Result};
@@ -256,6 +258,7 @@ impl BranchStore {
         bytes: &[u8],
         entry: &ObjectEntry,
         previous: Option<&ValidatedWal>,
+        bodies: &[PublicationBody<'_>],
     ) -> Result<ValidatedWal> {
         let load_chunk = |key: &str| {
             let relative = self.relative(key)?;
@@ -264,6 +267,13 @@ impl BranchStore {
                 .get(relative)?
                 .context("commit chunk missing from candidate catalog")?;
             semantic::registered(root, &entry)?;
+            // A body staged by this attempt is in the group buffer, not in the store
+            // yet. This is the rule pages already follow: validation of a candidate
+            // must be able to read what the candidate's own group will install,
+            // otherwise the authority rejects its own in-flight publication.
+            if let Some(bytes) = super::staged_body(bodies, &entry) {
+                return Ok(bytes.to_vec());
+            }
             self.authority.read_metadata_blob(&entry)
         };
         let validated = match previous {
@@ -344,23 +354,45 @@ impl BranchStore {
             .view
             .lock()
             .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
-        let (chunk, index) =
-            self.authority
-                .upload_wal_pair(&chunk_bytes, &index_bytes, |root| {
-                    Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
-                    self.validate_publication(root, "wal/index", &index_bytes)?;
-                    ensure!(!root.objects.contains(&chunk_key)?, PreconditionFailed);
-                    Ok(())
-                })?;
+        // Both instances of the pair ride in the publication group below: the group
+        // carries the bodies, the registrations that reach them and the head CAS, so a
+        // commit publishes the head once instead of reserving an intent in one revision
+        // and uploading the bodies between that revision and the next. The keys are
+        // fixed here, before the first attempt, so a retry rewrites the same bytes.
+        self.authority.check(MutationStage::Upload)?;
+        let chunk = Authority::upload_entry(&chunk_bytes)?;
+        let index = Authority::upload_entry(&index_bytes)?;
+        let bodies = [
+            PublicationBody {
+                entry: &chunk,
+                bytes: &chunk_bytes,
+            },
+            PublicationBody {
+                entry: &index,
+                bytes: &index_bytes,
+            },
+        ];
         let mut selected = None;
         let mut added = BTreeMap::new();
         let mut validated = None;
         let mut attempt = 0;
-        let published = self.authority.transact(None, |root| {
+        let published = self.authority.transact_with_bodies(&bodies, |root| {
             attempt += 1;
             Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
             self.validate_publication(root, "wal/index", &index_bytes)?;
             ensure!(!root.objects.contains(&chunk_key)?, PreconditionFailed);
+            for entry in [&chunk, &index] {
+                ensure!(
+                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
+                    "physical instance collision"
+                );
+                // The reservation lives only inside this revision: `prepare_uploads`
+                // discharges it in the transaction that makes the instance reachable,
+                // so the durable head never carries an intent whose bytes already
+                // landed with it.
+                root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                root.uploads.insert(entry.blob.clone(), entry.clone())?;
+            }
             root.objects.insert(chunk_key.clone(), chunk.clone())?;
             let previous = if attempt == 1 {
                 view.validated_wal.as_ref().and_then(|(entry, state)| {
@@ -369,7 +401,7 @@ impl BranchStore {
             } else {
                 None
             };
-            validated = Some(self.commit_point(root, &index_bytes, &index, previous)?);
+            validated = Some(self.commit_point(root, &index_bytes, &index, previous, &bodies)?);
             added = self.extend_pin(
                 root,
                 &view,
@@ -501,7 +533,7 @@ impl ObjectStore for BranchStore {
                         .head = Some(entry.clone())
                 }
                 "wal/index" => {
-                    self.commit_point(root, bytes, &entry, None)?;
+                    self.commit_point(root, bytes, &entry, None, &[])?;
                 }
                 _ => {
                     root.objects.insert(relative.to_owned(), entry.clone())?;
