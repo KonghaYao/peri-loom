@@ -3,11 +3,13 @@
 //! this change. Fixtures — the image of each tier and the frames a sample appends — are
 //! generated before the measurement, never inside it.
 //!
-//! Both arms run in the same binary on the same fixture bytes, and the only difference is
-//! the `INCREMENTAL_SCAN` switch: the baseline arm re-derives the checksum chain from the
-//! header on every call, which is the whole-image scan this change replaced. The measured
-//! span is appends plus one scan per append, so the reported difference is the scan state
-//! and nothing else — it is not a commit, a publication or a statement cost.
+//! Both arms run in the same binary on the same fixture bytes, and the only difference is the
+//! control arm on the image itself (`WalImage::force_whole_image`): the baseline arm re-derives
+//! the checksum chain from the header on every call, which is the whole-image scan this change
+//! replaced. Each arm owns its image, so the setting is instance state rather than process
+//! state and no other test can be affected by it. The measured span is appends plus one scan
+//! per append, so the reported difference is the scan state and nothing else — it is not a
+//! commit, a publication or a statement cost.
 
 use super::*;
 use crate::recovery::fixture::{write_at, WalBuilder, FRAME_SIZE, PAGE_SIZE};
@@ -65,8 +67,10 @@ struct Sample {
 /// Both arms start from the same image bytes and append the same frames, so the only
 /// difference between them is whether a scan may reuse the prefix it already verified.
 fn sample(image_bytes: &[u8], frames: &[Vec<u8>], incremental: bool) -> Sample {
-    INCREMENTAL_SCAN.store(incremental, std::sync::atomic::Ordering::Relaxed);
     let mut image = WalImage::default();
+    if !incremental {
+        image.force_whole_image();
+    }
     image
         .apply(&write_at(0, image_bytes))
         .expect("fixture image");
@@ -91,7 +95,6 @@ fn sample(image_bytes: &[u8], frames: &[Vec<u8>], incremental: bool) -> Sample {
     }
     let wall_us = started_at.elapsed().as_micros();
     let observed = recovery_observations();
-    INCREMENTAL_SCAN.store(true, std::sync::atomic::Ordering::Relaxed);
     // The arm's own conclusion must agree with the whole-image scan of the same bytes.
     assert_eq!(
         committed_position(image.bytes()).expect("reference scan"),

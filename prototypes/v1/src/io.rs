@@ -122,6 +122,19 @@ impl RemoteIO {
         self.native.disable();
     }
 
+    /// Test-only: moves this IO's WAL image to the control arm that re-derives the checksum
+    /// chain from the header on every scan. The image it switches belongs to this IO, so two
+    /// arms — or two tests running in parallel — cannot switch each other's scan.
+    #[cfg(test)]
+    pub(crate) fn force_whole_image_scan(&self) {
+        self.shared
+            .gate
+            .lock()
+            .expect("remote IO mutex poisoned")
+            .image
+            .force_whole_image();
+    }
+
     pub(crate) fn retirement_token(
         self: &Arc<Self>,
         deadline: std::time::Instant,

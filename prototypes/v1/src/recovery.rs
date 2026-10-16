@@ -29,14 +29,6 @@ pub struct RecoveryObservations {
     pub scan_nanos: u64,
 }
 
-/// Test-only: whether a scan may reuse the prefix a previous scan verified. `false`
-/// reproduces the whole-image scan this change replaced, on the same binary and the same
-/// fixture, so a paired measurement attributes the difference to the scan state alone
-/// rather than to the fixture or the store.
-#[cfg(test)]
-pub(crate) static INCREMENTAL_SCAN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
-
 impl RecoveryObservations {
     const ZERO: Self = Self {
         scanned_bytes: 0,
@@ -179,10 +171,6 @@ impl WalFrameScan {
     /// Equivalent of [`committed_position`] for an image whose examined bytes the caller
     /// left untouched since the previous call.
     fn position(&mut self, bytes: &[u8]) -> Result<Option<WalPosition>> {
-        #[cfg(test)]
-        if !INCREMENTAL_SCAN.load(std::sync::atomic::Ordering::Relaxed) {
-            self.reset();
-        }
         let started = Instant::now();
         let mut scanned = 0;
         let result = self.advance(bytes, &mut scanned);
@@ -302,6 +290,12 @@ impl WalFrameScan {
 pub(crate) struct WalImage {
     bytes: Vec<u8>,
     scan: WalFrameScan,
+    /// Test-only control arm: an image set to this drops its verified prefix before every scan,
+    /// which reproduces the whole-image scan the prefix reuse replaced. It is instance state, so
+    /// a control arm cannot change what another image — or another test running in parallel —
+    /// scans: only the caller that owns the image decides, and `clear` keeps the setting.
+    #[cfg(test)]
+    whole_image: bool,
 }
 
 impl WalImage {
@@ -349,9 +343,19 @@ impl WalImage {
         self.scan.reset();
     }
 
+    /// Test-only: moves this image to the control arm described on the field.
+    #[cfg(test)]
+    pub(crate) fn force_whole_image(&mut self) {
+        self.whole_image = true;
+    }
+
     /// Position of the last commit frame, verifying only the frames added since the
     /// previous call.
     pub(crate) fn committed_position(&mut self) -> Result<Option<WalPosition>> {
+        #[cfg(test)]
+        if self.whole_image {
+            self.scan.reset();
+        }
         self.scan.position(&self.bytes)
     }
 }

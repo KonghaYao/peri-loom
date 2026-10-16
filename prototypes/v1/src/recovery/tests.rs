@@ -1,5 +1,8 @@
 use super::*;
+use crate::object_store::{LocalObjectStore, ObjectStore};
 use crate::recovery::fixture::{started, truncate, write_at, WalBuilder, FRAME_SIZE, PAGE_SIZE};
+use crate::wal::RemoteWal;
+use std::sync::Arc;
 
 /// Same comparison for images that are expected to be invalid: a header the caller
 /// clobbered must fail identically on both paths instead of only on one.
@@ -303,16 +306,20 @@ fn clearing_or_growing_the_image_keeps_the_reference_agreement() -> Result<()> {
 }
 
 /// The same mutation sequence must agree with the reference in both arms, because the
-/// benchmark's baseline is only a control if it stays correct.
+/// benchmark's baseline is only a control if it stays correct. Each arm scans its own image, so
+/// a control arm cannot change what another arm — or a test running in parallel — scans.
 #[test]
 fn the_whole_image_arm_matches_the_reference_over_the_same_mutations() -> Result<()> {
-    for incremental in [true, false] {
-        INCREMENTAL_SCAN.store(incremental, std::sync::atomic::Ordering::Relaxed);
+    for whole_image in [false, true] {
         let mut builder = WalBuilder::new([72, 73]);
         let mut image = started(&builder)?;
+        if whole_image {
+            image.force_whole_image();
+        }
         for page in 1..=8 {
             let frame = builder.frame(page, if page % 3 == 0 { PAGE_SIZE as u32 } else { 0 });
-            image.apply(&write_at(image.len(), &frame))?;
+            let offset = image.len();
+            image.apply(&write_at(offset, &frame))?;
             assert_matches_full_scan(&mut image)?;
         }
         let offset = WAL_HEADER + FRAME_SIZE + 24;
@@ -321,12 +328,11 @@ fn the_whole_image_arm_matches_the_reference_over_the_same_mutations() -> Result
         image.apply(&write_at(offset, &corrupted))?;
         assert_eq!(assert_matches_full_scan(&mut image)?, None);
     }
-    INCREMENTAL_SCAN.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
-/// The control arm must actually do the whole-image work the benchmark compares against,
-/// or the paired measurement would compare a path with itself.
+/// The control arm must actually do the whole-image work the benchmark compares against, or
+/// the paired measurement would compare a path with itself.
 #[test]
 fn the_whole_image_arm_rescans_the_prefix() -> Result<()> {
     let mut builder = WalBuilder::new([61, 62]);
@@ -334,9 +340,11 @@ fn the_whole_image_arm_rescans_the_prefix() -> Result<()> {
     let next_frame = builder.frame(65, PAGE_SIZE as u32);
     let mut incremental_bytes = None;
     let mut whole_image_bytes = None;
-    for incremental in [false, true] {
-        INCREMENTAL_SCAN.store(incremental, std::sync::atomic::Ordering::Relaxed);
+    for whole_image in [false, true] {
         let mut image = WalImage::default();
+        if whole_image {
+            image.force_whole_image();
+        }
         image.apply(&write_at(0, &image_bytes))?;
         image.committed_position()?;
         let offset = image.len();
@@ -344,13 +352,12 @@ fn the_whole_image_arm_rescans_the_prefix() -> Result<()> {
         reset_recovery_observations();
         assert!(image.committed_position()?.is_some());
         let scanned = recovery_observations().scanned_bytes;
-        if incremental {
-            incremental_bytes = Some(scanned);
-        } else {
+        if whole_image {
             whole_image_bytes = Some(scanned);
+        } else {
+            incremental_bytes = Some(scanned);
         }
     }
-    INCREMENTAL_SCAN.store(true, std::sync::atomic::Ordering::Relaxed);
     let incremental = incremental_bytes.context("incremental arm missing")?;
     let whole_image = whole_image_bytes.context("control arm missing")?;
     assert!(
@@ -361,5 +368,205 @@ fn the_whole_image_arm_rescans_the_prefix() -> Result<()> {
         whole_image >= ((WAL_HEADER + 64 * FRAME_SIZE) as u64),
         "the control arm scanned only {whole_image} bytes, so it is not the whole-image path"
     );
+    Ok(())
+}
+
+/// The control arm belongs to the image it was set on: an image that never asked for it keeps
+/// paying for the frames it adds. A process-wide switch cannot hold this property, which is why
+/// tests of different arms in the same binary used to tread on each other.
+#[test]
+fn the_control_arm_does_not_leak_between_images() -> Result<()> {
+    let mut builder = WalBuilder::new([51, 52]);
+    let image_bytes = builder.image(8);
+    let next_frame = builder.frame(9, PAGE_SIZE as u32);
+    let mut control = WalImage::default();
+    control.force_whole_image();
+    let mut observed = WalImage::default();
+    for image in [&mut control, &mut observed] {
+        image.apply(&write_at(0, &image_bytes))?;
+        image.committed_position()?;
+        let offset = image.len();
+        image.apply(&write_at(offset, &next_frame))?;
+    }
+
+    reset_recovery_observations();
+    assert!(observed.committed_position()?.is_some());
+    assert_eq!(
+        recovery_observations().scanned_bytes,
+        (WAL_HEADER + FRAME_SIZE) as u64,
+        "another image's control arm changed what this image scanned"
+    );
+
+    reset_recovery_observations();
+    assert!(control.committed_position()?.is_some());
+    assert_eq!(
+        recovery_observations().scanned_bytes,
+        (WAL_HEADER + 9 * FRAME_SIZE) as u64,
+        "the image that asked for the control arm did not rescan"
+    );
+    Ok(())
+}
+
+/// Store-backed index fixture for the append tests: the records the store publishes and the
+/// chunk loader the validators read them back through.
+struct WalStore {
+    _directory: tempfile::TempDir,
+    store: Arc<dyn ObjectStore>,
+    namespace: Namespace,
+    wal: RemoteWal,
+}
+
+impl WalStore {
+    fn open(database: &str) -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        let store: Arc<dyn ObjectStore> = Arc::new(LocalObjectStore::open(directory.path())?);
+        Ok(Self {
+            _directory: directory,
+            wal: RemoteWal::new(store.clone()),
+            store,
+            namespace: Namespace::new("recovery", database)?,
+        })
+    }
+
+    /// Appends one record and returns the index that now describes it.
+    fn append(&self, batch: WalBatch, position: Option<WalPosition>) -> Result<Vec<u8>> {
+        self.wal
+            .append_commit(&self.namespace, 1, batch, position)?;
+        Ok(self
+            .store
+            .get(&self.namespace.key("wal/index")?)?
+            .context("missing WAL index")?
+            .bytes)
+    }
+
+    fn load(&self, key: &str) -> Result<Vec<u8>> {
+        Ok(self
+            .store
+            .get(key)?
+            .context("missing committed chunk")?
+            .bytes)
+    }
+}
+
+/// A candidate the index rejects must leave the validated state reusable: appending again from
+/// the same `previous` still resolves, and it pays for the frames it adds rather than for the
+/// whole image, which is what shows the rejected candidate left the verified prefix intact.
+#[test]
+fn a_rejected_append_leaves_the_validated_prefix_reusable() -> Result<()> {
+    let store = WalStore::open("prefix")?;
+    let mut builder = WalBuilder::new([17, 18]);
+    let salts = [17, 18];
+    let first = builder.image(4);
+    let index = store.append(
+        write_at(0, &first),
+        Some(WalPosition {
+            salts,
+            frame_count: 4,
+        }),
+    )?;
+    let validated = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+
+    let appended = builder.frame(5, PAGE_SIZE as u32);
+    let offset = first.len();
+    let index = store.append(
+        write_at(offset, &appended),
+        Some(WalPosition {
+            salts,
+            frame_count: 5,
+        }),
+    )?;
+
+    // The candidate matches the accepted prefix, the receipts and the new record, and is
+    // rejected only for the commit it claims: the copy was already extended when it fails,
+    // which is where a shared prefix would most easily be left describing too much.
+    let mut forged: serde_json::Value = serde_json::from_slice(&index)?;
+    forged["commit"]["position"]["frame_count"] = serde_json::Value::from(3);
+    reset_recovery_observations();
+    assert!(validate_index_append(
+        &validated,
+        &serde_json::to_vec(&forged)?,
+        &store.namespace,
+        |key| store.load(key)
+    )
+    .is_err());
+    assert_eq!(
+        recovery_observations().scanned_bytes,
+        (WAL_HEADER + FRAME_SIZE) as u64,
+        "the rejected candidate did not verify exactly the frames it added"
+    );
+
+    reset_recovery_observations();
+    let incremented =
+        validate_index_append(&validated, &index, &store.namespace, |key| store.load(key))?;
+    assert_eq!(
+        recovery_observations().scanned_bytes,
+        (WAL_HEADER + FRAME_SIZE) as u64,
+        "the rejected candidate cost the next append its verified prefix"
+    );
+
+    let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    assert_eq!(incremented.commit(), cold.commit());
+    assert_eq!(incremented.image.bytes(), cold.image.bytes());
+    Ok(())
+}
+
+/// A record that writes inside the validated prefix must not keep it: the append after it
+/// re-derives the chain from the header, and the chain still agrees with a cold replay.
+#[test]
+fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result<()> {
+    let store = WalStore::open("overwrite")?;
+    let mut builder = WalBuilder::new([31, 32]);
+    let salts = [31, 32];
+    let first = builder.image(4);
+    let index = store.append(
+        write_at(0, &first),
+        Some(WalPosition {
+            salts,
+            frame_count: 4,
+        }),
+    )?;
+    let validated = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+
+    // Overwrite a byte of an already verified frame. The image it leaves has no committed
+    // boundary, so the record carries no commit marker and does not scan at all.
+    let damage = WAL_HEADER + FRAME_SIZE + 24;
+    let mut corrupted = first[damage..damage + 8].to_vec();
+    corrupted[0] ^= 0xff;
+    let index = store.append(write_at(damage, &corrupted), None)?;
+    let overwritten =
+        validate_index_append(&validated, &index, &store.namespace, |key| store.load(key))?;
+
+    // Repairing the frame and appending behind it is one record. Its scan must cover the whole
+    // image: had the overwriting record left a prefix reusable, only the two new frames would
+    // be verified.
+    let repaired = first[damage..damage + 8].to_vec();
+    let mut batch = write_at(damage, &repaired);
+    for (page, db_size) in [(5, 0), (6, PAGE_SIZE as u32)] {
+        batch.operations.push(WalOperation::Write {
+            offset: (WAL_HEADER + (page - 1) * FRAME_SIZE) as u64,
+            bytes: builder.frame(page as u32, db_size),
+        });
+    }
+    let index = store.append(
+        batch,
+        Some(WalPosition {
+            salts,
+            frame_count: 6,
+        }),
+    )?;
+
+    reset_recovery_observations();
+    let chained = validate_index_append(&overwritten, &index, &store.namespace, |key| {
+        store.load(key)
+    })?;
+    assert_eq!(
+        recovery_observations().scanned_bytes,
+        (WAL_HEADER + 6 * FRAME_SIZE) as u64,
+        "the overwrite did not invalidate the verified prefix"
+    );
+
+    let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    assert_eq!(chained.commit(), cold.commit());
+    assert_eq!(chained.image.bytes(), cold.image.bytes());
     Ok(())
 }

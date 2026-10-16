@@ -1451,7 +1451,13 @@ struct CommitSample {
 }
 
 fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Result<CommitSample> {
-    crate::recovery::INCREMENTAL_SCAN.store(incremental, Ordering::Relaxed);
+    // The control arm lives on the arm's own WAL image: two arms — or two tests running in
+    // parallel — hold separate images, so neither can switch the other's scan. It covers the
+    // Worker `sync_wal` site; the Authority-side scan of a validated append runs on the
+    // Authority's own image, which this hook does not reach.
+    if !incremental {
+        arm.database.io().force_whole_image_scan();
+    }
     arm.store.reset();
     crate::recovery::reset_recovery_observations();
     let before = crate::recovery::recovery_observations();
@@ -1462,7 +1468,6 @@ fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Resu
     let wall_us = started.elapsed().as_micros();
     let counters = arm.store.snapshot();
     let observed = crate::recovery::recovery_observations();
-    crate::recovery::INCREMENTAL_SCAN.store(true, Ordering::Relaxed);
     Ok(CommitSample {
         wall_us,
         scan_us: u128::from((observed.scan_nanos - before.scan_nanos) / 1_000),
@@ -1476,9 +1481,10 @@ fn commit_sample(arm: &mut CommitArm, commits: usize, incremental: bool) -> Resu
     })
 }
 
-/// Paired commit benchmark. Both arms run the same statements against their own database
-/// and differ only in the scan switch, so the reported difference is the scan state. The
-/// wall time is a single-node commit through `RemoteIO` and the Authority — it is not a
+/// Paired commit benchmark. Both arms run the same statements against their own database and
+/// differ only in the scan arm of their own WAL image, so the reported difference is the scan
+/// state — at the Worker `sync_wal` site, which is the only site a per-image switch can reach.
+/// The wall time is a single-node commit through `RemoteIO` and the Authority — it is not a
 /// statement latency, a platform end-to-end figure or a capacity result.
 #[test]
 #[ignore = "commit 增量扫描对照基准：显式运行时才计时，避免与其它 owner 的测量重叠"]
