@@ -58,6 +58,18 @@ fn budget() -> Budget {
     }
 }
 
+// 墙钟兜底＝2× 执行预算：排队等待不消耗执行预算，只受更宽的兜底约束。
+fn blocked_budget() -> Budget {
+    Budget {
+        max_query_duration: Duration::from_millis(300),
+        ..budget()
+    }
+}
+
+fn wall_fallback(budget: &Budget) -> Duration {
+    budget.max_query_duration * 2
+}
+
 fn batch(operation: &str, delta: i64) -> String {
     format!(
         "BEGIN IMMEDIATE; INSERT INTO ledger VALUES('{operation}',{delta}); \
@@ -141,14 +153,16 @@ fn held_immediate_transaction_returns_admission_deadline_without_batch_side_effe
         ensure!(holder.in_transaction()?, "holder did not enter transaction");
         let failed_operation = "failed_b_while_locked";
         let started = Instant::now();
+        let blocked = blocked_budget();
+        let wall = wall_fallback(&blocked);
         let error = contender
-            .execute_with_budget(&batch(failed_operation, 7), &budget())
+            .execute_with_budget(&batch(failed_operation, 7), &blocked)
             .unwrap_err();
         assert_admission_deadline(backend, failed_operation, &error)?;
         ensure!(
-            started.elapsed() >= budget().max_query_duration
-                && started.elapsed() < Duration::from_secs(6),
-            "held writer queue reset the request budget"
+            started.elapsed() >= wall && started.elapsed() < wall + Duration::from_millis(500),
+            "held writer queue was not bounded by the wall fallback: elapsed={:?} wall={wall:?}",
+            started.elapsed()
         );
         ensure!(
             !contender.in_transaction()?,
@@ -177,21 +191,24 @@ struct Outcome {
     result: Result<()>,
 }
 
-fn four_once(fixture: &Fixture, prefix: &str) -> Result<Vec<Outcome>> {
+fn four_once(fixture: &Fixture, prefix: &str, budget: &Budget) -> Result<Vec<Outcome>> {
     let sessions = (0..4)
         .map(|_| fixture.database.session().map(Arc::new))
         .collect::<Result<Vec<_>>>()?;
     let barrier = Arc::new(Barrier::new(5));
     let (sender, receiver) = mpsc::channel();
+    let budget = budget.clone();
+    let bounded = wall_fallback(&budget) + Duration::from_secs(5);
     let outcomes = thread::scope(|scope| -> Result<Vec<Outcome>> {
         for (index, session) in sessions.iter().cloned().enumerate() {
             let sender = sender.clone();
             let barrier = barrier.clone();
+            let budget = budget.clone();
             let operation = format!("{prefix}_{index}");
             let delta = i64::try_from(index)? + 1;
             scope.spawn(move || {
                 barrier.wait();
-                let result = session.execute_with_budget(&batch(&operation, delta), &budget());
+                let result = session.execute_with_budget(&batch(&operation, delta), &budget);
                 sender
                     .send(Outcome {
                         operation,
@@ -205,7 +222,7 @@ fn four_once(fixture: &Fixture, prefix: &str) -> Result<Vec<Outcome>> {
         (0..4)
             .map(|_| {
                 receiver
-                    .recv_timeout(Duration::from_secs(10))
+                    .recv_timeout(bounded)
                     .context("bounded writer completion")
             })
             .collect()
@@ -225,7 +242,7 @@ fn four_single_call_batches_expose_admission_limits_without_sql_replay() -> Resu
         let fixture = Fixture::open(backend)?;
         let holder = fixture.database.session()?;
         holder.execute_with_budget("BEGIN IMMEDIATE;", &budget())?;
-        let blocked = four_once(&fixture, "blocked_once")?;
+        let blocked = four_once(&fixture, "blocked_once", &blocked_budget())?;
         ensure!(blocked.len() == 4, "missing blocked writer outcome");
         for outcome in blocked {
             let error = outcome.result.unwrap_err();
@@ -233,7 +250,7 @@ fn four_single_call_batches_expose_admission_limits_without_sql_replay() -> Resu
         }
         holder.execute_with_budget("ROLLBACK;", &budget())?;
         verify(&holder, &BTreeMap::new())?;
-        let raced = four_once(&fixture, "fresh_race_once")?;
+        let raced = four_once(&fixture, "fresh_race_once", &budget())?;
         ensure!(raced.len() == 4, "missing concurrent writer outcome");
         let mut expected = BTreeMap::new();
         let mut deadlines = 0;

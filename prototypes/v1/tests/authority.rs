@@ -128,10 +128,10 @@ fn physical_intent_precedes_put_and_lost_ack_is_read_back() -> Result<()> {
     let entry = authority.upload(b"confirmed")?;
     assert_eq!(authority.read_blob(&entry)?, b"confirmed");
     let snapshot = authority.snapshot()?;
-    assert_eq!(snapshot.root.uploads.get(&entry.blob), Some(&entry));
+    assert_eq!(snapshot.root.uploads.get(&entry.blob)?, Some(entry.clone()));
     assert!(authority.reachable(&snapshot.root)?.contains(&entry.blob));
     authority.transact(None, |root| {
-        root.objects.insert("orphans/value".into(), entry.clone());
+        root.objects.insert("orphans/value".into(), entry.clone())?;
         Ok(())
     })?;
     assert!(!authority.snapshot()?.root.uploads.contains_key(&entry.blob));
@@ -235,7 +235,7 @@ fn repeated_content_has_unique_instances_and_late_delete_cannot_hit_new_upload()
     let (store, authority) = fixture()?;
     let old = authority.upload(b"same-content")?;
     authority.transact(None, |root| {
-        root.objects.insert("orphans/old".into(), old.clone());
+        root.objects.insert("orphans/old".into(), old.clone())?;
         Ok(())
     })?;
     let collector = GarbageCollector::new(authority.clone(), Duration::ZERO);
@@ -256,8 +256,8 @@ fn repeated_content_has_unique_instances_and_late_delete_cannot_hit_new_upload()
     assert_eq!(authority.read_blob(&new)?, b"same-content");
     assert!(authority
         .transact(None, |root| {
-            root.blobs.insert(old.blob.clone(), old.clone());
-            root.uploads.insert(old.blob.clone(), old.clone());
+            root.blobs.insert(old.blob.clone(), old.clone())?;
+            root.uploads.insert(old.blob.clone(), old.clone())?;
             Ok(())
         })
         .is_err());
@@ -279,26 +279,29 @@ fn deletion_rejects_arbitrary_ids_reachable_objects_and_fake_acknowledgments() -
                     marked_ms: 0,
                     deleted: false,
                 },
-            );
+            )?;
             Ok(())
         })
         .is_err());
     authority.transact(None, |root| {
-        root.objects.insert("orphans/value".into(), entry.clone());
+        root.objects.insert("orphans/value".into(), entry.clone())?;
         Ok(())
     })?;
     GarbageCollector::new(authority.clone(), Duration::ZERO).mark()?;
     assert!(authority
         .transact(None, |root| {
-            root.tombstones.get_mut(&entry.blob).unwrap().deleted = true;
-            root.blobs.remove(&entry.blob);
+            root.tombstones.update(&entry.blob, |tombstone| {
+                tombstone.deleted = true;
+                Ok(())
+            })?;
+            root.blobs.remove(&entry.blob)?;
             Ok(())
         })
         .is_err());
     authority.delete_tombstone(&entry.blob)?;
     assert!(authority
         .transact(None, |root| {
-            root.tombstones.remove(&entry.blob);
+            root.tombstones.remove(&entry.blob)?;
             Ok(())
         })
         .is_err());
@@ -317,7 +320,7 @@ fn metadata_validation_rejects_missing_dependencies_without_segment_body_reads()
     assert_eq!(store.segment_gets.load(Ordering::SeqCst), 0);
     assert!(authority
         .transact(None, |root| {
-            root.objects.remove(&format!("segments/{segment}"));
+            root.objects.remove(&format!("segments/{segment}"))?;
             Ok(())
         })
         .is_err());

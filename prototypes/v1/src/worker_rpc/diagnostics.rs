@@ -57,7 +57,10 @@ fn policy(message: &str) -> Option<&'static str> {
 }
 
 fn classify(error: &Error) -> &'static str {
-    if !super::outcome::execution_completed(error) {
+    if error
+        .downcast_ref::<crate::session::UnsettledSqlOutcome>()
+        .is_some()
+    {
         return "outcome_unsettled";
     }
     classify_source(error)
@@ -131,6 +134,8 @@ impl Diagnostics {
         let mut bytes = serde_json::to_vec(&Record {
             event: if super::outcome::execution_completed(error) {
                 "native_sql_terminal_error"
+            } else if super::outcome::execution_rejected(error) {
+                "native_sql_rejected"
             } else {
                 "native_sql_unsettled_outcome"
             },
@@ -190,6 +195,7 @@ mod tests {
             .context("step bounded remote SQL")
             .context("privateSecret SQL SELECT credential FROM secrets")
             .unwrap_err()
+            .context(crate::session::SqlEvidence::Settled)
     }
 
     #[test]

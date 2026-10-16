@@ -37,7 +37,7 @@ pub fn stage_encrypted_image(
         "invalid SQLite page size"
     );
     ensure!(
-        SEGMENT_SIZE % page_size == 0,
+        SEGMENT_SIZE.is_multiple_of(page_size),
         "SQLite pages do not fit in segments"
     );
     ensure!(

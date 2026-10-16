@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -18,6 +17,7 @@ use super::session_entry::SessionCall;
 use super::sessions::{rows, value};
 
 impl State {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch(
         &self,
         command: WorkerCommand,
@@ -58,7 +58,7 @@ impl State {
                     "metrics": Metrics::global().snapshot(),
                     "capacity_trace": self.runtime.capacity_trace_snapshot(),
                     "resources": self.runtime.status()?.resources,
-                    "http_inflight": self.inflight.load(Ordering::SeqCst),
+                    "http_inflight": self.inflight.in_use(),
                     "sql_inflight": sql_inflight,
                     "rpc_lanes": usage,
                     "writer_profile": self.admission.enabled(),
@@ -80,7 +80,7 @@ impl State {
             }
             WorkerCommand::Shutdown => {
                 ensure!(control, "control authorization required");
-                self.stopped.store(true, Ordering::SeqCst);
+                self.stop();
                 Ok(json!({"stopping": true}))
             }
             _ if control => bail!("SQL authorization required"),

@@ -248,8 +248,7 @@ impl Client {
                 return Err(unknown());
             }
             let code = safe_code(&failure.code);
-            if code == "sql_error" && (!failure.execution_completed || !failure.may_have_committed)
-            {
+            if code == "sql_error" && !failure.execution_completed {
                 return Err(unknown());
             }
             let mut failure_error = SdkError::new(code, request_id, code == "outcome_unknown");

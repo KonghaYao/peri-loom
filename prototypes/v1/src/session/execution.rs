@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use std::num::NonZero;
 use std::sync::Arc;
 
@@ -147,6 +150,7 @@ pub(super) fn query(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn statement(
     database: &RemoteDatabase,
     connection: &Arc<Connection>,
@@ -600,6 +604,7 @@ fn run(
             } else {
                 database.admission().settle(control, writer(connection))?;
             }
+            deadline.evidence.settle();
             Ok((steps, rows))
         }
         Err(error) => {
@@ -623,6 +628,7 @@ fn run(
                         database.admission().quarantine();
                         return Err(error.context(UnsettledSqlOutcome));
                     }
+                    deadline.evidence.settle();
                     Err(error)
                 }
                 Ok(
@@ -638,6 +644,7 @@ fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_steps(
     context: &ExecutionContext<'_>,
     statement: &mut Statement,
@@ -663,14 +670,18 @@ fn run_steps(
         let mut paused = false;
         let result = {
             let _operation = database.operation_until(deadline, false)?;
-            statement.step_with_admission_check(|readonly| {
+            let step_clock = guard.enter_step()?;
+            let result = statement.step_with_admission_check(|readonly| {
                 if readonly || permit.is_some() {
+                    deadline.evidence.enter();
                     true
                 } else {
                     paused = true;
                     false
                 }
-            })?
+            });
+            step_clock.finish()?;
+            result?
         };
         if paused {
             let pager = connection.get_pager();
@@ -699,6 +710,8 @@ fn run_steps(
             }
             StepResult::Done => {
                 *terminal = true;
+                #[cfg(test)]
+                tests::after_done();
                 guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
                 return Ok((rows, true));
             }

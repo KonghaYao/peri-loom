@@ -51,6 +51,25 @@ impl ObjectStore for MetricsObjectStore {
         self.inner.validate_transaction(in_transaction)
     }
 
+    /// Forwards the whole group in one call: splitting it per write would put
+    /// the per-write durability barrier right back. The group is accounted as
+    /// `writes.len()` puts sharing one elapsed measurement, so `total`, `bytes`
+    /// and `latency_total_ns` stay comparable with the unbatched path.
+    fn put_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<String>> {
+        let started = std::time::Instant::now();
+        let result = self.inner.put_group(writes);
+        let share = started.elapsed() / writes.len().max(1) as u32;
+        for write in writes {
+            self.metrics.record(
+                Operation::Put,
+                share,
+                result.is_ok(),
+                write.bytes.len() as u64,
+            );
+        }
+        result
+    }
+
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         self.metrics.observe(
             Operation::Get,
@@ -85,5 +104,41 @@ impl ObjectStore for MetricsObjectStore {
             || self.inner.list(prefix),
             |keys| keys.iter().map(|key| key.len() as u64).sum(),
         )
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use crate::object_store::{GroupWrite, LocalObjectStore};
+
+    /// The wrapper must forward the whole group: a per-write fan-out would
+    /// restore the per-write durability barrier and lose the whole point.
+    #[test]
+    fn wrapper_forwards_the_group_without_resplitting_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let inner =
+            std::sync::Arc::new(LocalObjectStore::open(directory.path().join("objects")).unwrap());
+        let metrics = std::sync::Arc::new(Metrics::default());
+        let store = MetricsObjectStore::new(inner.clone(), metrics.clone());
+        let writes: Vec<GroupWrite> = (0..6)
+            .map(|index| GroupWrite::absent(format!("pages/{index:02}"), vec![index as u8; 1024]))
+            .collect();
+
+        let before = crate::object_store::local::barrier_count();
+        let etags = store.put_group(&writes).unwrap();
+        let bars = crate::object_store::local::barrier_count() - before;
+
+        assert_eq!(etags.len(), 6);
+        assert_eq!(bars, 7, "group must reach the store as one group");
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.put.total, 6, "each write still counted");
+        assert_eq!(
+            snapshot.put.bytes,
+            writes
+                .iter()
+                .map(|write| write.bytes.len() as u64)
+                .sum::<u64>()
+        );
     }
 }

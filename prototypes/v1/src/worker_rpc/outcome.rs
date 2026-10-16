@@ -1,11 +1,17 @@
 use anyhow::Error;
 
-use crate::session::UnsettledSqlOutcome;
+use crate::session::{SqlEvidence, UnsettledSqlOutcome};
 
 use super::protocol::{SessionState, WorkerResponse};
 
 pub(super) fn execution_completed(error: &Error) -> bool {
     error.downcast_ref::<UnsettledSqlOutcome>().is_none()
+        && error.downcast_ref::<SqlEvidence>() == Some(&SqlEvidence::Settled)
+}
+
+pub(super) fn execution_rejected(error: &Error) -> bool {
+    error.downcast_ref::<UnsettledSqlOutcome>().is_none()
+        && error.downcast_ref::<SqlEvidence>() == Some(&SqlEvidence::NotExecuted)
 }
 
 pub(super) fn failure_response(
@@ -22,10 +28,14 @@ pub(super) fn failure_response(
         ok: false,
         result: None,
         error: Some(format!("{error:#}")),
-        execution_completed: if completed {
-            (!control).then_some(true)
-        } else {
+        execution_completed: if control {
+            None
+        } else if completed {
+            Some(true)
+        } else if execution_rejected(&error) {
             Some(false)
+        } else {
+            None
         },
         session_state: if completed { terminal } else { None },
     }
@@ -95,7 +105,7 @@ mod tests {
             assert_eq!(response["version"], version);
             assert_eq!(response["request_id"], "same-request");
             assert_eq!(response["ok"], false);
-            assert_eq!(response["execution_completed"], false);
+            assert!(response.get("execution_completed").is_none());
             assert!(response["result"].is_null());
             assert!(response.get("session_state").is_none());
         }
@@ -111,6 +121,8 @@ mod tests {
                 Error::new(LimboError::Busy),
                 Error::new(LimboError::Constraint("private prefix".into())),
             ] {
+                assert!(!execution_completed(&error));
+                let error = error.context(crate::session::SqlEvidence::Settled);
                 assert!(execution_completed(&error));
                 let terminal = if version == 2 { Some(hint()?) } else { None };
                 let response =
@@ -123,9 +135,31 @@ mod tests {
     }
 
     #[test]
-    fn control_unsettled_is_explicit_false_and_known_error_keeps_legacy_shape() {
+    fn identical_errors_require_distinct_execution_evidence() {
+        for version in [1, 2] {
+            for (evidence, expected) in [
+                (crate::session::SqlEvidence::NotExecuted, false),
+                (crate::session::SqlEvidence::Settled, true),
+            ] {
+                let error = Error::new(AdmissionError::Deadline).context(evidence);
+                let response = failure_response(version, "evidence".into(), false, error, None);
+                assert_eq!(response.execution_completed, Some(expected));
+            }
+            let response = failure_response(
+                version,
+                "unproven".into(),
+                false,
+                Error::new(AdmissionError::Deadline),
+                None,
+            );
+            assert_eq!(response.execution_completed, None);
+        }
+    }
+
+    #[test]
+    fn control_failure_has_no_sql_evidence() {
         let response = failure_response(1, "control".into(), true, unsettled(), None);
-        assert_eq!(response.execution_completed, Some(false));
+        assert_eq!(response.execution_completed, None);
         assert!(response.session_state.is_none());
         let response = failure_response(
             1,

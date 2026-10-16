@@ -192,7 +192,7 @@ fn named_arguments_bind_natively_and_reject_ambiguous_or_missing_slots() -> Resu
     ] {
         let result = worker.statement_named(&session, sql, vec![], named_args)?;
         assert_eq!(result["ok"], false, "{result}");
-        assert_eq!(result["execution_completed"], true);
+        assert_eq!(result["execution_completed"], false);
     }
     let after = worker.statement(&session, "SELECT 7", vec![])?;
     assert_eq!(after["result"]["rows"], json!([[7]]));
@@ -436,7 +436,7 @@ fn write_cursor_early_close_aborts_without_committing_and_releases_owner() -> Re
     )?;
     assert_eq!(competing_write["ok"], false, "{competing_write}");
     assert_eq!(
-        competing_write["execution_completed"], true,
+        competing_write["execution_completed"], false,
         "{competing_write}"
     );
     let closed = worker.call(
@@ -742,22 +742,12 @@ fn statement_v2_owner_state_and_cleanup_ack() -> Result<()> {
     assert_eq!(created["session_state"]["owner"], true);
     let rejected = worker.statement(&session, "INSERT INTO missing_table VALUES (1)", vec![])?;
     assert_eq!(rejected["ok"], false, "{rejected}");
-    assert_eq!(rejected["execution_completed"], true);
-    assert_eq!(rejected["session_state"]["session"], session, "{rejected}");
-    assert_eq!(rejected["session_state"]["owner"], true, "{rejected}");
-    assert_eq!(
-        rejected["session_state"]["binding"],
-        begun["session_state"]["binding"]
-    );
-    assert!(
-        rejected["session_state"]["sequence"].as_u64().unwrap()
-            > created["session_state"]["sequence"].as_u64().unwrap(),
-        "{rejected}"
-    );
+    assert_eq!(rejected["execution_completed"], false);
+    assert!(rejected.get("session_state").is_none(), "{rejected}");
     worker.version = 1;
     let legacy = worker.statement(&session, "INSERT INTO missing_table VALUES (1)", vec![])?;
     assert_eq!(legacy["ok"], false, "{legacy}");
-    assert_eq!(legacy["execution_completed"], true, "{legacy}");
+    assert_eq!(legacy["execution_completed"], false, "{legacy}");
     assert!(legacy.get("session_state").is_none(), "{legacy}");
     worker.version = 2;
     let committed = worker.statement(&session, "COMMIT", vec![])?;
@@ -765,7 +755,7 @@ fn statement_v2_owner_state_and_cleanup_ack() -> Result<()> {
     assert_eq!(committed["session_state"]["owner"], false);
     assert!(
         committed["session_state"]["sequence"].as_u64().unwrap()
-            > rejected["session_state"]["sequence"].as_u64().unwrap(),
+            > created["session_state"]["sequence"].as_u64().unwrap(),
         "{committed}"
     );
     let data = worker.statement(
@@ -946,7 +936,7 @@ fn native_statement_metadata_parameters_and_transactions_via_worker_rpc() -> Res
 
     let bad_args = worker.statement(&session, "DELETE FROM records WHERE id = ?", vec![])?;
     assert_eq!(bad_args["ok"], false);
-    assert_eq!(bad_args["execution_completed"], true);
+    assert_eq!(bad_args["execution_completed"], false);
     let multiple = worker.statement(&session, "DELETE FROM records; DROP TABLE records", vec![])?;
     assert_eq!(multiple["ok"], false);
     assert_eq!(

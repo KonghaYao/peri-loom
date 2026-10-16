@@ -1,16 +1,76 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 
 use super::protocol::MAX_RPC_BYTES;
 
+/// How long an idle pooled connection may wait for its next request. Bounds the
+/// authority worker thread and inflight slot a parked connection holds, and
+/// drives how quickly shutdown can proceed.
+pub(crate) const KEEP_ALIVE_IDLE: Duration = Duration::from_secs(5);
+
+/// Longest single wait inside the idle loop, so authority shutdown is not
+/// delayed by a parked connection.
+const IDLE_SLICE: Duration = Duration::from_millis(250);
+
 pub(crate) struct Request {
     pub path: String,
     pub authorization: String,
     pub body: Vec<u8>,
+    /// The peer is willing to reuse this connection for another request.
+    pub keep_alive: bool,
+}
+
+/// Wait until the peer starts sending another request.
+///
+/// Returns `false` on clean EOF, on idle timeout, or once the server is
+/// stopping. Never consumes bytes: the caller re-reads the request itself.
+fn request_pending(stream: &mut TcpStream, idle: Duration, stopped: &AtomicBool) -> Result<bool> {
+    let deadline = Instant::now() + idle;
+    loop {
+        if stopped.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        stream.set_read_timeout(Some(remaining.min(IDLE_SLICE)))?;
+        match stream.peek(&mut [0u8; 1]) {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Read one request, optionally waiting for it to arrive on a reused
+/// connection. `Ok(None)` means the connection is finished.
+pub(crate) fn read_request_optional(
+    stream: &mut TcpStream,
+    idle: Option<Duration>,
+    stopped: &AtomicBool,
+) -> Result<Option<Request>> {
+    if let Some(idle) = idle {
+        if !request_pending(stream, idle, stopped)? {
+            return Ok(None);
+        }
+    }
+    read_request(stream).map(Some)
 }
 
 pub(crate) fn read_request(stream: &mut TcpStream) -> Result<Request> {
@@ -77,10 +137,20 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<Request> {
         body.len() == length && Instant::now() <= deadline,
         "incomplete or expired HTTP body"
     );
+    let keep_alive = match headers
+        .get("connection")
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("close") => false,
+        // HTTP/1.1 keeps the connection open unless the peer asks to close.
+        _ => true,
+    };
     Ok(Request {
         path,
         authorization: headers.remove("authorization").unwrap_or_default(),
         body,
+        keep_alive,
     })
 }
 
@@ -115,13 +185,29 @@ fn line(
 }
 
 pub(crate) fn reply(stream: &mut TcpStream, status: u16, body: &[u8]) -> Result<()> {
+    reply_with(stream, status, body, false)
+}
+
+/// `keep_alive` keeps the connection open for the next request; the caller must
+/// only ask for that after a fully written, unambiguous response.
+pub(crate) fn reply_with(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    keep_alive: bool,
+) -> Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    write_reply(stream, status, body)
+    write_reply_with(stream, status, body, keep_alive)
 }
 
-fn write_reply(writer: &mut impl Write, status: u16, body: &[u8]) -> Result<()> {
+fn write_reply_with(
+    writer: &mut impl Write,
+    status: u16,
+    body: &[u8],
+    keep_alive: bool,
+) -> Result<()> {
     let mut output = BufWriter::new(writer);
     let reason = match status {
         200 => "OK",
@@ -130,7 +216,12 @@ fn write_reply(writer: &mut impl Write, status: u16, body: &[u8]) -> Result<()> 
         503 => "Service Unavailable",
         _ => "Error",
     };
-    write!(output, "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+    write!(
+        output,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
+        body.len(),
+        if keep_alive { "keep-alive" } else { "close" }
+    )?;
     output.write_all(body)?;
     output.flush()?;
     Ok(())
@@ -160,7 +251,7 @@ mod tests {
     fn small_reply_does_not_fragment_header_and_body_into_tiny_writes() -> Result<()> {
         let body = br#"{"ok":true}"#;
         let mut output = Writes::default();
-        write_reply(&mut output, 200, body)?;
+        write_reply_with(&mut output, 200, body, false)?;
         assert_eq!(output.pieces.len(), 1);
         assert!(output.pieces[0].starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(output.pieces[0].ends_with(body));
@@ -172,7 +263,7 @@ mod tests {
     fn large_reply_preserves_body_and_content_length_without_unbounded_buffering() -> Result<()> {
         let body = vec![83; 16384];
         let mut output = Writes::default();
-        write_reply(&mut output, 200, &body)?;
+        write_reply_with(&mut output, 200, &body, false)?;
         let bytes = output.pieces.concat();
         let offset = bytes
             .windows(4)

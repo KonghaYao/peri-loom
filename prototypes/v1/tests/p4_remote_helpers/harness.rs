@@ -1,10 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::{ensure, Result};
 use peri_loom_v1::authority::ownership::OwnershipAuthority;
 use peri_loom_v1::authority_rpc::{
     auth::AuthConfig, client::AuthorityClient, protocol::AuthorityCommand, server::Server,
     startup::AuthorityStartup,
 };
 use peri_loom_v1::object_store::MemoryObjectStore;
+use peri_loom_v1::object_store::ObjectStore;
 use peri_loom_v1::ownership::types::{
     AccessRole, GrantIntent, GrantReply, GrantRequest, LeaseClock, LeaseIntent, NonceReply,
 };
@@ -30,6 +31,9 @@ pub fn private_directory() -> Result<tempfile::TempDir> {
     }
     Ok(directory)
 }
+
+/// Lease clock origin every consumer reasons about when it computes epochs.
+pub const CLOCK_ORIGIN_MS: u64 = 100;
 
 pub struct Clock(pub AtomicU64);
 
@@ -71,7 +75,7 @@ impl Harness {
         reconciled: bool,
     ) -> Result<Self> {
         let startup = AuthorityStartup::acquire(directory, reconciled)?;
-        let clock = Arc::new(Clock(AtomicU64::new(100)));
+        let clock = Arc::new(Clock(AtomicU64::new(CLOCK_ORIGIN_MS)));
         let owner = OwnershipAuthority::new(raw.clone(), clock.clone());
         let control_token = token()?;
         let worker_token = token()?;
@@ -102,6 +106,34 @@ impl Harness {
             thread: Some(thread),
             _directory: None,
         })
+    }
+
+    /// Fixture self-check: a clean authority, an unsettled-operation-free
+    /// owner, the lease clock at its known origin, and three distinct
+    /// principals. Every consumer of this harness relies on these premises, so
+    /// the check lives here rather than being repeated per target.
+    pub fn verify_preconditions(&self) -> Result<()> {
+        // 权威自带的 seal/启动对象本来就在 store 里，所以这里断言的是「还没有任何
+        // 已发布的数据库」：消费者都从空权威开始建库。
+        let objects = self.raw.list("")?;
+        ensure!(
+            !objects.iter().any(|key| key.ends_with("/HEAD")),
+            "authority already holds a published HEAD before the fixture ran"
+        );
+        ensure!(self.owner.quiescent(), "authority has unsettled operations");
+        ensure!(
+            self.clock.0.load(Ordering::SeqCst) == CLOCK_ORIGIN_MS,
+            "fixture lease clock origin changed"
+        );
+        ensure!(
+            self.worker_token != self.control_token,
+            "worker and control principals share a token"
+        );
+        ensure!(
+            !Arc::ptr_eq(&self.worker, &self.other),
+            "worker and other must be distinct clients"
+        );
+        Ok(())
     }
 
     pub fn grant_request(
@@ -168,11 +200,4 @@ pub fn identifier(name: &str) -> Result<DatabaseId> {
         peri_loom_v1::namespace::Namespace::new("rpc-tests", name)?,
         "main",
     )
-}
-
-pub fn session(reply: serde_json::Value) -> Result<String> {
-    Ok(reply["session"]
-        .as_str()
-        .context("opaque session missing")?
-        .to_owned())
 }

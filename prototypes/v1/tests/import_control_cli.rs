@@ -17,6 +17,7 @@ use turso_core::EncryptionKey;
 #[test]
 fn private_control_import_registers_staged_segments_without_writer_lease() -> Result<()> {
     let service = Harness::new()?;
+    service.verify_preconditions()?;
     let database = identifier("import-control-cli")?;
     let grant = service.grant(database.clone(), "worker-a", 1, 0)?;
     let remote = RemoteAuthorityProvider::new(service.worker.clone(), "worker-a".into())?;

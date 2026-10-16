@@ -331,7 +331,7 @@ fn gc_recomputes_after_concurrent_new_read_pin_and_rejects_resurrection() -> Res
     assert!(collector.mark()? > 0);
     assert!(authority
         .transact(None, |root| {
-            root.objects.insert(relative.clone(), entry.clone());
+            root.objects.insert(relative.clone(), entry.clone())?;
             Ok(())
         })
         .is_err());
@@ -390,7 +390,7 @@ fn unresolved_upload_intent_cannot_be_released_tombstoned_or_deleted() -> Result
     let (blob, entry) = root.uploads.iter().next().unwrap();
     assert!(authority
         .transact(None, |root| {
-            root.uploads.remove(blob);
+            root.uploads.remove(blob)?;
             Ok(())
         })
         .is_err());
@@ -403,7 +403,7 @@ fn unresolved_upload_intent_cannot_be_released_tombstoned_or_deleted() -> Result
                     marked_ms: 0,
                     deleted: false,
                 },
-            );
+            )?;
             Ok(())
         })
         .is_err());
@@ -581,7 +581,7 @@ fn retained_history_pins_dependencies_but_manifest_parent_is_not_retention() -> 
     for entry in before.head.iter().chain(before.wal.iter()) {
         assert!(after
             .tombstones
-            .get(&entry.blob)
+            .get(&entry.blob)?
             .is_some_and(|tombstone| tombstone.deleted));
     }
     assert!(capabilities.pitr("main", before.sequence).is_err());

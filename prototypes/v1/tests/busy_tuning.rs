@@ -257,11 +257,12 @@ fn interactive_stale_read_transaction_returns_busy_snapshot_without_reopen() -> 
     Ok(())
 }
 
-fn prefix_then_blocked_begin(
-    budget: Budget,
-    hook_delay: Duration,
-    duration_error: bool,
-) -> Result<()> {
+// 墙钟兜底＝2× 执行预算：排队与宿主等待不消耗执行预算，只受更宽的兜底约束。
+fn wall_fallback(budget: &Budget) -> Duration {
+    budget.max_query_duration * 2
+}
+
+fn prefix_then_blocked_begin(budget: Budget, hook_delay: Duration, bounded: bool) -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = Arc::new(fixture.database.session()?);
@@ -270,7 +271,7 @@ fn prefix_then_blocked_begin(
         .pause_after_committed_owner_release(&fixture.database, &contender);
     let (sender, receiver) = mpsc::channel();
     let writer = contender.clone();
-    let query_duration = budget.max_query_duration;
+    let wall = wall_fallback(&budget);
     let started = Instant::now();
     thread::scope(|scope| -> Result<()> {
         scope.spawn(move || {
@@ -295,18 +296,18 @@ fn prefix_then_blocked_begin(
         thread::sleep(hook_delay);
         resume.send(()).context("prefix hook receiver gone")?;
         let error = receiver
-            .recv_timeout(Duration::from_secs(6))
+            .recv_timeout(wall + Duration::from_secs(3))
             .context("blocked suffix did not terminate")?
             .unwrap_err();
         ensure!(
             error.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline),
             "expected typed admission deadline after committed prefix: {error:#}"
         );
-        if duration_error {
+        if bounded {
             ensure!(
-                started.elapsed() >= query_duration
-                    && started.elapsed() < query_duration + Duration::from_millis(150),
-                "budget reset between statements or hook delay not accounted"
+                started.elapsed() >= wall && started.elapsed() < wall + Duration::from_millis(500),
+                "queued suffix was not bounded by the wall fallback: elapsed={:?} wall={wall:?}",
+                started.elapsed()
             );
         }
         ensure!(
@@ -333,23 +334,30 @@ fn prefix_then_blocked_begin(
 
 #[test]
 fn single_batch_committed_prefix_survives_later_typed_admission_deadline() -> Result<()> {
-    prefix_then_blocked_begin(Budget::default(), Duration::ZERO, false)
-}
-
-#[test]
-fn all_statements_share_original_query_budget_including_prefix_pause() -> Result<()> {
     prefix_then_blocked_begin(
         Budget {
-            max_query_duration: Duration::from_millis(250),
+            max_query_duration: Duration::from_millis(300),
             ..Budget::default()
         },
-        Duration::from_millis(150),
+        Duration::ZERO,
         true,
     )
 }
 
 #[test]
-fn default_five_second_batch_budget_includes_prefix_pause_and_suffix_queue() -> Result<()> {
+fn all_statements_share_one_wall_fallback_including_prefix_pause() -> Result<()> {
+    prefix_then_blocked_begin(
+        Budget {
+            max_query_duration: Duration::from_millis(250),
+            ..Budget::default()
+        },
+        Duration::from_millis(300),
+        true,
+    )
+}
+
+#[test]
+fn default_five_second_budget_keeps_ten_second_wall_fallback() -> Result<()> {
     ensure!(
         Budget::default().max_query_duration == Duration::from_secs(5),
         "default query budget changed"

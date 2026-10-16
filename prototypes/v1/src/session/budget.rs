@@ -32,6 +32,10 @@ impl Default for Budget {
 }
 
 impl Budget {
+    pub(crate) fn wall_duration(&self) -> Duration {
+        // 预留一份执行预算给排队及远程 I/O；墙钟上限仍约束没有 CPU 进展的请求。
+        self.max_query_duration.saturating_mul(2)
+    }
     pub fn compatibility() -> Self {
         Self {
             max_sql_bytes: 8 * 1024 * 1024,
@@ -70,26 +74,70 @@ fn defaults() -> &'static RwLock<Budget> {
     DEFAULT.get_or_init(|| RwLock::new(Budget::compatibility()))
 }
 
+thread_local! {
+    static RPC_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) struct DeadlineScope {
+    previous: Option<Instant>,
+    thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for DeadlineScope {
+    fn drop(&mut self) {
+        RPC_DEADLINE.set(self.previous);
+    }
+}
+
+#[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_execution_budget_keeps_a_double_wall_fallback() {
+        let budget = Budget::default();
+        assert_eq!(budget.max_query_duration, Duration::from_secs(5));
+        assert_eq!(budget.wall_duration(), Duration::from_secs(10));
+        let before = Instant::now();
+        let end = RequestDeadline::new(&budget).unwrap().end();
+        assert!(end >= before + budget.max_query_duration);
+        assert!(end <= Instant::now() + budget.wall_duration());
+    }
+}
+
 pub(crate) struct RequestDeadline {
-    pub started: Instant,
     end: Instant,
+    pub(super) evidence: super::evidence::ExecutionEvidence,
+    clock: Arc<super::execution_clock::ExecutionClock>,
 }
 
 impl RequestDeadline {
+    pub fn scope(end: Instant) -> DeadlineScope {
+        DeadlineScope {
+            previous: RPC_DEADLINE.replace(Some(end)),
+            thread: std::marker::PhantomData,
+        }
+    }
     pub fn until(deadline: Instant) -> Self {
-        let started = Instant::now();
         Self {
-            started,
             end: deadline,
+            evidence: Default::default(),
+            clock: Default::default(),
         }
     }
     pub fn new(budget: &Budget) -> Result<Self> {
         budget.validate()?;
         let started = Instant::now();
         let end = started
-            .checked_add(budget.max_query_duration)
+            .checked_add(budget.wall_duration())
             .ok_or_else(|| anyhow::anyhow!("query deadline overflow"))?;
-        Ok(Self { started, end })
+        let end = RPC_DEADLINE.get().map_or(end, |outer| outer.min(end));
+        Ok(Self {
+            end,
+            evidence: Default::default(),
+            clock: Default::default(),
+        })
     }
 
     pub fn end(&self) -> Instant {
@@ -107,7 +155,8 @@ impl RequestDeadline {
 pub(super) struct ExecutionBudget<'a> {
     connection: &'a Connection,
     budget: &'a Budget,
-    started: Instant,
+    wall_end: Instant,
+    clock: Arc<super::execution_clock::ExecutionClock>,
     steps: Arc<AtomicU64>,
     rows: usize,
     bytes: usize,
@@ -129,7 +178,9 @@ impl<'a> ExecutionBudget<'a> {
             sql.len() <= budget.max_sql_bytes,
             "SQL byte budget exceeded"
         );
-        let started = deadline.started;
+        let wall_end = deadline.end();
+        let clock = deadline.clock.clone();
+        let progress_clock = clock.clone();
         let steps = Arc::new(AtomicU64::new(0));
         let progress_steps = steps.clone();
         let max_steps = budget.max_vm_steps;
@@ -142,7 +193,10 @@ impl<'a> ExecutionBudget<'a> {
                     .fetch_add(1000, Ordering::Relaxed)
                     .saturating_add(1000);
                 executed >= max_steps
-                    || started.elapsed() >= duration
+                    || Instant::now() >= wall_end
+                    || progress_clock
+                        .elapsed()
+                        .map_or(true, |elapsed| elapsed >= duration)
                     || store.validate_local().is_err()
                     || progress_control.closing.load(Ordering::Acquire)
             })),
@@ -152,7 +206,8 @@ impl<'a> ExecutionBudget<'a> {
         Ok(Self {
             connection,
             budget,
-            started,
+            wall_end,
+            clock,
             steps,
             rows: 0,
             bytes: 0,
@@ -165,7 +220,9 @@ impl<'a> ExecutionBudget<'a> {
         if self.control.closing.load(Ordering::Acquire) {
             return Err(AdmissionError::Closing.into());
         }
-        if self.started.elapsed() >= self.budget.max_query_duration {
+        if Instant::now() >= self.wall_end
+            || self.clock.elapsed()? >= self.budget.max_query_duration
+        {
             return Err(
                 anyhow::anyhow!("query duration budget exceeded").context(AdmissionError::Deadline)
             );
@@ -175,6 +232,10 @@ impl<'a> ExecutionBudget<'a> {
             "VM step budget exceeded"
         );
         Ok(())
+    }
+
+    pub fn enter_step(&self) -> Result<super::execution_clock::StepClock> {
+        self.clock.enter()
     }
 
     pub fn account_steps(&self, steps: u64) -> Result<()> {

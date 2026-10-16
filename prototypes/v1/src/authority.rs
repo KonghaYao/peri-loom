@@ -5,8 +5,13 @@ mod migration;
 pub mod ownership;
 mod ownership_view;
 pub(crate) mod paged_index;
+mod registry;
 pub(crate) mod request_reads;
+#[cfg(test)]
+mod scaling_probe;
 mod semantic;
+#[cfg(test)]
+mod store_scaling_tests;
 pub mod types;
 
 pub use branch::BranchStore;
@@ -18,9 +23,9 @@ use crate::{
     object_store::{ObjectStore, PreconditionFailed, PutCondition},
 };
 use anyhow::{ensure, Context, Result};
-use codec::{decode, encode};
+use codec::{decode_with_digest, encode, encode_with_digest};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -35,67 +40,73 @@ pub struct Authority {
     guard: Option<Arc<dyn MutationGuard>>,
 }
 
+/// Heads this process verified in full, per database lineage. Change-scoped validation is
+/// only sound on a head whose retained references were resolved once: a head this process
+/// built or verified qualifies, a head that appeared in the store behind its back does not,
+/// and the envelope checksum cannot tell the two apart because it proves only that the
+/// document is self-consistent. The record is held per process rather than per handle
+/// because several authorities share one store (a service and its maintenance handles,
+/// fixtures that open the same store twice) and a head one of them verified is exactly as
+/// sound for the other. Refusing to record a head only makes the next load verify again,
+/// so a full table can never weaken the check it gates.
+mod admitted {
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+
+    const MAX_DATABASES: usize = 1024;
+    const MAX_LINEAGES: usize = 64;
+
+    type Table = BTreeMap<String, BTreeMap<String, String>>;
+
+    fn table() -> &'static Mutex<Table> {
+        static ADMITTED: OnceLock<Mutex<Table>> = OnceLock::new();
+        ADMITTED.get_or_init(|| Mutex::new(Table::new()))
+    }
+
+    /// A lock that cannot be taken is not a reason to trust a head, so it reports the head
+    /// as unverified and the caller re-verifies it.
+    pub(super) fn holds(database: &str, lineage: &str, digest: &str) -> bool {
+        table().lock().is_ok_and(|table| {
+            table
+                .get(database)
+                .and_then(|lineages| lineages.get(lineage))
+                .is_some_and(|held| held.as_str() == digest)
+        })
+    }
+
+    pub(super) fn remember(database: &str, lineage: &str, digest: &str) {
+        let Ok(mut table) = table().lock() else {
+            return;
+        };
+        if !table.contains_key(database) && table.len() >= MAX_DATABASES {
+            return;
+        }
+        let lineages = table.entry(database.to_owned()).or_default();
+        if !lineages.contains_key(lineage) && lineages.len() >= MAX_LINEAGES {
+            return;
+        }
+        lineages.insert(lineage.to_owned(), digest.to_owned());
+    }
+}
+
 const INLINE_RECEIPTS_MAX: usize = 128;
+
+/// Test-only: whether a publication reaches the store as one durability group.
+#[cfg(test)]
+static GROUP_COMMIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 const RECEIPT_ARCHIVE_BATCH: usize = 64;
 
-#[cfg(test)]
-mod upload_batch_tests {
-    use super::*;
-    use crate::object_store::LocalObjectStore;
-
-    #[test]
-    fn segment_batch_reserves_intents_once_and_verifies_physical_bytes() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let store = Arc::new(LocalObjectStore::open(directory.path())?);
-        let authority = Authority::open(store, Namespace::new("bulk", "segments")?)?;
-        let segments = vec![
-            vec![0x11; crate::manifest::SEGMENT_SIZE],
-            vec![0x22; crate::manifest::SEGMENT_SIZE],
-        ];
-        let before = authority.snapshot()?.root.revision;
-        let entries = authority.upload_segments(&segments)?;
-        assert_eq!(authority.snapshot()?.root.revision, before + 1);
-        for (entry, expected) in entries.iter().zip(&segments) {
-            assert_eq!(authority.read_blob(entry)?, *expected);
-            assert_eq!(
-                authority.snapshot()?.root.uploads.get(&entry.blob),
-                Some(entry)
-            );
-        }
-        authority.register_segments(&entries)?;
-        for entry in &entries {
-            let key = format!("segments/{}", entry.hash);
-            assert_eq!(authority.snapshot()?.root.objects.get(&key), Some(entry));
-        }
-        let before = authority.snapshot()?.root.revision;
-        assert!(authority.upload_segments(&[]).is_err());
-        assert!(authority.upload_segments(&[vec![0; 1]]).is_err());
-        assert_eq!(authority.snapshot()?.root.revision, before);
-        Ok(())
-    }
-
-    #[test]
-    fn full_segment_batch_uses_two_catalog_publications() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let authority = Authority::open(
-            Arc::new(LocalObjectStore::open(directory.path())?),
-            Namespace::new("bulk", "full")?,
-        )?;
-        let segments = (0..128)
-            .map(|index| {
-                let mut bytes = vec![0; crate::manifest::SEGMENT_SIZE];
-                bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
-                bytes
-            })
-            .collect::<Vec<_>>();
-        let before = authority.snapshot()?.root.revision;
-        let entries = authority.upload_segments(&segments)?;
-        authority.register_segments(&entries)?;
-        let after = authority.snapshot()?.root;
-        assert_eq!(after.revision, before + 2);
-        assert_eq!(after.objects.len(), segments.len());
-        Ok(())
-    }
+/// Decode a stored head and give its registries a store handle. A hand-decoded root
+/// keeps no handle and can only serve inline content, which fails closed for pages.
+fn decode_head_with_digest(
+    store: &Arc<dyn ObjectStore>,
+    namespace: &Namespace,
+    bytes: &[u8],
+) -> Result<(CatalogRoot, String)> {
+    let (mut root, digest) = decode_with_digest(bytes)?;
+    root.attach(store.clone(), namespace.clone());
+    root.validate_shape()?;
+    Ok((root, digest))
 }
 
 pub(super) fn now_ms() -> Result<u64> {
@@ -121,22 +132,7 @@ impl Authority {
         let object = match store.get(&key)? {
             Some(object) => object,
             None => {
-                let root = CatalogRoot {
-                    version: 1,
-                    revision: 1,
-                    incarnation: unique_id()?,
-                    namespace: namespace.clone(),
-                    ownership: None,
-                    blobs: BTreeMap::new(),
-                    receipts: BTreeMap::new(),
-                    receipt_index: None,
-                    objects: BTreeMap::new(),
-                    branches: BTreeMap::from([("main".into(), BranchRef::default())]),
-                    snapshots: BTreeMap::new(),
-                    pins: BTreeMap::new(),
-                    uploads: BTreeMap::new(),
-                    tombstones: BTreeMap::new(),
-                };
+                let root = CatalogRoot::empty(namespace.clone(), unique_id()?);
                 let result = store.put(&key, &encode(&root)?, PutCondition::Absent);
                 match store.get(&key)? {
                     Some(object) => object,
@@ -148,7 +144,7 @@ impl Authority {
                 }
             }
         };
-        let root = decode(&object.bytes)?;
+        let (root, digest) = decode_head_with_digest(&store, &namespace, &object.bytes)?;
         ensure!(
             root.namespace == namespace,
             "authority root namespace mismatch"
@@ -159,7 +155,8 @@ impl Authority {
             incarnation: root.incarnation.clone(),
             guard: None,
         });
-        authority.validate_root(&root)?;
+        authority.verify_deep(&root)?;
+        authority.remember(&key, &root, &digest);
         Ok(authority)
     }
 
@@ -174,6 +171,13 @@ impl Authority {
             incarnation: self.incarnation.clone(),
             guard: Some(guard),
         })
+    }
+
+    /// Record a head as verified. Only called once the head has passed `verify_deep`, so
+    /// the change-scoped path can never be entered on a head this process has not seen the
+    /// whole of.
+    fn remember(&self, key: &str, root: &CatalogRoot, digest: &str) {
+        admitted::remember(key, &root.incarnation, digest);
     }
 
     fn check(&self, stage: MutationStage) -> Result<()> {
@@ -192,13 +196,27 @@ impl Authority {
     }
 
     pub fn snapshot(&self) -> Result<RootSnapshot> {
+        #[cfg(test)]
+        let _probe = scaling_probe::stage_of(&self.store, "snapshot", 0);
         self.check(MutationStage::Read)?;
+        let key = self.namespace.key("authority/root")?;
         let object = self
             .store
-            .get(&self.namespace.key("authority/root")?)?
+            .get(&key)?
             .context("authority root missing; refusing reset")?;
-        let root = decode(&object.bytes)?;
-        self.validate_root(&root)?;
+        let (root, digest) = decode_head_with_digest(&self.store, &self.namespace, &object.bytes)?;
+        if admitted::holds(&key, &root.incarnation, &digest) {
+            self.validate_head(&root)?;
+            self.validate_references(&root)?;
+        } else {
+            // The head is not one this process verified, so the references it inherits may
+            // have been replaced behind the authority's back: an envelope checksum proves
+            // the document is self-consistent, not that this authority wrote it, and a
+            // reference that was never registered can only be caught by resolving it.
+            // Verify the way boot does before any statement trusts the head.
+            self.verify_deep(&root)?;
+            self.remember(&key, &root, &digest);
+        }
         Ok(RootSnapshot {
             root,
             etag: object.etag,
@@ -230,7 +248,12 @@ impl Authority {
         }
     }
 
-    fn record_receipt(&self, root: &mut CatalogRoot, operation: String) -> Result<()> {
+    fn record_receipt(
+        &self,
+        root: &mut CatalogRoot,
+        operation: String,
+        index: &paged_index::PagedIndex<'_>,
+    ) -> Result<()> {
         root.receipts.insert(operation, root.revision);
         if root.version != 4 || root.receipts.len() <= INLINE_RECEIPTS_MAX {
             return Ok(());
@@ -241,7 +264,6 @@ impl Authority {
             .map(|(id, revision)| (id.clone(), *revision))
             .collect();
         oldest.sort_by_key(|(_, revision)| *revision);
-        let index = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace);
         let archived: Vec<_> = oldest.into_iter().take(RECEIPT_ARCHIVE_BATCH).collect();
         let updates = archived
             .iter()
@@ -271,6 +293,8 @@ impl Authority {
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
+        #[cfg(test)]
+        let _probe = scaling_probe::stage_of(&self.store, "transact", 0);
         let _reads = request_reads::Scope::enter();
         let operation = unique_id()?;
         for _ in 0..128 {
@@ -278,7 +302,17 @@ impl Authority {
             if let Some(revision) = expected_revision {
                 ensure!(current.root.revision == revision, PreconditionFailed);
             }
-            let mut candidate = current.root.clone();
+            // One durability group per attempt: the immutable in-flight page bodies are
+            // buffered here and the head CAS joins them as the last write, so the store
+            // either lands the whole publication or none of it.
+            let pending = std::cell::RefCell::new(paged_index::PendingPages::default());
+            let publishing = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
+                .deferring(&pending);
+            let mut candidate = {
+                #[cfg(test)]
+                let _probe = scaling_probe::stage("clone", scaling_probe::entries(&current.root));
+                current.root.clone()
+            };
             mutation(&mut candidate)?;
             self.prepare(&current.root, &mut candidate, deletion)?;
             candidate.revision = current
@@ -286,23 +320,63 @@ impl Authority {
                 .revision
                 .checked_add(1)
                 .context("authority revision overflow")?;
-            self.record_receipt(&mut candidate, operation.clone())?;
-            self.validate_root(&candidate)?;
-            let encoded = encode(&candidate)?;
+            self.record_receipt(&mut candidate, operation.clone(), &publishing)?;
+            self.validate_head_with(&candidate, Some(&pending))?;
+            self.validate_references(&candidate)?;
+            candidate.blobs.publish(&publishing)?;
+            candidate.objects.publish(&publishing)?;
+            candidate.uploads.publish(&publishing)?;
+            candidate.tombstones.publish(&publishing)?;
+            candidate.seal()?;
+            let (encoded, digest) = encode_with_digest(&candidate)?;
             if let Some(guard) = &self.guard {
                 guard.validate_root(&current.root, &candidate)?;
             }
             self.check(MutationStage::RootPublish)?;
-            match self.store.put(
-                &self.namespace.key("authority/root")?,
-                &encoded,
+            let mut writes = pending.borrow().writes().to_vec();
+            writes.push(crate::object_store::GroupWrite::new(
+                self.namespace.key("authority/root")?,
+                encoded,
                 PutCondition::Match(current.etag),
-            ) {
-                Ok(etag) => {
+            ));
+            // Test-only switch: `false` reproduces the per-write behaviour this change
+            // replaced, so a paired measurement can attribute the barrier difference.
+            #[cfg(test)]
+            let grouped = GROUP_COMMIT.load(Ordering::Relaxed);
+            #[cfg(not(test))]
+            let grouped = true;
+            let published = if grouped {
+                self.store.put_group(&writes)
+            } else {
+                writes
+                    .iter()
+                    .map(|write| {
+                        self.store
+                            .put(&write.key, &write.bytes, write.condition.clone())
+                    })
+                    .collect()
+            };
+            match published {
+                Ok(etags) => {
+                    for write in pending.borrow().writes() {
+                        request_reads::remember_page(
+                            Arc::as_ptr(&self.store) as *const () as usize,
+                            write.key.clone(),
+                            &write.bytes,
+                        );
+                    }
+                    // This attempt built the head from a verified one and validated the
+                    // change set, so the head is verified for the same reason a boot-verified
+                    // one is: recording it is what keeps the next statement on the cheap
+                    // path.
+                    self.remember(&self.namespace.key("authority/root")?, &candidate, &digest);
                     return Ok(RootSnapshot {
                         root: candidate,
-                        etag,
-                    })
+                        etag: etags
+                            .last()
+                            .cloned()
+                            .context("authority root etag missing")?,
+                    });
                 }
                 Err(error) => {
                     self.uncertain(MutationStage::RootPublish, &error);
@@ -325,11 +399,11 @@ impl Authority {
         let entry = Self::upload_entry(bytes)?;
         self.transact(None, |root| {
             ensure!(
-                !root.blobs.contains_key(&entry.blob) && !root.tombstones.contains_key(&entry.blob),
+                !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
                 "physical instance collision"
             );
-            root.blobs.insert(entry.blob.clone(), entry.clone());
-            root.uploads.insert(entry.blob.clone(), entry.clone());
+            root.blobs.insert(entry.blob.clone(), entry.clone())?;
+            root.uploads.insert(entry.blob.clone(), entry.clone())?;
             Ok(())
         })?;
         self.finish_upload(entry, bytes)
@@ -354,12 +428,11 @@ impl Authority {
         self.transact(None, |root| {
             for entry in &entries {
                 ensure!(
-                    !root.blobs.contains_key(&entry.blob)
-                        && !root.tombstones.contains_key(&entry.blob),
+                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
                     "physical instance collision"
                 );
-                root.blobs.insert(entry.blob.clone(), entry.clone());
-                root.uploads.insert(entry.blob.clone(), entry.clone());
+                root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                root.uploads.insert(entry.blob.clone(), entry.clone())?;
             }
             Ok(())
         })?;
@@ -387,11 +460,11 @@ impl Authority {
                 let key = format!("segments/{}", entry.hash);
                 ensure!(
                     root.objects
-                        .get(&key)
-                        .is_none_or(|current| current == entry),
+                        .get(&key)?
+                        .is_none_or(|current| current == *entry),
                     "segment logical identity conflict"
                 );
-                root.objects.insert(key, entry.clone());
+                root.objects.insert(key, entry.clone())?;
             }
             Ok(())
         })?;
@@ -423,12 +496,11 @@ impl Authority {
             verify(root)?;
             for entry in [&chunk, &index] {
                 ensure!(
-                    !root.blobs.contains_key(&entry.blob)
-                        && !root.tombstones.contains_key(&entry.blob),
+                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
                     "physical instance collision"
                 );
-                root.blobs.insert(entry.blob.clone(), entry.clone());
-                root.uploads.insert(entry.blob.clone(), entry.clone());
+                root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                root.uploads.insert(entry.blob.clone(), entry.clone())?;
             }
             Ok(())
         })?;
@@ -476,6 +548,8 @@ impl Authority {
     }
 
     fn read_metadata_blob(&self, entry: &ObjectEntry) -> Result<Vec<u8>> {
+        #[cfg(test)]
+        let _probe = scaling_probe::stage("ref_body", 0);
         self.check(MutationStage::Read)?;
         semantic::validate_entry(entry)?;
         let backend = Arc::as_ptr(&self.store) as *const () as usize;
@@ -497,7 +571,7 @@ impl Authority {
     }
 
     pub fn reachable(&self, root: &CatalogRoot) -> Result<BTreeSet<String>> {
-        self.validate_root(root)?;
+        self.verify_deep(root)?;
         self.mark(root)
     }
 
@@ -507,10 +581,10 @@ impl Authority {
         let tombstone = snapshot
             .root
             .tombstones
-            .get(blob)
+            .get(blob)?
             .context("physical deletion requires persisted tombstone")?;
         ensure!(
-            !snapshot.root.uploads.contains_key(blob),
+            !snapshot.root.uploads.contains(blob)?,
             "unresolved upload intent prevents deletion"
         );
         ensure!(
@@ -532,24 +606,90 @@ impl Authority {
         if tombstone.deleted {
             return Ok(());
         }
+        ensure!(
+            !self.snapshot()?.root.uploads.contains(blob)?,
+            "unresolved upload intent prevents deletion"
+        );
         self.transact_inner(
             None,
             |root| {
-                let tombstone = root
-                    .tombstones
-                    .get_mut(blob)
-                    .context("tombstone disappeared")?;
-                ensure!(tombstone.entry == entry, "tombstone instance changed");
+                root.tombstones.update(blob, |tombstone| {
+                    ensure!(tombstone.entry == entry, "tombstone instance changed");
+                    tombstone.deleted = true;
+                    Ok(())
+                })?;
                 ensure!(
-                    !root.uploads.contains_key(blob),
+                    !root.uploads.contains(blob)?,
                     "unresolved upload intent prevents deletion"
                 );
-                tombstone.deleted = true;
-                root.blobs.remove(blob);
+                root.blobs.remove(blob)?;
                 Ok(())
             },
             Some(blob),
         )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod upload_batch_tests {
+    use super::*;
+    use crate::object_store::LocalObjectStore;
+
+    #[test]
+    fn segment_batch_reserves_intents_once_and_verifies_physical_bytes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let authority = Authority::open(store, Namespace::new("bulk", "segments")?)?;
+        let segments = vec![
+            vec![0x11; crate::manifest::SEGMENT_SIZE],
+            vec![0x22; crate::manifest::SEGMENT_SIZE],
+        ];
+        let before = authority.snapshot()?.root.revision;
+        let entries = authority.upload_segments(&segments)?;
+        assert_eq!(authority.snapshot()?.root.revision, before + 1);
+        for (entry, expected) in entries.iter().zip(&segments) {
+            assert_eq!(authority.read_blob(entry)?, *expected);
+            assert_eq!(
+                authority.snapshot()?.root.uploads.get(&entry.blob)?,
+                Some(entry.clone())
+            );
+        }
+        authority.register_segments(&entries)?;
+        for entry in &entries {
+            let key = format!("segments/{}", entry.hash);
+            assert_eq!(
+                authority.snapshot()?.root.objects.get(&key)?,
+                Some(entry.clone())
+            );
+        }
+        let before = authority.snapshot()?.root.revision;
+        assert!(authority.upload_segments(&[]).is_err());
+        assert!(authority.upload_segments(&[vec![0; 1]]).is_err());
+        assert_eq!(authority.snapshot()?.root.revision, before);
+        Ok(())
+    }
+
+    #[test]
+    fn full_segment_batch_uses_two_catalog_publications() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let authority = Authority::open(
+            Arc::new(LocalObjectStore::open(directory.path())?),
+            Namespace::new("bulk", "full")?,
+        )?;
+        let segments = (0..128)
+            .map(|index| {
+                let mut bytes = vec![0; crate::manifest::SEGMENT_SIZE];
+                bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                bytes
+            })
+            .collect::<Vec<_>>();
+        let before = authority.snapshot()?.root.revision;
+        let entries = authority.upload_segments(&segments)?;
+        authority.register_segments(&entries)?;
+        let after = authority.snapshot()?.root;
+        assert_eq!(after.revision, before + 2);
+        assert_eq!(after.objects.entries()?.len(), segments.len());
         Ok(())
     }
 }

@@ -122,8 +122,15 @@ impl SessionLane {
 
     pub fn execute(&self, database: &RemoteDatabase, sql: &str, budget: &Budget) -> Result<()> {
         let _reads = crate::authority::request_reads::Scope::enter();
+        // A write must never reach the store in a cycle that has not validated
+        // the lease; when the window is already satisfied this is free.
+        if !crate::session::lease_window::satisfied() {
+            database.storage().store().validate_session()?;
+        }
         let deadline = RequestDeadline::new(budget)?;
-        let connection = self.lock(database, &deadline, false)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::execute(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -134,6 +141,7 @@ impl SessionLane {
         );
         drop(connection);
         self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
     }
 
     pub fn query(
@@ -144,7 +152,9 @@ impl SessionLane {
     ) -> Result<Vec<Vec<Value>>> {
         let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
-        let connection = self.lock(database, &deadline, false)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::query(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -155,6 +165,7 @@ impl SessionLane {
         );
         drop(connection);
         self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
     }
 
     pub fn describe(
@@ -165,7 +176,9 @@ impl SessionLane {
     ) -> Result<DescribeResult> {
         let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
-        let connection = self.lock(database, &deadline, false)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::describe(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -176,6 +189,7 @@ impl SessionLane {
         );
         drop(connection);
         self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
     }
 
     pub fn statement(
@@ -188,7 +202,9 @@ impl SessionLane {
     ) -> Result<StatementResult> {
         let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
-        let connection = self.lock(database, &deadline, false)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::statement(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -201,6 +217,7 @@ impl SessionLane {
         );
         drop(connection);
         self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
     }
 
     pub fn open_read_cursor(
@@ -213,7 +230,9 @@ impl SessionLane {
     ) -> Result<Vec<super::StatementColumn>> {
         let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
-        let connection = self.lock(database, &deadline, false)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::open_read_cursor(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -240,6 +259,7 @@ impl SessionLane {
         });
         drop(connection);
         self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
     }
 
     pub fn fetch_read_cursor(
@@ -288,7 +308,8 @@ impl SessionLane {
                 if execution::cancel_read_cursor(database, native, &self.control, cursor).is_err() {
                     Err(error.context(UnsettledSqlOutcome))
                 } else {
-                    Err(error)
+                    // 取消已收束：失败原因不再是未决结果，证据取代猜测。
+                    Err(error.context(super::SqlEvidence::Settled))
                 }
             }
         };
@@ -332,7 +353,9 @@ impl SessionLane {
     ) -> Result<Vec<super::StatementColumn>> {
         let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(budget)?;
-        let connection = self.lock(database, &deadline, false)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::open_write_cursor(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
@@ -358,6 +381,7 @@ impl SessionLane {
         });
         drop(connection);
         self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
     }
 
     pub fn fetch_write_cursor(
@@ -422,7 +446,8 @@ impl SessionLane {
                 {
                     Err(error.context(UnsettledSqlOutcome))
                 } else {
-                    Err(error)
+                    // 取消已收束：失败原因不再是未决结果，证据取代猜测。
+                    Err(error.context(super::SqlEvidence::Settled))
                 }
             }
         };

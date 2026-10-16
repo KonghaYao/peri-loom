@@ -890,6 +890,15 @@ fn native_checkpoint_grant_fence_preserves_acknowledged_prefix() -> Result<()> {
 
 #[test]
 fn delayed_backend_sql_setup_preserves_original_budget() -> Result<()> {
+    delayed_backend_sql_setup(40)
+}
+
+#[test]
+fn delayed_backend_setup_can_exceed_execution_budget_without_timeout() -> Result<()> {
+    delayed_backend_sql_setup(60)
+}
+
+fn delayed_backend_sql_setup(delay_ms: u64) -> Result<()> {
     let mut fixture = Fixture::new(false)?;
     let lease: GrantReply =
         serde_json::from_value(fixture.control.call(AuthorityCommand::Grant {
@@ -899,7 +908,7 @@ fn delayed_backend_sql_setup_preserves_original_budget() -> Result<()> {
     let session = open(&fixture.first, &fixture.database)?;
     fixture.rpc.reset_statistics();
     fixture.backend.reset_statistics();
-    fixture.backend.delay(40);
+    fixture.backend.delay(delay_ms);
     let started = Instant::now();
     let executed = observed_worker(
         &fixture.first,
@@ -911,7 +920,7 @@ fn delayed_backend_sql_setup_preserves_original_budget() -> Result<()> {
     );
     fixture.backend.delay(0);
     eprintln!(
-        "P4_DELAYED_SQL budget_ms=5000 delay_ms=40 elapsed_ms={} rpc={} physical={} cache={}",
+        "P4_DELAYED_SQL execution_cpu_budget_ms=5000 wall_budget_ms=10000 delay_ms={delay_ms} elapsed_ms={} rpc={} physical={} cache={}",
         started.elapsed().as_millis(),
         fixture.rpc.statistics(),
         fixture.backend.statistics(),

@@ -105,13 +105,13 @@ impl OwnershipAuthority {
             ensure!(head.manifest == expected_head, "import target HEAD changed");
             let manifest_entry = root
                 .objects
-                .get(&format!("manifests/{expected_head}"))
+                .get(&format!("manifests/{expected_head}"))?
                 .context("import target manifest missing")?;
             ensure!(
                 manifest_entry.hash == expected_head,
                 "import target manifest mismatch"
             );
-            let bytes = scoped.read_blob(manifest_entry)?;
+            let bytes = scoped.read_blob(&manifest_entry)?;
             ensure!(
                 digest(&bytes) == expected_head,
                 "import target manifest changed"
@@ -194,6 +194,7 @@ impl OwnershipAuthority {
                         gc_marks: snapshot
                             .root
                             .tombstones
+                            .entries()?
                             .keys()
                             .map(|blob| (blob.clone(), clock_anchor))
                             .collect(),

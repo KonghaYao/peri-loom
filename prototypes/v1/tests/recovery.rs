@@ -654,9 +654,11 @@ fn externally_discovered_manifest_and_listing_pin_dependencies_before_gc() -> Re
     let hash = blake3::hash(&segment).to_hex().to_string();
     let segment_key = namespace().key(&format!("segments/{hash}"))?;
     writer.put(&segment_key, &segment, PutCondition::Absent)?;
-    let mut manifest = peri_loom_v1::manifest::Manifest::default();
-    manifest.logical_db_size = segment.len() as u64;
-    manifest.segments.insert(0, hash);
+    let manifest = peri_loom_v1::manifest::Manifest {
+        logical_db_size: segment.len() as u64,
+        segments: std::collections::BTreeMap::from([(0, hash)]),
+        ..Default::default()
+    };
     let bytes = serde_json::to_vec(&manifest)?;
     let manifest_key = namespace().key(&format!("manifests/{}", blake3::hash(&bytes).to_hex()))?;
     writer.put(&manifest_key, &bytes, PutCondition::Absent)?;

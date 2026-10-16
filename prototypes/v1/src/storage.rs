@@ -349,6 +349,24 @@ impl RemoteStorage {
     }
 }
 
+fn put_immutable(store: &dyn ObjectStore, key: &str, bytes: &[u8]) -> Result<()> {
+    if let Some(existing) = store.get(key)? {
+        ensure!(
+            existing.bytes == bytes,
+            "immutable object integrity failure: {key}"
+        );
+        return Ok(());
+    }
+    if let Err(error) = store.put(key, bytes, PutCondition::Absent) {
+        let existing = store.get(key)?.context(error)?;
+        ensure!(
+            existing.bytes == bytes,
+            "immutable object integrity failure: {key}"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod image_tests {
     use super::*;
@@ -384,22 +402,4 @@ mod image_tests {
         assert!(storage.initial_image_replaced(store.as_ref())?);
         Ok(())
     }
-}
-
-fn put_immutable(store: &dyn ObjectStore, key: &str, bytes: &[u8]) -> Result<()> {
-    if let Some(existing) = store.get(key)? {
-        ensure!(
-            existing.bytes == bytes,
-            "immutable object integrity failure: {key}"
-        );
-        return Ok(());
-    }
-    if let Err(error) = store.put(key, bytes, PutCondition::Absent) {
-        let existing = store.get(key)?.context(error)?;
-        ensure!(
-            existing.bytes == bytes,
-            "immutable object integrity failure: {key}"
-        );
-    }
-    Ok(())
 }

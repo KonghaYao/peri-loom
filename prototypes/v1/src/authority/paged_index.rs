@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,30 @@ use crate::object_store::{ObjectStore, PutCondition};
 
 const PAGE_BYTES: usize = 16 * 1024;
 const HASH_NIBBLES: u8 = 64;
+
+/// Pages a publication rewrites are buffered here instead of being written one by one,
+/// so the whole attempt reaches the store as one durability group: immutable
+/// content-addressed page bodies first, the authority head CAS last.
+#[derive(Default)]
+pub(crate) struct PendingPages {
+    writes: Vec<crate::object_store::GroupWrite>,
+}
+
+impl PendingPages {
+    pub(crate) fn writes(&self) -> &[crate::object_store::GroupWrite] {
+        &self.writes
+    }
+
+    /// A page this attempt has already staged. Validation of a candidate runs before the
+    /// group is written, so a page it just created must be readable from the buffer;
+    /// otherwise the authority would reject its own in-flight publication.
+    fn page(&self, hash: &str) -> Option<Vec<u8>> {
+        self.writes
+            .iter()
+            .find(|write| write.key.ends_with(hash))
+            .map(|write| write.bytes.clone())
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
@@ -29,11 +53,29 @@ enum Page {
 pub(crate) struct PagedIndex<'a> {
     store: &'a dyn ObjectStore,
     namespace: &'a Namespace,
+    pending: Option<&'a std::cell::RefCell<PendingPages>>,
 }
 
 impl<'a> PagedIndex<'a> {
     pub(crate) fn new(store: &'a dyn ObjectStore, namespace: &'a Namespace) -> Self {
-        Self { store, namespace }
+        Self {
+            store,
+            namespace,
+            pending: None,
+        }
+    }
+
+    /// Route every page this index writes into `pack` instead of its own object.
+    /// Buffer page bodies for one durability group instead of writing them immediately.
+    pub(crate) fn deferring(
+        &self,
+        pending: &'a std::cell::RefCell<PendingPages>,
+    ) -> PagedIndex<'a> {
+        PagedIndex {
+            store: self.store,
+            namespace: self.namespace,
+            pending: Some(pending),
+        }
     }
 
     pub(crate) fn verify_root(&self, root: Option<&str>) -> Result<()> {
@@ -41,6 +83,11 @@ impl<'a> PagedIndex<'a> {
             self.read(hash, 0, &[])?;
         }
         Ok(())
+    }
+
+    fn page_key(&self, hash: &str) -> Result<String> {
+        validate_hash(hash)?;
+        self.namespace.key(&format!("authority/index-pages/{hash}"))
     }
 
     pub(crate) fn get(&self, root: Option<&str>, key: &str) -> Result<Option<Value>> {
@@ -58,16 +105,6 @@ impl<'a> PagedIndex<'a> {
             }
         }
         Ok(None)
-    }
-
-    pub(crate) fn insert_once(
-        &self,
-        root: Option<&str>,
-        key: &str,
-        value: Value,
-    ) -> Result<String> {
-        validate_key(key)?;
-        self.insert_at(root, key, &value, 0, &[])
     }
 
     pub(crate) fn insert_many(
@@ -90,47 +127,6 @@ impl<'a> PagedIndex<'a> {
             Ok(None)
         } else {
             Ok(Some(self.leaf_or_branch(entries, 0)?))
-        }
-    }
-
-    fn insert_at(
-        &self,
-        root: Option<&str>,
-        key: &str,
-        value: &Value,
-        depth: u8,
-        prefix: &[u8],
-    ) -> Result<String> {
-        match root {
-            None => self.leaf_or_branch(BTreeMap::from([(key.to_owned(), value.clone())]), depth),
-            Some(hash) => match self.read(hash, depth, prefix)? {
-                Page::Leaf { mut entries, .. } => {
-                    if let Some(previous) = entries.get(key) {
-                        ensure!(previous == value, "index key identity conflict");
-                        return Ok(hash.to_owned());
-                    }
-                    entries.insert(key.to_owned(), value.clone());
-                    self.leaf_or_branch(entries, depth)
-                }
-                Page::Branch { mut children, .. } => {
-                    let selected = nibble(key, depth)?;
-                    let mut next_prefix = prefix.to_vec();
-                    next_prefix.push(selected);
-                    let next = self.insert_at(
-                        children.get(&selected.to_string()).map(String::as_str),
-                        key,
-                        value,
-                        depth + 1,
-                        &next_prefix,
-                    )?;
-                    children.insert(selected.to_string(), next);
-                    self.write(&Page::Branch {
-                        version: 1,
-                        depth,
-                        children,
-                    })
-                }
-            },
         }
     }
 
@@ -198,6 +194,151 @@ impl<'a> PagedIndex<'a> {
         }
     }
 
+    /// Registry publication shares one immutable page tree, so a batch must apply
+    /// additions and removals together: removing the last key of a page has to prune
+    /// the child slot, otherwise an empty page (rejected by `read`) would be published.
+    pub(crate) fn apply(
+        &self,
+        root: Option<&str>,
+        inserts: BTreeMap<String, Value>,
+        removals: &BTreeSet<String>,
+    ) -> Result<Option<String>> {
+        self.apply_at(root, inserts, removals, 0, &[])
+    }
+
+    fn apply_at(
+        &self,
+        root: Option<&str>,
+        inserts: BTreeMap<String, Value>,
+        removals: &BTreeSet<String>,
+        depth: u8,
+        prefix: &[u8],
+    ) -> Result<Option<String>> {
+        let Some(hash) = root else {
+            if inserts.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(self.leaf_or_branch(inserts, depth)?));
+        };
+        match self.read(hash, depth, prefix)? {
+            Page::Leaf { mut entries, .. } => {
+                let mut changed = false;
+                for key in removals {
+                    if entries.remove(key).is_some() {
+                        changed = true;
+                    }
+                }
+                for (key, value) in inserts {
+                    match entries.get(&key) {
+                        Some(previous) if previous == &value => (),
+                        _ => {
+                            entries.insert(key, value);
+                            changed = true;
+                        }
+                    }
+                }
+                if entries.is_empty() {
+                    return Ok(None);
+                }
+                if !changed {
+                    return Ok(Some(hash.to_owned()));
+                }
+                Ok(Some(self.leaf_or_branch(entries, depth)?))
+            }
+            Page::Branch { mut children, .. } => {
+                let mut groups: BTreeMap<u8, (BTreeMap<String, Value>, BTreeSet<String>)> =
+                    BTreeMap::new();
+                for (key, value) in inserts {
+                    groups
+                        .entry(nibble(&key, depth)?)
+                        .or_default()
+                        .0
+                        .insert(key, value);
+                }
+                for key in removals {
+                    groups
+                        .entry(nibble(key, depth)?)
+                        .or_default()
+                        .1
+                        .insert(key.clone());
+                }
+                let mut changed = false;
+                for (selected, (group_inserts, group_removals)) in groups {
+                    let slot = selected.to_string();
+                    let mut next_prefix = prefix.to_vec();
+                    next_prefix.push(selected);
+                    let next = self.apply_at(
+                        children.get(&slot).map(String::as_str),
+                        group_inserts,
+                        &group_removals,
+                        depth + 1,
+                        &next_prefix,
+                    )?;
+                    match next {
+                        Some(next) if children.get(&slot) == Some(&next) => (),
+                        Some(next) => {
+                            children.insert(slot, next);
+                            changed = true;
+                        }
+                        None => {
+                            changed |= children.remove(&slot).is_some();
+                        }
+                    }
+                }
+                if children.is_empty() {
+                    return Ok(None);
+                }
+                if !changed {
+                    return Ok(Some(hash.to_owned()));
+                }
+                Ok(Some(self.write(&Page::Branch {
+                    version: 1,
+                    depth,
+                    children,
+                })?))
+            }
+        }
+    }
+
+    /// Full page walk used by maintenance paths (garbage collection, deep verification,
+    /// one-time inline spilling). Every page digest is re-verified by `read`.
+    pub(crate) fn entries(&self, root: Option<&str>) -> Result<BTreeMap<String, Value>> {
+        let mut entries = BTreeMap::new();
+        self.walk(root, 0, &[], &mut entries)?;
+        Ok(entries)
+    }
+
+    fn walk(
+        &self,
+        root: Option<&str>,
+        depth: u8,
+        prefix: &[u8],
+        entries: &mut BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let Some(location) = root else {
+            return Ok(());
+        };
+        match self.read(location, depth, prefix)? {
+            Page::Leaf { entries: page, .. } => {
+                for (key, value) in page {
+                    ensure!(
+                        entries.insert(key, value).is_none(),
+                        "duplicate index key across pages"
+                    );
+                }
+            }
+            Page::Branch { children, .. } => {
+                for (slot, child) in children {
+                    let selected = slot.parse::<u8>()?;
+                    let mut next_prefix = prefix.to_vec();
+                    next_prefix.push(selected);
+                    self.walk(Some(&child), depth + 1, &next_prefix, entries)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn leaf_or_branch(&self, entries: BTreeMap<String, Value>, depth: u8) -> Result<String> {
         let leaf = Page::Leaf {
             version: 1,
@@ -233,19 +374,23 @@ impl<'a> PagedIndex<'a> {
     }
 
     fn read(&self, hash: &str, depth: u8, prefix: &[u8]) -> Result<Page> {
-        validate_hash(hash)?;
-        let key = self
-            .namespace
-            .key(&format!("authority/index-pages/{hash}"))?;
+        let key = self.page_key(hash)?;
         let backend = self.store as *const dyn ObjectStore as *const () as usize;
-        let bytes = match request_reads::get_page(backend, &key) {
+        let buffered = self.pending.and_then(|pending| pending.borrow().page(hash));
+        let bytes = match buffered {
             Some(bytes) => bytes,
-            None => {
-                self.store
-                    .get(&key)?
-                    .context("published index page missing")?
-                    .bytes
-            }
+            None => match request_reads::get_page(backend, &key) {
+                Some(bytes) => bytes,
+                None => {
+                    let bytes = self
+                        .store
+                        .get(&key)?
+                        .context("published index page missing")?
+                        .bytes;
+                    request_reads::remember_page(backend, key.clone(), &bytes);
+                    bytes
+                }
+            },
         };
         ensure!(
             bytes.len() <= PAGE_BYTES && blake3::hash(&bytes).to_hex().as_str() == hash,
@@ -295,7 +440,6 @@ impl<'a> PagedIndex<'a> {
                 }
             }
         }
-        request_reads::remember_page(backend, key, &bytes);
         Ok(page)
     }
 
@@ -303,9 +447,19 @@ impl<'a> PagedIndex<'a> {
         let bytes = serde_json::to_vec(page)?;
         ensure!(bytes.len() <= PAGE_BYTES, "index page byte budget exceeded");
         let hash = blake3::hash(&bytes).to_hex().to_string();
-        let key = self
-            .namespace
-            .key(&format!("authority/index-pages/{hash}"))?;
+        let key = self.page_key(&hash)?;
+        if let Some(pending) = self.pending {
+            // Content-addressed bodies are idempotent, so they carry no condition: the
+            // group stays condition-checked exactly once, by the head CAS that ends it.
+            let mut pending = pending.borrow_mut();
+            pending.writes.push(crate::object_store::GroupWrite::new(
+                key,
+                bytes,
+                PutCondition::Any,
+            ));
+            return Ok(hash);
+        }
+        let backend = self.store as *const dyn ObjectStore as *const () as usize;
         if self.store.put(&key, &bytes, PutCondition::Absent).is_err() {
             let existing = self
                 .store
@@ -313,24 +467,31 @@ impl<'a> PagedIndex<'a> {
                 .context("index page upload unresolved")?;
             ensure!(existing.bytes == bytes, "immutable index page conflict");
         }
-        request_reads::remember_page(
-            self.store as *const dyn ObjectStore as *const () as usize,
-            key,
-            &bytes,
-        );
+        request_reads::remember_page(backend, key, &bytes);
         Ok(hash)
     }
 }
 
+/// Page keys are registry keys, so they follow the object-key shape (URL-safe path
+/// components) rather than a flat hash alphabet: logical catalog keys such as
+/// `segments/<hash>` and `wal/chunks/<hash>` are paged as-is.
 fn validate_key(key: &str) -> Result<()> {
     ensure!(
-        !key.is_empty()
-            && key.len() <= 128
-            && key
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte)),
-        "invalid index key"
+        !key.is_empty() && key.len() <= 1024,
+        "invalid index key length"
     );
+    for component in key.split('/') {
+        ensure!(
+            !component.is_empty() && component != "." && component != "..",
+            "invalid index key component"
+        );
+        ensure!(
+            component
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte)),
+            "index keys must be ASCII URL-safe paths"
+        );
+    }
     Ok(())
 }
 
@@ -359,7 +520,7 @@ fn nibble(key: &str, depth: u8) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object_store::MemoryObjectStore;
+    use crate::object_store::{LocalObjectStore, MemoryObjectStore};
     use serde_json::json;
 
     fn namespace() -> Namespace {
@@ -373,10 +534,9 @@ mod tests {
         let index = PagedIndex::new(&store, &namespace);
         let mut root = None;
         for sequence in 0..1_000 {
-            root = Some(index.insert_once(
+            root = Some(index.insert_many(
                 root.as_deref(),
-                &format!("receipt-{sequence:05}"),
-                json!(sequence),
+                BTreeMap::from([(format!("receipt-{sequence:05}"), json!(sequence))]),
             )?);
         }
         for sequence in 0..1_000 {
@@ -467,22 +627,31 @@ mod tests {
         let store = MemoryObjectStore::default();
         let namespace = namespace();
         let index = PagedIndex::new(&store, &namespace);
-        let published = index.insert_once(None, "first", json!(1))?;
-        let pending = index.insert_once(Some(&published), "second", json!(2))?;
+        let published = index.insert_many(None, BTreeMap::from([("first".into(), json!(1))]))?;
+        let pending = index.insert_many(
+            Some(&published),
+            BTreeMap::from([("second".into(), json!(2))]),
+        )?;
         assert_eq!(index.get(Some(&published), "second")?, None);
         assert_eq!(index.get(Some(&pending), "second")?, Some(json!(2)));
         assert_eq!(
-            index.insert_once(Some(&published), "first", json!(1))?,
+            index.insert_many(
+                Some(&published),
+                BTreeMap::from([("first".into(), json!(1))])
+            )?,
             published
         );
         assert!(index
-            .insert_once(Some(&published), "first", json!(3))
+            .insert_many(
+                Some(&published),
+                BTreeMap::from([("first".into(), json!(3))])
+            )
             .is_err());
         let key = namespace.key(&format!("authority/index-pages/{pending}"))?;
         store.put(&key, b"corrupt", PutCondition::Any)?;
         assert!(index.get(Some(&pending), "second").is_err());
         assert!(index
-            .insert_once(Some(&pending), "third", json!(3))
+            .insert_many(Some(&pending), BTreeMap::from([("third".into(), json!(3))]))
             .is_err());
         Ok(())
     }
@@ -493,10 +662,101 @@ mod tests {
         let namespace = namespace();
         let index = PagedIndex::new(&store, &namespace);
         let value = json!("x".repeat(PAGE_BYTES));
-        assert!(index.insert_once(None, "oversized", value).is_err());
+        assert!(index
+            .insert_many(None, BTreeMap::from([("oversized".into(), value)]))
+            .is_err());
         assert!(store
             .list(&namespace.key("authority/index-pages")?)?
             .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn batch_apply_removes_prunes_and_rebuilds_from_published_pages() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let namespace = namespace();
+        let store = LocalObjectStore::open(directory.path())?;
+        let index = PagedIndex::new(&store, &namespace);
+        let root = index
+            .build(
+                (0..200)
+                    .map(|sequence| (format!("key-{sequence:05}"), json!(sequence)))
+                    .collect(),
+            )?
+            .unwrap();
+        let removals: BTreeSet<_> = (0..200)
+            .filter(|sequence| sequence % 2 == 0)
+            .map(|sequence| format!("key-{sequence:05}"))
+            .collect();
+        let applied = index
+            .apply(
+                Some(&root),
+                BTreeMap::from([("key-00201".into(), json!(201))]),
+                &removals,
+            )?
+            .unwrap();
+        assert_eq!(index.get(Some(&applied), "key-00201")?, Some(json!(201)));
+        assert_eq!(index.get(Some(&applied), "key-00001")?, Some(json!(1)));
+        for sequence in removals.iter() {
+            assert_eq!(index.get(Some(&applied), sequence)?, None);
+        }
+        let all = index.entries(Some(&applied))?;
+        assert_eq!(all.len(), 101);
+        assert_eq!(index.entries(Some(&root))?.len(), 200);
+        // Every page stays inside the budget and the removed leaf keeps no empty slot.
+        for page in store.list(&namespace.key("authority/index-pages")?)? {
+            assert!(store.get(&page)?.unwrap().bytes.len() <= PAGE_BYTES);
+        }
+        let emptied = index.apply(
+            Some(&applied),
+            BTreeMap::new(),
+            &all.keys().cloned().collect(),
+        )?;
+        assert_eq!(emptied, None);
+        assert_eq!(index.entries(None)?.len(), 0);
+        // A crashed publication writes pages but never the pointer: the old root survives.
+        drop(store);
+        let reopened = LocalObjectStore::open(directory.path())?;
+        let index = PagedIndex::new(&reopened, &namespace);
+        assert_eq!(index.entries(Some(&applied))?.len(), 101);
+        let key = namespace.key(&format!("authority/index-pages/{applied}"))?;
+        assert!(reopened.get(&key)?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn apply_upserts_mutable_registry_values_and_keeps_absent_removals_free() -> Result<()> {
+        let store = MemoryObjectStore::default();
+        let namespace = namespace();
+        let index = PagedIndex::new(&store, &namespace);
+        let root = index.build(BTreeMap::from([("key".into(), json!(1))]))?;
+        // Registry values may change (tombstones flip `deleted`), so a batch apply is an
+        // upsert; receipt archival keeps the stricter `insert_many` identity check.
+        let updated = index
+            .apply(
+                root.as_deref(),
+                BTreeMap::from([("key".into(), json!(2))]),
+                &BTreeSet::new(),
+            )?
+            .context("update dropped the index")?;
+        assert_eq!(index.get(Some(&updated), "key")?, Some(json!(2)));
+        assert_eq!(index.entries(root.as_deref())?.len(), 1);
+        assert_eq!(index.get(root.as_deref(), "key")?, Some(json!(1)));
+        assert!(index
+            .insert_many(root.as_deref(), BTreeMap::from([("key".into(), json!(2))]))
+            .is_err());
+        let removed = index.apply(
+            root.as_deref(),
+            BTreeMap::new(),
+            &BTreeSet::from(["key".into()]),
+        )?;
+        assert_eq!(removed, None);
+        let absent = index.apply(
+            None,
+            BTreeMap::new(),
+            &BTreeSet::from(["key".into(), "other".into()]),
+        )?;
+        assert_eq!(absent, None);
         Ok(())
     }
 }

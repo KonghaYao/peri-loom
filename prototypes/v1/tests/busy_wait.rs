@@ -169,16 +169,24 @@ fn holder_commit_and_reader_progress_while_same_writer_call_waits() -> Result<()
 }
 
 #[test]
-fn default_writer_admission_deadline_exhausts_without_batch_side_effects() -> Result<()> {
+fn held_writer_lock_exhausts_wall_fallback_without_batch_side_effects() -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = fixture.database.session()?;
     holder.execute("BEGIN IMMEDIATE;")?;
     fixture.store.checks.store(0, Ordering::SeqCst);
     let physical = fixture.store.physical.load(Ordering::SeqCst);
+    let budget = Budget {
+        max_query_duration: Duration::from_millis(300),
+        ..Budget::default()
+    };
+    let wall = budget.max_query_duration * 2;
     let started = Instant::now();
     let error = contender
-        .execute("BEGIN IMMEDIATE; INSERT INTO ledger VALUES(7); COMMIT;")
+        .execute_with_budget(
+            "BEGIN IMMEDIATE; INSERT INTO ledger VALUES(7); COMMIT;",
+            &budget,
+        )
         .unwrap_err();
     let elapsed = started.elapsed();
     ensure!(
@@ -186,8 +194,8 @@ fn default_writer_admission_deadline_exhausts_without_batch_side_effects() -> Re
         "expected typed admission deadline, got {error:#}"
     );
     ensure!(
-        elapsed >= Budget::default().max_query_duration && elapsed < Duration::from_secs(6),
-        "writer queue did not share the original default query budget"
+        elapsed >= wall && elapsed < wall + Duration::from_millis(500),
+        "held writer queue was not bounded by the wall fallback: elapsed={elapsed:?} wall={wall:?}"
     );
     ensure!(
         fixture.store.physical.load(Ordering::SeqCst) == physical,
@@ -207,8 +215,9 @@ fn default_writer_admission_deadline_exhausts_without_batch_side_effects() -> Re
         "expired queued batch wrote a prefix"
     );
     eprintln!(
-        "terminal={:?} original_five_second_budget=true physical_io=0 single_batch_call=1 ledger_empty=true",
-        error.downcast_ref::<AdmissionError>()
+        "terminal={:?} wall_fallback_ms={} physical_io=0 single_batch_call=1 ledger_empty=true",
+        error.downcast_ref::<AdmissionError>(),
+        wall.as_millis()
     );
     Ok(())
 }
@@ -237,7 +246,7 @@ fn short_write_query_admission_budget_stops_before_io() -> Result<()> {
         "wrong short-budget terminal error: {error:#}"
     );
     ensure!(
-        elapsed >= Duration::from_millis(40) && elapsed < Duration::from_millis(300),
+        elapsed >= Duration::from_millis(80) && elapsed < Duration::from_millis(400),
         "query budget was reset by writer admission"
     );
     ensure!(
@@ -253,7 +262,7 @@ fn short_write_query_admission_budget_stops_before_io() -> Result<()> {
         ledger(&contender)?.is_empty(),
         "expired write-query produced side effects"
     );
-    eprintln!("query_budget_ms=40 admission_deadline=true physical_io=0 ledger_empty=true terminal={error:#}");
+    eprintln!("query_budget_ms=40 wall_fallback_ms=80 admission_deadline=true physical_io=0 ledger_empty=true terminal={error:#}");
     Ok(())
 }
 

@@ -96,8 +96,10 @@ fn authenticated_batches_are_registered_only_by_live_writers() -> Result<()> {
 
     let first = vec![7; SEGMENT_SIZE];
     let second = vec![8; SEGMENT_SIZE];
-    assert!(raw.upload_segments(&[first.clone()]).is_err());
-    assert!(readonly_store.upload_segments(&[first.clone()]).is_err());
+    assert!(raw.upload_segments(std::slice::from_ref(&first)).is_err());
+    assert!(readonly_store
+        .upload_segments(std::slice::from_ref(&first))
+        .is_err());
     assert!(worker
         .call(AuthorityCommand::Session {
             session: readonly_session.clone(),
@@ -158,8 +160,8 @@ fn authenticated_batches_are_registered_only_by_live_writers() -> Result<()> {
     assert!(after.uploads.is_empty());
     for (entry, bytes) in entries.iter().zip([&first, &second]) {
         assert_eq!(
-            after.objects.get(&format!("segments/{}", entry.hash)),
-            Some(entry)
+            after.objects.get(&format!("segments/{}", entry.hash))?,
+            Some(entry.clone())
         );
         assert_eq!(authority.read_blob(entry)?, *bytes);
     }
@@ -179,8 +181,8 @@ fn authenticated_batches_are_registered_only_by_live_writers() -> Result<()> {
     let published = authority.snapshot()?.root;
     for (entry, bytes) in maximum_entries.iter().zip(&maximum) {
         assert_eq!(
-            published.objects.get(&format!("segments/{}", entry.hash)),
-            Some(entry)
+            published.objects.get(&format!("segments/{}", entry.hash))?,
+            Some(entry.clone())
         );
         assert_eq!(authority.read_blob(entry)?, *bytes);
     }

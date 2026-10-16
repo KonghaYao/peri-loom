@@ -1,0 +1,1262 @@
+use super::*;
+use crate::authority::ownership::OwnershipAuthority;
+use crate::database::RemoteDatabase;
+use crate::namespace::Namespace;
+use crate::object_store::{LocalObjectStore, StoredObject};
+use crate::ownership::types::*;
+use crate::runtime::DatabaseId;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
+
+#[derive(Default, Debug)]
+struct Counters {
+    gets: usize,
+    page_gets: usize,
+    root_bytes: usize,
+    puts: usize,
+    page_puts: usize,
+    groups: usize,
+    group_bodies: usize,
+    group_us: u128,
+    root_writes: usize,
+    lists: usize,
+    get_us: u128,
+    put_us: u128,
+    list_us: u128,
+    sites: BTreeMap<String, (usize, u128)>,
+}
+
+struct Probe {
+    local: LocalObjectStore,
+    counts: Mutex<Counters>,
+    fail_root_puts: AtomicBool,
+}
+
+impl Probe {
+    fn open(root: impl AsRef<std::path::Path>) -> Result<Self> {
+        Ok(Self {
+            local: LocalObjectStore::open(root)?,
+            counts: Mutex::default(),
+            fail_root_puts: AtomicBool::new(false),
+        })
+    }
+
+    fn reset(&self) {
+        *self.counts.lock().unwrap() = Counters::default();
+    }
+
+    fn snapshot(&self) -> Counters {
+        std::mem::take(&mut *self.counts.lock().unwrap())
+    }
+}
+
+fn is_page(key: &str) -> bool {
+    key.contains("/authority/index-pages/")
+}
+
+impl ObjectStore for Probe {
+    fn supports_strict_fencing(&self) -> bool {
+        true
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        let start = Instant::now();
+        let result = self.local.get(key);
+        let mut counts = self.counts.lock().unwrap();
+        counts.gets += 1;
+        counts.page_gets += usize::from(is_page(key));
+        counts.get_us += start.elapsed().as_micros();
+        if key.ends_with("/authority/root") {
+            counts.root_bytes += result
+                .as_ref()
+                .ok()
+                .and_then(|value| value.as_ref())
+                .map_or(0, |value| value.bytes.len());
+        }
+        let kind = if key.ends_with("/authority/root") {
+            "root"
+        } else if is_page(key) {
+            "page"
+        } else {
+            "object"
+        };
+        let site = counts
+            .sites
+            .entry(format!("{}/get/{kind}", scaling_probe::site()))
+            .or_default();
+        site.0 += 1;
+        site.1 += start.elapsed().as_micros();
+        result
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if self.fail_root_puts.load(Ordering::SeqCst) && key.ends_with("/authority/root") {
+            anyhow::bail!("injected head publication failure");
+        }
+        let start = Instant::now();
+        let result = self.local.put(key, bytes, condition);
+        let mut counts = self.counts.lock().unwrap();
+        counts.puts += 1;
+        counts.page_puts += usize::from(is_page(key));
+        counts.root_writes += usize::from(key.ends_with("/authority/root"));
+        counts.put_us += start.elapsed().as_micros();
+        result
+    }
+
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        if self.fail_root_puts.load(Ordering::SeqCst)
+            && writes
+                .iter()
+                .any(|write| write.key.ends_with("/authority/root"))
+        {
+            anyhow::bail!("injected head publication failure");
+        }
+        let start = Instant::now();
+        let result = self.local.put_group(writes);
+        let mut counts = self.counts.lock().unwrap();
+        counts.groups += 1;
+        counts.group_bodies += writes.len();
+        counts.group_us += start.elapsed().as_micros();
+        counts.root_writes += writes
+            .iter()
+            .filter(|write| write.key.ends_with("/authority/root"))
+            .count();
+        result
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.local.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        let start = Instant::now();
+        let result = self.local.list(prefix);
+        let mut counts = self.counts.lock().unwrap();
+        counts.lists += 1;
+        counts.list_us += start.elapsed().as_micros();
+        result
+    }
+}
+
+struct Clock;
+
+impl LeaseClock for Clock {
+    fn now_ms(&self) -> Result<u64> {
+        Ok(1000)
+    }
+}
+
+fn authority(store: Arc<Probe>) -> Result<(Arc<OwnershipAuthority>, Arc<Authority>)> {
+    let namespace = Namespace::new("scaling", "sql")?;
+    let control = OwnershipAuthority::new(store.clone(), Arc::new(Clock));
+    let root = Authority::open(store, namespace)?;
+    Ok((control, root))
+}
+
+fn database(store: Arc<Probe>, cache: &std::path::Path) -> Result<RemoteDatabase> {
+    let (control, _) = authority(store)?;
+    let namespace = Namespace::new("scaling", "sql")?;
+    let intent = GrantIntent {
+        database: DatabaseId::new(namespace.clone(), "main")?,
+        worker_id: "worker".into(),
+        epoch: 1,
+        expected_epoch: 0,
+        lease_id: "lease".into(),
+        ttl_ms: 10000,
+        role: AccessRole::Writer,
+    };
+    let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+    let lease = control.grant(GrantRequest {
+        intent,
+        nonce,
+        request_id: "grant".into(),
+    })?;
+    let scoped = control.open_session(&lease.binding, AccessRole::Writer)?;
+    RemoteDatabase::open(scoped, namespace, cache, 1)
+}
+
+/// Realistic catalog growth: every publication registers physical segments (`blobs`) and
+/// logical objects (`objects`) through the production upload path, so the store scale is
+/// driven by the same registries a real workload grows.
+fn grow_catalog(root: &Arc<Authority>, objects: usize) -> Result<()> {
+    for batch in 0..objects.div_ceil(128) {
+        let size = (objects - batch * 128).min(128);
+        let segments = (0..size)
+            .map(|index| {
+                let mut bytes = vec![0u8; crate::manifest::SEGMENT_SIZE];
+                bytes[..8].copy_from_slice(&((batch * 128 + index) as u64).to_be_bytes());
+                bytes
+            })
+            .collect::<Vec<_>>();
+        let entries = root.upload_segments(&segments)?;
+        root.register_segments(&entries)?;
+    }
+    Ok(())
+}
+
+fn head_bytes(root: &Arc<Authority>) -> Result<usize> {
+    Ok(codec::encode(&root.snapshot()?.root)?.len())
+}
+
+fn measure(
+    store: &Probe,
+    label: &str,
+    mut operation: impl FnMut() -> Result<()>,
+) -> Result<BTreeMap<String, scaling_probe::Sample>> {
+    let mut elapsed = Vec::new();
+    let mut stages = BTreeMap::new();
+    for _ in 0..7 {
+        store.reset();
+        scaling_probe::start();
+        let start = Instant::now();
+        operation()?;
+        elapsed.push(start.elapsed().as_micros());
+        stages = scaling_probe::finish();
+        assert_eq!(store.snapshot().lists, 0, "SQL hot path listed the store");
+    }
+    elapsed.sort();
+    let counts = store.snapshot();
+    eprintln!(
+        "SCALING {label} p50_us={} gets={} page_gets={} puts={} page_puts={} root_bytes={} get_us={} put_us={}",
+        elapsed[3], counts.gets, counts.page_gets, counts.puts, counts.page_puts, counts.root_bytes, counts.get_us, counts.put_us
+    );
+    for (stage, sample) in &stages {
+        if sample.calls > 0 {
+            eprintln!(
+                "SCALING {label} stage={stage} calls={} micros={}",
+                sample.calls, sample.micros
+            );
+        }
+    }
+    Ok(stages)
+}
+
+/// Statements measured against a catalog of the given scale, with the deterministic
+/// counters a gate can assert on: root decodes/validates/encodes and page reads.
+struct Sample {
+    stages: BTreeMap<String, scaling_probe::Sample>,
+    head_bytes: usize,
+    page_gets: usize,
+    gets: usize,
+}
+
+impl Sample {
+    /// Stages nest (a snapshot decode happens inside `transact`), so gate assertions
+    /// aggregate by leaf name instead of by the full call path.
+    fn calls(&self, stage: &str) -> usize {
+        self.stages
+            .iter()
+            .filter(|(path, _)| path.rsplit('/').next() == Some(stage))
+            .map(|(_, sample)| sample.calls)
+            .sum()
+    }
+}
+
+fn statement_sample(objects: usize) -> Result<Sample> {
+    let directory = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let db = database(store.clone(), cache.path())?;
+    db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO items VALUES(1, 'fixed')")?;
+    let (_, root) = authority(store.clone())?;
+    grow_catalog(&root, objects)?;
+    store.reset();
+    scaling_probe::start();
+    db.query("SELECT value FROM items WHERE id=1")?;
+    db.execute("INSERT INTO items(value) VALUES('fixed')")?;
+    let stages = scaling_probe::finish();
+    let counts = store.snapshot();
+    Ok(Sample {
+        stages,
+        head_bytes: head_bytes(&root)?,
+        page_gets: counts.page_gets,
+        gets: counts.gets,
+    })
+}
+
+/// Regression gate for the reason this module exists: a statement must not walk the
+/// store, and the encoded head must not grow with the catalog. Deterministic counters
+/// only, so the gate cannot flake with host load.
+#[test]
+fn statement_cost_does_not_scale_with_catalog_size() -> Result<()> {
+    let small = statement_sample(100)?;
+    let large = statement_sample(1_200)?;
+    for (label, sample) in [("small", &small), ("large", &large)] {
+        eprintln!(
+            "GATE {label} gets={} page_gets={} head_bytes={} stages={:?}",
+            sample.gets,
+            sample.page_gets,
+            sample.head_bytes,
+            sample
+                .stages
+                .iter()
+                .map(|(path, sample)| (path.as_str(), sample.calls))
+                .collect::<BTreeMap<_, _>>()
+        );
+    }
+    for stage in ["decode", "encode"] {
+        assert!(
+            small.calls(stage) > 0,
+            "{stage} was never exercised; the gate would be vacuous"
+        );
+        assert!(
+            large.calls(stage) <= small.calls(stage) + 2,
+            "root {stage} count grew with catalog size: {} -> {}",
+            small.calls(stage),
+            large.calls(stage)
+        );
+        assert!(
+            large.calls(stage) <= 32,
+            "root {stage} count is unbounded: {}",
+            large.calls(stage)
+        );
+    }
+    assert!(
+        small.calls("verify_deep") == 0 && large.calls("verify_deep") == 0,
+        "statement walked the whole store"
+    );
+    // Reads are constant-bounded, not equal: a paged registry adds page hops instead of
+    // carrying the whole registry. Walking the store (the regression this gate exists
+    // for) would need at least one read per catalog entry.
+    assert!(
+        large.gets <= 96,
+        "statement store reads are unbounded: {}",
+        large.gets
+    );
+    assert!(
+        large.gets <= small.gets * 3,
+        "statement store reads grew with the catalog: {} -> {}",
+        small.gets,
+        large.gets
+    );
+    assert!(
+        large.page_gets <= 64,
+        "statement page reads are unbounded: {}",
+        large.page_gets
+    );
+    assert!(
+        large.head_bytes <= small.head_bytes + 4096,
+        "authority head grew with catalog size: {} -> {}",
+        small.head_bytes,
+        large.head_bytes
+    );
+    assert!(large.head_bytes <= 32 * 1024, "head exceeded its budget");
+    Ok(())
+}
+
+/// The same gate for the other axis a session grows along. `grow_catalog` adds registry
+/// entries without committing, so it never grows the recovery history or the WAL index;
+/// a real session does both. This fixture commits real rows through the production
+/// statement path and asserts that a late commit costs what an early one cost, which is
+/// the property the catalog-size gate cannot see.
+#[test]
+fn commit_cost_does_not_grow_with_retained_operations() -> Result<()> {
+    const COMMITS: usize = 120;
+    const WARM: usize = 60;
+    let directory = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let db = database(store.clone(), cache.path())?;
+    db.execute(
+        "CREATE TABLE growth(id INTEGER PRIMARY KEY, label TEXT NOT NULL, payload TEXT NOT NULL)",
+    )?;
+    let mut warm = None;
+    let mut cold = None;
+    for index in 1..=COMMITS {
+        store.reset();
+        scaling_probe::start();
+        db.execute(&format!(
+            "INSERT INTO growth(id,label,payload) VALUES ({index},'g-{index:04}','{}')",
+            "x".repeat(64)
+        ))?;
+        scaling_probe::finish();
+        let counters = store.snapshot();
+        assert_eq!(counters.lists, 0, "SQL hot path listed the store");
+        eprintln!(
+            "GATE retained-ops commit={index} gets={} page_gets={} page_puts={} root_bytes={}",
+            counters.gets, counters.page_gets, counters.page_puts, counters.root_bytes
+        );
+        if index == WARM {
+            warm = Some((counters.gets, counters.page_gets));
+        }
+        if index == COMMITS {
+            cold = Some((counters.gets, counters.page_gets));
+        }
+    }
+    let (warm_gets, warm_pages) = warm.context("warm sample missing")?;
+    let (cold_gets, cold_pages) = cold.context("cold sample missing")?;
+    eprintln!(
+        "GATE retained-ops warm={warm_gets} gets/{warm_pages} pages cold={cold_gets} gets/{cold_pages} pages"
+    );
+    assert!(
+        cold_pages <= 64,
+        "a commit's page reads are unbounded: {cold_pages}"
+    );
+    assert!(
+        cold_gets <= 96,
+        "a commit's store reads are unbounded: {cold_gets}"
+    );
+    assert!(
+        cold_pages <= warm_pages + 8,
+        "a commit paid for the operations it retained: page reads {warm_pages} at commit {WARM} -> {cold_pages} at commit {COMMITS}"
+    );
+    assert!(
+        cold_gets <= warm_gets + 16,
+        "a commit reads grew with retained operations: {warm_gets} at commit {WARM} -> {cold_gets} at commit {COMMITS}"
+    );
+    Ok(())
+}
+
+/// One measurement point: same fixture, same statements, only the catalog layout differs.
+#[derive(Debug, Clone)]
+struct Curve {
+    select_p50_us: u128,
+    insert_p50_us: u128,
+    head_bytes: usize,
+    root_bytes_per_insert: usize,
+    gets_per_insert: usize,
+    page_gets_per_insert: usize,
+    page_puts_per_insert: usize,
+    puts_per_insert: usize,
+    put_us_per_insert: u128,
+    groups_per_insert: usize,
+    group_bodies_per_insert: usize,
+    group_us_per_insert: u128,
+    /// The authority head is the single commit point of a publication: exactly one head
+    /// write per commit, so a second ~15 KB root write cannot come from this path.
+    root_writes_per_insert: usize,
+    get_us_per_insert: u128,
+    decode_calls_per_insert: usize,
+}
+
+/// What the tier grows. `Catalog` registers entries in this database's catalog through
+/// the real upload path, `Unrelated` adds physical objects that no catalog entry points
+/// at: the control axis that showed store size alone was never the statement cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Growth {
+    Catalog,
+    Unrelated,
+}
+
+impl Growth {
+    fn label(self) -> &'static str {
+        match self {
+            Growth::Catalog => "catalog-items",
+            Growth::Unrelated => "unrelated-objects",
+        }
+    }
+}
+
+fn scratch(case: &str) -> Result<std::path::PathBuf> {
+    let root = std::path::Path::new("/private/tmp/peri-perf/store").join(case);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
+fn host_load() -> String {
+    std::process::Command::new("uptime")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .unwrap_or_else(|| "uptime unavailable".into())
+        .trim()
+        .to_owned()
+}
+
+fn grow(store: &Probe, root: &Arc<Authority>, growth: Growth, objects: usize) -> Result<()> {
+    match growth {
+        Growth::Catalog => grow_catalog(root, objects),
+        Growth::Unrelated => {
+            for index in 0..objects {
+                store.local.put(
+                    &format!("unrelated/blob-{index:05}"),
+                    &vec![42u8; 32 * 1024],
+                    PutCondition::Absent,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn curve_sample(objects: usize, growth: Growth, budget: usize) -> Result<Curve> {
+    registry::INLINE_BUDGET.store(budget, Ordering::Relaxed);
+    let result = (|| -> Result<Curve> {
+        let directory = scratch(&format!("{}-{objects}", growth.label()))?;
+        let cache = directory.join("cache");
+        let store = Arc::new(Probe::open(directory.join("objects"))?);
+        let db = database(store.clone(), &cache)?;
+        db.execute(
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO items VALUES(1, 'fixed')",
+        )?;
+        let (_, root) = authority(store.clone())?;
+        grow(&store, &root, growth, objects)?;
+        let (select_p50_us, _, _) = p50(&store, || {
+            db.query("SELECT value FROM items WHERE id=1")?;
+            Ok(())
+        })?;
+        let (insert_p50_us, counters, stages) = p50(&store, || {
+            db.execute("INSERT INTO items(value) VALUES('fixed')")
+        })?;
+        Ok(Curve {
+            select_p50_us,
+            insert_p50_us,
+            head_bytes: head_bytes(&root)?,
+            root_bytes_per_insert: counters.root_bytes,
+            gets_per_insert: counters.gets,
+            page_gets_per_insert: counters.page_gets,
+            page_puts_per_insert: counters.page_puts,
+            puts_per_insert: counters.puts,
+            put_us_per_insert: counters.put_us,
+            groups_per_insert: counters.groups,
+            group_bodies_per_insert: counters.group_bodies,
+            group_us_per_insert: counters.group_us,
+            root_writes_per_insert: counters.root_writes,
+            get_us_per_insert: counters.get_us,
+            decode_calls_per_insert: stages
+                .iter()
+                .filter(|(path, _)| path.rsplit('/').next() == Some("decode"))
+                .map(|(_, sample)| sample.calls)
+                .sum(),
+        })
+    })();
+    registry::INLINE_BUDGET.store(registry::MAX_INLINE_BYTES, Ordering::Relaxed);
+    result
+}
+
+/// Seven runs, counter reset per run: the median is reported with the counters of the
+/// final run, so latency and call counts describe the same execution.
+fn p50(
+    store: &Probe,
+    mut operation: impl FnMut() -> Result<()>,
+) -> Result<(u128, Counters, BTreeMap<String, scaling_probe::Sample>)> {
+    let mut elapsed = Vec::new();
+    let mut counters = Counters::default();
+    let mut stages = BTreeMap::new();
+    for _ in 0..7 {
+        store.reset();
+        scaling_probe::start();
+        let start = Instant::now();
+        operation()?;
+        elapsed.push(start.elapsed().as_micros());
+        counters = store.snapshot();
+        stages = scaling_probe::finish();
+        assert_eq!(counters.lists, 0, "SQL hot path listed the store");
+    }
+    elapsed.sort();
+    Ok((elapsed[3], counters, stages))
+}
+
+/// Before/after under one process and one fixture: raising the inline budget keeps every
+/// registry inside the head (`monolithic`, the layout this change removed), while the
+/// shipped budget pages them (`paged`). Nothing else differs between the two columns.
+///
+/// Both groups run in the same tier, paired and adjacent in time, and every cell records
+/// the host load, so absolute numbers are comparable within a run rather than across runs.
+#[test]
+#[ignore = "四档受控变量基准：显式运行以避免和其它 owner 的测量重叠"]
+fn store_scaling_curve() -> Result<()> {
+    const TIERS: [usize; 4] = [100, 300, 600, 1_200];
+    let mut points: BTreeMap<(&'static str, &'static str, usize), (u128, u128)> = BTreeMap::new();
+    for objects in TIERS {
+        for growth in [Growth::Catalog, Growth::Unrelated] {
+            for (mode, budget) in [
+                ("monolithic", usize::MAX),
+                ("paged", registry::MAX_INLINE_BYTES),
+            ] {
+                let curve = curve_sample(objects, growth, budget)?;
+                points.insert(
+                    (growth.label(), mode, objects),
+                    (curve.select_p50_us, curve.insert_p50_us),
+                );
+                eprintln!(
+                    "SCALING tier={objects} group={} mode={mode} pk_p50_us={} insert_p50_us={} head_bytes={} root_bytes_per_insert={} decode_calls={} gets={} page_gets={} page_puts={} load={}",
+                    growth.label(),
+                    curve.select_p50_us,
+                    curve.insert_p50_us,
+                    curve.head_bytes,
+                    curve.root_bytes_per_insert,
+                    curve.decode_calls_per_insert,
+                    curve.gets_per_insert,
+                    curve.page_gets_per_insert,
+                    curve.page_puts_per_insert,
+                    host_load()
+                );
+            }
+        }
+    }
+    for group in ["catalog-items", "unrelated-objects"] {
+        for mode in ["monolithic", "paged"] {
+            let first = points[&(group, mode, TIERS[0])];
+            let last = points[&(group, mode, TIERS[3])];
+            let span = (TIERS[3] - TIERS[0]) as f64;
+            eprintln!(
+                "SLOPE group={group} mode={mode} pk_us_per_entry={:.3} insert_us_per_entry={:.3} pk_ratio={:.2} insert_ratio={:.2}",
+                (last.0 as f64 - first.0 as f64) / span,
+                (last.1 as f64 - first.1 as f64) / span,
+                last.0 as f64 / first.0 as f64,
+                last.1 as f64 / first.1 as f64,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Catalog share of one commit, release build, tiers that bracket the live stack.
+///
+/// Both arms run in the same process, and the order is reversed on the second pass, so a
+/// measurement cannot be explained by load drifting between the two arms.
+#[test]
+#[ignore = "目录占比基准：显式运行以避免和其它 owner 的测量重叠"]
+fn catalog_share_curve() -> Result<()> {
+    for objects in [100, 600, 1_200] {
+        for (pass, arm_order) in [
+            ("A", [("group-off", false), ("group-on", true)]),
+            ("B", [("group-on", true), ("group-off", false)]),
+        ] {
+            for (arm, grouped) in arm_order {
+                super::GROUP_COMMIT.store(grouped, Ordering::Relaxed);
+                let curve = curve_sample(objects, Growth::Catalog, registry::MAX_INLINE_BYTES)?;
+                eprintln!(
+                    "CATALOGSHARE tier={objects} pass={pass} arm={arm} insert_p50_us={} pk_p50_us={} head_bytes={} root_bytes_per_insert={} decode_calls={} gets={} page_gets={} puts={} page_puts={} put_us={} groups={} group_bodies={} group_us={} root_writes={} get_us={} load={}",
+                    curve.insert_p50_us,
+                    curve.select_p50_us,
+                    curve.head_bytes,
+                    curve.root_bytes_per_insert,
+                    curve.decode_calls_per_insert,
+                    curve.gets_per_insert,
+                    curve.page_gets_per_insert,
+                    curve.puts_per_insert,
+                    curve.page_puts_per_insert,
+                    curve.put_us_per_insert,
+                    curve.groups_per_insert,
+                    curve.group_bodies_per_insert,
+                    curve.group_us_per_insert,
+                    curve.root_writes_per_insert,
+                    curve.get_us_per_insert,
+                    host_load()
+                );
+            }
+        }
+    }
+    super::GROUP_COMMIT.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// A publication that loses the head write must leave the previous head fully readable:
+/// registry pages are immutable and only the head CAS commits.
+#[test]
+fn interrupted_publication_keeps_previous_head_readable() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let (_, root) = authority(store.clone())?;
+    grow_catalog(&root, 400)?;
+    let before = root.snapshot()?;
+    let entries = before.root.objects.entries()?;
+    assert!(!entries.is_empty());
+    store.fail_root_puts.store(true, Ordering::SeqCst);
+    let segments = vec![vec![7u8; crate::manifest::SEGMENT_SIZE]];
+    assert!(root.upload_segments(&segments).is_err());
+    store.fail_root_puts.store(false, Ordering::SeqCst);
+    let after = root.snapshot()?;
+    assert_eq!(after.root.revision, before.root.revision);
+    assert_eq!(after.root.objects.entries()?, entries);
+    assert_eq!(after.root.blobs.entries()?, before.root.blobs.entries()?);
+    // The next publication still succeeds and remains complete.
+    let published = root.upload_segments(&segments)?;
+    root.register_segments(&published)?;
+    assert_eq!(
+        root.snapshot()?.root.objects.entries()?.len(),
+        entries.len() + 1
+    );
+    Ok(())
+}
+
+#[test]
+fn corrupt_registry_page_fails_closed_and_recovers_only_with_intact_pages() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let (_, root) = authority(store.clone())?;
+    grow_catalog(&root, 400)?;
+    let snapshot = root.snapshot()?;
+    let pointer = snapshot
+        .root
+        .objects
+        .pointer()
+        .context("catalog did not spill")?
+        .to_owned();
+    let page = snapshot
+        .root
+        .namespace
+        .key(&format!("authority/index-pages/{pointer}"))?;
+    let object = store.local.get(&page)?.context("index page missing")?;
+    let mut corrupt = object.bytes.clone();
+    corrupt[0] ^= 1;
+    store
+        .local
+        .put(&page, &corrupt, PutCondition::Match(object.etag))?;
+    assert!(
+        root.snapshot()?.root.objects.entries().is_err(),
+        "corrupt page resolved a lookup"
+    );
+    assert!(
+        Authority::open(store.clone(), snapshot.root.namespace.clone()).is_err(),
+        "corrupt page survived boot verification"
+    );
+    store.local.put(&page, &object.bytes, PutCondition::Any)?;
+    assert_eq!(root.snapshot()?.root.objects.entries()?.len(), 400);
+    Ok(())
+}
+
+#[test]
+fn reopened_store_rebuilds_registry_from_pages() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let namespace = Namespace::new("scaling", "sql")?;
+    let (entries, blobs) = {
+        let store = Arc::new(Probe::open(directory.path())?);
+        let (_, root) = authority(store)?;
+        grow_catalog(&root, 400)?;
+        let snapshot = root.snapshot()?;
+        assert!(
+            snapshot.root.objects.pointer().is_some(),
+            "catalog stayed inline; the reopen check would be vacuous"
+        );
+        (
+            snapshot.root.objects.entries()?,
+            snapshot.root.blobs.entries()?,
+        )
+    };
+    let reopened = Arc::new(Probe::open(directory.path())?);
+    let root = Authority::open(reopened, namespace)?;
+    let snapshot = root.snapshot()?;
+    assert_eq!(snapshot.root.objects.entries()?, entries);
+    assert_eq!(snapshot.root.blobs.entries()?, blobs);
+    let (segment, entry) = entries
+        .iter()
+        .find(|(key, _)| key.starts_with("segments/"))
+        .context("no segment registered")?;
+    assert_eq!(entry.hash, segment.trim_start_matches("segments/"));
+    Ok(())
+}
+
+/// Where a killed child stops inside a publication group. The points are chosen so each
+/// one lands on a different side of the only visibility boundary (the head CAS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CrashPoint {
+    /// Some immutable page bodies are durable, the head CAS is not.
+    PartwayBodies,
+    /// The same, but only the first body of the group is durable.
+    BetweenBodies,
+    /// The whole group is durable, including the head CAS: the caller never learns it.
+    AckedNotReturned,
+}
+
+impl CrashPoint {
+    fn label(self) -> &'static str {
+        match self {
+            CrashPoint::PartwayBodies => "partway-bodies",
+            CrashPoint::BetweenBodies => "between-bodies",
+            CrashPoint::AckedNotReturned => "acked-not-returned",
+        }
+    }
+}
+
+/// Evidence for the injection report: what the head references versus what is on disk.
+fn crash_evidence(label: &str, directory: &std::path::Path, namespace: &Namespace) -> Result<()> {
+    let probe = LocalObjectStore::open(directory.join("objects"))?;
+    let head = match probe.get(&namespace.key("authority/root")?)? {
+        Some(object) => object,
+        None => {
+            eprintln!("CRASH_EVIDENCE {label} head=absent");
+            return Ok(());
+        }
+    };
+    let head: serde_json::Value = serde_json::from_slice(&head.bytes)?;
+    let root = &head["root"];
+    eprintln!(
+        "CRASH_EVIDENCE {label} revision={} blob_index={:?} object_index={:?} upload_index={:?} receipt_index={:?}",
+        root["revision"],
+        root.get("blob_index"),
+        root.get("object_index"),
+        root.get("upload_index"),
+        root.get("receipt_index")
+    );
+    let pages = probe.list(&namespace.key("authority/index-pages")?)?;
+    eprintln!("CRASH_EVIDENCE {label} page_objects={}", pages.len());
+    for key in &pages {
+        let bytes = probe.get(key)?.unwrap().bytes;
+        let page: serde_json::Value = serde_json::from_slice(&bytes)?;
+        eprintln!(
+            "CRASH_EVIDENCE {label} page={} bytes={} kind={}",
+            key.rsplit('/').next().unwrap(),
+            bytes.len(),
+            page["kind"]
+        );
+    }
+    Ok(())
+}
+
+/// A store that cuts a publication group at a deterministic point, then waits to be
+/// killed. Everything below it is the real local store, so the durable side effects are
+/// exactly the ones a crash would leave behind.
+struct CuttingStore {
+    inner: Arc<LocalObjectStore>,
+    point: CrashPoint,
+    reached: std::path::PathBuf,
+}
+
+impl ObjectStore for CuttingStore {
+    fn supports_strict_fencing(&self) -> bool {
+        true
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        let bodies = writes.len().saturating_sub(1);
+        let cut = match self.point {
+            CrashPoint::BetweenBodies => 1,
+            CrashPoint::PartwayBodies => bodies / 2,
+            // Fully durable, then withhold the answer: the caller dies without a reply.
+            CrashPoint::AckedNotReturned => {
+                let etags = self.inner.put_group(writes)?;
+                std::fs::write(&self.reached, "group-durable")?;
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                return Ok(etags);
+            }
+        };
+        for write in &writes[..cut.min(bodies)] {
+            self.inner
+                .put(&write.key, &write.bytes, PutCondition::Any)?;
+        }
+        std::fs::write(&self.reached, "mid-group")?;
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        Ok(writes.iter().map(|write| write.key.clone()).collect())
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+/// Child half of the crash injection: runs one publication, is killed inside it. Only the
+/// parent test spawns this with the environment set, otherwise it returns immediately.
+#[test]
+fn crash_injection_child() -> Result<()> {
+    let Ok(point) = std::env::var("PERI_CRASH_POINT") else {
+        return Ok(());
+    };
+    let point = match point.as_str() {
+        "partway-bodies" => CrashPoint::PartwayBodies,
+        "between-bodies" => CrashPoint::BetweenBodies,
+        _ => CrashPoint::AckedNotReturned,
+    };
+    let directory = std::path::PathBuf::from(std::env::var("PERI_CRASH_DIR")?);
+    let store = Arc::new(CuttingStore {
+        inner: Arc::new(LocalObjectStore::open(directory.join("objects"))?),
+        point,
+        reached: directory.join("reached"),
+    });
+    let root = Authority::open(store, Namespace::new("crash", "injected")?)?;
+    // One transaction, many registry additions: the publication group has several
+    // immutable page bodies before the head CAS.
+    let segments = (0..16)
+        .map(|index| {
+            let mut bytes = vec![0u8; crate::manifest::SEGMENT_SIZE];
+            bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            bytes
+        })
+        .collect::<Vec<_>>();
+    let entries = root.upload_segments(&segments)?;
+    root.register_segments(&entries)?;
+    Ok(())
+}
+
+fn crash_injection_point(point: CrashPoint) -> Result<()> {
+    let directory = scratch(&format!("crash-{}", point.label()))?;
+    let cache = directory.join("cache");
+    let namespace = Namespace::new("crash", "injected")?;
+    // Setup in this process: a database, an acknowledged commit, and physical blobs whose
+    // registration the child will try to publish.
+    let acked_revision;
+    let uploads_before;
+    let entries;
+    {
+        let store = Arc::new(Probe::open(directory.join("objects"))?);
+        eprintln!("CRASH_STEP opened-probe");
+        let control = OwnershipAuthority::new(store.clone(), Arc::new(Clock));
+        let root = Authority::open(store.clone(), namespace.clone())?;
+        eprintln!("CRASH_STEP opened-raw-authority");
+        let segments = (0..16)
+            .map(|index| {
+                let mut bytes = vec![0u8; crate::manifest::SEGMENT_SIZE];
+                bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+                bytes
+            })
+            .collect::<Vec<_>>();
+        entries = root.upload_segments(&segments)?;
+        eprintln!("CRASH_STEP uploaded-intents");
+        crash_evidence("after-upload", &directory, &namespace)?;
+        let intent = GrantIntent {
+            database: DatabaseId::new(namespace.clone(), "main")?,
+            worker_id: "worker".into(),
+            epoch: 1,
+            expected_epoch: 0,
+            lease_id: "lease".into(),
+            ttl_ms: 10_000,
+            role: AccessRole::Writer,
+        };
+        store.reset();
+        let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+        let counts = store.snapshot();
+        eprintln!(
+            "CRASH_STEP challenged groups={} bodies={} puts={} page_objects={} root_writes={}",
+            counts.groups,
+            counts.group_bodies,
+            counts.puts,
+            directory.join("objects").read_dir()?.count(),
+            counts.root_writes
+        );
+        let lease = control.grant(GrantRequest {
+            intent,
+            nonce,
+            request_id: "grant".into(),
+        })?;
+        let scoped = control.open_session(&lease.binding, AccessRole::Writer)?;
+        let db = RemoteDatabase::open(scoped, namespace.clone(), cache.clone(), 1)?;
+        eprintln!("CRASH_STEP opened-database");
+        db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)")?;
+        db.execute("INSERT INTO items(value) VALUES('acked')")?;
+        // The engine registers its own `segments/*` while materialising the database, so
+        // the injected batch is tracked by hash instead of by a bare count.
+        let entries_before = root.snapshot()?.root.objects.entries()?;
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entries_before.contains_key(&format!("segments/{}", entry.hash))),
+            "the injected segments were registered before the crash"
+        );
+        drop(db);
+        // Read the acknowledged revision after the engine closed: its shutdown can
+        // commit, and the child's group must land on top of that exact revision.
+        let acknowledged = root.snapshot()?;
+        acked_revision = acknowledged.root.revision;
+        uploads_before = acknowledged.root.uploads.entries()?.len();
+    }
+
+    crash_evidence("after-setup", &directory, &namespace)?;
+    // Child process, killed inside the publication.
+    let reached = directory.join("reached");
+    let child = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "authority::store_scaling_tests::crash_injection_child",
+            "--nocapture",
+        ])
+        .env("PERI_CRASH_POINT", point.label())
+        .env("PERI_CRASH_DIR", &directory)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !reached.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "child never reached the injection point ({point:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // SIGKILL, not a graceful stop: the process dies inside the store call.
+    assert_eq!(
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) },
+        0,
+        "kill failed"
+    );
+    let mut child = child;
+    let status = child.wait()?;
+    assert!(!status.success(), "child was expected to die by signal");
+
+    // Reopen and read: no partially visible group, and the acknowledged commit is intact.
+    let store = Arc::new(Probe::open(directory.join("objects"))?);
+    crash_evidence("after-crash", &directory, &namespace)?;
+    let control = OwnershipAuthority::new(store.clone(), Arc::new(Clock));
+    let root = Authority::open(store.clone(), namespace.clone())?;
+    let snapshot = root.snapshot()?;
+    let entries_after = snapshot.root.objects.entries()?;
+    // Visibility is all-or-nothing at the head CAS: either none of the group's
+    // registrations are visible, or all sixteen of them are.
+    let registered = entries
+        .iter()
+        .filter(|entry| entries_after.contains_key(&format!("segments/{}", entry.hash)))
+        .count();
+    let uploads_after = snapshot.root.uploads.entries()?.len();
+    match point {
+        CrashPoint::AckedNotReturned => {
+            // The child's first publication is the intent reservation for its sixteen
+            // uploads; the group that became durable is exactly that one, whole.
+            assert_eq!(
+                snapshot.root.revision,
+                acked_revision + 1,
+                "the durable group was not visible after the crash"
+            );
+            assert_eq!(
+                uploads_after - uploads_before,
+                16,
+                "a durable group was only partly visible"
+            );
+            assert_eq!(registered, 0, "an attempt that never ran became visible");
+        }
+        CrashPoint::PartwayBodies | CrashPoint::BetweenBodies => {
+            assert_eq!(
+                snapshot.root.revision, acked_revision,
+                "the cut group became visible"
+            );
+            assert_eq!(
+                uploads_after, uploads_before,
+                "the cut group leaked intents"
+            );
+            assert_eq!(registered, 0, "the group became partially visible");
+        }
+    }
+    eprintln!(
+        "CRASH_RESULT point={} revision_before={} revision_after={} injected_visible={}/16 groups={}",
+        point.label(),
+        acked_revision,
+        snapshot.root.revision,
+        registered,
+        point.label()
+    );
+    // Whatever the child left behind must be unreferenced immutable bodies: every page
+    // object still hashes to its own key, and the reachable tree resolves completely.
+    for key in store.local.list(&namespace.key("authority/index-pages")?)? {
+        let bytes = store.local.get(&key)?.unwrap().bytes;
+        let hash = key.rsplit('/').next().unwrap().to_owned();
+        assert_eq!(
+            blake3::hash(&bytes).to_hex().as_str(),
+            hash,
+            "a page body was left non-content-addressed"
+        );
+    }
+    // The acknowledged commit is readable through the engine, and the store accepts
+    // further commits without any manual cleanup.
+    // The post-crash grant continues from the epoch the setup left behind: a fence that
+    // reused an old epoch would be refused, which is itself the fencing property.
+    let intent = GrantIntent {
+        database: DatabaseId::new(namespace.clone(), "main")?,
+        worker_id: "worker-2".into(),
+        epoch: 2,
+        expected_epoch: 1,
+        lease_id: "lease-2".into(),
+        ttl_ms: 10_000,
+        role: AccessRole::Writer,
+    };
+    let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+    let lease = control.grant(GrantRequest {
+        intent,
+        nonce,
+        request_id: "grant-2".into(),
+    })?;
+    let scoped = control.open_session(&lease.binding, AccessRole::Writer)?;
+    let db = RemoteDatabase::open(scoped, namespace.clone(), cache.clone(), 2)?;
+    let rows = db.query("SELECT value FROM items")?;
+    assert_eq!(rows.len(), 1, "acknowledged row disappeared");
+    assert_eq!(rows[0][0].to_string(), "acked");
+    db.execute("INSERT INTO items(value) VALUES('after-crash')")?;
+    assert_eq!(
+        db.query("SELECT count(*) FROM items")?[0][0].to_string(),
+        "2"
+    );
+    drop(db);
+    // Registration can also be retried without cleanup: the child's blobs are still
+    // upload intents, and the retry publishes them as a fresh group.
+    if registered == 0 {
+        root.register_segments(&entries)?;
+        let retried = root.snapshot()?.root.objects.entries()?;
+        assert!(
+            entries
+                .iter()
+                .all(|entry| retried.contains_key(&format!("segments/{}", entry.hash))),
+            "retry after the crash did not register the injected batch"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn crash_between_group_bodies_leaves_no_partial_publication() -> Result<()> {
+    crash_injection_point(CrashPoint::BetweenBodies)
+}
+
+#[test]
+fn crash_partway_through_group_bodies_leaves_no_partial_publication() -> Result<()> {
+    crash_injection_point(CrashPoint::PartwayBodies)
+}
+
+#[test]
+fn crash_after_head_cas_publishes_the_whole_group_or_nothing() -> Result<()> {
+    crash_injection_point(CrashPoint::AckedNotReturned)
+}
+
+/// The real stack publishes through `NamespaceBackend`, so the group must survive that
+/// wrapper: an engine-driven commit has to show group calls, not per-write fallbacks.
+#[test]
+fn engine_commits_publish_through_the_backend_group() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let db = database(store.clone(), cache.path())?;
+    db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)")?;
+    store.reset();
+    db.execute("INSERT INTO items(value) VALUES('grouped')")?;
+    let counts = store.snapshot();
+    assert!(
+        counts.groups >= 1,
+        "the publication never reached the store as a group: {counts:?}"
+    );
+    assert_eq!(
+        counts.page_puts, 0,
+        "page bodies fell back to per-write publication"
+    );
+    Ok(())
+}
+
+/// R2 evidence: one commit publishes the authority head exactly twice, and both are the
+/// same invariant seen from two sides. The first reservation makes the upload intent
+/// durable before any physical blob exists ("intent precedes put"); the second registers
+/// the uploaded blobs as published objects and advances the branch WAL. Merging them
+/// would mean writing a physical blob before its intent is durable, which is the ordering
+/// the fence depends on, so this gate pins the count instead of the merge.
+#[test]
+fn a_commit_publishes_the_intent_head_then_the_registration_head() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let db = database(store.clone(), cache.path())?;
+    db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)")?;
+    for _ in 0..3 {
+        store.reset();
+        db.execute("INSERT INTO items(value) VALUES('fixed')")?;
+        assert_eq!(
+            store.snapshot().root_writes,
+            2,
+            "commit head writes changed; re-derive the intent/registration split"
+        );
+    }
+    Ok(())
+}
+
+/// R5 evidence: a lease validation must not cost a durable write. Every `session/validate`
+/// RPC the worker issues is a read of the head plus an in-memory lease check; the durable
+/// writes of a request come from the publication group only.
+#[test]
+fn lease_validation_costs_no_durable_write() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let (control, _) = authority(store.clone())?;
+    let namespace = Namespace::new("scaling", "sql")?;
+    let intent = GrantIntent {
+        database: DatabaseId::new(namespace.clone(), "main")?,
+        worker_id: "worker".into(),
+        epoch: 1,
+        expected_epoch: 0,
+        lease_id: "lease".into(),
+        ttl_ms: 10_000,
+        role: AccessRole::Writer,
+    };
+    let nonce = control.challenge(LeaseIntent::Grant(intent.clone()))?.nonce;
+    let lease = control.grant(GrantRequest {
+        intent,
+        nonce,
+        request_id: "grant".into(),
+    })?;
+    let scoped = control.open_session(&lease.binding, AccessRole::Writer)?;
+    store.reset();
+    for _ in 0..5 {
+        scoped.validate_session()?;
+    }
+    let counts = store.snapshot();
+    assert_eq!(
+        counts.puts + counts.groups,
+        0,
+        "lease validation performed a durable write"
+    );
+    assert!(counts.root_writes == 0, "lease validation wrote the head");
+    assert!(counts.gets > 0, "lease validation never read the head");
+    Ok(())
+}
+
+#[test]
+fn sql_reads_and_commits_do_not_list_physical_store() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(Probe::open(directory.path())?);
+    let db = database(store.clone(), cache.path())?;
+    db.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT)")?;
+    measure(&store, "gate insert", || {
+        db.execute("INSERT INTO items(value) VALUES('fixed')")
+    })?;
+    measure(&store, "gate select", || {
+        db.query("SELECT value FROM items WHERE id=1")?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn paged_receipt_lookup_and_update_do_not_enumerate_store() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Probe::open(directory.path())?;
+    let namespace = Namespace::new("scaling", "receipts")?;
+    let index = paged_index::PagedIndex::new(&store, &namespace);
+    let entries = (0..600)
+        .map(|number| (format!("receipt-{number}"), serde_json::json!(number)))
+        .collect();
+    let root = index.build(entries)?.unwrap();
+    store.reset();
+    assert_eq!(
+        index.get(Some(&root), "receipt-42")?,
+        Some(serde_json::json!(42))
+    );
+    let expected_gets = store.snapshot().gets;
+    for number in 0..32 {
+        store.local.put(
+            &format!("unrelated/key-{number}"),
+            b"payload",
+            PutCondition::Absent,
+        )?;
+    }
+    store.reset();
+    assert_eq!(
+        index.get(Some(&root), "receipt-42")?,
+        Some(serde_json::json!(42))
+    );
+    assert_eq!(store.snapshot().gets, expected_gets);
+    let next = index.insert_many(
+        Some(&root),
+        BTreeMap::from([("new-receipt".into(), serde_json::json!(601))]),
+    )?;
+    assert_eq!(store.snapshot().lists, 0);
+    drop(store);
+    let reopened = LocalObjectStore::open(directory.path())?;
+    let index = paged_index::PagedIndex::new(&reopened, &namespace);
+    assert_eq!(index.get(Some(&root), "new-receipt")?, None);
+    assert_eq!(
+        index.get(Some(&next), "new-receipt")?,
+        Some(serde_json::json!(601))
+    );
+    Ok(())
+}

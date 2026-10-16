@@ -134,8 +134,8 @@ fn control_imports_verified_batches_after_writer_expiry_without_changing_head() 
     for (entry, source) in entries.iter().zip(before.iter()) {
         assert_eq!(entry.hash, source.hash);
         assert_eq!(
-            after.objects.get(&format!("segments/{}", entry.hash)),
-            Some(entry)
+            after.objects.get(&format!("segments/{}", entry.hash))?,
+            Some(entry.clone())
         );
         assert_eq!(digest(&authority.read_blob(entry)?), source.hash);
     }

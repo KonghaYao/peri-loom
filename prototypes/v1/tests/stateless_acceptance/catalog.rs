@@ -32,9 +32,9 @@ pub fn manifest(authority: &Authority, branch: &str) -> Result<Manifest> {
     let entry = snapshot
         .root
         .objects
-        .get(&format!("manifests/{identifier}"))
+        .get(&format!("manifests/{identifier}"))?
         .context("manifest logical entry missing")?;
-    Ok(serde_json::from_slice(&authority.read_blob(entry)?)?)
+    Ok(serde_json::from_slice(&authority.read_blob(&entry)?)?)
 }
 
 pub fn assert_authority_layout(store: &Path, name: &str) -> Result<()> {

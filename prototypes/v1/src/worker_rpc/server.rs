@@ -1,5 +1,5 @@
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Result};
 
 use crate::authority_rpc::http;
+use crate::authority_rpc::ingress::{Acceptor, Quota, Wakeup};
 use crate::ownership::types::{validate_label, OwnershipMode};
 use crate::ownership::OwnershipRuntime;
 use crate::session::{AdmissionError, Budget};
@@ -16,11 +17,17 @@ use super::diagnostics::Diagnostics;
 use super::outcome::failure_response;
 use super::protocol::{WorkerCommand, WorkerRequest, WorkerResponse};
 use super::sessions::Sessions;
-use super::transport::{read_request, token_matches};
+use super::transport::{self, read_request, token_matches};
 
 mod shutdown;
 
 use shutdown::WorkerThreads;
+
+/// Connections the listener holds at once, whether they are mid-request or
+/// parked between requests. Deliberately not `max_inflight`: once a connection
+/// can be reused, a parked one is not work, and letting it spend the execution
+/// budget is what would let idle clients starve real requests.
+const MAX_CONNECTIONS: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct WorkerLimits {
@@ -42,7 +49,7 @@ impl Default for WorkerLimits {
 }
 
 pub struct WorkerServer {
-    listener: TcpListener,
+    acceptor: Acceptor,
     state: Arc<State>,
 }
 
@@ -52,16 +59,22 @@ pub(super) struct State {
     control_token: String,
     sql_token: String,
     pub stopped: AtomicBool,
-    pub inflight: AtomicUsize,
+    /// Execution budget, taken per request. `dispatch` reports it as
+    /// `http_inflight`, which now counts work rather than parked sockets.
+    pub inflight: Arc<Quota>,
+    pub connections: Arc<Quota>,
     pub admission: Arc<Admission>,
     pub diagnostics: Diagnostics,
     pub limits: WorkerLimits,
+    wakeup: Wakeup,
 }
 
-struct Ticket(Arc<State>);
-impl Drop for Ticket {
-    fn drop(&mut self) {
-        self.0.inflight.fetch_sub(1, Ordering::SeqCst);
+impl State {
+    /// Stops the worker and releases the parked acceptor so shutdown does not
+    /// wait out the supervision period.
+    pub(super) fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.wakeup.wake();
     }
 }
 
@@ -127,27 +140,32 @@ impl WorkerServer {
             "worker requires distinct nonempty control and SQL credentials of at least 32 bytes"
         );
         let admission = Admission::new(limits.max_inflight, limits.control_reserve, enabled)?;
-        let listener = TcpListener::bind(address)?;
+        let acceptor = Acceptor::bind(address)?;
+        let acceptor_wakeup = acceptor.wakeup();
         crate::session::Budget::set_default(crate::session::Budget::default())?;
-        listener.set_nonblocking(true)?;
+        // A connection cap below the request cap would make the request cap
+        // unreachable, so an oversized `PERI_WORKER_MAX_INFLIGHT` lifts it.
+        let connections = MAX_CONNECTIONS.max(limits.max_inflight);
         Ok(Self {
-            listener,
+            acceptor,
             state: Arc::new(State {
                 sessions: Sessions::new(runtime.clone(), limits.max_sessions),
                 runtime,
                 control_token,
                 sql_token,
                 stopped: AtomicBool::new(false),
-                inflight: AtomicUsize::new(0),
+                inflight: Quota::new(limits.max_inflight),
+                connections: Quota::new(connections),
                 admission,
                 diagnostics: Diagnostics::default(),
                 limits,
+                wakeup: acceptor_wakeup,
             }),
         })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.listener.local_addr()?)
+        Ok(self.acceptor.local_addr()?)
     }
 
     pub fn run(self) -> Result<()> {
@@ -187,57 +205,126 @@ impl WorkerServer {
                 if workers.reap_finished() || watchdog.is_finished() {
                     break;
                 }
-                let (mut connection, _) = match self.listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2));
+                self.acceptor.park()?;
+                while !self.state.stopped.load(Ordering::SeqCst) {
+                    let Some(mut connection) = self.acceptor.take()? else {
+                        break;
+                    };
+                    // Connection budget, not execution budget: a connection that
+                    // will sit parked between requests must not consume a request
+                    // slot, or idle pooled clients would starve real work.
+                    let Some(connection_ticket) = self.state.connections.try_acquire() else {
+                        let _ = http::reply(
+                            &mut connection,
+                            429,
+                            b"{\"error\":\"worker connection limit reached\"}",
+                        );
                         continue;
+                    };
+                    let state = self.state.clone();
+                    let accepted = Instant::now();
+                    match thread::Builder::new().spawn(move || {
+                        let _ticket = connection_ticket;
+                        let _ = state.serve(&mut connection, accepted);
+                    }) {
+                        Ok(worker) => workers.push(worker),
+                        Err(error) => return Err(error.into()),
                     }
-                    Err(error) => return Err(error.into()),
-                };
-                if self.state.inflight.load(Ordering::SeqCst) >= self.state.limits.max_inflight {
-                    let _ = http::reply(&mut connection, 429, b"{\"error\":\"worker saturated\"}");
-                    continue;
-                }
-                self.state.inflight.fetch_add(1, Ordering::SeqCst);
-                let state = self.state.clone();
-                let ticket = Ticket(state.clone());
-                let accepted = Instant::now();
-                match thread::Builder::new().spawn(move || {
-                    let _ticket = ticket;
-                    let _ = state.serve(&mut connection, accepted);
-                }) {
-                    Ok(worker) => workers.push(worker),
-                    Err(error) => return Err(error.into()),
                 }
             }
             Ok(())
         })();
-        self.state.stopped.store(true, Ordering::SeqCst);
-        drop(self.listener);
+        self.state.stop();
         workers.finish(watchdog, result, || self.state.sessions.clear())
     }
 }
 
 impl State {
-    fn serve(&self, stream: &mut TcpStream, accepted: Instant) -> Result<()> {
-        let request = match read_request(stream, self.limits.max_request_bytes) {
-            Ok(request) => request,
-            Err(_) => return http::reply(stream, 400, b"{\"error\":\"invalid HTTP request\"}"),
-        };
+    /// Serve one pooled connection until the peer closes it, it goes idle, or
+    /// the request pipeline decides the connection must not be reused.
+    ///
+    /// Requests are strictly serialized: the next request is only read after the
+    /// current response has been flushed, so a lost response can never be
+    /// followed by an implicitly replayed one on the same socket.
+    fn serve(&self, stream: &mut TcpStream, _accepted: Instant) -> Result<()> {
+        let mut first = true;
+        loop {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            let request = match read_request(
+                stream,
+                self.limits.max_request_bytes,
+                if first {
+                    None
+                } else {
+                    Some(transport::KEEP_ALIVE_IDLE)
+                },
+                &self.stopped,
+            ) {
+                Ok(Some(request)) => request,
+                Ok(None) => return Ok(()),
+                Err(_) => {
+                    let _ = transport::reply(
+                        stream,
+                        400,
+                        b"{\"error\":\"invalid HTTP request\"}",
+                        false,
+                    );
+                    return Ok(());
+                }
+            };
+            first = false;
+            let keep_alive = request.keep_alive && !self.stopped.load(Ordering::SeqCst);
+            // One lease window per request: the first full validation reaches
+            // the authority, later ones in the same request are local.
+            let _lease_window = crate::session::lease_window::open();
+            // Re-anchor the request budget per request: a pooled connection must
+            // not inherit a deadline measured from when it was accepted.
+            let accepted = Instant::now();
+            // The execution budget is taken per request. Charging it per
+            // connection is what let a parked socket hold a slot indefinitely.
+            let Some(_execution_ticket) = self.inflight.try_acquire() else {
+                let _ = transport::reply(stream, 429, b"{\"error\":\"worker saturated\"}", false);
+                return Ok(());
+            };
+            if !self.handle(stream, request, accepted, keep_alive)? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Returns whether the connection may serve another request.
+    fn handle(
+        &self,
+        stream: &mut TcpStream,
+        request: transport::Request,
+        accepted: Instant,
+        keep_alive: bool,
+    ) -> Result<bool> {
         let supplied = request.authorization.strip_prefix("Bearer ").unwrap_or("");
         let control = request.path == "/control" && token_matches(supplied, &self.control_token);
         let sql = request.path == "/sql" && token_matches(supplied, &self.sql_token);
         if !control && !sql {
-            return http::reply(stream, 403, b"{\"error\":\"unauthorized\"}");
+            let _ = transport::reply(stream, 403, b"{\"error\":\"unauthorized\"}", false);
+            return Ok(false);
         }
         let parsed = match serde_json::from_slice::<WorkerRequest>(&request.body) {
             Ok(parsed) => parsed,
-            Err(_) => return http::reply(stream, 400, b"{\"error\":\"invalid worker request\"}"),
+            Err(_) => {
+                let _ = transport::reply(
+                    stream,
+                    400,
+                    b"{\"error\":\"invalid worker request\"}",
+                    false,
+                );
+                return Ok(false);
+            }
         };
         let version = parsed.version;
         let identifier = parsed.request_id.clone();
-        let deadline = accepted + Budget::trusted_default().max_query_duration;
+        let deadline = accepted + Budget::trusted_default().wall_duration();
+        let _deadline_scope = crate::session::RequestDeadline::scope(deadline);
         let write_cursor_request = matches!(
             &parsed.command,
             WorkerCommand::OpenWriteCursor { .. } | WorkerCommand::FetchWriteCursor { .. }
@@ -262,7 +349,13 @@ impl State {
                 || !self.admission.enabled()
                 || !stateful && !matches!(&parsed.command, WorkerCommand::WriterProfileStatus))
         {
-            return http::reply(stream, 400, b"{\"error\":\"writer profile unavailable\"}");
+            let _ = transport::reply(
+                stream,
+                400,
+                b"{\"error\":\"writer profile unavailable\"}",
+                false,
+            );
+            return Ok(false);
         }
         let mut call = None;
         let prepared = (|| {
@@ -313,6 +406,8 @@ impl State {
             }
             Ok(())
         })();
+        let prepared =
+            prepared.map_err(|error| error.context(crate::session::SqlEvidence::NotExecuted));
         let mut terminal = None;
         let lane = if control {
             Lane::Control
@@ -328,11 +423,13 @@ impl State {
         };
         let lane_ticket = self.admission.try_acquire(lane)?;
         if lane_ticket.is_none() {
-            return http::reply(
+            let _ = transport::reply(
                 stream,
                 429,
                 b"{\"error\":\"worker execution lane saturated\"}",
+                false,
             );
+            return Ok(false);
         }
         let trace_guard = if crate::capacity_trace::enabled() {
             call.as_ref()
@@ -379,10 +476,10 @@ impl State {
             None
         };
         let result = prepared.and_then(|()| {
-            ensure!(
-                !stateful || Instant::now() < deadline,
-                AdmissionError::Deadline
-            );
+            if stateful && Instant::now() >= deadline {
+                return Err(anyhow::Error::new(AdmissionError::Deadline)
+                    .context(crate::session::SqlEvidence::NotExecuted));
+            }
             self.dispatch(
                 parsed.command,
                 control,
@@ -431,7 +528,7 @@ impl State {
             Err(error) => failure_response(version, identifier, control, error, terminal),
         };
         let bytes = serde_json::to_vec(&response)?;
-        let result = http::reply(stream, 200, &bytes);
+        let result = transport::reply(stream, 200, &bytes, keep_alive);
         if result.is_err() && write_cursor_request && response.ok {
             if let Some(call) = call.as_ref() {
                 if response
@@ -446,6 +543,8 @@ impl State {
         }
         drop(call);
         drop(lane_ticket);
-        result
+        // Reuse only after a response that was fully written. A failed write may
+        // have left the peer without the outcome, so the socket is retired.
+        Ok(result.is_ok() && keep_alive)
     }
 }

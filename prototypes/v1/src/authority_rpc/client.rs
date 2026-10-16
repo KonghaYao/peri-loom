@@ -3,17 +3,106 @@ use crate::object_store::PreconditionFailed;
 use anyhow::{ensure, Context, Result};
 use reqwest::blocking::Client;
 use std::io::Read;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 #[doc(hidden)]
 pub mod diagnostics;
+
+#[cfg(test)]
+#[path = "client/reuse_tests.rs"]
+mod reuse_tests;
+
+/// Sockets this client parks for the authority endpoint once they are idle.
+///
+/// Zero — the value this used to hold — meant every authority RPC built a fresh
+/// connection, so the authority's keep-alive path was unreachable from the only
+/// client that speaks it. A parked socket is only one the authority itself kept
+/// open, so raising this cannot keep a connection the peer closed.
+const IDLE_CONNECTIONS: usize = 8;
+
+/// Calls this client runs at the same time, and therefore the sockets it can
+/// have in flight. Together with `IDLE_CONNECTIONS` and the sockets the pool is
+/// handing back this is what bounds the client; the authority sizes its own
+/// connection budget against `LIVE_CONNECTIONS + IDLE_CONNECTIONS`.
+const LIVE_CONNECTIONS: usize = 24;
+
+/// How long a parked socket may sit idle before this side closes it.
+///
+/// Deliberately below the authority's own reclamation
+/// (`http::KEEP_ALIVE_IDLE`): this side must close first, otherwise a request
+/// could start on a socket the peer has already decided to retire.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Connecting to a loopback authority is the only step that can hang before the
+/// request exists, so it gets its own bound.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wall clock a single call may take. Also the longest a caller waits for a
+/// socket slot, and running out of that wait is a definite "not sent" because
+/// nothing has been written to any socket yet.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct AuthorityClient {
     endpoint: String,
     token: String,
     http: Client,
+    connections: Connections,
     observer: Option<diagnostics::RejectionObserver>,
+}
+
+/// Bounded pool of in-flight calls, and through them of sockets.
+///
+/// `pool_max_idle_per_host` bounds parked sockets only; nothing in the HTTP
+/// client bounds the ones a burst of callers would open. This cap turns "how
+/// many sockets can this client ask the authority for" into a number.
+///
+/// The cap is on calls, not on sockets, because the pool hands a finished
+/// socket back asynchronously: a caller that starts in that window connects
+/// instead of reusing. Sockets are therefore bounded by `LIVE_CONNECTIONS`
+/// (checked out) plus `IDLE_CONNECTIONS` (parked) plus the ones being handed
+/// back, and the idle cap reclaims any excess the window produced.
+struct Connections {
+    available: Mutex<usize>,
+    released: Condvar,
+}
+
+impl Connections {
+    fn new(limit: usize) -> Self {
+        Self {
+            available: Mutex::new(limit),
+            released: Condvar::new(),
+        }
+    }
+
+    /// Returns `None` once `wait` elapses, and never while a slot is held.
+    fn acquire(&self, wait: Duration) -> Option<ConnectionSlot<'_>> {
+        let deadline = Instant::now().checked_add(wait)?;
+        let mut available = self.available.lock().ok()?;
+        loop {
+            if *available > 0 {
+                *available -= 1;
+                return Some(ConnectionSlot(self));
+            }
+            let remaining = deadline.checked_duration_since(Instant::now())?;
+            available = self.released.wait_timeout(available, remaining).ok()?.0;
+        }
+    }
+}
+
+struct ConnectionSlot<'client>(&'client Connections);
+
+impl Drop for ConnectionSlot<'_> {
+    fn drop(&mut self) {
+        // A poisoned mutex would otherwise leak a slot permanently; the counter
+        // is the only thing in here, so recovering it is safe.
+        let mut available = match self.0.available.lock() {
+            Ok(available) => available,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *available += 1;
+        self.0.released.notify_one();
+    }
 }
 
 #[derive(Debug)]
@@ -84,17 +173,19 @@ impl AuthorityClient {
         let http = Client::builder()
             .no_proxy()
             .http1_only()
-            .pool_max_idle_per_host(0)
+            .pool_max_idle_per_host(IDLE_CONNECTIONS)
+            .pool_idle_timeout(IDLE_TIMEOUT)
             .retry(reqwest::retry::never())
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .context("authority transport initialization failed")?;
         Ok(Arc::new(Self {
             endpoint: url.to_string(),
             token,
             http,
+            connections: Connections::new(LIVE_CONNECTIONS),
             observer,
         }))
     }
@@ -141,19 +232,28 @@ impl AuthorityClient {
         } else {
             None
         };
+        let budget = match deadline {
+            Some(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .context("scope retirement deadline")?
+                .min(REQUEST_TIMEOUT),
+            None => REQUEST_TIMEOUT,
+        };
+        // The slot is taken before the request exists. Taking it after `send`
+        // would make the bound advisory, and taking it here is exactly why
+        // running out of slots is a definite "not sent" instead of an unknown.
+        let _slot = self
+            .connections
+            .acquire(budget)
+            .context("authority client saturated; request not sent")?;
         let mut pending = self
             .http
             .post(&self.endpoint)
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(bytes);
-        if let Some(deadline) = deadline {
-            pending = pending.timeout(
-                deadline
-                    .checked_duration_since(std::time::Instant::now())
-                    .context("scope retirement deadline")?
-                    .min(Duration::from_secs(30)),
-            );
+        if deadline.is_some() {
+            pending = pending.timeout(budget);
         }
         let response = pending
             .send()

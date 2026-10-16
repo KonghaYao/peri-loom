@@ -228,19 +228,20 @@ fn direct_database_write_joins_session_queue_instead_of_bypassing_holder() -> Re
 }
 
 #[test]
-fn default_five_second_budget_is_a_typed_admission_deadline_not_native_busy() -> Result<()> {
+fn default_budget_keeps_ten_second_wall_fallback_as_typed_admission_deadline() -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = fixture.database.session()?;
     holder.execute("BEGIN IMMEDIATE;")?;
     let physical = fixture.store.physical();
+    let wall = Budget::default().max_query_duration * 2;
     let started = Instant::now();
     let error = contender.execute(&batch(1401, 7)).unwrap_err();
     expect_admission(&error, AdmissionError::Deadline)?;
     ensure!(
-        started.elapsed() >= Budget::default().max_query_duration
-            && started.elapsed() < Duration::from_secs(6),
-        "default queue request did not retain its five-second budget"
+        started.elapsed() >= wall && started.elapsed() < wall + Duration::from_millis(500),
+        "default queue request was not bounded by the wall fallback: elapsed={:?} wall={wall:?}",
+        started.elapsed()
     );
     ensure!(
         fixture.store.physical() == physical,

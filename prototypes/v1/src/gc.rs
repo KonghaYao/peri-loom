@@ -40,27 +40,23 @@ impl GarbageCollector {
     pub fn inspect(&self) -> Result<GcStats> {
         let snapshot = self.authority.snapshot()?;
         let reachable = self.authority.reachable(&snapshot.root)?;
+        let blobs = snapshot.root.blobs.entries()?;
+        let tombstones = snapshot.root.tombstones.entries()?;
         Ok(GcStats {
             root_revision: snapshot.root.revision,
-            known_blobs: snapshot.root.blobs.len(),
+            known_blobs: blobs.len(),
             reachable_blobs: reachable.len(),
-            unreachable_blobs: snapshot
-                .root
-                .blobs
+            unreachable_blobs: blobs
                 .keys()
                 .filter(|blob| !reachable.contains(*blob))
                 .count(),
-            unresolved_uploads: snapshot.root.uploads.len(),
+            unresolved_uploads: snapshot.root.uploads.entries()?.len(),
             reader_pins: snapshot.root.pins.len(),
-            pending_deletions: snapshot
-                .root
-                .tombstones
+            pending_deletions: tombstones
                 .values()
                 .filter(|tombstone| !tombstone.deleted)
                 .count(),
-            completed_deletions: snapshot
-                .root
-                .tombstones
+            completed_deletions: tombstones
                 .values()
                 .filter(|tombstone| tombstone.deleted)
                 .count(),
@@ -71,14 +67,13 @@ impl GarbageCollector {
         for _ in 0..64 {
             let snapshot = self.authority.snapshot()?;
             let reachable = self.authority.reachable(&snapshot.root)?;
+            let tombstones = snapshot.root.tombstones.entries()?;
             let candidates: BTreeMap<_, _> = snapshot
                 .root
                 .blobs
-                .iter()
-                .filter(|(blob, _)| {
-                    !reachable.contains(*blob) && !snapshot.root.tombstones.contains_key(*blob)
-                })
-                .map(|(blob, entry)| (blob.clone(), entry.clone()))
+                .entries()?
+                .into_iter()
+                .filter(|(blob, _)| !reachable.contains(blob) && !tombstones.contains_key(blob))
                 .collect();
             if candidates.is_empty() {
                 return Ok(0);
@@ -87,8 +82,16 @@ impl GarbageCollector {
             match self
                 .authority
                 .transact(Some(snapshot.root.revision), |root| {
-                    root.objects
-                        .retain(|_, entry| !candidates.contains_key(&entry.blob));
+                    let orphaned: Vec<String> = root
+                        .objects
+                        .entries()?
+                        .into_iter()
+                        .filter(|(_, entry)| candidates.contains_key(&entry.blob))
+                        .map(|(key, _)| key)
+                        .collect();
+                    for key in orphaned {
+                        root.objects.remove(&key)?;
+                    }
                     for (blob, entry) in &candidates {
                         root.tombstones.insert(
                             blob.clone(),
@@ -97,7 +100,7 @@ impl GarbageCollector {
                                 marked_ms,
                                 deleted: false,
                             },
-                        );
+                        )?;
                     }
                     Ok(())
                 }) {
@@ -111,12 +114,15 @@ impl GarbageCollector {
 
     pub fn sweep(&self) -> Result<usize> {
         let snapshot = self.authority.snapshot()?;
+        // Deletion must not act on a store whose reachable metadata no longer verifies:
+        // the deep walk is what refuses to reap against corrupt dependencies.
+        self.authority.reachable(&snapshot.root)?;
         let now = now_ms()?;
         let window = u64::try_from(self.safety_window.as_millis())?;
         let mut deleted = 0;
-        for (blob, tombstone) in &snapshot.root.tombstones {
+        for (blob, tombstone) in snapshot.root.tombstones.entries()? {
             if now.saturating_sub(tombstone.marked_ms) >= window {
-                self.authority.delete_tombstone(blob)?;
+                self.authority.delete_tombstone(&blob)?;
                 deleted += usize::from(!tombstone.deleted);
             }
         }
@@ -141,6 +147,7 @@ impl GarbageCollector {
         let mut started = None;
         for _ in 0..64 {
             let snapshot = self.authority.snapshot()?;
+            self.authority.reachable(&snapshot.root)?;
             let catalog = snapshot
                 .root
                 .ownership
@@ -171,25 +178,20 @@ impl GarbageCollector {
                 break;
             }
             let reachable = self.authority.reachable(&snapshot.root)?;
+            let tombstones = snapshot.root.tombstones.entries()?;
             let candidates: BTreeMap<_, _> = snapshot
                 .root
                 .blobs
-                .iter()
-                .filter(|(blob, _)| {
-                    !reachable.contains(*blob) && !snapshot.root.tombstones.contains_key(*blob)
-                })
-                .map(|(blob, entry)| (blob.clone(), entry.clone()))
+                .entries()?
+                .into_iter()
+                .filter(|(blob, _)| !reachable.contains(blob) && !tombstones.contains_key(blob))
                 .collect();
-            let targets: Vec<_> = snapshot
-                .root
-                .tombstones
+            let targets: Vec<_> = tombstones
                 .keys()
                 .chain(candidates.keys())
                 .cloned()
                 .collect();
-            let initial_pending: Vec<_> = snapshot
-                .root
-                .tombstones
+            let initial_pending: Vec<_> = tombstones
                 .iter()
                 .filter(|(_, tombstone)| !tombstone.deleted)
                 .map(|(blob, _)| blob.clone())
@@ -200,8 +202,16 @@ impl GarbageCollector {
             match self
                 .authority
                 .transact(Some(snapshot.root.revision), |root| {
-                    root.objects
-                        .retain(|_, entry| !candidates.contains_key(&entry.blob));
+                    let orphaned: Vec<String> = root
+                        .objects
+                        .entries()?
+                        .into_iter()
+                        .filter(|(_, entry)| candidates.contains_key(&entry.blob))
+                        .map(|(key, _)| key)
+                        .collect();
+                    for key in orphaned {
+                        root.objects.remove(&key)?;
+                    }
                     for (blob, entry) in &candidates {
                         root.tombstones.insert(
                             blob.clone(),
@@ -210,7 +220,7 @@ impl GarbageCollector {
                                 marked_ms,
                                 deleted: false,
                             },
-                        );
+                        )?;
                     }
                     root.ownership
                         .as_mut()
@@ -242,23 +252,22 @@ impl GarbageCollector {
             let tombstone = snapshot
                 .root
                 .tombstones
-                .get(blob)
+                .get(blob)?
                 .context("GC tombstone missing")?;
-            let monotonic_ready = eligible(blob, tombstone)?;
+            let monotonic_ready = eligible(blob, &tombstone)?;
             if monotonic_ready && now.saturating_sub(tombstone.marked_ms) >= window {
                 self.authority.delete_tombstone(blob)?;
             }
         }
         let acknowledged = self.authority.snapshot()?;
+        let acknowledged_tombstones = acknowledged.root.tombstones.entries()?;
         let deleted = result["initial_pending"]
             .as_array()
             .context("GC initial pending targets missing")?
             .iter()
             .filter(|target| {
                 target.as_str().is_some_and(|blob| {
-                    acknowledged
-                        .root
-                        .tombstones
+                    acknowledged_tombstones
                         .get(blob)
                         .is_some_and(|tombstone| tombstone.deleted)
                 })

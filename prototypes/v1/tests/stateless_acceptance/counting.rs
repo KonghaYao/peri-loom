@@ -70,7 +70,7 @@ pub fn assert_lazy_current_stream(store: &Path, cache: &Path, name: &str) -> Res
     let mut segments = BTreeSet::new();
     let mut current_wal = BTreeSet::new();
     let mut archived_wal = BTreeSet::new();
-    for (logical, entry) in &root.objects {
+    for (logical, entry) in root.objects.entries()? {
         let physical = namespace.key(&format!("authority/blobs/{}", entry.blob))?;
         if logical.starts_with("segments/") {
             segments.insert(physical);

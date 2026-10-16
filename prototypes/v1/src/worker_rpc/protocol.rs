@@ -126,6 +126,7 @@ pub struct WorkerResponse {
     pub ok: bool,
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
+    // 失败时 true 表示执行已收束（不保证回滚），false 表示未进入执行；缺失表示无证据。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_completed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -81,6 +81,7 @@ fn worker_cold_load_and_native_commit_are_real_not_reused_sessions_or_execute_re
 {
     let _serial = GLOBAL_TESTS.lock().unwrap();
     let service = harness::Harness::new()?;
+    service.verify_preconditions()?;
     let id = harness::identifier("observed-cold")?;
     let remote = RemoteAuthorityProvider::new(service.worker.clone(), "worker-a".into())?;
     remote.install_lease(

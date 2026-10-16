@@ -103,6 +103,17 @@ impl ObjectStore for NamespaceBackend {
         );
         self.observe(result)
     }
+    /// The authority publishes through this backend, so a durability group has to reach
+    /// the underlying store as a group: falling back to the trait default would silently
+    /// turn one commit into one barrier per page.
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        self.available()?;
+        let io_id = self.start("put_group");
+        let bytes = writes.iter().map(|write| write.bytes.len() as u64).sum();
+        let result = self.inner.put_group(writes);
+        self.finish("put_group", io_id, result.is_ok(), Some(bytes));
+        self.observe(result)
+    }
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
         self.available()?;
         self.observe(self.inner.delete(key, expected))

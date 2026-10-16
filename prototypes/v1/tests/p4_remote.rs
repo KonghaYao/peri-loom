@@ -1,8 +1,8 @@
 #[path = "p4_remote_helpers/harness.rs"]
 mod harness;
 
-use anyhow::Result;
-use harness::{identifier, session, Harness};
+use anyhow::{Context, Result};
+use harness::{identifier, Harness};
 use peri_loom_v1::authority_rpc::protocol::{AuthorityCommand, SessionOperation};
 use peri_loom_v1::authority_rpc::RemoteAuthorityProvider;
 use peri_loom_v1::database::RemoteDatabase;
@@ -13,9 +13,18 @@ use peri_loom_v1::ownership::types::{
 use peri_loom_v1::runtime::{DatabaseProvider, WorkerLimits, WorkerRuntime};
 use std::sync::atomic::Ordering;
 
+/// 从 harness 搬来：本目标是该助手的唯一使用者。
+fn session(reply: serde_json::Value) -> Result<String> {
+    Ok(reply["session"]
+        .as_str()
+        .context("opaque session missing")?
+        .to_owned())
+}
+
 #[test]
 fn remote_native_sql_cold_reopen_and_readonly() -> Result<()> {
     let mut service = Harness::new()?;
+    service.verify_preconditions()?;
     let database = identifier("native")?;
     let lease = service.grant(database.clone(), "worker-a", 1, 0)?;
     let provider = RemoteAuthorityProvider::new(service.worker.clone(), "worker-a".into())?;

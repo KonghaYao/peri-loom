@@ -80,7 +80,15 @@ fn fixture_lease_broker_and_synthetic_image_only_publish_local_staging() -> Resu
         lease.clone(),
         peri_loom_v1::ownership::types::AccessRole::ReadOnly,
     )?;
-    let broker = Broker::new(&service, remote)?;
+    let broker = Broker::new(&service, remote.clone())?;
+    // 夹具前置条件：broker 未注入故障，且能在本用例的权威上构造密钥提供者
+    // —— CLI 侧解析密钥走的是同一条 broker 路径。
+    assert_eq!(
+        broker.mode.load(Ordering::SeqCst),
+        0,
+        "broker fault injection must start off"
+    );
+    let _key_provider = broker.provider(&service, remote)?;
     let private = private_directory()?;
     let image = synthetic_image(private.path())?;
     let destination = private.path().join("staged");
@@ -253,14 +261,11 @@ fn encrypted_image_publishes_through_fenced_batch_session() -> Result<()> {
         .unwrap();
     assert_eq!(digest(&segment.bytes), *first);
     assert_eq!(manifest.logical_db_size, fs::metadata(image)?.len());
-    assert!(
-        Command::new(env!("CARGO_BIN_EXE_peri-loom-v1"))
-            .arg("publish-image")
-            .arg(&fixture)
-            .output()?
-            .status
-            .success()
-            == false
-    );
+    assert!(!Command::new(env!("CARGO_BIN_EXE_peri-loom-v1"))
+        .arg("publish-image")
+        .arg(&fixture)
+        .output()?
+        .status
+        .success());
     Ok(())
 }

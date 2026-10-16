@@ -27,6 +27,7 @@ pub struct Broker {
 
 impl Broker {
     pub fn new(service: &harness::Harness, remote: Arc<RemoteAuthorityProvider>) -> Result<Self> {
+        service.verify_preconditions()?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let endpoint = format!("http://{}/", listener.local_addr()?);

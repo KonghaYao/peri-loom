@@ -561,6 +561,44 @@ fn sdk_terminal_sql_failure_allows_explicit_rollback_without_replay() {
 }
 
 #[test]
+fn sdk_rejected_and_noncommitting_terminal_errors_preserve_evidence() {
+    let (endpoint, task) = server(4, |path, body| {
+        if path.ends_with("/open") {
+            return Some(success(body, json!({"session":SESSION,"readonly":false})));
+        }
+        match body["sql"].as_str().unwrap() {
+            "rejected" => Some(
+                json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":{"code":"upstream_rejected"}}),
+            ),
+            "read failure" => Some(
+                json!({"version":1,"request_id":body["request_id"],"ok":false,"result":null,"error":{"code":"sql_error","execution_completed":true,"may_have_committed":false}}),
+            ),
+            "SELECT 1" => Some(success(body, json!([[1]]))),
+            _ => panic!("unexpected replay"),
+        }
+    });
+    let session = Client::new(&endpoint, CREDENTIAL.into())
+        .unwrap()
+        .open(&database())
+        .unwrap();
+    let rejected = session.execute("rejected", Some("rejected")).unwrap_err();
+    assert_eq!(rejected.code, "upstream_rejected");
+    assert!(
+        !rejected.execution_completed && !rejected.may_have_committed && !rejected.outcome_unknown
+    );
+    let read = session
+        .query("read failure", Some("read_failure"))
+        .unwrap_err();
+    assert_eq!(read.code, "sql_error");
+    assert!(read.execution_completed && !read.may_have_committed && !read.outcome_unknown);
+    assert_eq!(
+        session.query("SELECT 1", Some("new_operation")).unwrap(),
+        vec![vec![json!(1)]]
+    );
+    task.join().unwrap();
+}
+
+#[test]
 fn sdk_endpoint_validation_limits_and_malformed_ack() {
     for endpoint in [
         "http://localhost:8080",

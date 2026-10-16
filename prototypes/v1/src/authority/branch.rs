@@ -94,8 +94,8 @@ fn referenced(
         let index = semantic::index(&authority.read_metadata_blob(wal)?)?;
         for chunk in index.entries {
             let key = format!("wal/chunks/{}", chunk.hash);
-            let entry = root.objects.get(&key).context("WAL chunk missing")?;
-            semantic::registered(root, entry)?;
+            let entry = root.objects.get(&key)?.context("WAL chunk missing")?;
+            semantic::registered(root, &entry)?;
             entries.insert(key, entry.clone());
         }
         entries.insert("wal/index".into(), wal.clone());
@@ -109,15 +109,18 @@ fn manifest_dependencies(
     key: &str,
     entries: &mut BTreeMap<String, ObjectEntry>,
 ) -> Result<()> {
-    let entry = root.objects.get(key).context("manifest missing")?;
-    semantic::registered(root, entry)?;
-    let manifest: Manifest = serde_json::from_slice(&authority.read_metadata_blob(entry)?)?;
+    let entry = root.objects.get(key)?.context("manifest missing")?;
+    semantic::registered(root, &entry)?;
+    let manifest: Manifest = serde_json::from_slice(&authority.read_metadata_blob(&entry)?)?;
     manifest.validate()?;
     entries.insert(key.to_owned(), entry.clone());
     for hash in manifest.segments.values() {
         let key = format!("segments/{hash}");
-        let entry = root.objects.get(&key).context("manifest segment missing")?;
-        semantic::registered(root, entry)?;
+        let entry = root
+            .objects
+            .get(&key)?
+            .context("manifest segment missing")?;
+        semantic::registered(root, &entry)?;
         entries.insert(key, entry.clone());
     }
     Ok(())
@@ -258,10 +261,10 @@ impl BranchStore {
             let relative = self.relative(key)?;
             let entry = root
                 .objects
-                .get(relative)
+                .get(relative)?
                 .context("commit chunk missing from candidate catalog")?;
-            semantic::registered(root, entry)?;
-            self.authority.read_metadata_blob(entry)
+            semantic::registered(root, &entry)?;
+            self.authority.read_metadata_blob(&entry)
         };
         let validated = match previous {
             Some(previous) => {
@@ -339,7 +342,7 @@ impl BranchStore {
                 .upload_wal_pair(&chunk_bytes, &index_bytes, |root| {
                     Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
                     self.validate_publication(root, "wal/index", &index_bytes)?;
-                    ensure!(!root.objects.contains_key(&chunk_key), PreconditionFailed);
+                    ensure!(!root.objects.contains(&chunk_key)?, PreconditionFailed);
                     Ok(())
                 })?;
         let mut selected = None;
@@ -350,8 +353,8 @@ impl BranchStore {
             attempt += 1;
             Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
             self.validate_publication(root, "wal/index", &index_bytes)?;
-            ensure!(!root.objects.contains_key(&chunk_key), PreconditionFailed);
-            root.objects.insert(chunk_key.clone(), chunk.clone());
+            ensure!(!root.objects.contains(&chunk_key)?, PreconditionFailed);
+            root.objects.insert(chunk_key.clone(), chunk.clone())?;
             let previous = if attempt == 1 {
                 view.validated_wal.as_ref().and_then(|(entry, state)| {
                     (self.bound(root).ok()?.wal.as_ref() == Some(entry)).then_some(state)
@@ -412,14 +415,14 @@ impl ObjectStore for BranchStore {
         } else {
             let snapshot = self.authority.snapshot()?;
             self.bound(&snapshot.root)?;
-            if !snapshot.root.objects.contains_key(relative) {
+            if !snapshot.root.objects.contains(relative)? {
                 return Ok(None);
             }
             let mut selected = None;
             let mut added = BTreeMap::new();
             self.authority.transact(None, |root| {
                 self.bound(root)?;
-                selected = root.objects.get(relative).cloned();
+                selected = root.objects.get(relative)?;
                 if let Some(entry) = &selected {
                     let entries = accessible(&self.authority, root, relative, entry)?;
                     added = self.extend_pin(root, &view, entries)?;
@@ -456,10 +459,14 @@ impl ObjectStore for BranchStore {
             guard.validate_root(&snapshot.root, &snapshot.root)?;
         }
         let branch = self.bound(&snapshot.root)?;
+        let snapshot_owned;
         let current = match relative {
             "HEAD" => branch.head.as_ref(),
             "wal/index" => branch.wal.as_ref(),
-            _ => snapshot.root.objects.get(relative),
+            _ => {
+                snapshot_owned = snapshot.root.objects.get(relative)?;
+                snapshot_owned.as_ref()
+            }
         };
         Self::condition(current, &condition)?;
         self.validate_publication(&snapshot.root, relative, bytes)?;
@@ -468,10 +475,14 @@ impl ObjectStore for BranchStore {
         let mut added = BTreeMap::new();
         self.authority.transact(None, |root| {
             let branch = self.bound(root)?;
+            let owned;
             let current = match relative {
                 "HEAD" => branch.head.as_ref(),
                 "wal/index" => branch.wal.as_ref(),
-                _ => root.objects.get(relative),
+                _ => {
+                    owned = root.objects.get(relative)?;
+                    owned.as_ref()
+                }
             };
             Self::condition(current, &condition)?;
             self.validate_publication(root, relative, bytes)?;
@@ -486,7 +497,7 @@ impl ObjectStore for BranchStore {
                     self.commit_point(root, bytes, &entry, None)?;
                 }
                 _ => {
-                    root.objects.insert(relative.to_owned(), entry.clone());
+                    root.objects.insert(relative.to_owned(), entry.clone())?;
                 }
             }
             let entries = accessible(&self.authority, root, relative, &entry)?;
@@ -511,10 +522,14 @@ impl ObjectStore for BranchStore {
         let mut selected = None;
         self.authority.transact(None, |root| {
             let branch = self.bound(root)?;
+            let owned;
             let current = match relative {
                 "HEAD" => branch.head.as_ref(),
                 "wal/index" => branch.wal.as_ref(),
-                _ => root.objects.get(relative),
+                _ => {
+                    owned = root.objects.get(relative)?;
+                    owned.as_ref()
+                }
             };
             if let (Some(expected), Some(current)) = (expected, current) {
                 ensure!(current.etag == expected, PreconditionFailed);
@@ -533,7 +548,7 @@ impl ObjectStore for BranchStore {
                         .wal = None
                 }
                 _ => {
-                    root.objects.remove(relative);
+                    root.objects.remove(relative)?;
                 }
             }
             selected = Some(Self::selected(root, &self.branch)?);
@@ -563,9 +578,8 @@ impl ObjectStore for BranchStore {
             .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
         let snapshot = self.authority.snapshot()?;
         self.bound(&snapshot.root)?;
-        if snapshot
-            .root
-            .objects
+        let listed = snapshot.root.objects.entries()?;
+        if listed
             .keys()
             .any(|key| key.starts_with(relative) && !view.objects.contains_key(key))
         {
@@ -575,6 +589,7 @@ impl ObjectStore for BranchStore {
                 let mut candidates = BTreeMap::new();
                 for (key, entry) in root
                     .objects
+                    .entries()?
                     .iter()
                     .filter(|(key, _)| key.starts_with(relative))
                 {

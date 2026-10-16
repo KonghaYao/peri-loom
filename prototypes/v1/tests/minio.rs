@@ -458,16 +458,44 @@ fn private_microbench_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn microbench_record<T>(
+/// Invariant context every microbenchmark row shares. Bundled so the recording
+/// call carries only the fields that differ between rows.
+struct Microbench<'attention, Output> {
     started: Instant,
-    evidence: &mut impl Write,
-    bucket: &str,
+    evidence: &'attention mut Output,
+    bucket: &'attention str,
     s3_retries: usize,
+}
+
+impl<'attention, Output> Microbench<'attention, Output> {
+    fn new(
+        started: Instant,
+        evidence: &'attention mut Output,
+        bucket: &'attention str,
+        s3_retries: usize,
+    ) -> Self {
+        Self {
+            started,
+            evidence,
+            bucket,
+            s3_retries,
+        }
+    }
+}
+
+fn microbench_record<T, Output: Write>(
+    meta: Microbench<'_, Output>,
     operation: &str,
     index: usize,
     expected: serde_json::Value,
     action: impl FnOnce() -> Result<(T, serde_json::Value)>,
 ) -> Result<T> {
+    let Microbench {
+        started,
+        evidence,
+        bucket,
+        s3_retries,
+    } = meta;
     ensure!(
         started.elapsed() < Duration::from_secs(90),
         "microbenchmark exceeded 90s"
@@ -555,10 +583,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
     fs::create_dir(&cache)?;
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o700))?;
     let database = microbench_record(
-        started,
-        &mut evidence,
-        &fixture.config.bucket,
-        s3_retries,
+        Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
         "open",
         0,
         serde_json::json!("opened"),
@@ -570,10 +595,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
         },
     )?;
     microbench_record(
-        started,
-        &mut evidence,
-        &fixture.config.bucket,
-        s3_retries,
+        Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
         "setup",
         0,
         serde_json::json!("created"),
@@ -585,10 +607,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
     )?;
     for id in 1..=16 {
         microbench_record(
-            started,
-            &mut evidence,
-            &fixture.config.bucket,
-            s3_retries,
+            Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
             "serial_insert",
             id,
             serde_json::json!({"id": id, "amount": id}),
@@ -603,10 +622,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
     for index in 1..=64 {
         let id = (index - 1) % 16 + 1;
         microbench_record(
-            started,
-            &mut evidence,
-            &fixture.config.bucket,
-            s3_retries,
+            Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
             "serial_point_read",
             index,
             serde_json::json!({"id": id, "amount": id}),
@@ -628,10 +644,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
     fs::create_dir(&cold_cache)?;
     fs::set_permissions(&cold_cache, fs::Permissions::from_mode(0o700))?;
     let cold = microbench_record(
-        started,
-        &mut evidence,
-        &fixture.config.bucket,
-        s3_retries,
+        Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
         "cold_open",
         0,
         serde_json::json!("opened"),
@@ -647,10 +660,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
         ("cold_sum", "SELECT sum(amount) FROM ledger", 136),
     ] {
         microbench_record(
-            started,
-            &mut evidence,
-            &fixture.config.bucket,
-            s3_retries,
+            Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
             operation,
             0,
             serde_json::json!(expected),
@@ -662,10 +672,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
     }
     let expected_ledger: Vec<_> = (1..=16).map(|id| vec![id, id]).collect();
     microbench_record(
-        started,
-        &mut evidence,
-        &fixture.config.bucket,
-        s3_retries,
+        Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
         "cold_ledger",
         0,
         serde_json::json!(expected_ledger),
@@ -689,10 +696,7 @@ fn local_s3_sql_microbenchmark() -> Result<()> {
         },
     )?;
     microbench_record(
-        started,
-        &mut evidence,
-        &fixture.config.bucket,
-        s3_retries,
+        Microbench::new(started, &mut evidence, &fixture.config.bucket, s3_retries),
         "integrity_check",
         0,
         serde_json::json!("ok"),

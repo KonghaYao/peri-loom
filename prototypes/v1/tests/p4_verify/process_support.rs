@@ -159,7 +159,7 @@ impl Process {
         };
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
             .build()?;
         let response = client
             .post(format!(

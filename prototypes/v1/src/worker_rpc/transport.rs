@@ -1,11 +1,27 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Result};
 
-use crate::authority_rpc::http;
+/// How long an idle pooled connection may wait for its next request. Bounds the
+/// worker thread and inflight slot a parked connection holds, and drives how
+/// quickly shutdown can proceed.
+pub(super) const KEEP_ALIVE_IDLE: Duration = Duration::from_secs(5);
+
+/// Longest single wait inside the idle loop, so worker shutdown is not delayed
+/// by a parked connection.
+const IDLE_SLICE: Duration = Duration::from_millis(250);
+
+pub(super) struct Request {
+    pub path: String,
+    pub authorization: String,
+    pub body: Vec<u8>,
+    /// The peer is willing to reuse this connection for another request.
+    pub keep_alive: bool,
+}
 
 pub(super) fn token_matches(supplied: &str, expected: &str) -> bool {
     let supplied = blake3::hash(supplied.as_bytes());
@@ -18,7 +34,51 @@ pub(super) fn token_matches(supplied: &str, expected: &str) -> bool {
         == 0
 }
 
-pub(super) fn read_request(stream: &mut TcpStream, max_body_bytes: usize) -> Result<http::Request> {
+/// Wait until the peer starts sending another request.
+///
+/// Returns `false` on clean EOF, on idle timeout, or once the worker is
+/// stopping, so a pooled connection cannot hold a thread or an inflight slot
+/// indefinitely. Never consumes bytes: the caller re-reads the request itself.
+fn request_pending(stream: &mut TcpStream, idle: Duration, stopped: &AtomicBool) -> Result<bool> {
+    let deadline = Instant::now() + idle;
+    loop {
+        if stopped.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        stream.set_read_timeout(Some(remaining.min(IDLE_SLICE)))?;
+        match stream.peek(&mut [0u8; 1]) {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+pub(super) fn read_request(
+    stream: &mut TcpStream,
+    max_body_bytes: usize,
+    idle: Option<Duration>,
+    stopped: &AtomicBool,
+) -> Result<Option<Request>> {
+    if let Some(idle) = idle {
+        if !request_pending(stream, idle, stopped)? {
+            return Ok(None);
+        }
+    }
     stream.set_nonblocking(false)?;
     let deadline = Instant::now() + Duration::from_secs(15);
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -84,11 +144,49 @@ pub(super) fn read_request(stream: &mut TcpStream, max_body_bytes: usize) -> Res
         body.len() == length && Instant::now() <= deadline,
         "incomplete or expired HTTP body"
     );
-    Ok(http::Request {
+    let connection = headers
+        .get("connection")
+        .map(|value| value.to_ascii_lowercase());
+    let keep_alive = match connection.as_deref() {
+        Some("close") => false,
+        // HTTP/1.1 keeps the connection open unless the peer asks to close.
+        _ => true,
+    };
+    Ok(Some(Request {
         path,
         authorization: headers.remove("authorization").unwrap_or_default(),
         body,
-    })
+        keep_alive,
+    }))
+}
+
+pub(super) fn reply(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    keep_alive: bool,
+) -> Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_nodelay(true)?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut output = std::io::BufWriter::new(&mut *stream);
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        429 => "Too Many Requests",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    write!(
+        output,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
+        body.len(),
+        if keep_alive { "keep-alive" } else { "close" }
+    )?;
+    output.write_all(body)?;
+    output.flush()?;
+    Ok(())
 }
 
 fn header_line(

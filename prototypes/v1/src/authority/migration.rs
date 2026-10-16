@@ -58,26 +58,40 @@ impl Authority {
                 .revision
                 .checked_add(1)
                 .context("authority revision exhausted")?;
-            let index = PagedIndex::new(self.store.as_ref(), &self.namespace);
+            // Boot publishes the migration head through the same durability group as a
+            // statement: immutable page bodies first, the head CAS last.
+            let pending = std::cell::RefCell::new(super::paged_index::PendingPages::default());
+            let publishing =
+                PagedIndex::new(self.store.as_ref(), &self.namespace).deferring(&pending);
             if previous.root.version != 4 {
-                candidate.receipt_index = index.build(
+                candidate.receipt_index = publishing.build(
                     std::mem::take(&mut candidate.receipts)
                         .into_iter()
                         .map(|(id, revision)| (id, serde_json::json!(revision)))
                         .collect(),
                 )?;
             }
-            self.record_receipt(&mut candidate, operation.clone())?;
-            self.validate_root(&candidate)?;
-            match self.store.put(
-                &self.namespace.key("authority/root")?,
-                &codec::encode(&candidate)?,
+            self.record_receipt(&mut candidate, operation.clone(), &publishing)?;
+            self.validate_head_with(&candidate, Some(&pending))?;
+            candidate.blobs.publish(&publishing)?;
+            candidate.objects.publish(&publishing)?;
+            candidate.uploads.publish(&publishing)?;
+            candidate.tombstones.publish(&publishing)?;
+            candidate.seal()?;
+            let mut writes = pending.borrow().writes().to_vec();
+            writes.push(crate::object_store::GroupWrite::new(
+                self.namespace.key("authority/root")?,
+                codec::encode(&candidate)?,
                 PutCondition::Match(previous.etag),
-            ) {
-                Ok(etag) => {
+            ));
+            match self.store.put_group(&writes) {
+                Ok(etags) => {
                     return Ok(RootSnapshot {
                         root: candidate,
-                        etag,
+                        etag: etags
+                            .last()
+                            .cloned()
+                            .context("authority root etag missing")?,
                     })
                 }
                 Err(error) => {

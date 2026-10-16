@@ -303,6 +303,13 @@ impl ObjectStore for RemoteStore {
     }
 
     fn validate_session(&self) -> Result<()> {
+        // Advisory pre-check only: the authority re-checks the binding on every
+        // operation it serves and the head CAS is the final fence, so repeating
+        // this round trip inside one request adds latency without adding
+        // protection. The local checks in the wrapper store still run.
+        if crate::session::lease_window::satisfied() {
+            return Ok(());
+        }
         let reply: GrantReply = serde_json::from_value(self.call(SessionOperation::Validate)?)?;
         ensure!(
             same_identity(&self.binding, &reply.binding)
@@ -310,6 +317,7 @@ impl ObjectStore for RemoteStore {
                 && reply.remaining_ttl_ms > 0,
             "authority session lease mismatch"
         );
+        crate::session::lease_window::mark_satisfied();
         Ok(())
     }
 
@@ -395,5 +403,216 @@ impl Drop for RemoteStore {
         let _ = self.client.call(AuthorityCommand::CloseSession {
             session: self.session.clone(),
         });
+    }
+}
+
+#[cfg(test)]
+mod lease_window_tests {
+    use super::*;
+    use crate::namespace::Namespace;
+    use crate::object_store::ObjectStore;
+    use crate::ownership::types::AccessRole;
+    use crate::runtime::DatabaseId;
+    use crate::session::lease_window;
+    use crate::wal::{WalAppendRequest, WalBatch};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Minimal authority that answers every request from a per-operation table,
+    /// so a test can retire a lease in the middle of a request cycle.
+    struct FakeAuthority {
+        address: String,
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl FakeAuthority {
+        fn start(
+            reply: impl Fn(&str) -> Result<serde_json::Value> + Send + 'static,
+        ) -> Result<Self> {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let address = format!("http://{}/", listener.local_addr()?);
+            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = seen.clone();
+            let requests = Arc::new(AtomicU64::new(0));
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                for stream in listener.incoming() {
+                    if Instant::now() > deadline {
+                        return;
+                    }
+                    let Ok(mut stream) = stream else { return };
+                    let _ = handle(&mut stream, &reply, &recorded, &requests);
+                    if requests.load(Ordering::SeqCst) >= 8 {
+                        return;
+                    }
+                }
+            });
+            Ok(Self { address, seen })
+        }
+    }
+
+    fn handle(
+        stream: &mut TcpStream,
+        reply: &(impl Fn(&str) -> Result<serde_json::Value> + Send + 'static),
+        recorded: &Arc<std::sync::Mutex<Vec<String>>>,
+        requests: &AtomicU64,
+    ) -> Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let request = crate::authority_rpc::http::read_request(stream)?;
+        let parsed: serde_json::Value = serde_json::from_slice(&request.body)?;
+        let operation = parsed["command"]["operation"]["operation"]
+            .as_str()
+            .unwrap_or_else(|| parsed["command"]["command"].as_str().unwrap_or("?"))
+            .to_owned();
+        recorded.lock().unwrap().push(operation.clone());
+        requests.fetch_add(1, Ordering::SeqCst);
+        let body = match reply(&operation) {
+            Ok(mut value) => {
+                value["request_id"] = parsed["request_id"].clone();
+                value
+            }
+            Err(error) => serde_json::json!({"version": 1, "request_id": parsed["request_id"],
+                "ok": false, "result": null, "error": format!("{error:#}"),
+                "precondition_failed": false}),
+        };
+        let bytes = serde_json::to_vec(&body)?;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )?;
+        stream.write_all(&bytes)?;
+        stream.flush()?;
+        let mut drain = [0u8; 1];
+        let _ = stream.read(&mut drain);
+        Ok(())
+    }
+
+    fn binding() -> LeaseBinding {
+        LeaseBinding {
+            database: DatabaseId::new(Namespace::new("tenant", "database").unwrap(), "main")
+                .unwrap(),
+            root_incarnation: "root".into(),
+            authority_term: 1,
+            branch_incarnation: 1,
+            epoch: 7,
+            worker_id: "worker".into(),
+            lease_id: "lease".into(),
+            grant_id: "grant".into(),
+            renewal_sequence: 3,
+            role: AccessRole::Writer,
+        }
+    }
+
+    fn store(address: &str, binding: LeaseBinding) -> Result<RemoteStore> {
+        Ok(RemoteStore {
+            client: AuthorityClient::new(address, "synthetic_worker_credential_0123456789".into())?,
+            session: "synthetic_session".into(),
+            binding,
+            role: AccessRole::Writer,
+            retirement: std::sync::atomic::AtomicU8::new(0),
+        })
+    }
+
+    fn validate_reply(binding: &LeaseBinding) -> serde_json::Value {
+        serde_json::json!({"version": 1, "request_id": "r", "ok": true,
+            "result": {"binding": serde_json::to_value(binding).unwrap(),
+                "remaining_ttl_ms": 60_000},
+            "error": null, "precondition_failed": false})
+    }
+
+    fn wal_request() -> WalAppendRequest {
+        WalAppendRequest {
+            namespace: Namespace::new("tenant", "database").unwrap(),
+            epoch: 7,
+            batch: WalBatch::default(),
+            position: None,
+            append_id: "append".into(),
+            timestamp_millis: 1,
+        }
+    }
+
+    /// The window merges validate round trips, so the fence has to be re-proved:
+    /// a lease that dies in the middle of the cycle must still block the
+    /// publication even though the window is already satisfied.
+    #[test]
+    fn satisfied_window_still_cannot_publish_after_the_lease_dies() -> Result<()> {
+        let boundary = binding();
+        let authority = FakeAuthority::start(move |operation| match operation {
+            "validate" => Ok(validate_reply(&boundary)),
+            // The authority retires the binding between the validation and the
+            // write, exactly what an epoch change looks like to this worker.
+            _ => anyhow::bail!("Fenced WAL append identity"),
+        })?;
+        let store = store(&authority.address, binding())?;
+
+        let _window = lease_window::open();
+        store
+            .validate_session()
+            .expect("first validation must reach authority");
+        assert!(lease_window::satisfied());
+
+        let error = store
+            .append_wal(&wal_request())
+            .expect_err("superseded lease still published");
+        assert!(
+            error.is::<crate::authority_rpc::client::KnownAuthorityRejection>(),
+            "rejection was not surfaced as an authority refusal"
+        );
+        let seen = authority.seen.lock().unwrap().clone();
+        assert_eq!(seen, vec!["validate".to_owned(), "append_wal".to_owned()]);
+        Ok(())
+    }
+
+    /// The merged path must not turn a failed first validation into a silent
+    /// pass: if the authority rejects the lease, the cycle never gets a window.
+    #[test]
+    fn failed_first_validation_leaves_the_window_unsatisfied() -> Result<()> {
+        let authority = FakeAuthority::start(|operation| match operation {
+            "validate" => anyhow::bail!("LeaseExpired"),
+            _ => Ok(serde_json::Value::Null),
+        })?;
+        let store = store(&authority.address, binding())?;
+
+        let _window = lease_window::open();
+        let error = store
+            .validate_session()
+            .expect_err("expired lease accepted");
+        assert!(
+            error.is::<crate::authority_rpc::client::KnownAuthorityRejection>(),
+            "expired lease was not rejected by the authority"
+        );
+        assert!(
+            !lease_window::satisfied(),
+            "window opened on a rejected validation"
+        );
+
+        store
+            .validate_session()
+            .expect_err("rejected lease accepted on the retry");
+        let seen = authority.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec!["validate".to_owned(), "validate".to_owned()],
+            "a rejected cycle stopped reaching the authority"
+        );
+        Ok(())
+    }
+
+    /// Merging only applies inside a window; outside one every validation still
+    /// reaches the authority.
+    #[test]
+    fn outside_a_window_every_validation_reaches_the_authority() -> Result<()> {
+        let boundary = binding();
+        let authority = FakeAuthority::start(move |_| Ok(validate_reply(&boundary)))?;
+        let store = store(&authority.address, binding())?;
+        store.validate_session()?;
+        store.validate_session()?;
+        let seen = authority.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "validation was merged without a window");
+        Ok(())
     }
 }
