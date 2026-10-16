@@ -108,6 +108,12 @@ impl DatabaseHandle {
     pub fn is_readonly(&self) -> Result<bool> {
         self.session.as_ref().unwrap().is_readonly()
     }
+    pub fn autocommit(&self) -> Result<bool> {
+        self.session
+            .as_ref()
+            .unwrap()
+            .autocommit(&crate::session::Budget::trusted_default())
+    }
     pub fn checkpoint(&self) -> Result<()> {
         ensure!(
             !self.in_transaction()?,

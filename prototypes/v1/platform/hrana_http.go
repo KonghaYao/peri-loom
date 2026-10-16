@@ -558,35 +558,33 @@ func hranaCondition(raw json.RawMessage, results, errors []any, isAutocommit boo
 }
 
 func (handler *hranaHTTP) autocommit(request *http.Request, credential, session string) (bool, string) {
-	reply := handler.call(request, credential, "/v1/sql/statement", map[string]any{"session": session, "sql": "SELECT 1 AS state_probe"})
+	reply := handler.probe(request, credential, "/v1/sql/session_state", map[string]any{"session": session})
 	if reply.status != http.StatusOK || reply.code != "" {
 		return false, "native_autocommit_unavailable"
 	}
 	var native struct {
-		Cols []struct {
-			Name string `json:"name"`
-		} `json:"cols"`
-		Rows             [][]int64 `json:"rows"`
-		AffectedRowCount int64     `json:"affected_row_count"`
-		LastInsertRowid  *int64    `json:"last_insert_rowid"`
-		Autocommit       *bool     `json:"autocommit"`
+		Autocommit *bool `json:"autocommit"`
 	}
-	if json.Unmarshal(reply.result, &native) != nil || len(native.Cols) != 1 || native.Cols[0].Name != "state_probe" || len(native.Rows) != 1 || len(native.Rows[0]) != 1 || native.Rows[0][0] != 1 || native.AffectedRowCount != 0 || native.LastInsertRowid != nil || native.Autocommit == nil {
+	if json.Unmarshal(reply.result, &native) != nil || native.Autocommit == nil {
 		return false, "invalid_native_autocommit"
 	}
 	return *native.Autocommit, ""
 }
 
 // Only the Hrana adapter can attach this context value. A probe answers a
-// protocol question about a statement (its shape, its writability) with a
-// dispatch that cannot commit, so a successful probe is served without an
-// operation record and without an audit row; the client action that needed the
-// answer records its own. A failed probe becomes the client's error and keeps
-// its row. A public header cannot set the marker.
+// protocol question about a statement (its shape, its writability) or about the
+// session's own connection state with a dispatch that cannot commit, so a
+// successful probe is served without an operation record and without an audit
+// row; the client action that needed the answer records its own. A failed probe
+// becomes the client's error and keeps its row. A public header cannot set the
+// marker.
 type hranaProbeContextKey struct{}
 
 func hranaProbeRequest(ctx context.Context, action string) bool {
-	return action == "describe" && ctx.Value(hranaProbeContextKey{}) != nil
+	if ctx.Value(hranaProbeContextKey{}) == nil {
+		return false
+	}
+	return action == "describe" || action == "session_state"
 }
 
 // hranaReply is the platform's answer to one internal SQL request. It repeats

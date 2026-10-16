@@ -39,10 +39,10 @@ func hranaV3JSONDocument(t *testing.T, response *httptest.ResponseRecorder) map[
 func TestHranaV3JSONPipelineReadBindAndV2Compatibility(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "session_autocommit" {
+			return map[string]any{"autocommit": true}, nil
+		}
 		if command["command"] == "statement" {
-			if command["sql"] == "SELECT 1 AS state_probe" {
-				return map[string]any{"cols": []any{map[string]any{"name": "state_probe", "decltype": "INTEGER"}}, "rows": [][]any{{1}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
-			}
 			return map[string]any{"cols": []any{map[string]any{"name": "answer", "decltype": "INTEGER"}}, "rows": [][]any{{int64(42)}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
 		}
 		return nil, nil
@@ -85,11 +85,11 @@ func TestHranaV3JSONPipelineReadBindAndV2Compatibility(t *testing.T) {
 			}
 		})
 	}
-	if fixture.upstream.count("statement") != 4 || fixture.upstream.count("query") != 0 {
-		t.Fatalf("unexpected native execution: statements=%d queries=%d", fixture.upstream.count("statement"), fixture.upstream.count("query"))
+	if fixture.upstream.count("session_autocommit") != 2 || fixture.upstream.count("statement") != 2 || fixture.upstream.count("query") != 0 {
+		t.Fatalf("unexpected native execution: autocommit=%d statements=%d queries=%d", fixture.upstream.count("session_autocommit"), fixture.upstream.count("statement"), fixture.upstream.count("query"))
 	}
 	for _, call := range fixture.upstream.calls {
-		if call.command["command"] == "statement" && call.command["sql"] != "SELECT 1 AS state_probe" {
+		if call.command["command"] == "statement" {
 			if call.command["sql"] != "SELECT ? AS answer" {
 				t.Fatalf("bound SQL was rewritten: %v", call.command)
 			}

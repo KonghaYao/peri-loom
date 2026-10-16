@@ -144,6 +144,11 @@ impl OwnedHandle {
         self.context.check(None)?;
         self.handle.as_ref().unwrap().is_readonly()
     }
+
+    pub fn autocommit(&self) -> Result<bool> {
+        self.context.check(None)?;
+        self.handle.as_ref().unwrap().autocommit()
+    }
 }
 
 impl Drop for OwnedHandle {

@@ -266,8 +266,8 @@ func TestHranaV3ProtobufCombinedConditions(t *testing.T) {
 func TestHranaV3ProtobufGetAutocommitUsesNativeSession(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		if command["command"] == "statement" && command["sql"] == "SELECT 1 AS state_probe" {
-			return map[string]any{"cols": []any{map[string]any{"name": "state_probe", "decltype": nil}}, "rows": [][]any{{1}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
+		if command["command"] == "session_autocommit" {
+			return map[string]any{"autocommit": true}, nil
 		}
 		return nil, nil
 	})
@@ -275,7 +275,7 @@ func TestHranaV3ProtobufGetAutocommitUsesNativeSession(t *testing.T) {
 	request := hranaProtoBytes(2, hranaProtoBytes(8, nil))
 	request = append(request, hranaProtoBytes(2, hranaProtoBytes(1, nil))...)
 	response := testHranaV3Call(t, handler, fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/pipeline", request)
-	if response.Code != 200 || fixture.upstream.count("statement") != 1 || fixture.upstream.count("close_session") != 1 {
+	if response.Code != 200 || fixture.upstream.count("session_autocommit") != 1 || fixture.upstream.count("statement") != 0 || fixture.upstream.count("close_session") != 1 {
 		t.Fatalf("native autocommit request: %d %s", response.Code, response.Body.String())
 	}
 	fields, err := hranaProtoRead(response.Body.Bytes())

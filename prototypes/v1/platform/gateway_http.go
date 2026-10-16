@@ -66,6 +66,8 @@ func gatewayAction(path string) string {
 		return "statement"
 	case "/v1/sql/describe":
 		return "describe"
+	case "/v1/sql/session_state":
+		return "session_state"
 	case "/v1/sql/cursor/open":
 		return "cursor_open"
 	case "/v1/sql/cursor/fetch":
@@ -278,7 +280,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	switch action {
 	case "open":
 		result = gateway.open(ctx, principal, *parsed.Database, identifier, permit, project.Quotas)
-	case "execute", "query", "statement", "describe", "close", "cursor_open", "cursor_fetch", "cursor_close":
+	case "execute", "query", "statement", "describe", "close", "cursor_open", "cursor_fetch", "cursor_close", "session_state":
 		result = gateway.dispatch(ctx, principal, parsed, identifier, action, project.Quotas, permit, strings.Contains(request.Header.Get("Accept"), "application/x-ndjson"))
 		if result.permit != nil {
 			permit = result.permit
@@ -320,6 +322,8 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 		if action == "cursor_open" {
 			allowed["write_cursor"] = true
 		}
+	case "session_state":
+		allowed["session"] = true
 	case "cursor_fetch":
 		allowed["session"] = true
 		allowed["max_rows"] = true

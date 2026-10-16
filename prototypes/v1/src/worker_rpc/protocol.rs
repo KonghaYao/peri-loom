@@ -33,6 +33,11 @@ pub enum WorkerCommand {
         session: String,
         sql: String,
     },
+    // Reads the connection state a protocol condition asks about, on the session
+    // it belongs to, without preparing or stepping SQL.
+    SessionAutocommit {
+        session: String,
+    },
     Statement {
         session: String,
         sql: String,

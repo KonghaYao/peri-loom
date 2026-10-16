@@ -306,6 +306,19 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		}
 		return gatewayResult{value: reply, dispatched: true}
 	}
+	if action == "session_state" {
+		command["command"] = "session_autocommit"
+		var reply struct {
+			Autocommit *bool `json:"autocommit"`
+		}
+		if err := gateway.callSession(ctx, session, currentBinding, requestID, command, &reply); err != nil {
+			return gateway.upstreamFailure(err, session, permit)
+		}
+		if reply.Autocommit == nil {
+			return gateway.unknown(session, permit)
+		}
+		return gatewayResult{value: map[string]bool{"autocommit": *reply.Autocommit}, dispatched: true}
+	}
 	if action == "statement" {
 		args := request.Args
 		if args == nil {

@@ -198,6 +198,10 @@ impl RemoteSession {
         self.lane.is_readonly(self.lane.database()?.as_ref())
     }
 
+    pub fn autocommit(&self, budget: &Budget) -> Result<bool> {
+        self.lane.autocommit(self.lane.database()?.as_ref(), budget)
+    }
+
     #[doc(hidden)]
     pub fn admission_id(&self) -> u64 {
         self.lane.control.id

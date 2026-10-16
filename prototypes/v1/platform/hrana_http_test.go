@@ -434,8 +434,8 @@ func TestHranaConditionalBatchCombinesAndOrWithoutExecutingSkippedSQL(t *testing
 func TestHranaAutocommitConditionUsesNativeState(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		if command["command"] == "statement" && command["sql"] == "SELECT 1 AS state_probe" {
-			return map[string]any{"cols": []any{map[string]any{"name": "state_probe", "decltype": nil}}, "rows": [][]any{{1}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": false}, nil
+		if command["command"] == "session_autocommit" {
+			return map[string]any{"autocommit": false}, nil
 		}
 		return nil, nil
 	})
@@ -444,7 +444,7 @@ func TestHranaAutocommitConditionUsesNativeState(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	newHranaHTTP(fixture.gateway).ServeHTTP(response, request)
-	if response.Code != 200 || fixture.upstream.count("statement") != 1 || fixture.upstream.count("close_session") != 1 || !strings.Contains(response.Body.String(), `"step_results":[null]`) {
+	if response.Code != 200 || fixture.upstream.count("session_autocommit") != 1 || fixture.upstream.count("statement") != 0 || fixture.upstream.count("close_session") != 1 || !strings.Contains(response.Body.String(), `"step_results":[null]`) {
 		t.Fatalf("autocommit condition did not use native state: %d %s", response.Code, response.Body.String())
 	}
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	controller "peri-loom/controller"
@@ -113,5 +116,53 @@ func TestHranaFailedProbeKeepsAuditRow(test *testing.T) {
 	// Only the session open remains: the refused cursor never dispatched.
 	if grew := sidecarRevision(store) - before; grew != 2 {
 		test.Fatalf("refused cursor request cost %d operation sidecar revisions, want 2", grew)
+	}
+}
+
+// The autocommit probe answers a protocol condition with the session's own
+// connection state, so it runs no SQL and leaves no operation record and no
+// audit row. The client request that asked still records and audits its own
+// steps.
+func TestHranaAutocommitProbeCostsNoSQLOrRecord(test *testing.T) {
+	store, gateway, upstream, audit, credential := securityGatewayFixture(test)
+	upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "open_session":
+			return map[string]any{"session": strings.Repeat("a", 64), "readonly": false}, nil
+		case "session_autocommit":
+			return map[string]any{"autocommit": false}, nil
+		case "close_session":
+			return map[string]bool{"closed": true}, nil
+		}
+		return nil, nil
+	})
+	before := sidecarRevision(store)
+	request := httptest.NewRequest(http.MethodPost, "/db/tenant_a/database/main/v2/pipeline", strings.NewReader(`{"requests":[{"type":"batch","batch":{"steps":[{"condition":{"type":"is_autocommit"},"stmt":{"sql":"SELECT must_not_run"}}]}},{"type":"close"}]}`))
+	request.Header.Set("Authorization", "Bearer "+credential)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newHranaHTTP(gateway).ServeHTTP(response, request)
+	if response.Code != 200 || upstream.count("session_autocommit") != 1 || upstream.count("statement") != 0 {
+		test.Fatalf("autocommit probe did not replace the SQL probe: %d %s", response.Code, response.Body.String())
+	}
+	state, err := store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, record := range state.Operations {
+		if record.Action == "session_state" {
+			test.Fatalf("autocommit probe left %+v", record.OperationStatus)
+		}
+	}
+	for _, action := range audit.actions() {
+		if action == "session_state" {
+			test.Fatal("autocommit probe wrote an audit row")
+		}
+	}
+	// Only the client's own session open and close remain: each is a
+	// registration plus a settlement, and the probe and the skipped step add
+	// nothing.
+	if grew := sidecarRevision(store) - before; grew != 4 {
+		test.Fatalf("autocommit probe cost %d operation sidecar revisions, want 4", grew)
 	}
 }

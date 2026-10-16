@@ -143,6 +143,20 @@ impl State {
                 }
                 result
             }
+            WorkerCommand::SessionAutocommit { .. } => {
+                let call = call.context("worker session RPC guard absent")?;
+                let result = call
+                    .handle()
+                    .autocommit()
+                    .map(|autocommit| json!({"autocommit": autocommit}));
+                if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
+                    *terminal = call.terminal_state().unwrap_or(None);
+                }
+                if let Err(error) = &result {
+                    self.diagnostics.emit(Action::Query, request_id, error);
+                }
+                result
+            }
             WorkerCommand::Statement {
                 sql,
                 args,

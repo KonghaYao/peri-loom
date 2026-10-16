@@ -517,6 +517,27 @@ impl SessionLane {
             .get_auto_commit())
     }
 
+    // A protocol condition asks whether this connection is in autocommit, and a
+    // SQL probe answers it as a statement the platform then has to account for.
+    // The read keeps the same session guard, lease validation, isolation and
+    // deadline the statement path enforces, and prepares nothing.
+    pub fn autocommit(&self, database: &RemoteDatabase, budget: &Budget) -> Result<bool> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(budget)?;
+        self.check(database)?;
+        database.storage().store().validate_session()?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
+        let result = Ok(connection
+            .as_ref()
+            .ok_or(AdmissionError::Quarantine)?
+            .get_auto_commit());
+        drop(connection);
+        self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
+    }
+
     pub fn is_readonly(&self, database: &RemoteDatabase) -> Result<bool> {
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
         self.check(database)?;

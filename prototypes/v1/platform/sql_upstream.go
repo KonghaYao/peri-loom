@@ -153,7 +153,7 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		if version != 2 || len(fields) != 1 {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}
-	case "checkpoint", "compact", "diagnostics":
+	case "checkpoint", "compact", "diagnostics", "session_autocommit":
 		var session string
 		if version != 1 || len(fields) != 2 || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) || sqlJSONValue(ctx, json.NewDecoder(bytes.NewReader(encoded)), 0) != nil {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})

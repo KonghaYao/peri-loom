@@ -336,6 +336,7 @@ impl State {
                 | WorkerCommand::Query { .. }
                 | WorkerCommand::Describe { .. }
                 | WorkerCommand::Statement { .. }
+                | WorkerCommand::SessionAutocommit { .. }
                 | WorkerCommand::OpenReadCursor { .. }
                 | WorkerCommand::FetchReadCursor { .. }
                 | WorkerCommand::CloseReadCursor { .. }
@@ -396,6 +397,7 @@ impl State {
                 WorkerCommand::Checkpoint { session }
                 | WorkerCommand::Compact { session }
                 | WorkerCommand::Diagnostics { session }
+                | WorkerCommand::SessionAutocommit { session }
                 | WorkerCommand::FetchReadCursor { session, .. }
                 | WorkerCommand::CloseReadCursor { session }
                 | WorkerCommand::FetchWriteCursor { session, .. }
