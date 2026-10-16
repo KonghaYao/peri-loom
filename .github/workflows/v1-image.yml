@@ -125,4 +125,6 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
           printf 'Verified Linux service images: `%s`\n\nThe released tag is a multi-architecture manifest list whose `linux/amd64` and `linux/arm64` members were each built and verified natively; `%s-amd64` and `%s-arm64` pin one platform each. Apple Silicon no longer has to run the amd64 image under emulation.\n\nThis is a preview: clean restart and acknowledged SQL recovery are tested with a persistent local volume. Dirty restart remains denied; disaster recovery, live external S3 and HA are not certified by this workflow. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" "$image" "$image" > "$RUNNER_TEMP/notes.md"
-          gh release create "$RELEASE_TAG" --verify-tag --prerelease --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          # This job deliberately skips actions/checkout (it only talks to the registry), so `gh`
+          # has no local repository to infer the target from: name it explicitly.
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"
