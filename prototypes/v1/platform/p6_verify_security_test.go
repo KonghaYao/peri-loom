@@ -115,7 +115,7 @@ func TestP6VerifyScopedTokensAndNativeReadonly(test *testing.T) {
 	readonly := fixture.token(map[string]any{"database": clone, "role": "read_only"}, fixture.credential, time.Minute)
 	cloneSession := fixture.open(readonly, clone)
 	status, rejected := fixture.call(readonly, "/v1/sql/query", map[string]any{"session": cloneSession, "sql": "INSERT INTO proof VALUES(9) RETURNING id"})
-	if status != 400 || rejected.OK || rejected.Error.Code != "sql_error" || !rejected.Error.ExecutionCompleted {
+	if status != 403 || rejected.OK || rejected.Error.Code != "readonly_session" || !rejected.Error.ExecutionCompleted {
 		test.Fatalf("native readonly query write status=%d code=%s execution_completed=%t", status, rejected.Error.Code, rejected.Error.ExecutionCompleted)
 	}
 	rows = fixture.must(readonly, "/v1/sql/query", map[string]any{"session": cloneSession, "sql": "SELECT id FROM proof"})

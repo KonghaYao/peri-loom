@@ -225,7 +225,7 @@ func TestServiceOpenObserverWrappedErrorFlags(test *testing.T) {
 	for flags := 0; flags < 8; flags++ {
 		requestID := fmt.Sprintf("synthetic_flags_%d", flags)
 		ctx := bindSQLOpenObservation(context.Background(), observation.observer, requestID)
-		failure := &SQLRPCError{Ambiguous: flags&1 != 0, Rejected: flags&2 != 0, ExecutionCompleted: flags&4 != 0, cause: errors.New("synthetic private cause")}
+		failure := testRPCError(flags&4 != 0, flags&2 != 0, SQLRPCError{Ambiguous: flags&1 != 0, cause: errors.New("synthetic private cause")})
 		wrapped := fmt.Errorf("synthetic private wrapper: %w", failure)
 		if returned := observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenTransportFailure, wrapped); returned != wrapped {
 			test.Fatal("observation replaced original error")
@@ -242,7 +242,14 @@ func TestServiceOpenObserverWrappedErrorFlags(test *testing.T) {
 		if err := decoder.Decode(&record); err != nil {
 			test.Fatal(err)
 		}
-		if record.Stream != observation.stream || record.CallSequence != uint64(flags+1) || record.RequestID != fmt.Sprintf("synthetic_flags_%d", flags) || record.Stage != "upstream" || record.Reason != "transport" || record.Classification != "" || !record.RPCError || record.Ambiguous != (flags&1 != 0) || record.Rejected != (flags&2 != 0) || record.ExecutionCompleted != (flags&4 != 0) {
+		// A reply that claims both directions at once proves nothing, so the
+		// observation reports neither rather than echoing a state the worker
+		// never sent.
+		executed, rejected := flags&4 != 0, flags&2 != 0
+		if executed && rejected {
+			executed, rejected = false, false
+		}
+		if record.Stream != observation.stream || record.CallSequence != uint64(flags+1) || record.RequestID != fmt.Sprintf("synthetic_flags_%d", flags) || record.Stage != "upstream" || record.Reason != "transport" || record.Classification != "" || !record.RPCError || record.Ambiguous != (flags&1 != 0) || record.Rejected != rejected || record.ExecutionCompleted != executed {
 			test.Errorf("wrapped error flags/correlation lost for flags=%d: %+v", flags, record)
 		}
 	}

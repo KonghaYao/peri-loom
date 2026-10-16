@@ -70,7 +70,7 @@ func managementUnknownReply(response http.ResponseWriter, requestID string, fail
 	}
 	flags["execution_proven"] = false
 	if errors.As(failure, &rpc) {
-		flags["ambiguous"], flags["rejected"], flags["execution_completed"] = rpc.Ambiguous, rpc.Rejected, rpc.ExecutionCompleted
+		flags["ambiguous"], flags["rejected"], flags["execution_completed"] = rpc.Ambiguous, rpc.evidence.Rejected(), rpc.evidence.Executed()
 	}
 	if stage == "close_session" {
 		flags["business_outcome"], flags["cleanup_outcome"] = "completed", "unknown"

@@ -14,7 +14,17 @@ import (
 	controller "peri-loom/controller"
 )
 
-func unknownContractResponse(test *testing.T, response *httptest.ResponseRecorder, requestID, code string, completed bool) {
+// contractEvidence is what a reply may claim about execution: the worker proved
+// the statement settled, proved it never entered execution, or proved nothing.
+type contractEvidence int
+
+const (
+	noProof contractEvidence = iota
+	provenCompleted
+	provenRejected
+)
+
+func unknownContractResponse(test *testing.T, response *httptest.ResponseRecorder, requestID, code string, evidence contractEvidence) {
 	test.Helper()
 	var reply struct {
 		RequestID string          `json:"request_id"`
@@ -32,12 +42,19 @@ func unknownContractResponse(test *testing.T, response *httptest.ResponseRecorde
 	if reply.RequestID != requestID || reply.OK || string(reply.Result) != "null" || reply.Error.Code != code {
 		test.Fatalf("incorrect correlated failure: %s", response.Body.String())
 	}
-	if completed {
+	switch evidence {
+	case provenCompleted:
 		if reply.Error.ExecutionCompleted == nil || !*reply.Error.ExecutionCompleted || reply.Error.MayHaveCommitted == nil || !*reply.Error.MayHaveCommitted {
 			test.Fatalf("terminal SQL failure lost flags: %s", response.Body.String())
 		}
-	} else if reply.Error.ExecutionCompleted != nil || reply.Error.MayHaveCommitted != nil {
-		test.Fatalf("nonterminal failure gained terminal proof: %s", response.Body.String())
+	case provenRejected:
+		if reply.Error.ExecutionCompleted == nil || *reply.Error.ExecutionCompleted || reply.Error.MayHaveCommitted == nil || *reply.Error.MayHaveCommitted {
+			test.Fatalf("rejected SQL failure lost its proof of non-execution: %s", response.Body.String())
+		}
+	default:
+		if reply.Error.ExecutionCompleted != nil || reply.Error.MayHaveCommitted != nil {
+			test.Fatalf("unproven failure gained terminal proof: %s", response.Body.String())
+		}
 	}
 }
 
@@ -56,13 +73,14 @@ func TestGatewayUnknownContractOpenFailureMatrix(test *testing.T) {
 		failure  error
 		status   int
 		code     string
+		evidence contractEvidence
 		retained bool
 	}{
-		{"untyped", errors.New("synthetic private cause"), 502, "outcome_unknown", true},
-		{"wrapped_ambiguous_completed_rejected", fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{Ambiguous: true, ExecutionCompleted: true, Rejected: true}), 502, "outcome_unknown", true},
-		{"wrapped_completed", fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{ExecutionCompleted: true}), 400, "sql_error", false},
-		{"wrapped_rejected", fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{Rejected: true}), 502, "upstream_rejected", false},
-		{"wrapped_unavailable", fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{}), 503, "upstream_unavailable", false},
+		{"untyped", errors.New("synthetic private cause"), 502, "outcome_unknown", noProof, true},
+		{"wrapped_ambiguous_completed_rejected", fmt.Errorf("synthetic wrapper: %w", testRPCError(true, true, SQLRPCError{Ambiguous: true})), 502, "outcome_unknown", noProof, true},
+		{"wrapped_completed", fmt.Errorf("synthetic wrapper: %w", testRPCError(true, false, SQLRPCError{})), 400, "sql_error", provenCompleted, false},
+		{"wrapped_rejected", fmt.Errorf("synthetic wrapper: %w", testRPCError(false, true, SQLRPCError{})), 502, "upstream_rejected", provenRejected, false},
+		{"wrapped_unavailable", fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{}), 503, "upstream_unavailable", noProof, false},
 	} {
 		test.Run(scenario.name, func(test *testing.T) {
 			fixture := newGatewayFixture(test)
@@ -84,7 +102,7 @@ func TestGatewayUnknownContractOpenFailureMatrix(test *testing.T) {
 			if response.Code != scenario.status {
 				test.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
-			unknownContractResponse(test, response, requestID, scenario.code, scenario.code == "sql_error")
+			unknownContractResponse(test, response, requestID, scenario.code, scenario.evidence)
 			fixture.audit.mu.Lock()
 			event := fixture.audit.events[len(fixture.audit.events)-1]
 			fixture.audit.mu.Unlock()
@@ -118,7 +136,7 @@ func TestGatewayUnknownContractOpenFailureMatrix(test *testing.T) {
 			}
 			var rpc *SQLRPCError
 			isRPC := errors.As(scenario.failure, &rpc)
-			if records[0].RPCError != isRPC || isRPC && (records[0].Ambiguous != rpc.Ambiguous || records[0].Rejected != rpc.Rejected || records[0].ExecutionCompleted != rpc.ExecutionCompleted) {
+			if records[0].RPCError != isRPC || isRPC && (records[0].Ambiguous != rpc.Ambiguous || records[0].Rejected != rpc.evidence.Rejected() || records[0].ExecutionCompleted != rpc.evidence.Executed()) {
 				test.Fatalf("wrapped error flags lost: record=%+v rpc=%+v", records[0], rpc)
 			}
 			fixture.upstream.mu.Lock()
@@ -141,20 +159,20 @@ func TestGatewayUnknownContractSessionTerminalProof(test *testing.T) {
 			fixture.gateway.mu.Unlock()
 			writer.hook = func(command map[string]any, state *SessionWriterState, err error) (*SessionWriterState, error) {
 				if command["sql"] == "COMMIT" {
-					return state, fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{ExecutionCompleted: true, Ambiguous: ambiguous})
+					return state, fmt.Errorf("synthetic wrapper: %w", testRPCError(true, false, SQLRPCError{Ambiguous: ambiguous}))
 				}
 				return state, err
 			}
 			before := fixture.upstream.count("execute")
 			response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/execute", map[string]any{"session": public, "sql": "COMMIT", "request_id": "contract_commit"})
-			status, code, held := 400, "sql_error", 0
+			status, code, held, evidence := 400, "sql_error", 0, provenCompleted
 			if ambiguous {
-				status, code, held = 502, "outcome_unknown", 1
+				status, code, held, evidence = 502, "outcome_unknown", 1, noProof
 			}
 			if response.Code != status {
 				test.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
-			unknownContractResponse(test, response, "contract_commit", code, !ambiguous)
+			unknownContractResponse(test, response, "contract_commit", code, evidence)
 			unknownContractAdmission(test, fixture, held, 1, held)
 			session.mu.Lock()
 			poisoned, closed, owner := session.poisoned, session.closed, session.writerOwner
@@ -192,7 +210,9 @@ func TestGatewayUnknownContractCheckpointNoCleanup(test *testing.T) {
 	for _, stage := range []string{"open_session", "checkpoint"} {
 		test.Run(stage, func(test *testing.T) {
 			management, fixture, _, _ := nativeDiagnosticManagement(test)
-			failure := &SQLRPCError{Ambiguous: true, Rejected: true, ExecutionCompleted: true}
+			// A reply that proves nothing is the only one this path can carry, so the
+			// diagnostic must report both directions as unproven.
+			failure := &SQLRPCError{Ambiguous: true}
 			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 				if command["command"] == stage {
 					return nil, fmt.Errorf("synthetic wrapper: %w", failure)
@@ -213,7 +233,7 @@ func TestGatewayUnknownContractCheckpointNoCleanup(test *testing.T) {
 				test.Fatalf("Checkpoint failure stage lost: %v", err)
 			}
 			record := nativeToolRecord("/v1/databases/checkpoint", toolFailure.stage, "active", "contract_checkpoint", err)
-			if record.RequestID != "contract_checkpoint" || !record.RPCError || !record.Ambiguous || !record.Rejected || !record.ExecutionCompleted {
+			if record.RequestID != "contract_checkpoint" || !record.RPCError || !record.Ambiguous || record.Rejected || record.ExecutionCompleted {
 				test.Fatalf("Checkpoint diagnostic flags lost: %+v", record)
 			}
 			expectedCheckpoint := 0
@@ -247,7 +267,7 @@ func TestGatewayUnknownContractCheckpointCleanupMatrix(test *testing.T) {
 	privateCause := errors.New("synthetic private Close cause")
 	closeRPC := &SQLRPCError{Ambiguous: true, cause: privateCause}
 	wrappedClose := fmt.Errorf("synthetic private wrapper: %w", closeRPC)
-	completedRPC := &SQLRPCError{ExecutionCompleted: true, cause: privateCause}
+	completedRPC := testRPCError(true, false, SQLRPCError{cause: privateCause})
 	wrappedCompleted := fmt.Errorf("synthetic private completed: %w", completedRPC)
 	for _, scenario := range []struct {
 		name       string
@@ -319,14 +339,14 @@ func TestGatewayUnknownContractCheckpointCleanupMatrix(test *testing.T) {
 				if !errors.Is(err, injected) || !errors.Is(err, privateCause) {
 					test.Fatal("cleanup/tool failure replaced original error chain")
 				}
-			} else if !isRPC || !rpc.Ambiguous || rpc.ExecutionCompleted || rpc.Rejected {
+			} else if !isRPC || !rpc.Ambiguous || rpc.evidence.Executed() || rpc.evidence.Rejected() {
 				test.Fatalf("missing Close ACK gained terminal proof: %v", err)
 			}
 			if scenario.closeError == wrappedClose && rpc != closeRPC || scenario.toolError == wrappedCompleted && rpc != completedRPC {
 				test.Fatal("wrapped RPC flags were replaced")
 			}
 			record := nativeToolRecord("/v1/databases/checkpoint", toolFailure.stage, "active", requestID, err)
-			if record.RPCError != isRPC || isRPC && (record.Ambiguous != rpc.Ambiguous || record.Rejected != rpc.Rejected || record.ExecutionCompleted != rpc.ExecutionCompleted) {
+			if record.RPCError != isRPC || isRPC && (record.Ambiguous != rpc.Ambiguous || record.Rejected != rpc.evidence.Rejected() || record.ExecutionCompleted != rpc.evidence.Executed()) {
 				test.Fatalf("diagnostic lost original flags: %+v", record)
 			}
 			var diagnostic bytes.Buffer
@@ -389,7 +409,7 @@ func TestGatewayUnknownContractCanceledOpenRetainsPermit(test *testing.T) {
 	if response.Code != 502 {
 		test.Fatalf("cancellation gained terminal proof: %d %s", response.Code, response.Body.String())
 	}
-	unknownContractResponse(test, response, "contract_canceled_open", "outcome_unknown", false)
+	unknownContractResponse(test, response, "contract_canceled_open", "outcome_unknown", noProof)
 	unknownContractAdmission(test, fixture, 1, 1, 1)
 	if fixture.gateway.Close(context.Background()) == nil || fixture.upstream.count("open_session") != 1 || fixture.upstream.count("close_session") != 0 {
 		test.Fatal("cancellation released/retried/cleaned unknown Open")
@@ -406,7 +426,7 @@ func TestGatewayUnknownContractCompletedWithoutWriterProof(test *testing.T) {
 				if command["sql"] != "COMMIT" {
 					return state, err
 				}
-				completed := fmt.Errorf("synthetic completed: %w", &SQLRPCError{ExecutionCompleted: true})
+				completed := fmt.Errorf("synthetic completed: %w", testRPCError(true, false, SQLRPCError{}))
 				if proof == "missing" {
 					return nil, completed
 				}
@@ -418,7 +438,7 @@ func TestGatewayUnknownContractCompletedWithoutWriterProof(test *testing.T) {
 			if response.Code != 502 {
 				test.Fatalf("untrusted writer proof accepted: %d %s", response.Code, response.Body.String())
 			}
-			unknownContractResponse(test, response, "contract_missing_proof", "outcome_unknown", false)
+			unknownContractResponse(test, response, "contract_missing_proof", "outcome_unknown", noProof)
 			unknownContractAdmission(test, fixture, 1, 1, 1)
 			fixture.gateway.mu.Lock()
 			session := fixture.gateway.sessions[public]
@@ -448,7 +468,7 @@ func TestGatewayNonCommittingFailureReportsNoCommit(test *testing.T) {
 		if fields["command"] == "open_session" {
 			return nil, nil
 		}
-		return nil, &SQLRPCError{ExecutionCompleted: true}
+		return nil, testRPCError(true, false, SQLRPCError{})
 	})
 	for _, scenario := range []struct {
 		name       string

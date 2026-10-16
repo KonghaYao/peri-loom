@@ -55,7 +55,7 @@ func TestSQLWriterCodecSettledStateAndExactNumbers(test *testing.T) {
 			}
 		} else {
 			var failure *SQLRPCError
-			if !errors.As(err, &failure) || failure.Ambiguous || !failure.ExecutionCompleted {
+			if !errors.As(err, &failure) || failure.Ambiguous || !failure.evidence.Executed() {
 				test.Fatal("known constraint terminal lost its owner state")
 			}
 		}
@@ -175,7 +175,9 @@ func TestSQLWriterWireVersionAndNoFallback(test *testing.T) {
 	}
 	state, err := upstream.(WriterSQLUpstream).CallWriter(context.Background(), controller.Worker{ID: "worker", Address: server.URL}, "request", map[string]any{"command": "query", "session": strings.Repeat("a", 64), "sql": "SELECT 1"}, new(any))
 	var failure *SQLRPCError
-	if state != nil || !errors.As(err, &failure) || !failure.Rejected || failure.Ambiguous || calls.Load() != 1 {
+	// A bare 400 body is not SQL evidence: the transport learns that the worker
+	// answered, not that the statement was refused.
+	if state != nil || !errors.As(err, &failure) || !failure.Ambiguous || failure.evidence.Rejected() || failure.evidence.Executed() || calls.Load() != 1 {
 		test.Fatal("unsupported v2 retried or fell back")
 	}
 	_, _ = upstream.(WriterSQLUpstream).CallWriter(context.Background(), controller.Worker{ID: "worker", Address: server.URL}, "request", map[string]any{"command": "checkpoint", "session": strings.Repeat("a", 64)}, nil)
@@ -213,8 +215,8 @@ func TestSQLWriterWriteCursorCommandsReachVersionedWorker(test *testing.T) {
 	for _, command := range commands {
 		_, err := upstream.(WriterSQLUpstream).CallWriter(context.Background(), controller.Worker{ID: "worker", Address: server.URL}, "cursor", command, new(any))
 		var failure *SQLRPCError
-		if !errors.As(err, &failure) || !failure.Rejected || failure.Ambiguous {
-			test.Fatalf("cursor transport failed to report worker rejection: %v", err)
+		if !errors.As(err, &failure) || !failure.Ambiguous || failure.evidence.Rejected() || failure.evidence.Executed() {
+			test.Fatalf("cursor transport claimed execution state from a status code: %v", err)
 		}
 	}
 	if calls.Load() != int32(len(commands)) {

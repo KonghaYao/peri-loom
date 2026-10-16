@@ -58,7 +58,7 @@ func sqlDecodeWriter(ctx context.Context, body []byte, requestID string, output 
 	}
 	err = sqlDecode(ctx, normalized, requestID, temporary)
 	var failure *SQLRPCError
-	settled := err == nil || errors.As(err, &failure) && failure.ExecutionCompleted && !failure.Ambiguous
+	settled := err == nil || errors.As(err, &failure) && failure.evidence.Executed() && !failure.Ambiguous
 	if settled != found {
 		reason = sqlOpenWriterPresence
 		return invalid()

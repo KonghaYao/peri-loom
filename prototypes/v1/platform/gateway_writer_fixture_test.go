@@ -67,7 +67,7 @@ func (upstream *gatewayWriterUpstream) CallWriter(ctx context.Context, worker co
 		return upstream.hook(fields, &state, err)
 	}
 	var failure *SQLRPCError
-	if err != nil && (!errors.As(err, &failure) || failure.Ambiguous || !failure.ExecutionCompleted) {
+	if err != nil && (!errors.As(err, &failure) || failure.Ambiguous || !failure.evidence.Executed()) {
 		return nil, err
 	}
 	return &state, err

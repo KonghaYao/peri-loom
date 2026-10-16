@@ -30,14 +30,14 @@ func TestHranaHighLevelExecutePagesOnlyProvenReadonlyResult(t *testing.T) {
 			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 				switch command["command"] {
 				case "statement":
-					return nil, &SQLRPCError{ExecutionCompleted: true}
+					return nil, testRPCError(true, false, SQLRPCError{})
 				case "describe":
 					return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": scenario.readonly}, nil
 				case "open_read_cursor", "open_write_cursor":
 					return map[string]any{"cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}}, nil
 				case "fetch_read_cursor", "fetch_write_cursor":
 					if scenario.failPage {
-						return nil, &SQLRPCError{ExecutionCompleted: true}
+						return nil, testRPCError(true, false, SQLRPCError{})
 					}
 					rows := make([][]any, 0, 256)
 					for len(rows) < 256 && next < 300 {

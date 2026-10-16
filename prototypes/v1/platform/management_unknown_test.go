@@ -54,7 +54,7 @@ func TestManagementUnknownOperationIdentity(test *testing.T) {
 func TestManagementUnknownBlocksFreshSession(test *testing.T) {
 	management, fixture, _, _ := nativeDiagnosticManagement(test)
 	management.config.State = fixture.state
-	failure := &SQLRPCError{Ambiguous: true, Rejected: true, ExecutionCompleted: true}
+	failure := testRPCError(true, true, SQLRPCError{Ambiguous: true})
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		if command["command"] == "checkpoint" {
 			return nil, failure

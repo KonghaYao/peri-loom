@@ -130,7 +130,7 @@ func TestSQLUpstreamStrictResponsesAndNull(test *testing.T) {
 				return
 			}
 			failure := sqlTestFailure(test, err)
-			if !failure.Ambiguous || failure.Rejected || strings.Contains(fmt.Sprintf("%+v", err), secret) {
+			if !failure.Ambiguous || failure.evidence.Rejected() || strings.Contains(fmt.Sprintf("%+v", err), secret) {
 				test.Fatal("unsafe response classification or credential leak")
 			}
 		})
@@ -176,7 +176,7 @@ func TestSQLUpstreamRedirectUnauthorizedAndBounds(test *testing.T) {
 				test.Fatal(err)
 			}
 			failure := sqlTestFailure(test, upstream.Call(context.Background(), controller.Worker{ID: "worker-a", Address: server.URL}, "status-1", map[string]any{"command": "query"}, nil))
-			if redirected.Load() != 0 || failure.StatusCode != status || failure.Rejected != (status == 403) || failure.Ambiguous == (status == 403) {
+			if redirected.Load() != 0 || failure.StatusCode != status || failure.evidence.Rejected() || !failure.Ambiguous {
 				test.Fatal("HTTP outcome or redirect boundary incorrect")
 			}
 		})

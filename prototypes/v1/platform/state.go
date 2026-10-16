@@ -10,7 +10,7 @@ import (
 
 type stateStore struct {
 	disk        *durableFile
-	operations  *durableFile
+	operations  *operationJournal
 	state       State
 	digestIndex map[string]string
 }
@@ -202,9 +202,9 @@ func (store *stateStore) Update(mutation func(*State) error) error {
 	if err := store.disk.commit(committed.Revision, committed); err != nil {
 		return err
 	}
-	if err := store.commitOperations(committed); err != nil {
-		return err
-	}
+	// The registry payload already carries the complete operation view, so the
+	// operation log only has to record the deltas that follow this revision; the
+	// next operation mutation binds the new one.
 	if len(committed.APIKeys) != len(store.state.APIKeys) {
 		for id, key := range committed.APIKeys {
 			if _, exists := store.state.APIKeys[id]; !exists {

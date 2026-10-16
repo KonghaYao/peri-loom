@@ -125,7 +125,10 @@ func TestOperationHTTPFlagsAuthorizationDecisionAndNoLeaks(test *testing.T) {
 	privateCause := errors.New("private-session SQL-text credentials " + adminToken)
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		if command["command"] == "checkpoint" {
-			return nil, &SQLRPCError{Ambiguous: true, Rejected: true, ExecutionCompleted: true, cause: privateCause}
+			// A reply that proves nothing is the only one the platform can produce
+			// on this path, so the operator surface must report both directions as
+			// unproven instead of echoing a state the worker never sent.
+			return nil, &SQLRPCError{Ambiguous: true, cause: privateCause}
 		}
 		return nil, nil
 	})
@@ -143,7 +146,7 @@ func TestOperationHTTPFlagsAuthorizationDecisionAndNoLeaks(test *testing.T) {
 			RetryAllowed       bool   `json:"retry_allowed"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(response.Body.Bytes(), &reply) != nil || response.Code != 502 || reply.RequestID != "correlated" || reply.Error.OperationID == "" || reply.Error.OperationID == "correlated" || reply.Error.Code != "outcome_unknown" || reply.Error.Stage != "tool_rpc" || !reply.Error.Ambiguous || !reply.Error.Rejected || !reply.Error.ExecutionCompleted || reply.Error.ExecutionProven || reply.Error.RetryAllowed {
+	if json.Unmarshal(response.Body.Bytes(), &reply) != nil || response.Code != 502 || reply.RequestID != "correlated" || reply.Error.OperationID == "" || reply.Error.OperationID == "correlated" || reply.Error.Code != "outcome_unknown" || reply.Error.Stage != "tool_rpc" || !reply.Error.Ambiguous || reply.Error.Rejected || reply.Error.ExecutionCompleted || reply.Error.ExecutionProven || reply.Error.RetryAllowed {
 		test.Fatalf("incorrect unknown response: %s", response.Body.String())
 	}
 	for _, token := range []string{fixture.tokenB, fixture.viewer, fixture.tokenA} {

@@ -107,8 +107,22 @@ func TestAuditInterruptedAppendAndTruncatedNewlineFailClosed(test *testing.T) {
 					test.Fatal(err)
 				}
 			}
-			if _, err := OpenAudit(path); err == nil {
-				test.Fatal("incomplete audit append accepted")
+			reopened, err := OpenAudit(path)
+			if !interrupted {
+				if err == nil {
+					reopened.Close()
+					test.Fatal("incomplete audit append accepted")
+				}
+				return
+			}
+			// A write that never reached the file was never acknowledged, so recovery
+			// has to accept the audit and fabricate nothing from it.
+			if err != nil {
+				test.Fatal(err)
+			}
+			defer reopened.Close()
+			if reopened.(*fileAudit).state.Sequence != 0 {
+				test.Fatal("failed append invented an audit record")
 			}
 		})
 	}

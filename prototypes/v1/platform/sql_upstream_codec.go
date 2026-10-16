@@ -53,9 +53,9 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 	if json.Unmarshal(fields["version"], &version) != nil || version != 1 || json.Unmarshal(fields["request_id"], &identity) != nil || identity != requestID || json.Unmarshal(fields["ok"], &success) != nil || bytes.Equal(fields["ok"], []byte("null")) || json.Unmarshal(fields["error"], &message) != nil || ctx.Err() != nil {
 		return invalid()
 	}
+	var completed bool
 	if hasCompleted {
-		var completed bool
-		if success || json.Unmarshal(completedRaw, &completed) != nil || !completed {
+		if success || bytes.Equal(bytes.TrimSpace(completedRaw), []byte("null")) || json.Unmarshal(completedRaw, &completed) != nil {
 			return invalid()
 		}
 	}
@@ -63,7 +63,7 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 		if message == nil || !bytes.Equal(bytes.TrimSpace(fields["result"]), []byte("null")) {
 			return invalid()
 		}
-		return observeSQLOpenError(ctx, requestID, sqlOpenCodecV1, sqlOpenWorkerNegative, &SQLRPCError{Ambiguous: !hasCompleted, ExecutionCompleted: hasCompleted})
+		return observeSQLOpenError(ctx, requestID, sqlOpenCodecV1, sqlOpenWorkerNegative, sqlWorkerFailureFromReply(hasCompleted, completed, *message))
 	}
 	if message != nil {
 		return invalid()

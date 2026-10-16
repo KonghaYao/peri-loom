@@ -62,8 +62,15 @@ func TestSQLUpstreamTerminalNegativeStrictFlag(test *testing.T) {
 			}
 			err = upstream.Call(context.Background(), controller.Worker{ID: "worker-a", Address: server.URL}, "terminal-1", map[string]any{"command": "execute", "sql": "INSERT INTO t VALUES (1)"}, nil)
 			failure := sqlTestFailure(test, err)
-			terminal := scenario == "completed"
-			if failure.ExecutionCompleted != terminal || failure.Ambiguous == terminal || failure.Rejected || calls.Load() != 1 {
+			// 三态证据：true 表示执行已收束，false 表示未进入执行，缺失或编码非法都是 Unknown。
+			var completed, rejected bool
+			switch scenario {
+			case "completed":
+				completed = true
+			case "false":
+				rejected = true
+			}
+			if failure.evidence.Executed() != completed || failure.evidence.Rejected() != rejected || failure.Ambiguous != (!completed && !rejected) || calls.Load() != 1 {
 				test.Fatal("SQL completion classification or no-retry invariant violated")
 			}
 			if strings.Contains(fmt.Sprintf("%+v", err), secret) {

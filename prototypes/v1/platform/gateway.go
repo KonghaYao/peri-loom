@@ -46,6 +46,7 @@ type gatewaySession struct {
 type gatewayResult struct {
 	status                  int
 	code                    string
+	failure                 *sqlFailure
 	value                   any
 	dispatched              bool
 	session                 *gatewaySession

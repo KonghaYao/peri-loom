@@ -10,10 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"peri-loom/platform/sqlcontract"
 	"time"
 )
 
@@ -239,8 +242,19 @@ func TestMalformedResponseCannotFabricateSuccessOrLeakCredential(t *testing.T) {
 	if failure == nil || !failure.Unknown || strings.Contains(failure.Error(), testKey) {
 		t.Fatal("unmatched ID accepted or credential leaked")
 	}
-	classified := classify(500, testKey)
+	classified := decodeError(500, contractFailure(t, `{"code":`+strconv.Quote(testKey)+`}`))
 	if strings.Contains(classified.Error(), testKey) || !classified.Unknown {
 		t.Fatal("untrusted error code leaked credential")
 	}
+}
+
+// contractFailure decodes a synthetic failure object the way the client does, so
+// a test states the wire shape it injects instead of naming internal fields.
+func contractFailure(t *testing.T, body string) sqlcontract.Failure {
+	t.Helper()
+	var failure sqlcontract.Failure
+	if err := json.Unmarshal([]byte(body), &failure); err != nil {
+		t.Fatal(err)
+	}
+	return failure
 }

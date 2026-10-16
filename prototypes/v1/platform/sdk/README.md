@@ -23,6 +23,13 @@ flags never prove rollback or absence of a committed multi-statement prefix. Mis
 or malformed terminal flags are uncertain and poison the session. No SDK performs
 automatic rollback or retry.
 
+A statement the Worker proved it never entered execution is `sql_error` with
+`execution_completed=false` and `may_have_committed=false`. The Gateway also reports
+`sql_timeout`, `sql_budget_exceeded`, `sql_conflict`, `sql_unavailable`, and
+`readonly_session` for the failure classes a caller must act on differently, each
+with an `Error.Message`. Legacy `result_limit`, `sql_limit`, `upstream_rejected`,
+and `upstream_unavailable` keep their meanings.
+
 Management accepts the server whitelist: database create/delete/branch/clone/snapshot/
 restore/restore-point/pitr/drop-snapshot/retain-after/suspend/resume/migrate/status/
 refs/schema/checkpoint/compact/gc/gc-inspect/rewrap, plus canonical organization,

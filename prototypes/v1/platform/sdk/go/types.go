@@ -8,6 +8,8 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"peri-loom/platform/sqlcontract"
 )
 
 type Namespace struct {
@@ -39,6 +41,7 @@ type Options struct {
 
 type Error struct {
 	Code               string
+	Message            string
 	RequestID          string
 	OutcomeUnknown     bool
 	ExecutionCompleted bool
@@ -88,40 +91,20 @@ type ManagementRequest struct {
 }
 
 type envelope struct {
-	Version   int             `json:"version"`
-	RequestID string          `json:"request_id"`
-	OK        *bool           `json:"ok"`
-	Result    json.RawMessage `json:"result"`
-	Error     *struct {
-		Code               string `json:"code"`
-		ExecutionCompleted bool   `json:"execution_completed,omitempty"`
-		MayHaveCommitted   bool   `json:"may_have_committed,omitempty"`
-		OperationID        string `json:"operation_id,omitempty"`
-		Stage              string `json:"stage,omitempty"`
-		BusinessOutcome    string `json:"business_outcome,omitempty"`
-		CleanupOutcome     string `json:"cleanup_outcome,omitempty"`
-		ExecutionProven    bool   `json:"execution_proven,omitempty"`
-		Ambiguous          bool   `json:"ambiguous,omitempty"`
-		Rejected           bool   `json:"rejected,omitempty"`
-		RetryAllowed       bool   `json:"retry_allowed,omitempty"`
-		PossibleCommit     bool   `json:"possible_commit,omitempty"`
-		RPCObservation     *struct {
-			Ambiguous          bool `json:"ambiguous"`
-			Rejected           bool `json:"rejected"`
-			ExecutionCompleted bool `json:"execution_completed"`
-		} `json:"rpc_observation,omitempty"`
-	} `json:"error"`
+	Version   int                  `json:"version"`
+	RequestID string               `json:"request_id"`
+	OK        *bool                `json:"ok"`
+	Result    json.RawMessage      `json:"result"`
+	Error     *sqlcontract.Failure `json:"error"`
 }
 
-func safeCode(code string) string {
-	switch code {
-	case "database_isolated", "operation_recorded", "operation_registration_unavailable":
-		return code
-	case "sql_error":
-		return code
-	case "outcome_unknown", "session_moved", "session_unusable", "invalid_request", "invalid_session", "unauthenticated", "unauthorized", "forbidden", "quota_exceeded", "request_limit", "result_limit", "sql_limit", "session_busy", "upstream_rejected", "upstream_unavailable", "placement_unavailable", "metadata_unavailable", "audit_unavailable", "gateway_closing", "operation_incomplete", "token_binding_mismatch", "readonly_placement_required":
-		return code
-	default:
+// safeCode keeps the published vocabulary from reaching a client as free text:
+// a code the platform does not publish becomes remote_error instead of being
+// echoed. The vocabulary and the evidence rule both live in sqlcontract, so a
+// code added to the platform cannot fall out of this SDK's table.
+func safeCode(failure sqlcontract.Failure) string {
+	if failure.Class() == sqlcontract.Unrecognized {
 		return "remote_error"
 	}
+	return failure.Code()
 }

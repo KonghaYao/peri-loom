@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	controller "peri-loom/controller"
@@ -12,6 +13,15 @@ import (
 func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) (result gatewayResult) {
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
+	}
+	// 持久隔离的原因优先于 placement 故障，避免客户端把 Unknown 误当成可重试的路由问题。
+	if err := readOperationState(gateway.config.State, func(state State) error {
+		if _, isolated := isolatedOperation(state, database, false); isolated {
+			return ErrDatabaseQuarantined
+		}
+		return nil
+	}); err != nil {
+		return operationAdmissionFailure(err)
 	}
 	worker, binding, err := gateway.route(database)
 	if err != nil {
@@ -130,6 +140,7 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 
 func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool, session *gatewaySession) (result gatewayResult) {
 	currentBinding := session.binding
+	// Authorization is verified again after routing, before the worker call.
 	if gateway.authorize(principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
@@ -139,9 +150,25 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	if session.poisoned {
 		return gateway.isolatedSessionFailure(session.database)
 	}
+	// The placement store is read once per dispatch and the same snapshot backs
+	// every binding check below: re-reading it only queues the request behind
+	// placement writers, and both checks must agree on one snapshot to be
+	// meaningful.
+	var (
+		worker   controller.Worker
+		binding  controller.Binding
+		routed   bool
+		routeErr error
+	)
+	lookup := func() error {
+		if !routed {
+			routed = true
+			worker, binding, routeErr = gateway.route(session.database)
+		}
+		return routeErr
+	}
 	if principal.Database != nil {
-		_, binding, err := gateway.route(session.database)
-		if err != nil {
+		if err := lookup(); err != nil {
 			return gatewayFailure(409, "placement_unavailable")
 		}
 		if !principalBindingValid(principal, binding) {
@@ -152,8 +179,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		if session.moved {
 			return gatewayFailure(409, "session_moved")
 		}
-		worker, binding, err := gateway.route(session.database)
-		if err != nil {
+		if err := lookup(); err != nil {
 			return gatewayFailure(409, "placement_unavailable")
 		}
 		if !sameGatewayBinding(session.binding, binding) || worker.Address != session.worker.Address {
@@ -349,16 +375,20 @@ func (gateway *Gateway) unknown(session *gatewaySession, permit *admissionPermit
 func (gateway *Gateway) upstreamFailure(err error, session *gatewaySession, permit *admissionPermit) (result gatewayResult) {
 	var failure *SQLRPCError
 	defer func() { result.rpc = failure }()
-	if errors.As(err, &failure) && failure.ExecutionCompleted && !failure.Ambiguous {
-		return gatewayResult{status: 400, code: "sql_error", dispatched: true}
+	if !errors.As(err, &failure) || failure.Ambiguous {
+		return gateway.unknown(session, permit)
 	}
-	if errors.As(err, &failure) && !failure.Ambiguous {
-		if failure.Rejected {
+	worker, found := sqlWorkerFailure(failure)
+	if !found {
+		if failure.evidence.Rejected() {
 			return gatewayFailure(502, "upstream_rejected")
 		}
 		return gatewayFailure(503, "upstream_unavailable")
 	}
-	return gateway.unknown(session, permit)
+	// The worker text is the operator's evidence; the caller only sees the
+	// classified code and message.
+	log.Printf("SQL worker failure: code=%s status=%d executed=%t rejected=%t worker_error=%s", worker.code, worker.status, worker.executed, worker.rejected, workerFailureLog(failure.workerFailure))
+	return gatewayResult{status: worker.status, code: worker.code, failure: &worker, dispatched: true, session: session}
 }
 
 func upstreamSessionID(identifier string) bool {

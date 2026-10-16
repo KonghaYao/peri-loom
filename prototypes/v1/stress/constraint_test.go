@@ -27,15 +27,18 @@ func TestTerminalSQLErrorContractAndUncertainStop(t *testing.T) {
 		committed any
 		status    int
 		known     bool
+		risk      bool
 	}{
-		{"known_negative", "sql_error", true, true, 400, true},
-		{"missing_completed", "sql_error", nil, true, 400, false},
-		{"missing_committed", "sql_error", true, nil, 400, false},
-		{"false_completed", "sql_error", false, true, 400, false},
-		{"false_committed", "sql_error", true, false, 400, false},
-		{"wrong_status", "sql_error", true, true, 500, false},
-		{"unknown_even_with_flags", "outcome_unknown", true, true, 400, false},
-		{"malformed_flag", "sql_error", "true", true, 400, false},
+		{"known_negative", "sql_error", true, true, 400, true, true},
+		{"settled_without_commit_risk", "sql_error", true, false, 400, true, false},
+		{"missing_completed", "sql_error", nil, true, 400, false, false},
+		{"missing_committed", "sql_error", true, nil, 400, false, false},
+		{"contradictory_pair", "sql_error", false, true, 400, false, false},
+		// The proof decides, not the status the platform happened to answer with:
+		// a settled statement stays a definite answer even on a platform failure.
+		{"platform_status_with_proof", "sql_error", true, true, 500, true, true},
+		{"unknown_even_with_flags", "outcome_unknown", true, true, 400, false, false},
+		{"malformed_flag", "sql_error", "true", true, 400, false, false},
 	}
 	for _, testcase := range cases {
 		t.Run(testcase.name, func(t *testing.T) {
@@ -75,7 +78,7 @@ func TestTerminalSQLErrorContractAndUncertainStop(t *testing.T) {
 			if failure == nil || failure.Unknown == testcase.known || session.poisoned == testcase.known {
 				t.Fatalf("incorrect terminal classification: %+v", failure)
 			}
-			if testcase.known && (failure.Class != "sql_error" || !failure.ExecutionCompleted || !failure.MayHaveCommitted) {
+			if testcase.known && (failure.Class != "sql_error" || !failure.ExecutionCompleted || failure.MayHaveCommitted != testcase.risk) {
 				t.Fatalf("typed flags lost: %+v", failure)
 			}
 			_, _, next := session.SQL(context.Background(), true, "SELECT 1")

@@ -86,18 +86,11 @@ func (gateway *Gateway) expireNativeSession(ctx context.Context, session *gatewa
 	if session.closed || session.hrana || session.poisoned || session.lastUsed.IsZero() || now.Sub(session.lastUsed) < idle {
 		return nil
 	}
-	state, err := gateway.config.State.Snapshot()
+	quota, err := sessionCleanupQuota(gateway.config.State, session)
 	if err != nil {
 		return err
 	}
-	if _, blocked := isolatedOperation(state, session.database, true); blocked {
-		return ErrDatabaseQuarantined
-	}
-	project, exists := state.Projects[session.project]
-	if !exists {
-		return errors.New("native session project unavailable")
-	}
-	permit, ok := gateway.admission.reserve(session.project, project.Quotas, false, true)
+	permit, ok := gateway.admission.reserve(session.project, quota, false, true)
 	if !ok {
 		return errors.New("native session cleanup admission unavailable")
 	}

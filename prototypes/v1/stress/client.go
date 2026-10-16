@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"peri-loom/platform/sqlcontract"
 )
 
 type Failure struct {
@@ -72,18 +74,12 @@ type wireRequest struct {
 	RequestID string      `json:"request_id"`
 }
 
-type wireError struct {
-	Code               string `json:"code"`
-	ExecutionCompleted bool   `json:"execution_completed,omitempty"`
-	MayHaveCommitted   bool   `json:"may_have_committed,omitempty"`
-}
-
 type wireResponse struct {
-	Version   int             `json:"version"`
-	RequestID string          `json:"request_id"`
-	OK        *bool           `json:"ok"`
-	Result    json.RawMessage `json:"result"`
-	Error     *wireError      `json:"error"`
+	Version   int                  `json:"version"`
+	RequestID string               `json:"request_id"`
+	OK        *bool                `json:"ok"`
+	Result    json.RawMessage      `json:"result"`
+	Error     *sqlcontract.Failure `json:"error"`
 }
 
 type Session struct {
@@ -228,32 +224,47 @@ func timeoutError(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &network) && network.Timeout()
 }
 
-func decodeError(status int, reply wireError) *Failure {
-	if reply.Code == "sql_error" {
-		failure := &Failure{Class: "unknown", Code: "sql_error", HTTPStatus: status, Unknown: true,
-			ExecutionCompleted: reply.ExecutionCompleted, MayHaveCommitted: reply.MayHaveCommitted}
-		if status == http.StatusBadRequest && reply.ExecutionCompleted && reply.MayHaveCommitted {
-			failure.Class, failure.Unknown = "sql_error", false
-		}
-		return failure
+// decodeError classifies a platform failure through sqlcontract, which owns the
+// code vocabulary, the evidence rule and the unknown-outcome rule. The harness
+// keeps only its own report labels, so a code the platform adds is classified
+// here without this table being edited.
+func decodeError(status int, reply sqlcontract.Failure) *Failure {
+	if len(reply.Unexpected()) > 0 {
+		return &Failure{Class: "unknown", Code: "invalid_failure", Unknown: true, HTTPStatus: status}
 	}
-	failure := classify(status, reply.Code)
-	failure.ExecutionCompleted, failure.MayHaveCommitted = reply.ExecutionCompleted, reply.MayHaveCommitted
-	return failure
+	class, code := reportClass(reply)
+	return &Failure{Class: class, Code: code, HTTPStatus: status, Unknown: reply.Uncertain(),
+		ExecutionCompleted: reply.Executed(), MayHaveCommitted: reply.MayHaveCommitted()}
 }
 
-func classify(status int, code string) *Failure {
-	known := map[string]string{"quota_exceeded": "admission", "sql_limit": "request_limit", "request_limit": "request_limit", "result_limit": "result_limit",
-		"unauthenticated": "authorization", "forbidden": "authorization", "invalid_session": "session_error", "session_busy": "admission",
-		"placement_unavailable": "placement", "token_binding_mismatch": "authorization", "readonly_placement_required": "authorization",
-		"upstream_unavailable": "server_error", "upstream_rejected": "server_error", "gateway_closing": "admission",
-		"metadata_unavailable": "server_error", "invalid_request": "request_error", "operation_incomplete": "unknown",
-		"outcome_unknown": "unknown", "audit_unavailable": "unknown", "not_found": "unsupported", "unauthorized": "authorization", "method_not_allowed": "unsupported"}
-	class, found := known[code]
-	if !found {
-		class, code = "unknown", "unrecognized_server_code"
+// reportClass maps the platform's own classification onto the labels this
+// harness reports. It is a presentation mapping over a closed set of classes,
+// not a code table: an unpublished code is the only thing that can reach the
+// unknown label.
+func reportClass(reply sqlcontract.Failure) (string, string) {
+	switch reply.Class() {
+	case sqlcontract.Statement:
+		return "sql_error", reply.Code()
+	case sqlcontract.Uncertain:
+		return "unknown", reply.Code()
+	case sqlcontract.Request:
+		return "request_error", reply.Code()
+	case sqlcontract.Limit:
+		return "request_limit", reply.Code()
+	case sqlcontract.Access:
+		return "authorization", reply.Code()
+	case sqlcontract.Session:
+		return "session_error", reply.Code()
+	case sqlcontract.Capacity:
+		return "admission", reply.Code()
+	case sqlcontract.Placement:
+		return "placement", reply.Code()
+	case sqlcontract.Platform:
+		return "server_error", reply.Code()
+	case sqlcontract.Unsupported:
+		return "unsupported", reply.Code()
 	}
-	return &Failure{Class: class, Code: code, HTTPStatus: status, Unknown: class == "unknown"}
+	return "unknown", "unrecognized_server_code"
 }
 
 func (client *Client) Open(ctx context.Context, database DatabaseID) (*Session, *Failure) {

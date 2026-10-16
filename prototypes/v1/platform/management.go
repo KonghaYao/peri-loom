@@ -27,6 +27,7 @@ type ManagementConfig struct {
 	Telemetry     *Telemetry
 	Resources     *Gateway
 	StopProof     WorkerStopVerifier
+	Fence         IsolationFenceVerifier
 	CapacityTrace *capacityTraceBridge
 }
 
@@ -65,6 +66,11 @@ var errDatabaseQuotaExceeded = errors.New("database quota exceeded")
 func NewManagement(config ManagementConfig) (*Management, error) {
 	if config.State == nil || config.Placements == nil || config.Controller == nil || config.Identity == nil || config.Authority == nil || config.Keys == nil || config.Upstream == nil || config.Audit == nil {
 		return nil, errors.New("management dependencies required")
+	}
+	if config.Fence == nil {
+		// The release path needs the authority's own attestation; the control
+		// transport is already the component that talks to it.
+		config.Fence = authorityIsolationFence{transport: config.Authority}
 	}
 	return &Management{config: config}, nil
 }
@@ -130,6 +136,20 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 			managementReply(response, 409, input.RequestID, nil, "database_isolated")
 			return
 		}
+		// The release refusals name the missing proof instead of collapsing into the
+		// generic isolation code, so an operator can tell where the path is stuck.
+		if errors.Is(err, errReleaseNotRetired) {
+			managementReply(response, 409, input.RequestID, nil, "release_not_retired")
+			return
+		}
+		if errors.Is(err, errReleaseProofMissing) {
+			managementReply(response, 409, input.RequestID, nil, "release_stop_proof_missing")
+			return
+		}
+		if errors.Is(err, errReleaseFenceUnavailable) {
+			managementReply(response, 409, input.RequestID, nil, "release_fencing_proof_unavailable")
+			return
+		}
 		var native *nativeToolError
 		if !errors.As(err, &native) {
 			if errors.Is(err, errManagementForbidden) {
@@ -149,6 +169,11 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 
 func (management *Management) dispatch(request *http.Request, principal Principal, input managementRequest) (any, error) {
 	if strings.HasPrefix(request.URL.Path, "/v1/databases/") {
+		if request.URL.Path == "/v1/databases/isolation/release" {
+			// The release is the one path that must run while the database is still
+			// isolated, so it is dispatched before the isolation gate below.
+			return management.releaseIsolation(request.Context(), principal, input)
+		}
 		if request.URL.Path == "/v1/databases/operations" || request.URL.Path == "/v1/databases/operations/decision" || request.URL.Path == "/v1/databases/operations/clear" || request.URL.Path == "/v1/databases/operations/retire-local" {
 			if request.URL.Path == "/v1/databases/operations/retire-local" {
 				return management.retireLocal(request.Context(), principal, input)
@@ -171,8 +196,16 @@ func (management *Management) dispatch(request *http.Request, principal Principa
 			} else if err := management.config.Identity.Authorize(principal, input.Database, "manage"); err != nil {
 				return nil, err
 			}
-			if _, blocked := isolatedOperation(state, input.Database, true); blocked {
-				return nil, ErrDatabaseQuarantined
+			if request.URL.Path != "/v1/databases/suspend" {
+				// Stopping service is the one placement change that stays allowed while
+				// a database is isolated. It can only take serving away: the drain asks
+				// the owning worker to detach and then records a revoke so the authority
+				// drops the branch ownership. That is exactly the fencing evidence the
+				// isolation release needs, and it never puts old data back in service,
+				// because resume stays behind the isolation gate.
+				if _, blocked := isolatedOperation(state, input.Database, true); blocked {
+					return nil, ErrDatabaseQuarantined
+				}
 			}
 		}
 	}

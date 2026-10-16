@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	controller "peri-loom/controller"
+	"peri-loom/platform/sqlcontract"
 )
 
 type gatewayRequest struct {
@@ -130,11 +131,14 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			}
 			if auditErr := gateway.config.Audit.Record(event); auditErr != nil {
 				if result.code != "outcome_unknown" {
-					result.auditExecutionCompleted = result.dispatched && (result.code == "" || result.code == "sql_error" || result.code == "result_limit")
+					result.auditExecutionCompleted = result.dispatched && sqlExecutedOutcome(result)
 					result.code = "audit_unavailable"
 					result.status = 503
 					result.value = nil
 					result.stream = nil
+					// The degraded reply reports the audit failure, not the SQL
+					// failure it replaced.
+					result.failure = nil
 				}
 			}
 		}
@@ -389,6 +393,20 @@ func validSQLArguments(args []sqlArgument) bool {
 	return true
 }
 
+// sqlExecutionVerdict records the worker's verdict about a statement on the
+// failure reply. It is the only writer of both evidence fields, so no path can
+// declare a statement settled while leaving the commit warning out: every client
+// reads an omitted may_have_committed as "did not commit", which would tell a
+// caller that a write it cannot account for is safe to replay. The verdict
+// itself comes from sqlcontract, which owns the rule that a settled statement
+// keeps the commit warning of its operation; nonCommittingOperation stays the
+// only authority for what that operation is.
+func sqlExecutionVerdict(failure map[string]any, executed, committing bool) {
+	executionCompleted, mayHaveCommitted := sqlcontract.Verdict(executed, committing)
+	failure["execution_completed"] = executionCompleted
+	failure["may_have_committed"] = mayHaveCommitted
+}
+
 func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID string, result gatewayResult) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
@@ -410,7 +428,7 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 			}
 			failure["possible_commit"], failure["execution_proven"] = true, false
 			if result.rpc != nil {
-				failure["rpc_observation"] = map[string]bool{"ambiguous": result.rpc.Ambiguous, "rejected": result.rpc.Rejected, "execution_completed": result.rpc.ExecutionCompleted}
+				failure["rpc_observation"] = map[string]bool{"ambiguous": result.rpc.Ambiguous, "rejected": result.rpc.evidence.Rejected(), "execution_completed": result.rpc.evidence.Executed()}
 			}
 			if record := result.operationObservation; record != nil {
 				failure["business_outcome"], failure["cleanup_outcome"] = record.BusinessOutcome, record.CleanupOutcome
@@ -418,16 +436,20 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 			}
 		}
 		if result.code == "result_limit" && result.dispatched {
-			failure["execution_completed"] = true
+			sqlExecutionVerdict(failure, true, result.committing)
 		}
 		if result.code == "audit_unavailable" && result.auditExecutionCompleted {
-			failure["execution_completed"] = true
+			sqlExecutionVerdict(failure, true, result.committing)
 			failure["operation_id"] = result.operationID
 			failure["retry_allowed"] = false
 		}
-		if result.code == "sql_error" && result.dispatched {
-			failure["execution_completed"] = true
-			failure["may_have_committed"] = result.committing
+		if result.failure != nil {
+			failure["message"] = result.failure.message
+			if result.failure.executed {
+				sqlExecutionVerdict(failure, true, result.committing)
+			} else if result.failure.rejected {
+				sqlExecutionVerdict(failure, false, false)
+			}
 		}
 		response["error"] = failure
 	}

@@ -1,13 +1,15 @@
 import {parseLosslessJSON, encodeLosslessJSON} from "/json.js";
+import * as sqlcontract from "/sqlcontract.js";
 
 export class ConsoleRPCError extends Error {
-  constructor(code, requestID = "", outcomeUnknown = false, executionCompleted = false, mayHaveCommitted = false) {
-    super(code);
+  constructor(code, requestID = "", outcomeUnknown = false, executionCompleted = false, mayHaveCommitted = false, serverMessage = "") {
+    super(serverMessage ? `${code}: ${serverMessage}` : code);
     this.code = code;
     this.requestID = requestID;
     this.outcomeUnknown = outcomeUnknown;
     this.executionCompleted = executionCompleted;
     this.mayHaveCommitted = mayHaveCommitted;
+    this.serverMessage = serverMessage;
   }
 }
 
@@ -20,26 +22,28 @@ function unknown(identifier) {
   return new ConsoleRPCError("outcome_unknown", identifier, true);
 }
 
-function envelopeResult(envelope, identifier, responseOK) {
+function envelopeResult(envelope, identifier, status) {
   if (!keys(envelope, "error,ok,request_id,result,version") || envelope.version !== 1 ||
       typeof envelope.request_id !== "string" || (identifier !== null && envelope.request_id !== identifier) ||
       typeof envelope.ok !== "boolean") throw unknown(identifier ?? "");
   if (envelope.ok) {
-    if (!responseOK || envelope.error !== null) throw unknown(identifier ?? "");
+    if (status < 200 || status >= 300 || envelope.error !== null) throw unknown(identifier ?? "");
     return envelope.result;
   }
   const failure = envelope.error;
   if (envelope.result !== null || !object(failure) || typeof failure.code !== "string" ||
       !/^[a-z][a-z0-9_]{0,63}$/.test(failure.code) ||
-      Object.keys(failure).some(key => !["code", "execution_completed", "may_have_committed"].includes(key)) ||
+      Object.keys(failure).some(key => !["code", "message", "execution_completed", "may_have_committed"].includes(key)) ||
+      (failure.message !== undefined && typeof failure.message !== "string") ||
       [failure.execution_completed, failure.may_have_committed].some(flag => flag !== undefined && typeof flag !== "boolean")) {
     throw unknown(identifier ?? "");
   }
-  if (failure.code === "sql_error" && (failure.execution_completed !== true || failure.may_have_committed !== true)) {
-    throw unknown(identifier ?? "");
-  }
+  // The decision belongs to the shared contract module, which is also what the
+  // console and the TypeScript SDK read: a reply that proves what happened to
+  // the statement is a definite answer whatever code it carries.
+  if (sqlcontract.unknown(failure, status)) throw unknown(identifier ?? "");
   throw new ConsoleRPCError(failure.code, identifier ?? "", failure.code === "outcome_unknown",
-    failure.execution_completed === true, failure.may_have_committed === true);
+    sqlcontract.executed(failure), sqlcontract.commitRisk(failure), failure.message ?? "");
 }
 
 function validateResult(action, result, identifier, maxRows) {
@@ -114,7 +118,7 @@ async function readReply(response, identifier, streaming, limits, signal) {
       if (pending) frame(pending);
       if (!complete) throw unknown(identifier);
       result = rows;
-    } else result = envelopeResult(parseLosslessJSON(pending), identifier, response.ok);
+    } else result = envelopeResult(parseLosslessJSON(pending), identifier, response.status);
     successful = true;
     return result;
   } finally {

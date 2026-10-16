@@ -20,8 +20,11 @@ The two response forms intentionally remain distinct:
 
 `outcome_unknown` stays unknown even if execution was observed as completed.
 Business completion with unknown cleanup does not make a session reusable.
-Legacy `sql_error` still requires both flat completion flags to be `true` before
-explicit rollback/reuse is permitted.
+`sql_error`, `sql_timeout`, and `sql_budget_exceeded` report a statement that
+reached the Worker, so they require explicit flat completion flags before
+explicit rollback/reuse is permitted; `execution_completed=false` together with
+`may_have_committed=false` is the Worker's proof that the statement never ran.
+The server `message` travels as `PeriError.serverMessage`.
 
 All new fields are optional for compatibility with code-only errors, but fields
 present with wrong types, nulls, unsupported stage/outcome enums, or unknown keys

@@ -6,54 +6,26 @@ import (
 	"path/filepath"
 )
 
-type durableOperations struct {
-	Version      uint32                     `json:"version"`
-	BaseRevision uint64                     `json:"base_revision"`
-	Records      map[string]OperationRecord `json:"records"`
-	Sequence     uint64                     `json:"sequence"`
-	Evictions    uint64                     `json:"evictions"`
-}
-
-func operationsFromState(state State) durableOperations {
-	return durableOperations{
-		Version: 1, BaseRevision: state.Revision, Records: state.Operations,
-		Sequence: state.OperationSequence, Evictions: state.OperationEvictions,
-	}
-}
-
-func applyDurableOperations(state *State, operations durableOperations) {
-	state.Operations = operations.Records
-	state.OperationSequence = operations.Sequence
-	state.OperationEvictions = operations.Evictions
-}
-
-func openOperationDisk(directory string, registry *durableFile, state *State) (*durableFile, error) {
-	path := filepath.Join(directory, "operations", "state.json")
+func openOperationDisk(directory string, registry *durableFile, state *State) (*operationJournal, error) {
+	path := filepath.Join(directory, "operations", "journal")
 	if state.OperationStorageVersion == 1 {
 		if _, err := os.Lstat(path + ".lock"); err != nil {
 			return nil, errors.New("required operation storage missing")
 		}
 	}
-	disk, err := openDurable(path, operationsFromState(*state))
+	journal, err := openOperationJournal(filepath.Join(directory, "operations"))
 	if err != nil {
 		return nil, err
 	}
 	ok := false
 	defer func() {
 		if !ok {
-			disk.close()
+			journal.close()
 		}
 	}()
-	var current durableOperations
-	if err := strictDecode(disk.payload, &current); err != nil {
-		return nil, err
-	}
-	if current.Version != 1 || current.BaseRevision > state.Revision {
-		return nil, errors.New("operation storage revision mismatch")
-	}
 	if state.OperationStorageVersion == 0 {
-		// No operation-only requests may run until the registry records that
-		// this sidecar is mandatory. A crashed migration still uses the registry.
+		// No operation-only requests may run until the registry records that this
+		// log is mandatory. A crashed migration still uses the registry.
 		candidate := *state
 		candidate.OperationStorageVersion = 1
 		candidate.Revision++
@@ -65,54 +37,32 @@ func openOperationDisk(directory string, registry *durableFile, state *State) (*
 		}
 		*state = candidate
 	}
-	if current.BaseRevision < state.Revision {
-		// A registry commit won the race with a crash before its sidecar
-		// checkpoint. The registry contains the complete operation view.
-		if err := disk.commit(disk.revision+1, operationsFromState(*state)); err != nil {
-			return nil, err
-		}
-		current = operationsFromState(*state)
-	} else if state.OperationStorageVersion == 1 {
-		applyDurableOperations(state, current)
-	}
+	// The registry payload is the recovered base view; the log only carries the
+	// deltas appended after that revision, so a log that trails the registry is
+	// already contained in the payload.
+	journal.applyView(state.Revision, state)
 	if err := validateState(*state, nil); err != nil {
 		return nil, err
 	}
 	ok = true
-	return disk, nil
+	return journal, nil
 }
 
 // registryParentOperations rebuilds the operation view recovery would join into a
-// registry payload. Between registry commits the sidecar is the only writer of
-// operations, so the persisted snapshot alone is not the parent a successor has
-// to be legal against: an operation etched into that snapshot can settle and be
-// evicted afterwards, and validating against the stale copy would reject a valid
-// commit and poison the registry.
-func registryParentOperations(sidecar *durableFile) func(*State) {
+// registry payload. Between registry commits the log is the only writer of
+// operations, so the persisted payload alone is not the parent a successor has to
+// be legal against: an operation etched into that payload can settle and be evicted
+// afterwards, and validating against the stale copy would reject a valid commit and
+// poison the registry.
+func registryParentOperations(journal *operationJournal) func(*State) {
 	return func(parent *State) {
-		sidecar.mutex.Lock()
-		defer sidecar.mutex.Unlock()
-		if sidecar.payload == nil {
+		journal.mutex.Lock()
+		defer journal.mutex.Unlock()
+		if journal.closed {
 			return
 		}
-		var current durableOperations
-		if strictDecode(sidecar.payload, &current) != nil || current.Version != 1 || current.BaseRevision != parent.Revision {
-			// A sidecar behind the registry was not checkpointed, and recovery
-			// treats the registry as the complete operation view in that case.
-			return
-		}
-		applyDurableOperations(parent, current)
+		journal.applyView(parent.Revision, parent)
 	}
-}
-
-func (store *stateStore) commitOperations(state State) error {
-	store.operations.mutex.Lock()
-	defer store.operations.mutex.Unlock()
-	if err := store.operations.commit(store.operations.revision+1, operationsFromState(state)); err != nil {
-		store.disk.poisoned = true
-		return err
-	}
-	return nil
 }
 
 // readOperations visits the committed operation view without copying the rest
@@ -154,8 +104,15 @@ func (store *stateStore) updateOperations(change func(*State) error) error {
 	if err := validateOperations(candidate, &store.state); err != nil {
 		return err
 	}
-	if err := store.commitOperations(candidate); err != nil {
-		return err
+	delta := operationDeltaBetween(store.state.Operations, candidate.Operations)
+	if !delta.empty() || candidate.OperationSequence != store.state.OperationSequence || candidate.OperationEvictions != store.state.OperationEvictions {
+		// One append carries the whole commit; the registry rewrite is reserved for
+		// catalog changes, so an operation-only commit never pays for the bounded
+		// set it did not change.
+		if err := store.operations.appendOperations(candidate, delta); err != nil {
+			store.disk.poisoned = true
+			return err
+		}
 	}
 	store.state = candidate
 	return nil

@@ -101,15 +101,22 @@ func (client *Client) call(ctx context.Context, path, identifier string, input a
 		if reply.Error == nil || len(reply.Result) == 0 || string(reply.Result) != "null" {
 			return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
 		}
-		code := safeCode(reply.Error.Code)
-		if code == "sql_error" && (!reply.Error.ExecutionCompleted || !reply.Error.MayHaveCommitted) {
-			return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
+		failure := reply.Error
+		// sqlcontract decides whether the reply leaves the statement's fate open.
+		// A reply the platform proved — including one that settled without being
+		// able to commit — is a definite answer with its code preserved.
+		if failure.Unknown(response.StatusCode) {
+			return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: true, ExecutionCompleted: failure.Executed(), MayHaveCommitted: failure.MayHaveCommitted(), OperationID: failure.OperationID(), Stage: failure.Stage(), BusinessOutcome: failure.BusinessOutcome(), CleanupOutcome: failure.CleanupOutcome(), RetryAllowed: failure.RetryAllowed()}
 		}
-		failure := &Error{Code: code, RequestID: identifier, OutcomeUnknown: code == "outcome_unknown", ExecutionCompleted: reply.Error.ExecutionCompleted, MayHaveCommitted: reply.Error.MayHaveCommitted || reply.Error.PossibleCommit, OperationID: reply.Error.OperationID, Stage: reply.Error.Stage, BusinessOutcome: reply.Error.BusinessOutcome, CleanupOutcome: reply.Error.CleanupOutcome, ExecutionProven: reply.Error.ExecutionProven, Ambiguous: reply.Error.Ambiguous, Rejected: reply.Error.Rejected, RetryAllowed: reply.Error.RetryAllowed}
-		if reply.Error.RPCObservation != nil {
-			failure.Ambiguous, failure.Rejected, failure.ExecutionCompleted = reply.Error.RPCObservation.Ambiguous, reply.Error.RPCObservation.Rejected, reply.Error.RPCObservation.ExecutionCompleted
+		code := safeCode(*failure)
+		executed, rejected, ambiguous := failure.Executed(), failure.Rejected(), failure.Ambiguous()
+		if observation, found := failure.Observation(); found {
+			executed, rejected, ambiguous = observation.Executed(), observation.Rejected(), observation.Ambiguous()
 		}
-		return failure
+		return &Error{Code: code, Message: failure.Message(), RequestID: identifier, OutcomeUnknown: code == "outcome_unknown",
+			ExecutionCompleted: executed, MayHaveCommitted: failure.MayHaveCommitted(), OperationID: failure.OperationID(), Stage: failure.Stage(),
+			BusinessOutcome: failure.BusinessOutcome(), CleanupOutcome: failure.CleanupOutcome(), ExecutionProven: failure.ExecutionProven(),
+			Ambiguous: ambiguous, Rejected: rejected, RetryAllowed: failure.RetryAllowed()}
 	}
 	if reply.Error != nil || response.StatusCode < 200 || response.StatusCode >= 300 || len(reply.Result) == 0 {
 		return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}

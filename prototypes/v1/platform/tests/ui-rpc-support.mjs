@@ -4,11 +4,15 @@ import {Script, createContext} from "node:vm";
 const app = await readFile(new URL("../web/app.js", import.meta.url), "utf8");
 const jsonSource = await readFile(new URL("../web/json.js", import.meta.url), "utf8");
 const jsonURL = `data:text/javascript;base64,${Buffer.from(jsonSource).toString("base64")}`;
+const contractSource = await readFile(new URL("../web/sqlcontract.js", import.meta.url), "utf8");
+const contractURL = `data:text/javascript;base64,${Buffer.from(contractSource).toString("base64")}`;
 export const json = await import(jsonURL);
+export const contract = await import(contractURL);
 let protocol = {};
 try {
   const source = await readFile(new URL("../web/rpc.js", import.meta.url), "utf8");
-  protocol = await import(`data:text/javascript;base64,${Buffer.from(source.replace('"/json.js"', JSON.stringify(jsonURL))).toString("base64")}`);
+  const rewritten = source.replace('"/json.js"', JSON.stringify(jsonURL)).replace('"/sqlcontract.js"', JSON.stringify(contractURL));
+  protocol = await import(`data:text/javascript;base64,${Buffer.from(rewritten).toString("base64")}`);
 } catch (failure) {
   if (failure.code !== "ENOENT") throw failure;
 }

@@ -9,6 +9,30 @@ import (
 
 var errHranaSessionBusy = errors.New("Hrana session is busy")
 var errHranaSessionUnknown = errors.New("Hrana session has an unresolved SQL outcome")
+var errSessionProjectUnavailable = errors.New("session project unavailable")
+
+// sessionCleanupQuota resolves the quota and quarantine state one session
+// expiry needs. Expiry runs on a one-second tick, so it visits the committed
+// registry under its own lock instead of cloning it: a full clone holds the
+// registry lock that in-flight read requests need before they touch the worker.
+func sessionCleanupQuota(store StateStore, session *gatewaySession) (Quotas, error) {
+	var quota Quotas
+	err := readOperationState(store, func(state State) error {
+		if _, blocked := isolatedOperation(state, session.database, true); blocked {
+			return ErrDatabaseQuarantined
+		}
+		project, exists := state.Projects[session.project]
+		if !exists {
+			return errSessionProjectUnavailable
+		}
+		quota = project.Quotas
+		return nil
+	})
+	if err != nil {
+		return Quotas{}, err
+	}
+	return quota, nil
+}
 
 func (gateway *Gateway) expireHranaSession(ctx context.Context, identifier string) error {
 	gateway.mu.Lock()
@@ -27,18 +51,11 @@ func (gateway *Gateway) expireHranaSession(ctx context.Context, identifier strin
 	if session.poisoned {
 		return errHranaSessionUnknown
 	}
-	state, err := gateway.config.State.Snapshot()
+	quota, err := sessionCleanupQuota(gateway.config.State, session)
 	if err != nil {
 		return err
 	}
-	if _, blocked := isolatedOperation(state, session.database, true); blocked {
-		return ErrDatabaseQuarantined
-	}
-	project, exists := state.Projects[session.project]
-	if !exists {
-		return errors.New("Hrana session project unavailable")
-	}
-	permit, ok := gateway.admission.reserve(session.project, project.Quotas, false, true)
+	permit, ok := gateway.admission.reserve(session.project, quota, false, true)
 	if !ok {
 		return errHranaSessionBusy
 	}

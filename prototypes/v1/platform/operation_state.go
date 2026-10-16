@@ -40,6 +40,14 @@ type OperationStatus struct {
 	DecisionRequestID     string                `json:"decision_request_id,omitempty"`
 	LocalResourcesRetired bool                  `json:"local_resources_retired"`
 	RetirementRequestID   string                `json:"retirement_request_id,omitempty"`
+	// A recorded release keeps the operation truthful (its outcome is still unknown
+	// and may have committed) while ending the namespace isolation under durability
+	// proof: every affected worker's owned stop plus the data plane's own attestation
+	// that no worker holds the branch. ReleaseEpoch is the epoch the authority
+	// reported at release time, kept for audit.
+	ReleaseRequestID     string `json:"release_request_id,omitempty"`
+	ReleaseAuthorityMode string `json:"release_authority_mode,omitempty"`
+	ReleaseEpoch         uint64 `json:"release_epoch,omitempty"`
 }
 
 type OperationRecord struct {
@@ -181,7 +189,12 @@ func isolatedOperation(state State, database controller.DatabaseID, includePendi
 	var selected OperationStatus
 	found := false
 	for _, record := range state.Operations {
-		if record.Database.Namespace == database.Namespace && (record.State == "quarantined" || record.State == "in_flight" && (includePending || record.Source == "management")) {
+		// A released quarantine no longer blocks admission: the release was recorded
+		// only after the owned workers stopped and the data plane attested that no
+		// worker holds the branch, so the next activation runs on a fresh epoch. The
+		// record itself stays quarantined and may_have_committed, so the history is
+		// still visible.
+		if record.Database.Namespace == database.Namespace && (record.State == "quarantined" && record.ReleaseRequestID == "" || record.State == "in_flight" && (includePending || record.Source == "management")) {
 			if !found || record.OperationID < selected.OperationID {
 				selected, found = record.OperationStatus, true
 			}
@@ -362,7 +375,7 @@ func finishOperation(store StateStore, database controller.DatabaseID, requestID
 		record.State = "quarantined"
 		var rpc *SQLRPCError
 		if errors.As(failure, &rpc) {
-			record.Ambiguous, record.Rejected, record.ExecutionCompleted = rpc.Ambiguous, rpc.Rejected, rpc.ExecutionCompleted
+			record.Ambiguous, record.Rejected, record.ExecutionCompleted = rpc.Ambiguous, rpc.evidence.Rejected(), rpc.evidence.Executed()
 		}
 		record.MayHaveCommitted = true
 		if record.Stage == "close_session" {
@@ -410,6 +423,9 @@ func validateOperations(state State, previous *State) error {
 		if record.RetirementPending && (record.State != "quarantined" || record.Decision == "" || record.LocalResourcesRetired) {
 			return errors.New("unsafe pending retirement")
 		}
+		if record.ReleaseRequestID != "" && (record.State != "quarantined" || record.Decision == "" || !record.LocalResourcesRetired || record.RetirementPending || !labelPattern.MatchString(record.ReleaseRequestID) || !fencedAuthorityMode(record.ReleaseAuthorityMode)) {
+			return errors.New("unsafe isolation release")
+		}
 	}
 	if previous != nil {
 		for key, old := range previous.Operations {
@@ -431,8 +447,23 @@ func validateOperations(state State, previous *State) error {
 				normalized.Decision, normalized.DecisionRequestID = old.Decision, old.DecisionRequestID
 				normalized.LocalResourcesRetired, normalized.RetirementRequestID = old.LocalResourcesRetired, old.RetirementRequestID
 				normalized.RetirementPending = old.RetirementPending
+				normalized.ReleaseRequestID, normalized.ReleaseAuthorityMode, normalized.ReleaseEpoch = old.ReleaseRequestID, old.ReleaseAuthorityMode, old.ReleaseEpoch
 				if old.State == "terminal" && old.Source == "gateway" && old.Action == "open" && old.CleanupOutcome == "pending" && (record.State == "terminal" && record.CleanupOutcome == "completed" || record.State == "quarantined" && record.CleanupOutcome == "unknown") {
 					normalized.State, normalized.CleanupOutcome, normalized.MayHaveCommitted = old.State, old.CleanupOutcome, old.MayHaveCommitted
+				}
+				if old.ReleaseRequestID != "" {
+					// A recorded release is immutable: no path may rewrite or drop it.
+					if record.ReleaseRequestID != old.ReleaseRequestID || record.ReleaseAuthorityMode != old.ReleaseAuthorityMode || record.ReleaseEpoch != old.ReleaseEpoch {
+						return errors.New("isolation release immutable")
+					}
+				} else if record.ReleaseRequestID != "" {
+					// A release may only be recorded once, on a quarantine whose local
+					// retirement already completed, and it never coexists with a pending
+					// retirement intent.
+					if !old.LocalResourcesRetired || old.RetirementPending || record.RetirementPending || record.LocalResourcesRetired != old.LocalResourcesRetired {
+						return errors.New("isolation release must follow completed local retirement")
+					}
+					normalized.ReleaseRequestID, normalized.ReleaseAuthorityMode, normalized.ReleaseEpoch = "", "", 0
 				}
 				if !reflect.DeepEqual(normalized, old) || old.Decision != "" && (record.Decision != old.Decision || record.DecisionRequestID != old.DecisionRequestID) || old.LocalResourcesRetired && (!record.LocalResourcesRetired || record.RetirementRequestID != old.RetirementRequestID) {
 					return errors.New("terminal outcome or quarantine immutable")

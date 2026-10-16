@@ -16,20 +16,51 @@ import (
 	"time"
 
 	controller "peri-loom/controller"
+	"peri-loom/platform/sqlcontract"
 )
 
 const sqlWireLimit = 32 * 1024 * 1024
 
 type SQLRPCError struct {
-	Ambiguous          bool
-	Rejected           bool
-	StatusCode         int
-	ExecutionCompleted bool
-	cause              error
+	Ambiguous  bool
+	StatusCode int
+	// evidence is the worker's own SQL evidence, decoded by sqlcontract: the
+	// statement entered execution and settled, or it never entered execution. It
+	// is unexported and only the two constructors below fill it, which is what
+	// keeps an HTTP status, a dropped socket or an elapsed deadline from ever
+	// claiming what happened to a statement.
+	evidence sqlcontract.Evidence
+	// workerFailure is the failure text a worker reported for a statement. It is
+	// classified for the client contract and logged, never echoed to the caller.
+	workerFailure string
+	cause         error
 }
 
 func (failure *SQLRPCError) Error() string { return "SQL upstream request failed" }
 func (failure *SQLRPCError) Unwrap() error { return failure.cause }
+
+// sqlWorkerFailureFromReply is the only constructor for the execution state the
+// platform reports about a statement, and sql_upstream_codec.go is its only
+// caller. A present "execution_completed" states the worker's own verdict; an
+// absent one proves nothing and stays ambiguous. The worker answers every SQL
+// reply with HTTP 200 (prototypes/v1/src/worker_rpc/server.rs), so a reply the
+// platform could not decode has no evidence to offer and never reaches here.
+func sqlWorkerFailureFromReply(present, completed bool, message string) *SQLRPCError {
+	if !present {
+		return &SQLRPCError{Ambiguous: true, workerFailure: message}
+	}
+	rejected := !completed
+	failure := &SQLRPCError{evidence: sqlcontract.EvidenceFromDirections(completed, rejected, false)}
+	failure.workerFailure = message
+	return failure
+}
+
+// sqlRecordedEvidence restores the evidence a durable operation record kept, so a
+// later request against an isolated session is answered from the same proof that
+// was recorded. The record is written from a SQLRPCError that already carried it.
+func sqlRecordedEvidence(record OperationStatus) *SQLRPCError {
+	return &SQLRPCError{Ambiguous: record.Ambiguous, evidence: sqlcontract.EvidenceFromDirections(record.ExecutionCompleted, record.Rejected, record.MayHaveCommitted)}
+}
 
 type sqlHTTPUpstream struct {
 	tokens  map[string]string
@@ -55,8 +86,26 @@ func NewSQLUpstreamWithTimeout(workerSQLTokens map[string]string, timeout time.D
 		tokens[worker] = token
 	}
 	return &sqlHTTPUpstream{tokens: tokens, timeout: timeout, client: &http.Client{
-		Timeout:       timeout,
-		Transport:     &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, DisableKeepAlives: true, ResponseHeaderTimeout: timeout, MaxResponseHeaderBytes: 16384},
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:                  nil,
+			DialContext:            (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ResponseHeaderTimeout:  timeout,
+			MaxResponseHeaderBytes: 16384,
+			// Connections are pooled. The worker now keeps its side open for its own
+			// idle window and answers with "keep-alive", so dispatches do reuse sockets
+			// and the TIME_WAIT churn is gone. Idle connections stay bounded, and a
+			// request that lands on a socket the worker is closing fails as an ambiguous
+			// upstream failure rather than being retried, because a retry could
+			// double-apply a commit. This client idle timeout still matches the worker's
+			// window, so a request can be handed a socket the worker is about to close;
+			// that race is a known open defect (closing it means retiring connections
+			// here strictly before the worker does, which trades reuse for reconnects on
+			// bursty traffic) and is deliberately not papered over by replaying.
+			MaxIdleConns:        64,
+			MaxIdleConnsPerHost: 16,
+			IdleConnTimeout:     5 * time.Second,
+		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
 }
@@ -144,8 +193,12 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		rejected := response.StatusCode >= 400 && response.StatusCode < 500
-		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenHTTPStatus, &SQLRPCError{Ambiguous: !rejected, Rejected: rejected, StatusCode: response.StatusCode})
+		// The status code is not SQL evidence. The worker answers every SQL reply
+		// with 200 and everything else with a bare {"error":...} body, so this exit
+		// learns only that the request reached the worker. Whether the statement ran
+		// is unproven, and the caller is told exactly that: outcome_unknown with a
+		// possible commit, never a definite "rejected".
+		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenHTTPStatus, &SQLRPCError{Ambiguous: true, StatusCode: response.StatusCode})
 	}
 	if response.ContentLength > sqlWireLimit {
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenBody, &SQLRPCError{Ambiguous: true})

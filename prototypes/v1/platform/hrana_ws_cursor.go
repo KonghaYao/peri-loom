@@ -44,17 +44,17 @@ func (handler *hranaHTTP) readCursorCondition(request *http.Request, credential,
 }
 
 func (handler *hranaHTTP) cursorStatementReadonly(request *http.Request, credential, session, sql string) (bool, string, bool) {
-	code, result, failure := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": sql})
-	if failure != "" {
-		return false, failure, code >= 500 || failure == "outcome_unknown"
+	reply := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": sql})
+	if reply.code != "" {
+		return false, reply.code, reply.unknown
 	}
-	if code != http.StatusOK || !validDescribeResult(result) {
+	if reply.status != http.StatusOK || !validDescribeResult(reply.result) {
 		return false, "invalid_native_describe", true
 	}
 	var description struct {
 		Readonly bool `json:"is_readonly"`
 	}
-	if json.Unmarshal(result, &description) != nil {
+	if json.Unmarshal(reply.result, &description) != nil {
 		return false, "invalid_native_describe", true
 	}
 	return description.Readonly, "", false
@@ -134,14 +134,14 @@ func (handler *hranaHTTP) wsOpenReadStep(request *http.Request, credential, sess
 	for index, argument := range statement.NamedArgs {
 		namedArgs[index] = namedSQLArgument{Name: argument.Name, Value: sqlArgument{Type: argument.Value.Type, Value: argument.Value.Value, Base64: argument.Value.Base64}}
 	}
-	code, result, failure := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": write})
-	if failure != "" {
-		return nil, failure, code >= 500 || failure == "outcome_unknown"
+	reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": write})
+	if reply.code != "" {
+		return nil, reply.code, reply.unknown
 	}
 	var metadata struct {
 		Cols []any `json:"cols"`
 	}
-	if json.Unmarshal(result, &metadata) != nil || metadata.Cols == nil {
+	if json.Unmarshal(reply.result, &metadata) != nil || metadata.Cols == nil {
 		return nil, "invalid_native_cursor", true
 	}
 	return metadata.Cols, "", false
@@ -157,14 +157,14 @@ func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string
 	}
 	if cursor.native && cursor.active && !cursor.ended && len(cursor.entries) < count {
 		pageSize := min(256, count-len(cursor.entries))
-		code, result, failure := handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": cursor.session, "max_rows": pageSize, "write_cursor": cursor.write})
-		if failure != "" {
-			fatal := code >= 500 || failure == "outcome_unknown"
+		reply := handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": cursor.session, "max_rows": pageSize, "write_cursor": cursor.write})
+		if reply.code != "" {
+			fatal := reply.unknown
 			if !fatal {
 				cursor.ended = true
 				cursor.entries = nil
 			}
-			return nil, failure, fatal
+			return nil, reply.code, fatal
 		}
 		var page struct {
 			Rows             [][]any `json:"rows"`
@@ -172,7 +172,7 @@ func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string
 			AffectedRowCount *uint32 `json:"affected_row_count"`
 			LastInsertRowid  *int64  `json:"last_insert_rowid"`
 		}
-		decoder := json.NewDecoder(bytes.NewReader(result))
+		decoder := json.NewDecoder(bytes.NewReader(reply.result))
 		decoder.UseNumber()
 		if decoder.Decode(&page) != nil || page.Rows == nil {
 			return nil, "invalid_native_cursor_page", true

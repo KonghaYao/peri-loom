@@ -87,9 +87,19 @@ test("flagged terminal SQL error retains session for user-issued rollback only",
   assert.equal(rpc.requests.length, 2);
 });
 
+test("settled failure without commit risk is a definite answer", async () => {
+  const rpc = transport((_path, body) => rpc.requests.length === 1 ?
+    reply(body.request_id, null, {code: "sql_error", execution_completed: true, may_have_committed: false}, 400) : reply(body.request_id, {executed: true}));
+  await assert.rejects(rpc.call("/v1/sql/query", {session: sessionID, sql: "SELECT bad"}, true),
+    failure => failure.code === "sql_error" && failure.executionCompleted && !failure.mayHaveCommitted && !failure.outcomeUnknown);
+  assert.equal(rpc.requests.length, 1);
+  await rpc.call("/v1/sql/execute", {session: sessionID, sql: "ROLLBACK"});
+  assert.equal(rpc.requests.length, 2);
+});
+
 for (const error of [
   {code: "sql_error"}, {code: "sql_error", execution_completed: true},
-  {code: "sql_error", execution_completed: true, may_have_committed: false},
+  {code: "sql_error", execution_completed: false, may_have_committed: true},
   {code: "sql_error", execution_completed: "true", may_have_committed: true},
   {code: "quota_exceeded", extra: true}, {code: 429},
 ]) {
@@ -101,9 +111,11 @@ for (const error of [
   });
 }
 
-for (const code of ["outcome_unknown", "session_moved"]) {
+// session_moved is a 409 refusal the gateway proved; only the platform's own
+// unresolved answer is a 502. Both must poison the session.
+for (const [code, status] of [["outcome_unknown", 502], ["session_moved", 409]]) {
   test(`${code} poisons execute/query/close with one actual dispatch`, async () => {
-    const rpc = transport((_path, body) => reply(body.request_id, null, {code}, 502));
+    const rpc = transport((_path, body) => reply(body.request_id, null, {code}, status));
     await assert.rejects(rpc.call("/v1/sql/query", {session: sessionID, sql: "COMMIT"}), {code});
     for (const action of ["execute", "query", "close"]) await assert.rejects(
       rpc.call(`/v1/sql/${action}`, {session: sessionID, sql: "ROLLBACK"}), {code: "session_unusable"});

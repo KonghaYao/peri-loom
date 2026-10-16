@@ -193,7 +193,7 @@ func TestSQLOpenObservationDecoderResultsUnchanged(test *testing.T) {
 					}
 				} else {
 					failure := sqlTestFailure(test, err)
-					if failure.Ambiguous != scenario.ambiguous || failure.ExecutionCompleted != scenario.completed || failure.Rejected || failure.StatusCode != 0 || failure.cause != nil || failure.Error() != "SQL upstream request failed" {
+					if failure.Ambiguous != scenario.ambiguous || failure.evidence.Executed() != scenario.completed || failure.evidence.Rejected() || failure.StatusCode != 0 || failure.cause != nil || failure.Error() != "SQL upstream request failed" {
 						test.Fatal("original decoder flags/error changed")
 					}
 				}
@@ -257,7 +257,9 @@ func TestSQLOpenObservationOriginalTransportUnchanged(test *testing.T) {
 				ctx := bindSQLOpenObservation(context.Background(), observer, "public_open")
 				err := upstream.Call(ctx, controller.Worker{ID: "worker-a", Address: "http://127.0.0.1:1"}, "public_open", map[string]any{"command": "open_session"}, nil)
 				failure := sqlTestFailure(test, err)
-				if failure.Ambiguous != (scenario != "http_status") || failure.Rejected != (scenario == "http_status") || failure.ExecutionCompleted || failure.cause != nil || httpUpstream.client != originalClient {
+				// No branch of this transport may claim execution state: the status
+				// code, the body and the socket prove nothing about the statement.
+				if !failure.Ambiguous || failure.evidence.Rejected() || failure.evidence.Executed() || failure.cause != nil || httpUpstream.client != originalClient {
 					test.Fatal("observation changed original transport outcome/client")
 				}
 				if mode == "on" {
@@ -325,7 +327,7 @@ func TestSQLOpenObservationGatewayClassificationAndProbeExclusion(test *testing.
 				if scenario == "unknown" || scenario == "terminal" {
 					probe.negativeOpen = true
 					fixture.upstream.setHook(func(context.Context, controller.Worker, map[string]any) (any, error) {
-						return nil, &SQLRPCError{Ambiguous: scenario == "unknown", ExecutionCompleted: scenario == "terminal", cause: errors.New("private_token_SQL_namespace")}
+						return nil, testRPCError(scenario == "terminal", false, SQLRPCError{Ambiguous: scenario == "unknown", cause: errors.New("private_token_SQL_namespace")})
 					})
 				}
 				if scenario != "success" {

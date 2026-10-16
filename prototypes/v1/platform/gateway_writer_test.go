@@ -88,7 +88,7 @@ func TestGatewayWriterConstraintKeepsOwnerThenRollback(test *testing.T) {
 	owner := writerGatewaySession(test, fixture)
 	fixture.upstream.setHook(func(ctx context.Context, worker controller.Worker, command map[string]any) (any, error) {
 		if command["sql"] == "constraint" {
-			return nil, &SQLRPCError{ExecutionCompleted: true}
+			return nil, testRPCError(true, false, SQLRPCError{})
 		}
 		return nil, nil
 	})

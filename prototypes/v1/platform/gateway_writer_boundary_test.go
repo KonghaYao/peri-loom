@@ -10,7 +10,7 @@ import (
 
 func TestGatewayWriterUnsupportedProfileNoNativeOpen(test *testing.T) {
 	fixture, upstream := newWriterGatewayFixture(test)
-	upstream.profileError = &SQLRPCError{Rejected: true}
+	upstream.profileError = testRPCError(false, true, SQLRPCError{})
 	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first})
 	if gatewayCode(test, response) != "writer_profile_unavailable" || fixture.upstream.count("open_session") != 0 || upstream.profileCalls != 1 {
 		test.Fatal("old/disabled worker was treated as reserve capable")

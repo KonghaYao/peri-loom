@@ -70,7 +70,7 @@ func TestSQLUpstreamPrivateMaintenanceStrictSessionOnly(test *testing.T) {
 			{"command": operation, "session": strings.Repeat("a", 64), "database": "arbitrary"},
 		} {
 			failure := sqlTestFailure(test, upstream.Call(context.Background(), controller.Worker{ID: "worker-a", Address: server.URL}, "invalid-admin", fields, nil))
-			if failure.Ambiguous || failure.ExecutionCompleted {
+			if failure.Ambiguous || failure.evidence.Executed() {
 				test.Fatal("invalid private command was not rejected before dispatch")
 			}
 		}

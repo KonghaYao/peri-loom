@@ -1,4 +1,5 @@
 import { encodeLosslessJSON, parseLosslessJSON } from './features/lossless';
+import { commitRisk, executed, unknown as unknownFailure } from '../../web/sqlcontract.js';
 
 export type DatabaseID = { namespace: { tenant: string; database: string }; branch: string };
 export type Database = { id: DatabaseID; project: string; state: string; role?: string; root_incarnation?: string; branch_incarnation?: number | bigint };
@@ -94,8 +95,10 @@ export function createAPI(getCredential: () => string) {
         if (!envelope.ok) {
           if (envelope.result !== null || !record(envelope.error) || typeof envelope.error.code !== 'string') throw unknown(id);
           const error = envelope.error as Record<string, unknown> & { code: string };
-          if (!/^[a-z][a-z0-9_]{0,63}$/.test(error.code) || error.code === 'sql_error' && (error.execution_completed !== true || error.may_have_committed !== true)) throw unknown(id);
-          throw new APIError(error.code, id, error.code === 'outcome_unknown' || error.code === 'session_moved', error);
+          if (!/^[a-z][a-z0-9_]{0,63}$/.test(error.code) || unknownFailure(error, response.status)) throw unknown(id);
+          throw new APIError(error.code, id, error.code === 'outcome_unknown' || error.code === 'session_moved', {
+            ...error, execution_completed: executed(error), may_have_committed: commitRisk(error),
+          });
         }
         if (!response.ok || envelope.error !== null) throw unknown(id);
         const result = envelope.result;

@@ -25,7 +25,7 @@ func (gateway *Gateway) isolatedSessionFailure(database controller.DatabaseID) g
 	}
 	if record, found := isolatedOperation(state, database, true); found {
 		result.operationID, result.operationStage, result.operationObservation = record.OperationID, record.Stage, &record
-		result.rpc = &SQLRPCError{Ambiguous: record.Ambiguous, Rejected: record.Rejected, ExecutionCompleted: record.ExecutionCompleted}
+		result.rpc = sqlRecordedEvidence(record)
 	}
 	return result
 }
@@ -129,7 +129,7 @@ func applyOperationOutcome(record *OperationRecord, result gatewayResult, stage 
 		record.Session = result.session.upstream
 	}
 	if result.rpc != nil {
-		record.Ambiguous, record.Rejected, record.ExecutionCompleted = result.rpc.Ambiguous, result.rpc.Rejected, result.rpc.ExecutionCompleted
+		record.Ambiguous, record.Rejected, record.ExecutionCompleted = result.rpc.Ambiguous, result.rpc.evidence.Rejected(), result.rpc.evidence.Executed()
 	}
 	if result.code == "outcome_unknown" {
 		record.State, record.MayHaveCommitted = "quarantined", true
@@ -142,7 +142,7 @@ func applyOperationOutcome(record *OperationRecord, result gatewayResult, stage 
 	}
 	record.State = "terminal"
 	record.BusinessOutcome = "not_executed"
-	if result.code == "" || result.code == "sql_error" || result.code == "result_limit" {
+	if sqlExecutedOutcome(result) {
 		record.BusinessOutcome = "completed"
 		record.ExecutionProven = true
 	}

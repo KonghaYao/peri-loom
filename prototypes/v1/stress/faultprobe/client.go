@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"peri-loom/platform/sqlcontract"
 )
 
 type Failure struct {
@@ -121,15 +123,11 @@ func (client *Client) call(ctx context.Context, path string, input map[string]an
 		return nil, &Failure{Code: "response_unavailable_or_bound", Unknown: true}
 	}
 	var envelope struct {
-		Version   int             `json:"version"`
-		RequestID string          `json:"request_id"`
-		OK        *bool           `json:"ok"`
-		Result    json.RawMessage `json:"result"`
-		Error     *struct {
-			Code               string `json:"code"`
-			ExecutionCompleted bool   `json:"execution_completed,omitempty"`
-			MayHaveCommitted   bool   `json:"may_have_committed,omitempty"`
-		} `json:"error"`
+		Version   int                  `json:"version"`
+		RequestID string               `json:"request_id"`
+		OK        *bool                `json:"ok"`
+		Result    json.RawMessage      `json:"result"`
+		Error     *sqlcontract.Failure `json:"error"`
 	}
 	if strict(body, &envelope) != nil || envelope.Version != 1 || envelope.RequestID != identifier || envelope.OK == nil {
 		return nil, &Failure{Code: "invalid_envelope", Unknown: true}
@@ -138,17 +136,14 @@ func (client *Client) call(ctx context.Context, path string, input map[string]an
 		if envelope.Error == nil || !bytes.Equal(bytes.TrimSpace(envelope.Result), []byte("null")) {
 			return nil, &Failure{Code: "invalid_failure", Unknown: true}
 		}
-		failure = &Failure{Code: "unrecognized_error", Unknown: true, HTTPStatus: response.StatusCode, ExecutionCompleted: envelope.Error.ExecutionCompleted, MayHaveCommitted: envelope.Error.MayHaveCommitted}
-		switch envelope.Error.Code {
-		case "sql_error":
-			failure.Code = "sql_error"
-			failure.Unknown = !(response.StatusCode == 400 && failure.ExecutionCompleted && failure.MayHaveCommitted)
-		case "quota_exceeded", "forbidden", "unauthenticated", "sql_limit", "request_limit", "invalid_request", "invalid_session", "not_found", "method_not_allowed":
-			failure.Code = envelope.Error.Code
-			failure.Unknown = false
-		case "outcome_unknown", "operation_incomplete", "audit_unavailable":
-			failure.Code = envelope.Error.Code
+		// sqlcontract owns the code vocabulary, the evidence rule and the
+		// unknown-outcome rule; this probe only projects them onto its own record.
+		if len(envelope.Error.Unexpected()) > 0 {
+			return nil, &Failure{Code: "invalid_failure", Unknown: true}
 		}
+		reply := *envelope.Error
+		failure = &Failure{Code: reply.Code(), Unknown: reply.Uncertain(), HTTPStatus: response.StatusCode,
+			ExecutionCompleted: reply.Executed(), MayHaveCommitted: reply.MayHaveCommitted()}
 		return nil, failure
 	}
 	if envelope.Error != nil || response.StatusCode != 200 || len(envelope.Result) == 0 || bytes.Equal(bytes.TrimSpace(envelope.Result), []byte("null")) {

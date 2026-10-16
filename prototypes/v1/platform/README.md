@@ -93,11 +93,32 @@ parsing; clients must not weaken response-ID checks or retry SQL automatically.
 
 SQL requests are never automatically retried. A lost reply may have committed;
 use business idempotency keys and inspect durable state before reconnecting.
-Native terminal `sql_error` replies explicitly indicate `execution_completed`
-and `may_have_committed`: the session can issue an explicit rollback, but a
-multi-statement committed prefix is not rolled back automatically. Unknown
+Worker SQL failures are answered with a machine-readable `error.code` and a
+sanitized `error.message`; the Worker text stays in the Gateway log. `sql_error`
+(400) is the statement itself failing, `sql_timeout` (504) the Worker
+per-statement deadline, `sql_budget_exceeded` (400) the per-statement compute
+budget, `result_limit`/`sql_limit` (413) the Worker result or SQL size budget,
+`sql_conflict` (409) writer admission held by another writer, `sql_unavailable`
+(503) a refused admission or lost ownership, and `readonly_session` (403) a write
+on a read-only session. Settled failures carry
+`execution_completed=true` plus `may_have_committed`; a statement the Worker
+proved it never entered execution carries `execution_completed=false` and
+`may_have_committed=false`. Only the Worker's own SQL reply states which of the
+two happened: an answer the Gateway could not decode as that reply, including any
+non-200 status on the Worker `/sql` call, is answered as `outcome_unknown` with
+`possible_commit` rather than as a proven rejection. The session can issue an
+explicit rollback, but a multi-statement committed prefix is not rolled back
+automatically. Unknown
 outcomes retain admission permits and poison the session instead of treating
-timeout, close, or readback as cancellation proof. Migration invalidates old
+timeout, close, or readback as cancellation proof. Every client — the Hrana
+adapters, the Go and TypeScript SDKs, the browser console and the stress
+harnesses — decides from `peri-loom/platform/sqlcontract`, which owns the code
+vocabulary, the meaning of the two evidence fields and the rule that a failure
+proving what happened to a statement is never an unknown outcome. The two fields
+are unexported and decoded by that package alone, and
+`TestHranaAgreesWithTheFailureContract` in the platform package drives each
+consumer over every code, evidence shape and status, so a code added to the
+vocabulary cannot fall out of a consumer's table. Migration invalidates old
 session bindings; reopen explicitly against the current placement.
 
 Native SQL sessions idle for 5 minutes are closed by the Gateway's background

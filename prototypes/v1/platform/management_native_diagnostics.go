@@ -91,8 +91,8 @@ func nativeToolRecord(path, stage, phase, requestID string, cause error) nativeD
 	if errors.As(cause, &rpc) {
 		record.RPCError = true
 		record.Ambiguous = rpc.Ambiguous
-		record.Rejected = rpc.Rejected
-		record.ExecutionCompleted = rpc.ExecutionCompleted
+		record.Rejected = rpc.evidence.Rejected()
+		record.ExecutionCompleted = rpc.evidence.Executed()
 	}
 	return record
 }

@@ -126,7 +126,7 @@ func TestManagementNativeDiagnosticsSuccessStillCloses(test *testing.T) {
 
 func TestManagementNativeDiagnosticsClosedFieldsAndTypedOutcomes(test *testing.T) {
 	secret := errors.New("secret-token SQL-text private-namespace")
-	for _, cause := range []error{secret, fmt.Errorf("private context: %w", &SQLRPCError{Ambiguous: true, cause: secret}), &SQLRPCError{Rejected: true}, &SQLRPCError{ExecutionCompleted: true}} {
+	for _, cause := range []error{secret, fmt.Errorf("private context: %w", &SQLRPCError{Ambiguous: true, cause: secret}), testRPCError(false, true, SQLRPCError{}), testRPCError(true, false, SQLRPCError{})} {
 		budget := nativeDiagnosticBudget{}
 		var output bytes.Buffer
 		record := nativeToolRecord("/v1/databases/checkpoint", "tool_rpc", "secret-phase", "safe-id", cause)
@@ -137,7 +137,7 @@ func TestManagementNativeDiagnosticsClosedFieldsAndTypedOutcomes(test *testing.T
 		}
 		var rpc *SQLRPCError
 		if errors.As(cause, &rpc) {
-			if !decoded.RPCError || decoded.Ambiguous != rpc.Ambiguous || decoded.Rejected != rpc.Rejected || decoded.ExecutionCompleted != rpc.ExecutionCompleted {
+			if !decoded.RPCError || decoded.Ambiguous != rpc.Ambiguous || decoded.Rejected != rpc.evidence.Rejected() || decoded.ExecutionCompleted != rpc.evidence.Executed() {
 				test.Fatal("typed RPC outcome changed")
 			}
 		} else if decoded.RPCError || decoded.Ambiguous || decoded.Rejected || decoded.ExecutionCompleted {

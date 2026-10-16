@@ -82,15 +82,15 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		handler.reserved++
 		handler.mu.Unlock()
 		defer func() { handler.mu.Lock(); handler.reserved--; handler.mu.Unlock() }()
-		code, result, failure := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
-		if failure != "" || code != http.StatusOK {
-			http.Error(writer, "cursor session unavailable", code)
+		reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
+		if reply.code != "" || reply.status != http.StatusOK {
+			http.Error(writer, "cursor session unavailable", reply.status)
 			return true
 		}
 		var opened struct {
 			Session string `json:"session"`
 		}
-		if json.Unmarshal(result, &opened) != nil || !publicSessionID(opened.Session) {
+		if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
 			http.Error(writer, "cursor session outcome unknown", 502)
 			return true
 		}
@@ -136,9 +136,9 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		if active {
 			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			code, _, failure := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": stream.session, "write_cursor": activeWrite})
-			if failure != "" || code != http.StatusOK {
-				log.Printf("Hrana native cursor cleanup not proven: status=%d code=%s", code, failure)
+			reply := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": stream.session, "write_cursor": activeWrite})
+			if reply.code != "" || reply.status != http.StatusOK {
+				log.Printf("Hrana native cursor cleanup not proven: status=%d code=%s", reply.status, reply.code)
 				failed = true
 			}
 		}
@@ -262,10 +262,10 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 			namedArgs[index] = namedSQLArgument{Name: argument.Name, Value: sqlArgument{Type: argument.Value.Type, Value: argument.Value.Value, Base64: argument.Value.Base64}}
 		}
 		writeCursor := !readonly
-		code, result, failure := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writeCursor})
-		if failure != "" || code != http.StatusOK {
-			if failure != "" && code < 500 && failure != "outcome_unknown" {
-				encoded, err := hranaProtoError(map[string]any{"message": failure, "code": failure})
+		reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writeCursor})
+		if reply.code != "" || reply.status != http.StatusOK {
+			if reply.code != "" && !reply.unknown {
+				encoded, err := hranaProtoError(map[string]any{"message": reply.code, "code": reply.code})
 				if err != nil || !startResponse() {
 					failed = true
 					return true
@@ -279,7 +279,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 			}
 			failed = sentHeader
 			if !sentHeader {
-				http.Error(writer, "cursor open failed: "+failure, http.StatusBadGateway)
+				http.Error(writer, "cursor open failed: "+reply.code, http.StatusBadGateway)
 			}
 			return true
 		}
@@ -288,7 +288,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		var metadata struct {
 			Cols []any `json:"cols"`
 		}
-		if json.Unmarshal(result, &metadata) != nil || metadata.Cols == nil {
+		if json.Unmarshal(reply.result, &metadata) != nil || metadata.Cols == nil {
 			failed = true
 			if !sentHeader {
 				http.Error(writer, "invalid cursor metadata", 502)
@@ -315,9 +315,9 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				failed = true
 				return true
 			}
-			code, result, failure = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writeCursor})
-			if failure != "" || code != http.StatusOK {
-				log.Printf("Hrana native cursor fetch failed: step=%d status=%d code=%s", index, code, failure)
+			reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writeCursor})
+			if reply.code != "" || reply.status != http.StatusOK {
+				log.Printf("Hrana native cursor fetch failed: step=%d status=%d code=%s", index, reply.status, reply.code)
 				failed = true
 				return true
 			}
@@ -327,7 +327,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				AffectedRowCount *uint32 `json:"affected_row_count"`
 				LastInsertRowid  *int64  `json:"last_insert_rowid"`
 			}
-			decoder := json.NewDecoder(bytes.NewReader(result))
+			decoder := json.NewDecoder(bytes.NewReader(reply.result))
 			decoder.UseNumber()
 			if decoder.Decode(&page) != nil || page.Rows == nil {
 				log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)

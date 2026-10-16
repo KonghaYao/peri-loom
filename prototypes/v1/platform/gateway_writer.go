@@ -53,7 +53,7 @@ func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession
 	}
 	state, err := gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, session.worker, requestID, command, output)
 	var failure *SQLRPCError
-	settled := err == nil || errors.As(err, &failure) && failure.ExecutionCompleted && !failure.Ambiguous
+	settled := err == nil || errors.As(err, &failure) && failure.evidence.Executed() && !failure.Ambiguous
 	if !settled {
 		return err
 	}

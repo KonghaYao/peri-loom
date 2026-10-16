@@ -209,7 +209,7 @@ func TestOperationSidecarDoesNotRewriteRegistry(test *testing.T) {
 	}
 }
 
-func TestOperationSidecarRegistryCheckpointWinsAfterCrash(test *testing.T) {
+func TestOperationLogRegistryCheckpointWinsAfterCrash(test *testing.T) {
 	store := operationDurableStore(test)
 	database := securityDatabase()
 	directory := filepath.Dir(store.(*stateStore).disk.path)
@@ -225,18 +225,12 @@ func TestOperationSidecarRegistryCheckpointWinsAfterCrash(test *testing.T) {
 	}); err != nil {
 		test.Fatal(err)
 	}
-	// Model a crash after the registry commit but before its sidecar checkpoint:
-	// the older sidecar is valid, yet the newer registry is authoritative.
-	concrete := store.(*stateStore)
-	concrete.operations.mutex.Lock()
-	if err := concrete.operations.commit(concrete.operations.revision+1, durableOperations{
-		Version: 1, BaseRevision: concrete.state.Revision - 1,
-		Records: map[string]OperationRecord{},
-	}); err != nil {
-		concrete.operations.mutex.Unlock()
+	// A crash right after the registry commit leaves the log trailing that
+	// revision. The payload is authoritative for everything the log already
+	// contained, and the log continues from the new revision.
+	if err := beginOperation(store, database, "after", "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
 		test.Fatal(err)
 	}
-	concrete.operations.mutex.Unlock()
 	if err := store.Close(); err != nil {
 		test.Fatal(err)
 	}
@@ -246,8 +240,8 @@ func TestOperationSidecarRegistryCheckpointWinsAfterCrash(test *testing.T) {
 	}
 	defer reopened.Close()
 	state, err := reopened.Snapshot()
-	if err != nil || state.Organizations["second"].ID != "second" || state.Operations[operationKey(database, "checkpoint")].State != "terminal" {
-		test.Fatalf("newer registry did not restore sidecar: %v", err)
+	if err != nil || state.Organizations["second"].ID != "second" || state.Operations[operationKey(database, "checkpoint")].State != "terminal" || state.Operations[operationKey(database, "after")].State != "quarantined" {
+		test.Fatalf("registry commit and log continuation disagree: %v", err)
 	}
 }
 

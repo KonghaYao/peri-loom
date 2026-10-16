@@ -197,9 +197,9 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 		}
 		cursor := cursors[message.CursorID]
 		if cursor.native && cursor.active {
-			code, _, failure := handler.call(request, credential, "/v1/sql/cursor/close", map[string]any{"session": cursor.session, "write_cursor": cursor.write})
-			if failure != "" {
-				return nil, failure, code >= 500 || failure == "outcome_unknown"
+			reply := handler.call(request, credential, "/v1/sql/cursor/close", map[string]any{"session": cursor.session, "write_cursor": cursor.write})
+			if reply.code != "" {
+				return nil, reply.code, reply.unknown
 			}
 		}
 		delete(cursors, message.CursorID)
@@ -222,22 +222,22 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 			handler.reserved--
 			handler.mu.Unlock()
 		}()
-		code, result, failure := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
-		if code >= 500 || failure == "outcome_unknown" {
+		reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
+		if reply.unknown {
 			return nil, "", true
 		}
-		if failure != "" {
-			return nil, failure, false
+		if reply.code != "" {
+			return nil, reply.code, false
 		}
 		var opened struct {
 			Session string `json:"session"`
 		}
-		if json.Unmarshal(result, &opened) != nil || !publicSessionID(opened.Session) {
+		if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
 			return nil, "", true
 		}
 		baton, err := controller.RandomID()
 		if err != nil {
-			_, _, _ = handler.call(request, credential, "/v1/sql/close", map[string]any{"session": opened.Session})
+			_ = handler.call(request, credential, "/v1/sql/close", map[string]any{"session": opened.Session})
 			return nil, "", true
 		}
 		handler.mu.Lock()

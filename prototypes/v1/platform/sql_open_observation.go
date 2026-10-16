@@ -109,16 +109,21 @@ func observeSQLOpen(ctx context.Context, requestID string, stage sqlOpenObservat
 		return
 	}
 	record := SQLOpenObservation{CallSequence: binding.sequence, RequestID: requestID, Stage: string(stage), Reason: string(reason)}
+	// The closed vocabulary sql_failure.go answers a caller with: a new class
+	// belongs here, otherwise the observation reports the failure without saying
+	// which class it was.
 	switch classification {
-	case "outcome_unknown", "upstream_rejected", "upstream_unavailable", "sql_error":
+	case "outcome_unknown", "upstream_rejected", "upstream_unavailable", "sql_error",
+		"sql_timeout", "sql_budget_exceeded", "sql_conflict", "sql_unavailable",
+		"readonly_session", "result_limit", "sql_limit":
 		record.Classification = classification
 	}
 	var failure *SQLRPCError
 	if errors.As(cause, &failure) && failure != nil {
 		record.RPCError = true
 		record.Ambiguous = failure.Ambiguous
-		record.Rejected = failure.Rejected
-		record.ExecutionCompleted = failure.ExecutionCompleted
+		record.Rejected = failure.evidence.Rejected()
+		record.ExecutionCompleted = failure.evidence.Executed()
 	}
 	for {
 		previous := binding.observer.events.Load()

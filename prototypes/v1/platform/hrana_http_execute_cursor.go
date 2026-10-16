@@ -10,9 +10,9 @@ import (
 )
 
 func (handler *hranaHTTP) executeCursor(request *http.Request, credential, session, sql string, args []sqlArgument, namedArgs []namedSQLArgument, writing, discardRows bool) (value any, failure string, unknown bool) {
-	code, result, failure := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": sql, "args": args, "named_args": namedArgs, "write_cursor": writing})
-	if failure != "" {
-		return nil, failure, code >= 500 || failure == "outcome_unknown"
+	reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": sql, "args": args, "named_args": namedArgs, "write_cursor": writing})
+	if reply.code != "" {
+		return nil, reply.code, reply.unknown
 	}
 	var opened struct {
 		Cols []struct {
@@ -27,12 +27,12 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		status, _, closeFailure := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": session, "write_cursor": writing})
-		if closeFailure != "" || status != http.StatusOK {
+		close := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": session, "write_cursor": writing})
+		if close.code != "" || close.status != http.StatusOK {
 			value, failure, unknown = nil, "cursor_cleanup_unknown", true
 		}
 	}()
-	if code != http.StatusOK || json.Unmarshal(result, &opened) != nil || opened.Cols == nil {
+	if reply.status != http.StatusOK || json.Unmarshal(reply.result, &opened) != nil || opened.Cols == nil {
 		return nil, "invalid_native_cursor", true
 	}
 	cols := make([]any, len(opened.Cols))
@@ -42,12 +42,12 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 	rows := make([][]any, 0)
 	responseBytes := 0
 	for {
-		code, result, failure = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": session, "max_rows": 256, "write_cursor": writing})
-		if failure != "" {
-			return nil, failure, writing || code >= 500 || failure == "outcome_unknown"
+		reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": session, "max_rows": 256, "write_cursor": writing})
+		if reply.code != "" {
+			return nil, reply.code, writing || reply.unknown
 		}
 		if !discardRows {
-			responseBytes += len(result)
+			responseBytes += len(reply.result)
 		}
 		var page struct {
 			Rows             [][]any `json:"rows"`
@@ -55,9 +55,9 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 			AffectedRowCount *uint32 `json:"affected_row_count"`
 			LastInsertRowid  *int64  `json:"last_insert_rowid"`
 		}
-		decoder := json.NewDecoder(bytes.NewReader(result))
+		decoder := json.NewDecoder(bytes.NewReader(reply.result))
 		decoder.UseNumber()
-		if code != http.StatusOK || decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 {
+		if reply.status != http.StatusOK || decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 {
 			return nil, "invalid_native_cursor", true
 		}
 		if !discardRows && (responseBytes > 8*1024*1024 || len(rows)+len(page.Rows) > 100_000) {

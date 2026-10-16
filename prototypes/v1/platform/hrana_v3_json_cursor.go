@@ -313,15 +313,15 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			handler.reserved--
 			handler.mu.Unlock()
 		}()
-		code, response, failure := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
-		if failure != "" || code != http.StatusOK {
-			http.Error(writer, "cursor session unavailable: "+failure, code)
+		reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
+		if reply.code != "" || reply.status != http.StatusOK {
+			http.Error(writer, "cursor session unavailable: "+reply.code, reply.status)
 			return
 		}
 		var opened struct {
 			Session string `json:"session"`
 		}
-		if json.Unmarshal(response, &opened) != nil || !publicSessionID(opened.Session) {
+		if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
 			http.Error(writer, "cursor session outcome unknown", 502)
 			return
 		}
@@ -363,9 +363,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		if active {
 			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			code, _, failure := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": stream.session, "write_cursor": activeWrite})
-			if failure != "" || code != http.StatusOK {
-				log.Printf("Hrana JSON cursor cleanup not proven: status=%d code=%s", code, failure)
+			reply := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": stream.session, "write_cursor": activeWrite})
+			if reply.code != "" || reply.status != http.StatusOK {
+				log.Printf("Hrana JSON cursor cleanup not proven: status=%d code=%s", reply.status, reply.code)
 				failed = true
 			}
 		}
@@ -481,23 +481,23 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			namedArgs[position] = namedSQLArgument{Name: argument.Name, Value: sqlArgument{Type: argument.Value.Type, Value: argument.Value.Value, Base64: argument.Value.Base64}}
 		}
 		writing := !readonly
-		code, response, failure := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writing})
-		if failure != "" || code != http.StatusOK {
-			if failure != "" && code < 500 && failure != "outcome_unknown" {
+		reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writing})
+		if reply.code != "" || reply.status != http.StatusOK {
+			if reply.code != "" && !reply.unknown {
 				failures[index] = true
-				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": failure, "code": failure}}) {
+				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": reply.code, "code": reply.code}}) {
 					return
 				}
 				continue
 			}
-			fatal("cursor open failed: " + failure)
+			fatal("cursor open failed: " + reply.code)
 			return
 		}
 		active, activeWrite = true, writing
 		var metadata struct {
 			Cols []json.RawMessage `json:"cols"`
 		}
-		if json.Unmarshal(response, &metadata) != nil || metadata.Cols == nil {
+		if json.Unmarshal(reply.result, &metadata) != nil || metadata.Cols == nil {
 			fatal("invalid cursor metadata")
 			return
 		}
@@ -509,9 +509,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				failed = true
 				return
 			}
-			code, response, failure = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
-			if failure != "" || code != http.StatusOK {
-				fatal("cursor fetch failed: " + failure)
+			reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
+			if reply.code != "" || reply.status != http.StatusOK {
+				fatal("cursor fetch failed: " + reply.code)
 				return
 			}
 			var page struct {
@@ -520,7 +520,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				AffectedRowCount *uint32 `json:"affected_row_count"`
 				LastInsertRowid  *int64  `json:"last_insert_rowid"`
 			}
-			decoder := json.NewDecoder(bytes.NewReader(response))
+			decoder := json.NewDecoder(bytes.NewReader(reply.result))
 			decoder.UseNumber()
 			if decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 || len(page.Rows) == 0 && !page.Done {
 				fatal("invalid cursor page")

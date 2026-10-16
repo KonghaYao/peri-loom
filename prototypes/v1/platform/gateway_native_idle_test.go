@@ -219,11 +219,11 @@ func TestHranaAdapterSessionKeepsItsOwnIdleTimer(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
 	request := httptest.NewRequest("POST", "/db", nil)
-	status, raw, failure := handler.call(request, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first})
+	reply := handler.call(request, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first})
 	var opened struct {
 		Session string `json:"session"`
 	}
-	if status != 200 || failure != "" || json.Unmarshal(raw, &opened) != nil || !publicSessionID(opened.Session) {
+	if reply.status != 200 || reply.code != "" || json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
 		test.Fatal("Hrana adapter failed to create a marked session")
 	}
 	fixture.gateway.mu.Lock()

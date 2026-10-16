@@ -72,3 +72,65 @@ func TestTerminalSQLFailureAllowsExplicitRollbackWithoutReplay(test *testing.T) 
 		test.Fatal("implicit replay or reconnection")
 	}
 }
+
+// Every Worker SQL failure class must reach the caller as its own code, and only
+// proven evidence may turn a failure into a definite answer.
+func TestTerminalSQLFailureClassesStayDistinguishable(test *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		failure   map[string]any
+		code      string
+		message   string
+		unknown   bool
+		completed bool
+		committed bool
+	}{
+		{"settled deadline", map[string]any{"code": "sql_timeout", "message": "deadline budget", "execution_completed": true, "may_have_committed": true}, "sql_timeout", "deadline budget", false, true, true},
+		{"settled compute budget", map[string]any{"code": "sql_budget_exceeded", "message": "step budget", "execution_completed": true, "may_have_committed": true}, "sql_budget_exceeded", "step budget", false, true, true},
+		{"rejected statement", map[string]any{"code": "sql_error", "message": "could not be prepared", "execution_completed": false, "may_have_committed": false}, "sql_error", "could not be prepared", false, false, false},
+		{"admission refusal", map[string]any{"code": "sql_unavailable", "message": "queue full", "execution_completed": false, "may_have_committed": false}, "sql_unavailable", "queue full", false, false, false},
+		{"missing evidence", map[string]any{"code": "sql_timeout", "message": "deadline budget"}, "outcome_unknown", "", true, false, false},
+		{"settled without commit risk", map[string]any{"code": "sql_error", "execution_completed": true, "may_have_committed": false}, "sql_error", "", false, true, false},
+		// The platform never publishes this pairing, so it proves nothing about
+		// execution; the commit warning it did publish still reaches the caller.
+		{"contradictory evidence", map[string]any{"code": "sql_error", "execution_completed": false, "may_have_committed": true}, "outcome_unknown", "", true, false, true},
+		{"partial evidence", map[string]any{"code": "sql_error", "execution_completed": true}, "outcome_unknown", "", true, false, false},
+		{"unknown code", map[string]any{"code": "invented_code", "execution_completed": true, "may_have_committed": true}, "remote_error", "", false, true, true},
+	} {
+		test.Run(scenario.name, func(test *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var raw map[string]json.RawMessage
+				if err := json.NewDecoder(request.Body).Decode(&raw); err != nil {
+					test.Error(err)
+				}
+				var identifier, sql string
+				_ = json.Unmarshal(raw["request_id"], &identifier)
+				_ = json.Unmarshal(raw["sql"], &sql)
+				if request.URL.Path == "/v1/sql/open" {
+					writeReply(writer, identifier, map[string]any{"session": testSession, "readonly": false})
+					return
+				}
+				if sql == "ROLLBACK" {
+					writeReply(writer, identifier, map[string]bool{"executed": true})
+					return
+				}
+				json.NewEncoder(writer).Encode(map[string]any{"version": 1, "request_id": identifier, "ok": false, "result": nil, "error": scenario.failure})
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL, testCredential, Options{})
+			if err != nil {
+				test.Fatal(err)
+			}
+			session, err := client.Open(context.Background(), testDatabase())
+			if err != nil {
+				test.Fatal(err)
+			}
+			_, err = session.Query(context.Background(), "SELECT 1", "failure-class")
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Code != scenario.code || failure.Message != scenario.message ||
+				failure.OutcomeUnknown != scenario.unknown || failure.ExecutionCompleted != scenario.completed || failure.MayHaveCommitted != scenario.committed {
+				test.Fatalf("failure class lost: %v", err)
+			}
+		})
+	}
+}

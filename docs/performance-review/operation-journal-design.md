@@ -1,6 +1,6 @@
 # F03：operation 持久区与平台注册表
 
-状态：独立持久区和恢复路径已实现；追加日志、group commit 和 T03 实测仍未完成。
+状态：独立持久区、恢复路径与追加日志已实现并接入生产路径（`operation_store.go:16` 打开日志，`operation_store.go:57` 把它接进注册表父视图）；审计已按批提交（`audit.go:326`）。group commit 屏障与 T03 实测仍未完成。
 
 生产 `stateStore` 保留原有 `StateStore` 接口。`updateOperationRecords` 调用私有 `updateOperations`，仅复制有上限的 operation records、验证既有不变量并同步提交 `operations/state.json`。提交成功后才更新内存视图并允许 SQL 派发或确认。提交不明时 poison 状态存储并返回 `ErrStateUncertain`。测试用 StateStore 保持原有 `Update` 适配。
 
@@ -8,7 +8,7 @@
 
 目录更新先将当前合成视图提交到更高 revision 的注册表，再将 sidecar 的 `base_revision` 推进到该 revision。若两次提交间崩溃，重启时较新的注册表包含完整 operation 视图，安全前滚 sidecar；若 sidecar 的 base revision 与注册表相同，则 sidecar 包含之后的 operation-only 提交，作为最新 operation 视图。注册表更新后的 sidecar 提交失败会 poison 服务。单个持久区内部的中断写入不依赖 intent 文件：payload 先原子落盘、floor 随后推进到同一 revision，恢复时用 floor 校验 payload 并允许 floor 落后不超过 `durableRevisionStep` 的前滚；payload 缺失只允许在同一提交的初始化阶段（floor 恰为 0）恢复，其余拒绝启动。这个顺序允许数据库删除、operator decision 等目录与 operation 同时变化的更新安全恢复，无须额外的跨文件 intent。
 
-operation-only 提交不写 `state.json`，因此单次编码与写盘量不再随组织、项目、密钥和数据库注册表扩张。但 sidecar 当前仍是每次完整写入有界 operation 集合，登记、结算和审计各自同步；追加日志、索引、组提交屏障及 T03 负载测量是 F03 的剩余工作。
+operation-only 提交不写 `state.json`，因此单次编码与写盘量不再随组织、项目、密钥和数据库注册表扩张。但 sidecar 当前仍是每次完整写入有界 operation 集合；追加日志已接入，索引、组提交屏障及 T03 负载测量是 F03 的剩余工作。
 
 不能提交的操作（`describe`、只读 cursor open/fetch/close）不写登记意图，只写一条终态记录作为 ACK；Hrana 适配器为实现协议判断而发出的内部只读探针既不留 operation 记录也不写审计行，客户端动作自己记账。可提交操作仍保持登记先于派发。
 
