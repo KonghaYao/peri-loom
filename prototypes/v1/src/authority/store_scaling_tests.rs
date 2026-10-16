@@ -276,11 +276,40 @@ fn statement_sample(objects: usize) -> Result<Sample> {
     })
 }
 
+/// Runs the scaling gate again in a process that has no other test's statements in it,
+/// and carries the child's own output into the failure message: the GATE lines and the
+/// assertion that tripped are what a reader needs, and they are printed only on failure.
+fn run_scaling_gate_isolated() -> Result<()> {
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "authority::store_scaling_tests::statement_cost_does_not_scale_with_catalog_size",
+            "--nocapture",
+        ])
+        .env("PERI_SCALING_GATE_CHILD", "1")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "the isolated scaling gate failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 /// Regression gate for the reason this module exists: a statement must not walk the
 /// store, and the encoded head must not grow with the catalog. Deterministic counters
 /// only, so the gate cannot flake with host load.
+///
+/// The stage probe counts process-wide (statement work runs on session lanes), so a test
+/// running statements alongside this one would land in these windows and read as catalog
+/// growth. The gate therefore measures in a child process of its own, the way the crash
+/// injection does, and only the parent reports the result.
 #[test]
 fn statement_cost_does_not_scale_with_catalog_size() -> Result<()> {
+    if std::env::var_os("PERI_SCALING_GATE_CHILD").is_none() {
+        return run_scaling_gate_isolated();
+    }
     let small = statement_sample(100)?;
     let large = statement_sample(1_200)?;
     for (label, sample) in [("small", &small), ("large", &large)] {
