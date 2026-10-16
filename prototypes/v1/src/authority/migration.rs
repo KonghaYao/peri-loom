@@ -6,12 +6,24 @@ use super::{
 use crate::object_store::{PreconditionFailed, PutCondition};
 use crate::ownership::types::{AccessRole, GrantState, OwnerRecord};
 
+pub(crate) enum BootFailure {
+    Read(anyhow::Error),
+    Unsettled(anyhow::Error),
+}
+
+impl From<anyhow::Error> for BootFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Read(error)
+    }
+}
+
 impl Authority {
-    pub(crate) fn boot_ownership(&self) -> Result<RootSnapshot> {
-        ensure!(
-            self.guard.is_none(),
-            "ownership boot requires trusted authority"
-        );
+    pub(crate) fn boot_ownership(&self) -> Result<RootSnapshot, BootFailure> {
+        if self.guard.is_some() {
+            return Err(BootFailure::Read(anyhow::anyhow!(
+                "ownership boot requires trusted authority"
+            )));
+        }
         let operation = unique_id()?;
         for _ in 0..128 {
             let previous = self.snapshot()?;
@@ -91,14 +103,15 @@ impl Authority {
                         etag: etags
                             .last()
                             .cloned()
-                            .context("authority root etag missing")?,
+                            .context("authority root etag missing")
+                            .map_err(BootFailure::Unsettled)?,
                     })
                 }
                 Err(error) => {
                     if !error.is::<PreconditionFailed>() {
-                        return Err(
-                            error.context("authority boot outcome uncertain; refusing admission")
-                        );
+                        return Err(BootFailure::Unsettled(
+                            error.context("authority boot outcome uncertain; refusing admission"),
+                        ));
                     }
                     let observed = self.snapshot()?;
                     if self.receipt_in(&observed.root, &operation)? == Some(candidate.revision) {
@@ -107,7 +120,7 @@ impl Authority {
                 }
             }
         }
-        Err(PreconditionFailed.into())
+        Err(BootFailure::Unsettled(PreconditionFailed.into()))
     }
 }
 

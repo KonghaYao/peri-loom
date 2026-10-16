@@ -35,6 +35,10 @@ impl ObjectStore for MetricsObjectStore {
         self.inner.supports_strict_fencing()
     }
 
+    fn group_rejection_publishes_nothing(&self) -> bool {
+        self.inner.group_rejection_publishes_nothing()
+    }
+
     fn validate_session(&self) -> Result<()> {
         self.inner.validate_session()
     }

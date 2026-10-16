@@ -4,6 +4,8 @@ mod backend;
 mod http_regression;
 #[path = "p4_verify/leases.rs"]
 mod leases;
+#[path = "p4_verify/namespace_init.rs"]
+mod namespace_init;
 #[path = "p4_verify/process.rs"]
 mod process;
 #[path = "p4_verify/process_support.rs"]

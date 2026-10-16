@@ -142,7 +142,9 @@ pub trait ObjectStore: Send + Sync {
     ///   durable before this call returns. The returned etags follow `writes`
     ///   order.
     /// * `Err(PreconditionFailed)`: all conditions are evaluated against the
-    ///   pre-group state, so no write of the group became visible.
+    ///   pre-group state, so no write of the group became visible. That promise is
+    ///   binding only for backends that declare [`Self::group_rejection_publishes_nothing`];
+    ///   the portable fallback below cannot keep it.
     /// * Any other error means the group is **not** committed. Writes carrying
     ///   [`PutCondition::Absent`] may still have landed; repeating them is safe
     ///   because their key is derived from their content.
@@ -162,6 +164,24 @@ pub trait ObjectStore: Send + Sync {
     }
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()>;
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
+
+    /// Whether a rejected group proves that *no* write of the group became visible.
+    ///
+    /// A caller that turns `put_group`'s `PreconditionFailed` into "this attempt
+    /// changed nothing" — and therefore retries it — is relying on a property the
+    /// default implementation below does not have: it evaluates one condition per
+    /// `put`, so a failure on a later write leaves the earlier, condition-free
+    /// bodies behind. Those bodies are content-addressed and unreferenced, but the
+    /// group is still partly published, and a caller that cannot tell the two
+    /// situations apart has to keep treating the attempt as unsettled.
+    ///
+    /// The default is therefore the conservative answer: an undeclared backend is
+    /// reported as if the rejection may have published part of the group. Backends
+    /// that evaluate every condition against the pre-group state before writing the
+    /// first body override this and let their callers retry.
+    fn group_rejection_publishes_nothing(&self) -> bool {
+        false
+    }
 }
 
 fn validate_key(key: &str) -> Result<()> {

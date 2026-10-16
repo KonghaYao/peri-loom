@@ -163,22 +163,40 @@ pub(super) fn unique_id() -> Result<String> {
 impl Authority {
     pub fn open(store: Arc<dyn ObjectStore>, namespace: Namespace) -> Result<Arc<Self>> {
         let namespace = Namespace::new(namespace.tenant, namespace.database)?;
-        let key = namespace.key("authority/root")?;
-        let object = match store.get(&key)? {
+        let object = match Self::open_root(store.as_ref(), &namespace)? {
             Some(object) => object,
-            None => {
-                let root = CatalogRoot::empty(namespace.clone(), unique_id()?);
-                let result = store.put(&key, &encode(&root)?, PutCondition::Absent);
-                match store.get(&key)? {
-                    Some(object) => object,
-                    None => {
-                        return Err(result.err().unwrap_or_else(|| {
-                            anyhow::anyhow!("authority root missing after initialization")
-                        }))
-                    }
-                }
-            }
+            None => Self::claim_absent_root(store.as_ref(), &namespace)?,
         };
+        Self::from_loaded(store, namespace, object)
+    }
+
+    pub(crate) fn open_root(
+        store: &dyn ObjectStore,
+        namespace: &Namespace,
+    ) -> Result<Option<crate::object_store::StoredObject>> {
+        store.get(&namespace.key("authority/root")?)
+    }
+
+    pub(crate) fn claim_absent_root(
+        store: &dyn ObjectStore,
+        namespace: &Namespace,
+    ) -> Result<crate::object_store::StoredObject> {
+        let key = namespace.key("authority/root")?;
+        let root = CatalogRoot::empty(namespace.clone(), unique_id()?);
+        let result = store.put(&key, &encode(&root)?, PutCondition::Absent);
+        store.get(&key)?.ok_or_else(|| {
+            result
+                .err()
+                .unwrap_or_else(|| anyhow::anyhow!("authority root missing after initialization"))
+        })
+    }
+
+    pub(crate) fn from_loaded(
+        store: Arc<dyn ObjectStore>,
+        namespace: Namespace,
+        object: crate::object_store::StoredObject,
+    ) -> Result<Arc<Self>> {
+        let key = namespace.key("authority/root")?;
         let (root, digest) = decode_head_with_digest(&store, &namespace, &object.bytes)?;
         ensure!(
             root.namespace == namespace,

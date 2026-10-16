@@ -12,6 +12,10 @@ mod commands;
 mod fenced;
 #[path = "ownership_maintenance.rs"]
 mod maintenance;
+#[path = "namespace_init.rs"]
+mod namespace_init;
+
+use namespace_init::NamespaceCell;
 
 use self::admission::{Guard, Permission};
 use super::{unique_id, Authority, CatalogRoot, ObjectEntry};
@@ -22,7 +26,7 @@ use crate::{
 use anyhow::{anyhow, ensure, Context, Result};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 pub struct OwnershipAuthority {
@@ -30,8 +34,6 @@ pub struct OwnershipAuthority {
     clock: Arc<dyn LeaseClock>,
     namespaces: Mutex<BTreeMap<Namespace, Arc<NamespaceCell>>>,
 }
-
-type NamespaceCell = OnceLock<std::result::Result<Arc<Service>, String>>;
 
 struct Service {
     authority: Arc<Authority>,
@@ -164,50 +166,7 @@ impl OwnershipAuthority {
             .entry(identifier.namespace.clone())
             .or_default()
             .clone();
-        cell.get_or_init(|| {
-            (|| {
-                ensure!(
-                    self.store.supports_strict_fencing(),
-                    "UncertainUnsupported backend may hide unsettled mutation retries"
-                );
-                let backend = backend::NamespaceBackend::scoped(
-                    self.store.clone(),
-                    identifier.namespace.clone(),
-                );
-                let authority = Authority::open(backend.clone(), identifier.namespace.clone())?;
-                backend.available()?;
-                let snapshot = authority.boot_ownership()?;
-                backend.available()?;
-                let catalog = snapshot
-                    .root
-                    .ownership
-                    .as_ref()
-                    .context("ownership migration missing")?;
-                let clock_anchor = self.clock.now_ms()?;
-                Ok(Arc::new(Service {
-                    authority,
-                    backend,
-                    clock: self.clock.clone(),
-                    gate: admission_gate::Admission::default(),
-                    memory: Mutex::new(Memory {
-                        last_clock: Some(clock_anchor),
-                        gc_marks: snapshot
-                            .root
-                            .tombstones
-                            .entries()?
-                            .keys()
-                            .map(|blob| (blob.clone(), clock_anchor))
-                            .collect(),
-                        ..Memory::default()
-                    }),
-                    authority_term: catalog.authority_term,
-                    incarnation: snapshot.root.incarnation,
-                }))
-            })()
-            .map_err(|error: anyhow::Error| format!("{error:#}"))
-        })
-        .clone()
-        .map_err(|error| anyhow!(error))
+        cell.acquire(self, &identifier.namespace)
     }
 
     pub fn challenge(&self, intent: LeaseIntent) -> Result<NonceReply> {
@@ -343,10 +302,7 @@ impl OwnershipAuthority {
             return false;
         };
         for cell in namespaces.values() {
-            let Some(Ok(service)) = cell.get() else {
-                return false;
-            };
-            if service.available().is_err() || !service.gate.quiescent() {
+            if !cell.quiescent() {
                 return false;
             }
         }
@@ -362,10 +318,7 @@ impl OwnershipAuthority {
         let cell = namespaces
             .get(&identifier.namespace)
             .context("Fenced unknown namespace")?;
-        cell.get()
-            .context("Fenced namespace not admitted")?
-            .clone()
-            .map_err(|error| anyhow!(error))
+        cell.ready()
     }
 }
 

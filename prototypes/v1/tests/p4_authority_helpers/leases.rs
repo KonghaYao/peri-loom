@@ -242,14 +242,18 @@ fn epoch_exhaustion_and_clock_overflow_fail_closed() -> Result<()> {
 }
 
 #[test]
-fn backend_without_explicit_terminal_contract_is_rejected_before_boot() -> Result<()> {
+fn backend_without_explicit_terminal_contract_refuses_without_dispatch_and_stays_quiescent(
+) -> Result<()> {
     let store = Arc::new(Store::default());
     store.unsupported.store(true, Ordering::SeqCst);
     let authority = OwnershipAuthority::new(store.clone(), Arc::new(Clock::default()));
     let error = authority.state(&identifier("main")).unwrap_err();
     assert!(format!("{error:#}").contains("UncertainUnsupported"));
     assert!(store.mutations.lock().unwrap().is_empty());
-    assert!(!authority.quiescent());
+    // Preflight refuses before the first read, so this attempt dispatched nothing: no
+    // unsettled write can be hidden by a clean shutdown, and the namespace stays
+    // retryable instead of being poisoned into an Unknown terminal state.
+    assert!(authority.quiescent());
     Ok(())
 }
 

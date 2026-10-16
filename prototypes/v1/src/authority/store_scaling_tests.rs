@@ -61,6 +61,10 @@ impl ObjectStore for Probe {
         true
     }
 
+    fn group_rejection_publishes_nothing(&self) -> bool {
+        self.local.group_rejection_publishes_nothing()
+    }
+
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         let start = Instant::now();
         let result = self.local.get(key);

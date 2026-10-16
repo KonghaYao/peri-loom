@@ -203,6 +203,12 @@ impl ObjectStore for LocalObjectStore {
         true
     }
 
+    fn group_rejection_publishes_nothing(&self) -> bool {
+        // `put_group` checks every condition before it stages the first body, so a
+        // rejected group leaves nothing behind on this backend.
+        true
+    }
+
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         let started = std::time::Instant::now();
         validate_key(key)?;
