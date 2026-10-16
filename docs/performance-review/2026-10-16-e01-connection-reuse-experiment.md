@@ -141,3 +141,56 @@
 - 全量 `go test ./sdk/go/` 通过；并发相关用例 `-race` 通过（`GOMAXPROCS=2 GOFLAGS=-p=1`，未跑性能）。
 - 未测边界：真实复用性能收益（无健康 fixture，A/B 仍阻塞）、写入中途 RST/代理截断等其它失败形态、
   v1.1.4 上任何平台性能数值。
+
+## 9. 启动诊断准备（只读，2026-10-16 三轮）
+
+### 9.1 版本证据（纠正第 8.1 节的武断表述）
+
+- 失败三次实际用的 Go 二进制带 VCS stamping：`go version -m` 给出 `vcs.revision`（见下节表格），
+  因此**其源版本可证**；此前"不是 997abbd 构建"的写法改为**更准确的表述**：
+  "既有失败二进制与 `997abbd` **不具备可比版本证据**（当时未冻结、未比对），不得当作 997abbd 的测量"。
+- Rust 二进制：可搜到 40-hex 串（如 `48a229ce…`），但**不对应**仓库 HEAD、`997abbd` 或 turso
+  子模块 `24a3a460…` 中任何一个 ⇒ **无可用源版本证据**，不得据 mtime 断言版本。
+
+| 二进制 | sha256(前16) | 版本证据 |
+| --- | --- | --- |
+| `control-20261016T082844Z/peri-platform` | `99e3e9aaccd20c6e` | `go version -m` 带 `vcs.revision`（可核对） |
+| `prototypes/v1/target/debug/peri-loom-v1` | `2d8fd7058f7ce666` | 无匹配源版本证据（候选 40-hex 不对应任何相关 revision） |
+
+### 9.2 dev.py 全部二进制/环境注入点（启动模板必须显式给定）
+
+| 变量 | 默认值 | 风险 |
+| --- | --- | --- |
+| `PERI_PLATFORM_BINARY` | **`<run-dir>/peri-platform`** | 未设置时 dev.py 去 run 目录找 ⇒ 直接启动失败（第 2 节即此因） |
+| `PERI_RUST_BINARY` | `prototypes/v1/target/debug/peri-loom-v1` | 指向他人正在重建的路径 ⇒ 版本漂移 |
+| `PERI_TLS_CERT` / `PERI_TLS_KEY` | `<run-dir>/keys/gateway.*` | 显式指定后 dev.py 不再自动生成 |
+| `PERI_BOOTSTRAP_KEY` | 无（自动生成） | 复用会引入旧凭据 |
+| `PERI_CAPACITY_TRACE` / `PERI_NATIVE_GATE_TRACE` | 继承外部环境 | 诊断运行必须显式置 `0`，避免引入额外行为 |
+
+### 9.3 Controller 就绪/放置错误分支（只读定位）
+
+- `controller/reconcile.go:70` 返回 `ErrPlacementMissing`；`:120` 处理该分支；
+  `:257` 写入 `placement.LastError = "reconciliation incomplete"` —— 与观测到的
+  `operation_incomplete` 文本一致 ⇒ 失败**显式来自放置/调谐路径**，而非 journal。
+- 仍需固定的未决事实：心跳健康判定的 **deadline 与 readiness 先后**（`model.go:66-67`
+  的 `Healthy`/`LastHeartbeatMS` 比较处）与探测 RPC 的身份校验路径。
+
+### 9.4 启动模板与预检（不含取值）
+
+```
+PREFLIGHT: 对 $PERI_PLATFORM_BINARY / $PERI_RUST_BINARY 逐个 test -x，并记录 sha256 与
+           `go version -m` 的 vcs.revision（Rust 侧无证据则显式写 NOT_PROVABLE）
+LAUNCH:   PERI_PLATFORM_BINARY=<私有冻结副本> PERI_RUST_BINARY=<私有冻结副本> \
+          PERI_CAPACITY_TRACE=0 PERI_NATIVE_GATE_TRACE=0 \
+          nohup python3 dev.py --run-dir <全新私有run目录> --listen 127.0.0.1:<空闲端口> \
+            --tls --no-build --backend local > <私有目录>/launcher.log 2>&1 &
+CHECK:    ls <run>/connection.json（仅存在性检查，不读取内容）
+STOP:     kill -TERM <launcher pid>，随后确认端口无监听、无残留进程；不清 dirty marker
+```
+
+### 9.5 冻结要求与成本
+
+- 二进制必须先**复制到唯一私有目录**（例如 `~/.peri-e01/frozen-<revision>/`）并记录 sha256，
+  避免被其他 owner 的重建覆盖；Rust 侧若要可证版本，需要在 WAL 时隙外**一次 release 构建**
+  并记录其源 revision（成本：一次 Rust 构建，约 5–15 分钟，非本轮执行）。
+- 本轮未启动任何服务（仅只读命令），无自有进程残留，未建栈、未编译。
