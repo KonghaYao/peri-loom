@@ -748,3 +748,105 @@ fn s3_group_unknown_body_response_fails_closed() -> Result<()> {
     worker.join().unwrap();
     Ok(())
 }
+
+// Prepared, not yet executed: these two pin the fallback predicate for inputs the
+// executed tests do not cover (a conditional body that is not the first write, and a
+// body sharing the CAS key). They are added only after the next build slot runs them.
+#[test]
+fn s3_group_conditional_body_keeps_serial_order_from_its_position() -> Result<()> {
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server = observed.clone();
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let observed = server;
+        listener.set_nonblocking(true).unwrap();
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            observed.lock().unwrap().push(request.target.clone());
+            match request.target.as_str() {
+                "/bucket/group/body/0" => {
+                    assert_eq!(request.headers["if-none-match"], "*");
+                    reply(&mut stream, 200, &[("ETag", "\"body-0\"")], b"");
+                }
+                "/bucket/group/cas" => {
+                    assert_eq!(request.headers["if-match"], "\"v0\"");
+                    reply(
+                        &mut stream,
+                        412,
+                        &[],
+                        b"<Error><Code>PreconditionFailed</Code></Error>",
+                    );
+                }
+                other => panic!("write after the conditional body was attempted: {other}"),
+            }
+        }
+    });
+    let writes = [
+        GroupWrite::absent("group/body/0", b"body-0".to_vec()),
+        GroupWrite::new(
+            "group/cas",
+            b"cas-body".to_vec(),
+            PutCondition::Match("\"v0\"".into()),
+        ),
+        GroupWrite::absent("group/body/1", b"body-1".to_vec()),
+        GroupWrite::new(
+            "group/root",
+            b"root-body".to_vec(),
+            PutCondition::Match("\"old\"".into()),
+        ),
+    ];
+    let error = store.put_group(&writes).unwrap_err();
+    assert!(error.is::<PreconditionFailed>(), "{error}");
+    worker.join().unwrap();
+    let observed = observed.lock().unwrap().clone();
+    assert_eq!(
+        observed,
+        vec!["/bucket/group/body/0", "/bucket/group/cas"],
+        "{observed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn s3_group_body_sharing_the_cas_key_keeps_serial_order() -> Result<()> {
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let server = observed.clone();
+    let (store, worker) = mock_with_retries(0, move |listener| {
+        let observed = server;
+        listener.set_nonblocking(true).unwrap();
+        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+            let request = read_request(&mut stream);
+            verify_signature(&request);
+            assert_eq!(request.method, "PUT");
+            assert_eq!(request.target, "/bucket/group/shared");
+            let body = String::from_utf8_lossy(&request.body).into_owned();
+            observed.lock().unwrap().push(body.clone());
+            match body.as_str() {
+                "body" => {
+                    assert_eq!(request.headers["if-none-match"], "*");
+                    reply(&mut stream, 200, &[("ETag", "\"first\"")], b"");
+                }
+                "root-body" => {
+                    assert_eq!(request.headers["if-match"], "\"old\"");
+                    reply(&mut stream, 200, &[("ETag", "\"second\"")], b"");
+                }
+                other => panic!("unexpected group body {other}"),
+            }
+        }
+    });
+    let writes = [
+        GroupWrite::absent("group/shared", b"body".to_vec()),
+        GroupWrite::new(
+            "group/shared",
+            b"root-body".to_vec(),
+            PutCondition::Match("\"old\"".into()),
+        ),
+    ];
+    let etags = store.put_group(&writes)?;
+    assert_eq!(etags, vec!["\"first\"", "\"second\""]);
+    worker.join().unwrap();
+    let observed = observed.lock().unwrap().clone();
+    assert_eq!(observed, vec!["body", "root-body"], "{observed:?}");
+    Ok(())
+}
