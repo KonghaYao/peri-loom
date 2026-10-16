@@ -103,3 +103,41 @@
 - 本轮结束时**无自有进程残留**，也未启动任何性能任务（三次建栈均失败，
   `operation_incomplete`，见第 3 节）→ **性能时隙已释放**，重型任务可安排，
   但仍建议与其他 owner 错峰。
+
+## 8. 修正与补充（2026-10-16 二轮）
+
+### 8.1 归因措辞修正（此前不准确）
+
+- 第 3 节所述三次就绪失败（`project stopped: request rejected: operation_incomplete`）**只是待证假设**，
+  不是已归因结论；需 operation journal/controller reconcile 的 owner 确认收敛条件。此前写成"归属"已作废。
+
+### 8.2 版本关系（不得混合对比）
+
+- 既有平台测量来自旧工作树 `1faafd05` + 私有二进制 `869b75df…`；SDK 补丁与测试建在**干净基线
+  `997abbd`（v1.1.4）** 的独立 worktree；两者不可混比，也不得称"最新 main 已测"。
+
+### 8.3 Go 重试路径（go1.23.4 实际源码）
+
+- `net/http/transport.go:756 func (pc *persistConn) shouldRetryRequest(req *Request, err error) bool`
+  （由 `:664` 调用）；`:781` 注释明确"从未写出任何内容 ⇒ 可安全重试"；`:785 if !req.isReplayable()`
+  则**不重试**。
+- `request.go:1543 isReplayable()`：仅当 `Body==nil||NoBody||GetBody!=nil` 且
+  方法 ∈ {GET,HEAD,OPTIONS,TRACE} 或带 `Idempotency-Key`/`X-Idempotency-Key` 时为 true。
+- 结论边界：外部 SDK 请求为 POST + 非 nil Body + `GetBody=nil` + 无幂等头 ⇒ **已写出的请求不会被重发**；
+  **未派发**（从未写出）的请求允许重新建连，二者语义不同，不得泛化为"一律永不重发"。
+
+### 8.4 外部网关 idle 事实与客户端取值
+
+- `997abbd` `service.go:276`：`http.Server{ReadHeaderTimeout 5s, ReadTimeout 15s, WriteTimeout 35s,
+  **IdleTimeout 30s**, MaxHeaderBytes 32KiB}` → 外部 keep-alive 空闲上限 **30s**。
+- 客户端按事实取 **20s**（低于服务端上限，避免复用被服务端先关闭的连接）；
+  **不采用**内部 Gateway→Worker 的 5s（`sql_upstream.go:105-107`，属不同连接层）。
+- 内部 5s 与外部 20s 的"对齐"仅为只读建议，本轮不改动任何平台/内部配置。
+
+### 8.5 测试结果（worktree 分支 `e01-sdk-connection-reuse`，commit 见报）
+
+- 9 项定向测试全部通过：单连接复用、默认逐请求、已收到请求后断连**仅派发一次**且 `outcome_unknown`、
+  显式 `Connection: close` 后重连、静默关闭空闲连接后重连、响应截断不重放、并发不混读、显式清理幂等。
+- 全量 `go test ./sdk/go/` 通过；并发相关用例 `-race` 通过（`GOMAXPROCS=2 GOFLAGS=-p=1`，未跑性能）。
+- 未测边界：真实复用性能收益（无健康 fixture，A/B 仍阻塞）、写入中途 RST/代理截断等其它失败形态、
+  v1.1.4 上任何平台性能数值。
