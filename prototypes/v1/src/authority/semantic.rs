@@ -1,3 +1,4 @@
+use super::types::pin_entry_parts;
 use super::{Authority, CatalogRoot, ObjectEntry, RecoveryPoint};
 use crate::{
     manifest::{valid_hash, Head, Manifest},
@@ -205,6 +206,13 @@ impl Authority {
                 "invalid branch counters"
             );
         }
+        for (pin, inline) in &root.pins {
+            ensure!(valid_hash(pin), "invalid reader pin identity");
+            ensure!(
+                inline.is_empty(),
+                "legacy inline reader pin entries are unsupported"
+            );
+        }
         Ok(())
     }
 
@@ -293,11 +301,22 @@ impl Authority {
             validate_name(name)?;
             walker.point(point)?;
         }
-        for (pin, entries) in &root.pins {
+        for (pin, inline) in &root.pins {
             ensure!(valid_hash(pin), "invalid reader pin identity");
-            for entry in entries {
-                registered(root, entry)?;
-            }
+            ensure!(
+                inline.is_empty(),
+                "legacy inline reader pin entries are unsupported"
+            );
+        }
+        for (key, entry) in root.pin_entries.entries()? {
+            let (pin, blob) = pin_entry_parts(&key).context("invalid reader pin entry key")?;
+            ensure!(
+                valid_hash(pin) && valid_hash(blob) && blob == entry.blob,
+                "invalid reader pin entry identity"
+            );
+            ensure!(root.pins.contains_key(pin), "reader pin entry without pin");
+            validate_entry(&entry)?;
+            registered(root, &entry)?;
         }
         Ok(())
     }
@@ -443,6 +462,19 @@ impl Authority {
             validate_name(name)?;
             walker.point(point)?;
         }
+        for (key, change) in root.pin_entries.changes() {
+            let super::registry::Change::Added(entry) = change else {
+                continue;
+            };
+            let (pin, blob) = pin_entry_parts(key).context("invalid reader pin entry key")?;
+            ensure!(
+                valid_hash(pin) && valid_hash(blob) && blob == entry.blob,
+                "invalid reader pin entry identity"
+            );
+            ensure!(root.pins.contains_key(pin), "reader pin entry without pin");
+            validate_entry(entry)?;
+            registered(root, entry)?;
+        }
         for (key, change) in root.objects.changes() {
             let super::registry::Change::Added(entry) = change else {
                 continue;
@@ -488,7 +520,8 @@ impl Authority {
             walker.point(point)?;
         }
         let uploads = root.uploads.entries()?;
-        for entry in root.pins.values().flatten().chain(uploads.values()) {
+        let pins = root.pin_entries.entries()?;
+        for entry in pins.values().chain(uploads.values()) {
             walker.direct(entry)?;
         }
         Ok(walker.reachable)

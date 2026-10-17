@@ -109,6 +109,10 @@ pub(super) struct CatalogDocument {
     pub(super) snapshots: BTreeMap<String, RecoveryPoint>,
     #[serde(default)]
     pub(super) pins: BTreeMap<String, Vec<ObjectEntry>>,
+    #[serde(default)]
+    pub(super) pin_entries: BTreeMap<String, ObjectEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pin_index: Option<String>,
     pub(super) uploads: BTreeMap<String, ObjectEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) upload_index: Option<String>,
@@ -117,9 +121,23 @@ pub(super) struct CatalogDocument {
     pub(super) tombstone_index: Option<String>,
 }
 
-/// In-memory authority head. Identity state (branches, snapshots, reader pins, receipt
-/// window) stays inline because it is bounded by distinct identities, while volume state
-/// is held by `Registry` handles that page themselves once they outgrow the inline budget.
+/// Reader pin entries are addressed by `{pin}/{blob}`. Both identities are URL-safe, so the
+/// key can live in the same page tree as the other registries and a release can remove every
+/// entry belonging to one pin by its prefix.
+pub(super) fn pin_entry_key(pin: &str, blob: &str) -> String {
+    format!("{pin}/{blob}")
+}
+
+pub(super) fn pin_entry_parts(key: &str) -> Option<(&str, &str)> {
+    let (pin, blob) = key.split_once('/')?;
+    (!pin.is_empty() && !blob.is_empty() && !blob.contains('/')).then_some((pin, blob))
+}
+
+/// In-memory authority head. Identity state (branches, snapshots, reader pin identities,
+/// receipt window) stays inline because it is bounded by distinct identities, while volume
+/// state is held by `Registry` handles that page themselves once they outgrow the inline
+/// budget. `pins` keeps only the reader identities; their entries live in `pin_entries`
+/// and are rejected if they ever reappear inline.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "CatalogDocument", into = "CatalogDocument")]
 pub struct CatalogRoot {
@@ -134,7 +152,10 @@ pub struct CatalogRoot {
     pub objects: Registry<ObjectEntry>,
     pub branches: BTreeMap<String, BranchRef>,
     pub snapshots: BTreeMap<String, RecoveryPoint>,
+    /// The map values are kept empty: reader entries live in `pin_entries`, and a decoded
+    /// root carrying inline entries is rejected by `semantic::validate_head`.
     pub pins: BTreeMap<String, Vec<ObjectEntry>>,
+    pub(crate) pin_entries: Registry<ObjectEntry>,
     pub uploads: Registry<ObjectEntry>,
     pub tombstones: Registry<Tombstone>,
 }
@@ -154,6 +175,7 @@ impl CatalogRoot {
             branches: BTreeMap::from([("main".into(), BranchRef::default())]),
             snapshots: BTreeMap::new(),
             pins: BTreeMap::new(),
+            pin_entries: Registry::inline(BTreeMap::new()),
             uploads: Registry::inline(BTreeMap::new()),
             tombstones: Registry::inline(BTreeMap::new()),
         }
@@ -164,7 +186,12 @@ impl CatalogRoot {
         store: std::sync::Arc<dyn crate::object_store::ObjectStore>,
         namespace: Namespace,
     ) {
-        for registry in [&mut self.blobs, &mut self.objects, &mut self.uploads] {
+        for registry in [
+            &mut self.blobs,
+            &mut self.objects,
+            &mut self.pin_entries,
+            &mut self.uploads,
+        ] {
             registry.attach(store.clone(), namespace.clone());
         }
         self.tombstones.attach(store, namespace);
@@ -175,6 +202,11 @@ impl CatalogRoot {
         for (name, pointer, inline) in [
             ("blobs", self.blobs.pointer(), self.blobs.window_len()),
             ("objects", self.objects.pointer(), self.objects.window_len()),
+            (
+                "pin_entries",
+                self.pin_entries.pointer(),
+                self.pin_entries.window_len(),
+            ),
             ("uploads", self.uploads.pointer(), self.uploads.window_len()),
             (
                 "tombstones",
@@ -204,6 +236,7 @@ impl CatalogRoot {
         anyhow::ensure!(
             !self.blobs.has_changes()
                 && !self.objects.has_changes()
+                && !self.pin_entries.has_changes()
                 && !self.uploads.has_changes()
                 && !self.tombstones.has_changes(),
             "registry changes were not published"
@@ -227,6 +260,7 @@ impl From<CatalogDocument> for CatalogRoot {
             branches: document.branches,
             snapshots: document.snapshots,
             pins: document.pins,
+            pin_entries: Registry::paged(document.pin_index, document.pin_entries),
             uploads: Registry::paged(document.upload_index, document.uploads),
             tombstones: Registry::paged(document.tombstone_index, document.tombstones),
         }
@@ -238,6 +272,7 @@ impl From<CatalogRoot> for CatalogDocument {
         let (blob_index, blobs) = root.blobs.into_parts();
         let (object_index, objects) = root.objects.into_parts();
         let (upload_index, uploads) = root.uploads.into_parts();
+        let (pin_index, pin_entries) = root.pin_entries.into_parts();
         let (tombstone_index, tombstones) = root.tombstones.into_parts();
         Self {
             version: root.version,
@@ -254,6 +289,8 @@ impl From<CatalogRoot> for CatalogDocument {
             branches: root.branches,
             snapshots: root.snapshots,
             pins: root.pins,
+            pin_entries,
+            pin_index,
             uploads,
             upload_index,
             tombstones,

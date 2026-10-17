@@ -101,6 +101,16 @@ fn committed(frames: u64) -> Option<WalPosition> {
     })
 }
 
+fn pin_entries(root: &CatalogRoot, pin: &str) -> Result<BTreeMap<String, ObjectEntry>> {
+    let prefix = format!("{pin}/");
+    Ok(root
+        .pin_entries
+        .entries()?
+        .into_iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .collect())
+}
+
 /// Publishes through the same entry point the fenced worker path uses.
 fn append(
     branch: &Arc<BranchStore>,
@@ -575,9 +585,13 @@ fn a_later_wal_adopted_after_a_lost_ack_is_pinned_through_gc() -> Result<()> {
 
     let adopted = branch.view.lock().unwrap().wal.clone().unwrap();
     let snapshot = authority.snapshot()?;
-    assert!(snapshot.root.pins[&branch.pin]
+    let pin_prefix = format!("{}/", branch.pin);
+    assert!(snapshot
+        .root
+        .pin_entries
+        .entries()?
         .iter()
-        .any(|entry| entry.blob == adopted.blob));
+        .any(|(key, entry)| { key.starts_with(&pin_prefix) && entry.blob == adopted.blob }));
     assert!(!snapshot.root.branches["main"]
         .history
         .iter()
@@ -729,17 +743,157 @@ fn segmented_wal_pins_and_gc_reach_segments_and_chunks() -> Result<()> {
     );
     let mut unpinned = snapshot.root.clone();
     unpinned.pins.clear();
+    unpinned.pin_entries = crate::authority::registry::Registry::inline(BTreeMap::new());
     let reachable = authority.reachable(&unpinned)?;
     for entry in objects.values() {
         assert!(reachable.contains(&entry.blob));
     }
     let cold = authority.branch_store("main")?;
     let pinned = authority.snapshot()?;
+    let pin_prefix = format!("{}/", cold.pin);
+    let pin_entries = pinned.root.pin_entries.entries()?;
     for entry in objects.values() {
-        assert!(pinned.root.pins[&cold.pin]
+        assert!(pin_entries
             .iter()
-            .any(|pin| pin.blob == entry.blob));
+            .any(|(key, pinned)| key.starts_with(&pin_prefix) && pinned.blob == entry.blob));
     }
     assert_eq!(RemoteWal::new(cold).read(&namespace, 0)?.len(), 513);
+    Ok(())
+}
+
+#[test]
+fn pin_entries_spill_without_growing_the_head_and_survive_cold_recovery() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    let pin = branch.pin.clone();
+    for ordinal in 1..=160 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-spill-{ordinal}"),
+        )?;
+    }
+    let snapshot = authority.snapshot()?;
+    assert!(snapshot.root.pins[&pin].is_empty());
+    assert!(
+        snapshot.root.pin_entries.pointer().is_some(),
+        "pin entries stayed inline"
+    );
+    assert_eq!(snapshot.root.pin_entries.window_len(), 0);
+    let entries = pin_entries(&snapshot.root, &pin)?;
+    assert!(entries.len() >= 320);
+    let pin_bytes = serde_json::to_vec(&entries)?.len();
+    let head_bytes = crate::authority::codec::encode(&snapshot.root)?.len();
+    assert!(
+        pin_bytes > 64 * 1024,
+        "pin payload did not exceed the inline budget: {pin_bytes}"
+    );
+    assert!(
+        head_bytes < pin_bytes / 2,
+        "head grew with the pin payload: head={head_bytes} pin={pin_bytes}"
+    );
+
+    let reopened = Authority::open(store, namespace)?;
+    let reopened_root = reopened.snapshot()?.root;
+    assert!(reopened_root.pins.contains_key(&pin));
+    assert_eq!(pin_entries(&reopened_root, &pin)?, entries);
+    Ok(())
+}
+
+#[test]
+fn releasing_a_reader_pin_drops_entries_and_releases_its_blobs() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=8 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-release-{ordinal}"),
+        )?;
+    }
+    let pin = branch.pin.clone();
+    let pinned = pin_entries(&authority.snapshot()?.root, &pin)?;
+    assert!(!pinned.is_empty());
+    let blobs: BTreeSet<String> = pinned.values().map(|entry| entry.blob.clone()).collect();
+    let reachable = authority.reachable(&authority.snapshot()?.root)?;
+    assert!(blobs.iter().all(|blob| reachable.contains(blob)));
+
+    // The descriptor cannot disappear while its entries still name the pin.
+    assert!(authority
+        .transact(None, |root| {
+            root.pins.remove(&pin);
+            Ok(())
+        })
+        .is_err());
+
+    drop(branch);
+    let root = authority.snapshot()?.root;
+    assert!(!root.pins.contains_key(&pin));
+    assert!(pin_entries(&root, &pin)?.is_empty());
+    authority.transact(None, |root| {
+        let branch = root.branches.get_mut("main").context("branch missing")?;
+        branch.head = None;
+        branch.wal = None;
+        branch.history.clear();
+        Ok(())
+    })?;
+    let reachable = authority.reachable(&authority.snapshot()?.root)?;
+    for blob in blobs {
+        assert!(
+            !reachable.contains(&blob),
+            "released pin still marks blob {blob}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn pin_entries_fail_closed_when_pages_are_missing_corrupt_or_legacy_inline() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=48 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-page-{ordinal}"),
+        )?;
+    }
+    let snapshot = authority.snapshot()?;
+    let pointer = snapshot
+        .root
+        .pin_entries
+        .pointer()
+        .context("pin entries did not spill")?
+        .to_owned();
+    let key = namespace.key(&format!("authority/index-pages/{pointer}"))?;
+    let original = store.inner.get(&key)?.context("pin page missing")?;
+
+    store
+        .inner
+        .put(&key, b"{}", crate::object_store::PutCondition::Any)?;
+    assert!(authority.reachable(&snapshot.root).is_err());
+    store.inner.put(
+        &key,
+        &original.bytes,
+        crate::object_store::PutCondition::Any,
+    )?;
+    assert!(authority.reachable(&snapshot.root).is_ok());
+
+    let mut legacy = authority.snapshot()?.root;
+    let pin = branch.pin.clone();
+    let entry = legacy
+        .pin_entries
+        .entries()?
+        .into_values()
+        .next()
+        .context("pin entry missing")?;
+    legacy.pins.get_mut(&pin).unwrap().push(entry);
+    assert!(authority.reachable(&legacy).is_err());
+
+    store.inner.delete(&key, None)?;
+    assert!(authority.reachable(&authority.snapshot()?.root).is_err());
     Ok(())
 }

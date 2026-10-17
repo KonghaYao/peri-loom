@@ -248,7 +248,7 @@ impl<V> Registry<V> {
     }
 
     /// Upsert. Which value changes are legal is a per-registry rule and lives in
-    /// `catalog::prepare`: tombstones flip their `deleted` flag and pins grow, while
+    /// `catalog::prepare`: tombstones flip their `deleted` flag and pin entries grow, while
     /// physical and logical registries must keep their identity.
     pub fn insert(&mut self, key: String, value: V) -> Result<()>
     where

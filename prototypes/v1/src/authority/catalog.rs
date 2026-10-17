@@ -54,6 +54,7 @@ impl Authority {
         self.prepare_objects(previous, next)?;
         self.prepare_tombstones(previous, next, deletion)?;
         self.prepare_uploads(previous, next, &published)?;
+        self.prepare_pin_removals(previous, next)?;
         self.validate_changed_references(previous, next, bodies)?;
         // Additions are validated against the change set. A removal can invalidate a
         // reference held by state this transaction never touched, and there is no reverse
@@ -221,6 +222,30 @@ impl Authority {
                     );
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// A pin's identity and its entries must disappear together. Releasing the identity
+    /// while leaving entries behind would keep their blobs reachable forever, so the rare
+    /// removal path pays for the scan that proves no `{pin}/` key survived.
+    fn prepare_pin_removals(&self, previous: &CatalogRoot, next: &CatalogRoot) -> Result<()> {
+        let removed: Vec<&str> = previous
+            .pins
+            .keys()
+            .filter(|pin| !next.pins.contains_key(*pin))
+            .map(String::as_str)
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+        let entries = next.pin_entries.entries()?;
+        for pin in removed {
+            let prefix = format!("{pin}/");
+            ensure!(
+                !entries.keys().any(|key| key.starts_with(&prefix)),
+                "reader pin removal left entries"
+            );
         }
         Ok(())
     }

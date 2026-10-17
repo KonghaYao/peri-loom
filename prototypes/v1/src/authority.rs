@@ -532,16 +532,14 @@ impl Authority {
             self.validate_references(&candidate, bodies)?;
             candidate.blobs.publish(&publishing)?;
             candidate.objects.publish(&publishing)?;
+            candidate.pin_entries.publish(&publishing)?;
             candidate.uploads.publish(&publishing)?;
             candidate.tombstones.publish(&publishing)?;
             candidate.seal()?;
             let (encoded, digest) = encode_with_digest(&candidate)?;
             crate::work_metrics::observe_root_publish(
                 encoded.len(),
-                candidate
-                    .pins
-                    .values()
-                    .fold(0usize, |total, entries| total.saturating_add(entries.len())),
+                candidate.pin_entries.window_len(),
                 candidate.receipts.len(),
             );
             if let Some(guard) = &self.guard {

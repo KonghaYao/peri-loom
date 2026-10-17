@@ -4,6 +4,7 @@ mod publication;
 #[path = "branch_tests.rs"]
 mod tests;
 
+use super::types::pin_entry_key;
 use super::{
     now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, PublicationBody,
     RecoveryPoint,
@@ -52,9 +53,14 @@ impl Authority {
             let head = reference.head.clone();
             let wal = reference.wal.clone();
             let entries = referenced(self, root, head.as_ref(), wal.as_ref())?;
-            let pinned = entries.values().map(|entry| entry.blob.clone()).collect();
-            root.pins
-                .insert(pin.clone(), entries.values().cloned().collect());
+            let mut pinned = BTreeSet::new();
+            root.pins.insert(pin.clone(), Vec::new());
+            for entry in entries.values() {
+                if pinned.insert(entry.blob.clone()) {
+                    root.pin_entries
+                        .insert(pin_entry_key(&pin, &entry.blob), entry.clone())?;
+                }
+            }
             selected = Some(View {
                 incarnation,
                 head,
@@ -182,10 +188,7 @@ impl BranchStore {
     }
 
     pub(crate) fn release_pin(&self, authority: &Authority) -> Result<()> {
-        authority.transact(None, |root| {
-            root.pins.remove(&self.pin);
-            Ok(())
-        })?;
+        authority.transact(None, |root| release_pin(root, &self.pin))?;
         Ok(())
     }
     fn relative<'a>(&self, key: &'a str) -> Result<&'a str> {
@@ -220,15 +223,17 @@ impl BranchStore {
         view: &View,
         entries: BTreeMap<String, ObjectEntry>,
     ) -> Result<BTreeMap<String, ObjectEntry>> {
-        let pin = root
-            .pins
-            .get_mut(&self.pin)
-            .context("reader pin disappeared")?;
+        ensure!(root.pins.contains_key(&self.pin), "reader pin disappeared");
         let mut added = BTreeMap::new();
         let mut seen = BTreeSet::new();
         for (key, entry) in entries {
             if !view.pinned.contains(&entry.blob) && seen.insert(entry.blob.clone()) {
-                pin.push(entry.clone());
+                let pin_key = pin_entry_key(&self.pin, &entry.blob);
+                if let Some(previous) = root.pin_entries.get(&pin_key)? {
+                    ensure!(previous == entry, "reader pin entry identity mutation");
+                } else {
+                    root.pin_entries.insert(pin_key, entry.clone())?;
+                }
             }
             added.insert(key, entry);
         }
@@ -759,9 +764,23 @@ impl Drop for BranchStore {
         if !self.drop_cleanup.load(Ordering::Acquire) {
             return;
         }
-        let _ = self.authority.transact(None, |root| {
-            root.pins.remove(&self.pin);
-            Ok(())
-        });
+        let _ = self
+            .authority
+            .transact(None, |root| release_pin(root, &self.pin));
     }
+}
+
+fn release_pin(root: &mut CatalogRoot, pin: &str) -> Result<()> {
+    let prefix = format!("{pin}/");
+    let keys: Vec<String> = root
+        .pin_entries
+        .entries()?
+        .into_keys()
+        .filter(|key| key.starts_with(&prefix))
+        .collect();
+    for key in keys {
+        root.pin_entries.remove(&key)?;
+    }
+    root.pins.remove(pin);
+    Ok(())
 }

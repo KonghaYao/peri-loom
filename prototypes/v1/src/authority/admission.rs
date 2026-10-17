@@ -102,9 +102,64 @@ impl MutationGuard for Guard {
 fn pins_only(current: &CatalogRoot, candidate: &CatalogRoot) -> Result<()> {
     let mut normalized = candidate.clone();
     normalized.pins = current.pins.clone();
+    normalized.pin_entries = current.pin_entries.clone();
     normalized.revision = current.revision;
     normalized.receipts = current.receipts.clone();
     normalized.receipt_index = current.receipt_index.clone();
     ensure!(&normalized == current, "ReadOnly permits only service pins");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        authority::{types::pin_entry_key, Authority, ObjectEntry},
+        namespace::Namespace,
+        object_store::MemoryObjectStore,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn pin_normalization_does_not_allow_other_catalog_state() -> Result<()> {
+        let authority = Authority::open(
+            Arc::new(MemoryObjectStore::default()),
+            Namespace::new("pin", "admission")?,
+        )?;
+        let current = authority.snapshot()?.root;
+        let pin = "a".repeat(64);
+        let blob = "b".repeat(64);
+        let mut candidate = current.clone();
+        candidate.pins.insert(pin.clone(), Vec::new());
+        candidate.pin_entries.insert(
+            pin_entry_key(&pin, &blob),
+            ObjectEntry {
+                blob: blob.clone(),
+                hash: "c".repeat(64),
+                etag: "d".repeat(64),
+                created_ms: 1,
+            },
+        )?;
+        pins_only(&current, &candidate)?;
+
+        let mut branch_mutation = candidate.clone();
+        branch_mutation.branches.get_mut("main").unwrap().sequence += 1;
+        assert!(pins_only(&current, &branch_mutation).is_err());
+
+        let mut snapshot_mutation = candidate;
+        snapshot_mutation.snapshots.insert(
+            "forbidden".into(),
+            crate::authority::RecoveryPoint {
+                id: "forbidden".into(),
+                branch: "main".into(),
+                timeline: 1,
+                sequence: 1,
+                timestamp_ms: 1,
+                head: None,
+                wal: None,
+            },
+        );
+        assert!(pins_only(&current, &snapshot_mutation).is_err());
+        Ok(())
+    }
 }
