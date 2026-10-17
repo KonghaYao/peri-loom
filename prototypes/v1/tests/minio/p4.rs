@@ -41,7 +41,7 @@ fn network_legacy_receipts_migrate_to_bounded_root() -> Result<()> {
     OwnershipAuthority::new(raw.clone(), Arc::new(SystemLeaseClock)).state(&database)?;
     let after = authority.snapshot()?.root;
     ensure!(
-        after.version == 4
+        after.version == 5
             && after.receipts.len() == 1
             && raw.get(&root_key)?.unwrap().bytes.len() < old_size / 2,
         "S3 receipt migration did not bound the online root"

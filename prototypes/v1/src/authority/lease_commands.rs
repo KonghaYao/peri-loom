@@ -112,7 +112,13 @@ pub(super) fn grant(authority: &OwnershipAuthority, request: GrantRequest) -> Re
                 role: binding.role,
             },
         );
-        insert_receipt(root, &request.request_id, &payload, &result)
+        insert_receipt(
+            &service.authority,
+            root,
+            &request.request_id,
+            &payload,
+            &result,
+        )
     })?;
     service.available()?;
     ensure!(
@@ -172,7 +178,13 @@ pub(super) fn renew(authority: &OwnershipAuthority, request: RenewRequest) -> Re
             "Fenced renewal sequence"
         );
         record.renewal_sequence = binding.renewal_sequence;
-        insert_receipt(root, &request.request_id, &payload, &result)
+        insert_receipt(
+            &service.authority,
+            root,
+            &request.request_id,
+            &payload,
+            &result,
+        )
     })?;
     service.available()?;
     ensure!(
@@ -229,7 +241,13 @@ pub(super) fn revoke(
                 "Fenced expected epoch"
             );
             record.state = GrantState::Revoked;
-            insert_receipt(root, &request.request_id, &payload, &result)
+            insert_receipt(
+                &service.authority,
+                root,
+                &request.request_id,
+                &payload,
+                &result,
+            )
         })?;
     service.available()?;
     service
@@ -255,10 +273,21 @@ pub(super) fn receipt(
         );
         return Ok(Some(receipt.result.clone()));
     }
+    if let Some(receipt) = service
+        .authority
+        .archived_command(catalog.command_index.as_deref(), identifier)?
+    {
+        ensure!(
+            receipt.digest == payload,
+            "Conflict request ID payload mismatch"
+        );
+        return Ok(Some(receipt.result));
+    }
     Ok(None)
 }
 
 pub(super) fn insert_receipt(
+    authority: &crate::authority::Authority,
     root: &mut CatalogRoot,
     identifier: &str,
     payload: &str,
@@ -267,6 +296,14 @@ pub(super) fn insert_receipt(
     let catalog = root.ownership.as_mut().context("ownership missing")?;
     ensure!(
         !catalog.commands.contains_key(identifier),
+        "Conflict command already committed"
+    );
+    // An archived id is still a committed id: inserting it again would shadow the page
+    // the old reply lives in and turn a replay into a second execution.
+    ensure!(
+        authority
+            .archived_command(catalog.command_index.as_deref(), identifier)?
+            .is_none(),
         "Conflict command already committed"
     );
     catalog.commands.insert(
@@ -340,4 +377,244 @@ fn replay_grant(service: &Service, reply: GrantReply) -> Result<GrantReply> {
 fn ttl(value: u64) -> Result<()> {
     ensure!((100..=60000).contains(&value), "invalid lease TTL");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authority::{paged_index::PagedIndex, Authority};
+    use crate::namespace::Namespace;
+    use crate::object_store::{MemoryObjectStore, ObjectStore};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn fixture() -> Result<(Arc<Authority>, Arc<dyn ObjectStore>, Namespace)> {
+        let store: Arc<dyn ObjectStore> = Arc::new(MemoryObjectStore::default());
+        let namespace = Namespace::new("archive", "commands")?;
+        let authority = Authority::open(store.clone(), namespace.clone())?;
+        Ok((authority, store, namespace))
+    }
+
+    /// Grow a version-5 catalog with `terminal` terminal receipts and `pending` GC
+    /// receipts, then move the overflow to the archive.
+    fn archived_catalog(
+        authority: &Authority,
+        store: &Arc<dyn ObjectStore>,
+        namespace: &Namespace,
+        terminal: usize,
+        pending: usize,
+    ) -> Result<(CatalogRoot, Vec<(String, CommandReceipt)>)> {
+        let mut root = authority.snapshot()?.root;
+        root.version = 5;
+        let mut catalog = OwnershipCatalog {
+            authority_term: 1,
+            ..OwnershipCatalog::default()
+        };
+        let mut receipts = Vec::new();
+        for index in 0..terminal {
+            let identifier = format!("terminal-{index:04}");
+            let receipt = CommandReceipt {
+                digest: blake3::hash(identifier.as_bytes()).to_hex().to_string(),
+                result: serde_json::json!({"kind": "terminal", "index": index}),
+            };
+            catalog.commands.insert(identifier.clone(), receipt.clone());
+            receipts.push((identifier, receipt));
+        }
+        for index in 0..pending {
+            let identifier = format!("pending-{index:04}");
+            catalog.commands.insert(
+                identifier,
+                CommandReceipt {
+                    digest: blake3::hash(format!("pending-{index}").as_bytes())
+                        .to_hex()
+                        .to_string(),
+                    result: serde_json::json!({"status": "pending_gc"}),
+                },
+            );
+        }
+        root.ownership = Some(catalog);
+        let index = PagedIndex::new(store.as_ref(), namespace);
+        authority.archive_commands(&mut root, &index)?;
+        Ok((root, receipts))
+    }
+
+    #[test]
+    fn archive_bounds_terminal_receipts_but_keeps_pending_gc_inline() -> Result<()> {
+        let (authority, store, namespace) = fixture()?;
+        let overflow = 7;
+        let (root, receipts) = archived_catalog(
+            &authority,
+            &store,
+            &namespace,
+            super::super::super::INLINE_COMMANDS_MAX + overflow,
+            3,
+        )?;
+        let catalog = root.ownership.as_ref().context("ownership missing")?;
+        assert_eq!(
+            catalog.commands.len(),
+            super::super::super::INLINE_COMMANDS_MAX + 3,
+            "the window kept the wrong number of receipts"
+        );
+        assert_eq!(
+            catalog
+                .commands
+                .values()
+                .filter(|receipt| receipt
+                    .result
+                    .get("status")
+                    .and_then(|status| status.as_str())
+                    == Some("pending_gc"))
+                .count(),
+            3,
+            "pending GC receipts left the inline window"
+        );
+        let pointer = catalog
+            .command_index
+            .as_deref()
+            .context("commands were not archived")?;
+        // Eviction takes the lexicographically smallest identifiers first.
+        for (identifier, expected) in receipts.iter().take(overflow) {
+            assert!(!catalog.commands.contains_key(identifier));
+            assert_eq!(
+                authority
+                    .archived_command(Some(pointer), identifier)?
+                    .as_ref(),
+                Some(expected)
+            );
+        }
+        for (identifier, expected) in receipts.iter().skip(overflow) {
+            assert_eq!(
+                catalog.commands.get(identifier),
+                Some(expected),
+                "a receipt inside the window was archived"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn archived_identifier_cannot_be_inserted_again() -> Result<()> {
+        let (authority, store, namespace) = fixture()?;
+        let (mut root, receipts) = archived_catalog(
+            &authority,
+            &store,
+            &namespace,
+            super::super::super::INLINE_COMMANDS_MAX + 1,
+            0,
+        )?;
+        let (archived, _) = &receipts[0];
+        let error = insert_receipt(
+            &authority,
+            &mut root,
+            archived,
+            &"0".repeat(64),
+            &serde_json::json!({"kind": "forged"}),
+        )
+        .expect_err("an archived identifier was inserted again");
+        assert!(
+            error
+                .to_string()
+                .contains("Conflict command already committed"),
+            "unexpected error: {error}"
+        );
+        // A fresh identifier takes the same path without reading the archive.
+        insert_receipt(
+            &authority,
+            &mut root,
+            "fresh",
+            &"1".repeat(64),
+            &serde_json::json!({"kind": "fresh"}),
+        )?;
+        assert!(root
+            .ownership
+            .as_ref()
+            .context("ownership missing")?
+            .commands
+            .contains_key("fresh"));
+        Ok(())
+    }
+
+    #[test]
+    fn command_archive_pointer_mutation_is_rejected() -> Result<()> {
+        let (authority, _, _) = fixture()?;
+        let mut previous = authority.snapshot()?.root;
+        previous.version = 5;
+        previous.ownership = Some(OwnershipCatalog {
+            authority_term: 1,
+            branches: BTreeMap::new(),
+            commands: BTreeMap::new(),
+            command_index: Some("a".repeat(64)),
+        });
+        let mut next = previous.clone();
+        next.ownership
+            .as_mut()
+            .context("ownership missing")?
+            .command_index = Some("b".repeat(64));
+        let error =
+            crate::authority::ownership::catalog_rules::prepare(&authority, &previous, &mut next)
+                .expect_err("a transaction moved the command archive");
+        assert!(
+            error
+                .to_string()
+                .contains("command archive mutation forbidden"),
+            "unexpected error: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn oversize_receipt_is_spooled_and_reads_back() -> Result<()> {
+        let (authority, store, namespace) = fixture()?;
+        let receipt = CommandReceipt {
+            digest: blake3::hash(b"oversize").to_hex().to_string(),
+            result: serde_json::json!({
+                "payload": "x".repeat(super::super::super::COMMAND_ARCHIVE_VALUE_MAX + 1)
+            }),
+        };
+        let bytes = serde_json::to_vec(&receipt)?;
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let mut root = authority.snapshot()?.root;
+        root.version = 5;
+        let mut catalog = OwnershipCatalog {
+            authority_term: 1,
+            ..OwnershipCatalog::default()
+        };
+        catalog.commands.insert("oversize".into(), receipt.clone());
+        for index in 0..super::super::super::INLINE_COMMANDS_MAX {
+            let identifier = format!("terminal-{index:04}");
+            catalog.commands.insert(
+                identifier.clone(),
+                CommandReceipt {
+                    digest: blake3::hash(identifier.as_bytes()).to_hex().to_string(),
+                    result: serde_json::json!({"kind": "terminal"}),
+                },
+            );
+        }
+        root.ownership = Some(catalog);
+        let index = PagedIndex::new(store.as_ref(), &namespace);
+        authority.archive_commands(&mut root, &index)?;
+        let pointer = root
+            .ownership
+            .as_ref()
+            .context("ownership missing")?
+            .command_index
+            .clone()
+            .context("commands were not archived")?;
+        assert_eq!(
+            index.get(Some(&pointer), "oversize")?,
+            Some(serde_json::json!({"archive_object": hash.clone()})),
+            "the oversize value was not replaced by its object digest"
+        );
+        assert_eq!(
+            authority.archived_command(Some(&pointer), "oversize")?,
+            Some(receipt)
+        );
+        // A spool object that no longer matches its digest is not a receipt.
+        let key = namespace.key(&format!("authority/command-archive/{hash}"))?;
+        store.put(&key, b"corrupted", crate::object_store::PutCondition::Any)?;
+        assert!(authority
+            .archived_command(Some(&pointer), "oversize")
+            .is_err());
+        Ok(())
+    }
 }

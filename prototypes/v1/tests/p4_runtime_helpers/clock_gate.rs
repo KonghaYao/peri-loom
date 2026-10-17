@@ -76,7 +76,7 @@ impl CleanupObserver {
             .context("cleanup owner missing")?
             .clone();
         ensure!(
-            matches!(root.version, 2 | 4)
+            matches!(root.version, 2 | 4 | 5)
                 && root.incarnation == binding.root_incarnation
                 && root.ownership.as_ref().unwrap().authority_term == binding.authority_term
                 && owner.epoch == binding.epoch
@@ -153,7 +153,7 @@ impl CleanupObserver {
                 && catalog.branches.get(&watch.branch) == Some(&watch.owner)
         });
         if !success
-            || !matches!(root.version, 2 | 4)
+            || !matches!(root.version, 2 | 4 | 5)
             || root.incarnation != watch.incarnation
             || !matched
         {
@@ -357,6 +357,7 @@ mod cleanup_tests {
             authority_term: 1,
             branches: BTreeMap::from([("main".into(), owner)]),
             commands: BTreeMap::new(),
+            command_index: None,
         });
         root.pins.insert("old-session-pin".into(), Vec::new());
         let key = namespace.key("authority/root")?;

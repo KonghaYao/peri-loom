@@ -309,3 +309,43 @@ fn gc_safety_window_starts_at_each_tombstone_not_namespace_boot() -> Result<()> 
     assert!(root(&raw)?.snapshot()?.root.blobs.is_empty());
     Ok(())
 }
+
+#[test]
+fn archived_command_receipts_stay_idempotent_and_keep_the_head_bounded() -> Result<()> {
+    let (raw, _, authority) = fixture()?;
+    let mut issued = Vec::new();
+    for index in 0..120 {
+        let request = format!("save-{index:04}");
+        let operation = MaintenanceOperation::Snapshot {
+            name: format!("save-{index:04}"),
+        };
+        let result = authority.maintenance(&identifier("main"), &request, operation.clone())?;
+        issued.push((request, operation, result));
+    }
+    let snapshot = root(&raw)?.snapshot()?.root;
+    let catalog = snapshot.ownership.as_ref().expect("ownership missing");
+    assert_eq!(snapshot.version, 5);
+    assert!(
+        catalog.command_index.is_some(),
+        "commands were never archived"
+    );
+    assert!(
+        catalog.commands.len() < issued.len(),
+        "the inline command window was not bounded"
+    );
+    let (oldest, operation, expected) = &issued[0];
+    assert!(
+        !catalog.commands.contains_key(oldest),
+        "the oldest receipt never left the inline window"
+    );
+    // An archived id still answers with the durable reply.
+    assert_eq!(
+        authority.maintenance(&identifier("main"), oldest, operation.clone())?,
+        *expected
+    );
+    // Reusing the same id with a different payload is a conflict, not a second command.
+    assert!(authority
+        .maintenance(&identifier("main"), oldest, MaintenanceOperation::GcInspect,)
+        .is_err());
+    Ok(())
+}

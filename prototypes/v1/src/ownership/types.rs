@@ -56,7 +56,13 @@ pub struct CommandReceipt {
 pub struct OwnershipCatalog {
     pub authority_term: u64,
     pub branches: BTreeMap<String, OwnerRecord>,
+    /// Recent idempotency receipts. Bounded by the writer: the head is decoded and
+    /// validated on every statement, and the ledger otherwise grows with namespace age.
     pub commands: BTreeMap<String, CommandReceipt>,
+    /// Older receipts moved to an immutable page tree. A lookup must consult both this
+    /// and `commands`: archiving is a representation change, never a deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_index: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

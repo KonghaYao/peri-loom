@@ -153,7 +153,13 @@ impl GarbageCollector {
                 .ownership
                 .as_ref()
                 .context("ownership missing")?;
-            if let Some(receipt) = catalog.commands.get(request_id) {
+            let receipt = match catalog.commands.get(request_id) {
+                Some(receipt) => Some(receipt.clone()),
+                None => self
+                    .authority
+                    .archived_command(catalog.command_index.as_deref(), request_id)?,
+            };
+            if let Some(receipt) = receipt {
                 anyhow::ensure!(
                     receipt.digest == digest,
                     "Conflict request ID payload mismatch"
@@ -164,7 +170,7 @@ impl GarbageCollector {
                     .and_then(|status| status.as_str())
                     == Some("completed_gc")
                 {
-                    return Ok(receipt.result.clone());
+                    return Ok(receipt.result);
                 }
                 anyhow::ensure!(
                     receipt
@@ -174,7 +180,7 @@ impl GarbageCollector {
                         == Some("pending_gc"),
                     "Conflict GC command status"
                 );
-                started = Some(receipt.result.clone());
+                started = Some(receipt.result);
                 break;
             }
             let reachable = self.authority.reachable(&snapshot.root)?;

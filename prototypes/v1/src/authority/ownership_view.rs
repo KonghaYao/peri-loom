@@ -28,7 +28,7 @@ impl Authority {
             root.namespace.database.clone(),
         )?;
         ensure!(
-            matches!(root.version, 2 | 4)
+            matches!(root.version, 2 | 4 | 5)
                 && root.revision >= 1
                 && root.namespace == self.namespace
                 && root.incarnation == self.incarnation

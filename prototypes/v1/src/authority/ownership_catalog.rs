@@ -14,6 +14,10 @@ pub(crate) fn prepare(
                 old.authority_term == new.authority_term,
                 "authority term change requires exclusive boot"
             );
+            ensure!(
+                old.command_index == new.command_index,
+                "command archive mutation forbidden"
+            );
             for (branch, record) in &old.branches {
                 let candidate = new
                     .branches

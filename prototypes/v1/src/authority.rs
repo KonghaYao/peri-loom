@@ -18,7 +18,7 @@ pub mod types;
 pub use branch::BranchStore;
 pub use types::{BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint, RootSnapshot, Tombstone};
 
-use crate::ownership::types::{MutationGuard, MutationStage};
+use crate::ownership::types::{CommandReceipt, MutationGuard, MutationStage};
 use crate::{
     namespace::Namespace,
     object_store::{ObjectStore, PreconditionFailed, PutCondition},
@@ -102,6 +102,30 @@ const INLINE_RECEIPTS_MAX: usize = 128;
 /// and a query for a sequence that left it keeps failing closed with "exact committed
 /// sequence is not retained" instead of answering with a neighbouring point.
 const RETAINED_RECOVERY_POINTS: usize = 32;
+
+/// Recent command receipts kept inline in the ownership catalog. Every statement decodes
+/// and validates the whole head, and one receipt carries a full reply (~357 B), so an
+/// unbounded ledger would make each lease validation follow how long the namespace has
+/// been running. Older terminal receipts move to immutable pages; pending GC receipts
+/// stay inline because the collector rewrites their status in place.
+const INLINE_COMMANDS_MAX: usize = 32;
+
+/// A command receipt value larger than this cannot share a page with another entry: the
+/// immutable page budget is 16 KiB and a page must hold at least one value. Such values
+/// are spooled to their own content-addressed object and the page tree stores only the
+/// digest, so a large GC reply never wedges archiving or leaves an unbounded inline entry.
+const COMMAND_ARCHIVE_VALUE_MAX: usize = 8 * 1024;
+
+/// A receipt the archive may take. `pending_gc` is the one status the collector rewrites
+/// after insertion, and pages are immutable, so it stays in the inline window until the
+/// collection completes.
+pub(super) fn terminal_receipt(receipt: &CommandReceipt) -> bool {
+    receipt
+        .result
+        .get("status")
+        .and_then(|status| status.as_str())
+        != Some("pending_gc")
+}
 
 /// Test-only: whether a publication reaches the store as one durability group.
 #[cfg(test)]
@@ -289,7 +313,7 @@ impl Authority {
         if let Some(revision) = root.receipts.get(operation) {
             return Ok(Some(*revision));
         }
-        if root.version == 4 {
+        if root.version >= 4 {
             let value = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
                 .get(root.receipt_index.as_deref(), operation)?;
             value
@@ -312,7 +336,7 @@ impl Authority {
         index: &paged_index::PagedIndex<'_>,
     ) -> Result<()> {
         root.receipts.insert(operation, root.revision);
-        if root.version != 4 || root.receipts.len() <= INLINE_RECEIPTS_MAX {
+        if root.version < 4 || root.receipts.len() <= INLINE_RECEIPTS_MAX {
             return Ok(());
         }
         let mut oldest: Vec<_> = root
@@ -332,6 +356,113 @@ impl Authority {
         }
         root.receipt_index = Some(pointer);
         Ok(())
+    }
+
+    /// Move terminal command receipts beyond the inline window into the immutable page
+    /// tree. Runs after `prepare` for the same reason as `record_receipt`: the candidate
+    /// still contains every receipt the transaction validated, and only this writer may
+    /// move them. A lookup consults both representations, so archiving never erases an
+    /// idempotency answer.
+    pub(super) fn archive_commands(
+        &self,
+        root: &mut CatalogRoot,
+        index: &paged_index::PagedIndex<'_>,
+    ) -> Result<()> {
+        if root.version < 5 {
+            return Ok(());
+        }
+        let Some(catalog) = root.ownership.as_mut() else {
+            return Ok(());
+        };
+        let excess = catalog
+            .commands
+            .values()
+            .filter(|receipt| terminal_receipt(receipt))
+            .count()
+            .saturating_sub(INLINE_COMMANDS_MAX);
+        if excess == 0 {
+            return Ok(());
+        }
+        let mut terminal: Vec<String> = catalog
+            .commands
+            .iter()
+            .filter(|(_, receipt)| terminal_receipt(receipt))
+            .map(|(identifier, _)| identifier.clone())
+            .collect();
+        terminal.sort();
+        let archived: Vec<String> = terminal.into_iter().take(excess).collect();
+        let mut updates = std::collections::BTreeMap::new();
+        for identifier in &archived {
+            let receipt = catalog
+                .commands
+                .get(identifier)
+                .context("command receipt vanished before archiving")?;
+            crate::ownership::types::validate_label(identifier)?;
+            ensure!(
+                crate::manifest::valid_hash(&receipt.digest),
+                "invalid command receipt digest"
+            );
+            updates.insert(identifier.clone(), self.archive_value(receipt)?);
+        }
+        let pointer = index.insert_many(catalog.command_index.as_deref(), updates)?;
+        for identifier in archived {
+            catalog.commands.remove(&identifier);
+        }
+        catalog.command_index = Some(pointer);
+        Ok(())
+    }
+
+    /// Values that fit a page stay in it. Larger values go to an immutable object first;
+    /// the page entry is only a digest, and a lost head CAS leaves an unreferenced object
+    /// behind rather than a pointer to bytes that were never written.
+    fn archive_value(&self, receipt: &CommandReceipt) -> Result<serde_json::Value> {
+        let bytes = serde_json::to_vec(receipt)?;
+        if bytes.len() <= COMMAND_ARCHIVE_VALUE_MAX {
+            return Ok(serde_json::from_slice(&bytes)?);
+        }
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        self.store.put(
+            &self
+                .namespace
+                .key(&format!("authority/command-archive/{hash}"))?,
+            &bytes,
+            PutCondition::Any,
+        )?;
+        Ok(serde_json::json!({ "archive_object": hash }))
+    }
+
+    /// Read a receipt that left the inline window. The page tree is content addressed and
+    /// immutable, so a missing page or a malformed entry fails closed instead of turning
+    /// an old idempotency key into a fresh command.
+    pub(crate) fn archived_command(
+        &self,
+        pointer: Option<&str>,
+        identifier: &str,
+    ) -> Result<Option<CommandReceipt>> {
+        let Some(value) = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
+            .get(pointer, identifier)?
+        else {
+            return Ok(None);
+        };
+        let Some(hash) = value.get("archive_object").and_then(|hash| hash.as_str()) else {
+            return Ok(Some(serde_json::from_value(value)?));
+        };
+        ensure!(
+            value.as_object().is_some_and(|value| value.len() == 1),
+            "invalid archived command pointer"
+        );
+        let key = self
+            .namespace
+            .key(&format!("authority/command-archive/{hash}"))?;
+        let object = self
+            .store
+            .get(&key)?
+            .context("archived command payload missing")?;
+        ensure!(
+            blake3::hash(&object.bytes).to_hex().as_str() == hash,
+            "archived command payload mismatch"
+        );
+        Ok(Some(serde_json::from_slice(&object.bytes)?))
     }
 
     pub fn transact<F>(&self, expected_revision: Option<u64>, mutation: F) -> Result<RootSnapshot>
@@ -387,12 +518,16 @@ impl Authority {
             };
             mutation(&mut candidate)?;
             self.prepare(&current.root, &mut candidate, deletion, bodies)?;
+            let ownership_changed = candidate.ownership != current.root.ownership;
             candidate.revision = current
                 .root
                 .revision
                 .checked_add(1)
                 .context("authority revision overflow")?;
             self.record_receipt(&mut candidate, operation.clone(), &publishing)?;
+            if ownership_changed {
+                self.archive_commands(&mut candidate, &publishing)?;
+            }
             self.validate_head_with(&candidate, Some(&pending))?;
             self.validate_references(&candidate, bodies)?;
             candidate.blobs.publish(&publishing)?;

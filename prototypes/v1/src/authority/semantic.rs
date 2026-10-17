@@ -126,7 +126,7 @@ impl Authority {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("validate", 0);
         ensure!(
-            matches!(root.version, 1 | 2 | 4)
+            matches!(root.version, 1 | 2 | 4 | 5)
                 && root.revision >= 1
                 && root.namespace == self.namespace
                 && root.incarnation == self.incarnation
@@ -134,21 +134,39 @@ impl Authority {
             "authority root identity mismatch"
         );
         super::migration::validate(root)?;
-        if root.version == 4 {
+        let index = super::paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace);
+        let index = match pending {
+            Some(pending) => index.deferring(pending),
+            None => index,
+        };
+        if root.version >= 4 {
             ensure!(
                 root.receipts.len() <= super::INLINE_RECEIPTS_MAX,
                 "inline receipt window exceeded"
             );
-            let index = super::paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace);
-            let index = match pending {
-                Some(pending) => index.deferring(pending),
-                None => index,
-            };
             index.verify_root(root.receipt_index.as_deref())?;
         } else {
             ensure!(
                 root.receipt_index.is_none(),
                 "paged receipts in legacy root"
+            );
+        }
+        if root.version >= 5 {
+            let catalog = root.ownership.as_ref().context("ownership missing")?;
+            index.verify_root(catalog.command_index.as_deref())?;
+            ensure!(
+                catalog
+                    .commands
+                    .values()
+                    .filter(|receipt| super::terminal_receipt(receipt))
+                    .count()
+                    <= super::INLINE_COMMANDS_MAX,
+                "inline command window exceeded"
+            );
+        } else if let Some(catalog) = &root.ownership {
+            ensure!(
+                catalog.command_index.is_none(),
+                "paged commands in legacy root"
             );
         }
         ensure!(

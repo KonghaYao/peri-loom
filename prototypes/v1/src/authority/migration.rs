@@ -69,7 +69,7 @@ impl Authority {
                 record.epoch = record.epoch.max(floor);
                 record.branch_incarnation = branch.incarnation;
             }
-            candidate.version = 4;
+            candidate.version = 5;
             candidate.ownership = Some(catalog);
             candidate.revision = candidate
                 .revision
@@ -80,7 +80,7 @@ impl Authority {
             let pending = std::cell::RefCell::new(super::paged_index::PendingPages::default());
             let publishing =
                 PagedIndex::new(self.store.as_ref(), &self.namespace).deferring(&pending);
-            if previous.root.version != 4 {
+            if previous.root.version < 4 {
                 candidate.receipt_index = publishing.build(
                     std::mem::take(&mut candidate.receipts)
                         .into_iter()
@@ -89,6 +89,7 @@ impl Authority {
                 )?;
             }
             self.record_receipt(&mut candidate, operation.clone(), &publishing)?;
+            self.archive_commands(&mut candidate, &publishing)?;
             self.validate_head_with(&candidate, Some(&pending))?;
             candidate.blobs.publish(&publishing)?;
             candidate.objects.publish(&publishing)?;
@@ -170,6 +171,13 @@ pub(super) fn validate(root: &CatalogRoot) -> Result<()> {
             ensure!(
                 crate::manifest::valid_hash(&receipt.digest),
                 "invalid command receipt digest"
+            );
+        }
+        if let Some(pointer) = &catalog.command_index {
+            ensure!(root.version >= 5, "paged commands in legacy root");
+            ensure!(
+                crate::manifest::valid_hash(pointer),
+                "invalid command archive pointer"
             );
         }
     }

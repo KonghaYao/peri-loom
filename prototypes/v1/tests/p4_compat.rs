@@ -66,7 +66,7 @@ fn migration_retains_restored_state_refs_blobs_and_native_wal() -> Result<()> {
     let initial = ownership.state(&identifier)?;
     assert!(initial.binding.is_none());
     let migrated = base.snapshot()?.root;
-    assert_eq!(migrated.version, 4);
+    assert_eq!(migrated.version, 5);
     assert_eq!(migrated.incarnation, before.incarnation);
     assert_eq!(migrated.branches, before.branches);
     assert_eq!(migrated.snapshots, before.snapshots);
@@ -157,7 +157,7 @@ fn paged_receipts_keep_owned_root_bounded_and_corruption_fails_closed() -> Resul
         authority.transact(None, |_| Ok(()))?;
     }
     let snapshot = authority.snapshot()?;
-    assert_eq!(snapshot.root.version, 4);
+    assert_eq!(snapshot.root.version, 5);
     assert!(snapshot.root.receipts.len() <= 128);
     assert!(!snapshot.root.receipts.contains_key(&first_receipt.0));
     assert_eq!(authority.receipt(&first_receipt.0)?, Some(first_receipt.1));
@@ -190,7 +190,7 @@ fn legacy_receipt_migration_shrinks_root_without_losing_history() -> Result<()> 
     let old_size = store.get(&key)?.unwrap().bytes.len();
     OwnershipAuthority::new(store.clone(), Arc::new(Clock)).state(&database)?;
     let after = authority.snapshot()?.root;
-    assert_eq!(after.version, 4);
+    assert_eq!(after.version, 5);
     assert_eq!(after.receipts.len(), 1);
     assert!(store.get(&key)?.unwrap().bytes.len() < old_size / 2);
     for (operation, revision) in before.receipts {

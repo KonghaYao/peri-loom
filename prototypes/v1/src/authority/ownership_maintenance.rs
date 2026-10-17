@@ -76,7 +76,7 @@ pub(super) fn run(
             let mut result = None;
             scoped.transact(None, |root| {
                 let outcome = apply(root, &identifier.branch, &operation)?;
-                commands::insert_receipt(root, request_id, &payload, &outcome)?;
+                commands::insert_receipt(&service.authority, root, request_id, &payload, &outcome)?;
                 result = Some(outcome);
                 Ok(())
             })?;

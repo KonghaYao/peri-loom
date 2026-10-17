@@ -68,7 +68,7 @@ fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
     );
     let root: CatalogRoot = serde_json::from_str(envelope.root.get())?;
     ensure!(
-        matches!(root.version, 1 | 2 | 4),
+        matches!(root.version, 1 | 2 | 4 | 5),
         "unsupported authority root version"
     );
     ensure!(
