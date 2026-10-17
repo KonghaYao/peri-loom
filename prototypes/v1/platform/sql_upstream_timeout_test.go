@@ -25,3 +25,18 @@ func TestSQLUpstreamTimeoutBounds(test *testing.T) {
 		}
 	}
 }
+
+// The worker reclaims a parked socket after its own keep-alive window
+// (KEEP_ALIVE_IDLE, 5 s in prototypes/v1/src/worker_rpc/transport.rs). This
+// client must retire a socket first: otherwise a request can start on one the
+// worker has already decided to close, and the reply is reported ambiguous.
+func TestSQLUpstreamRetiresIdleSocketsBeforeWorkerReclamation(test *testing.T) {
+	created, err := NewSQLUpstream(map[string]string{"worker-a": sqlTestToken(test)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	transport := created.(*sqlHTTPUpstream).client.Transport.(*http.Transport)
+	if transport.IdleConnTimeout <= 0 || transport.IdleConnTimeout >= 5*time.Second {
+		test.Fatalf("client idle timeout %s must stay below the worker's 5 s reclamation", transport.IdleConnTimeout)
+	}
+}

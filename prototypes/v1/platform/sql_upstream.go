@@ -97,19 +97,18 @@ func NewSQLUpstreamWithTimeout(workerSQLTokens map[string]string, timeout time.D
 			DialContext:            (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			ResponseHeaderTimeout:  timeout,
 			MaxResponseHeaderBytes: 16384,
-			// Connections are pooled. The worker now keeps its side open for its own
+			// Connections are pooled. The worker keeps its side open for its own
 			// idle window and answers with "keep-alive", so dispatches do reuse sockets
-			// and the TIME_WAIT churn is gone. Idle connections stay bounded, and a
-			// request that lands on a socket the worker is closing fails as an ambiguous
-			// upstream failure rather than being retried, because a retry could
-			// double-apply a commit. This client idle timeout still matches the worker's
-			// window, so a request can be handed a socket the worker is about to close;
-			// that race is a known open defect (closing it means retiring connections
-			// here strictly before the worker does, which trades reuse for reconnects on
-			// bursty traffic) and is deliberately not papered over by replaying.
+			// and the TIME_WAIT churn is gone. This side retires a parked socket before
+			// the worker's reclamation (KEEP_ALIVE_IDLE, 5 s in
+			// prototypes/v1/src/worker_rpc/transport.rs), so a request never starts on a
+			// socket the peer has already decided to close. The 1 s margin matches the
+			// Authority client. Idle connections stay bounded, and a request that still
+			// loses its reply is an ambiguous upstream failure rather than a retry,
+			// because a retry could double-apply a commit.
 			MaxIdleConns:        64,
 			MaxIdleConnsPerHost: 16,
-			IdleConnTimeout:     5 * time.Second,
+			IdleConnTimeout:     4 * time.Second,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
