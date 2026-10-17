@@ -142,22 +142,80 @@ worker-b 的 `maintenance.units` 时间线（首次加载段 2 s 采样；compac
 
 ---
 
-## 4. 不能从本次运行推出的结论
+## 4. 16/64 MiB 档的一次 checkpoint 观测
+
+这一节是另一个栈（端口 `19644`，branch `maint3`，worker-b epoch 2）上的独立观测：
+只把 checkpoint 的 low/high 改为 16/64 MiB，compact 也改为 16/64 MiB，其余开关与 §1 相同。
+它不是档位对比实验：主机负载、数据集大小与 §2/§3 都不同。
+
+| 指标 | 值 |
+|---|---|
+| 导入 | 220000 行，33.0714 s，4290.339 durable rows/s，readback 220000，`failures = []` |
+| 导入后 WAL | 95 097 872 B（约 90.7 MiB），高于 64 MiB 高水位 |
+| 第一次 checkpoint pick | 失败，`ns = 15 416`（15.4 µs），`backfill_bytes = 88 398 752` |
+| worker 日志 | `maintenance outcome=blocked lane=checkpoint elapsed_ms=0 reason=writer admission conflict` |
+| 第二次 checkpoint pick | 成功，`ns = 23 717 541 666`（23.718 s），`backfill_bytes = 95 097 872` |
+| `failures` | 1（第一次），之后不再增长 |
+| 发布后 WAL | 95 097 872 B（Full checkpoint 不截断） |
+
+- 第一次 pick 与导入末尾的写入重叠，被 writer admission 拒绝。这是保护写入的保守拒绝，
+  不是数据错误；它计入 `units.checkpoint.failures`，但**不**计入 `maintenance.blocked.*`
+  （后者全 0），运行时日志把它描述为 `blocked`。两个计数口径不能混用。
+- 第二次 pick 在约一个周期后成功，回填 90.7 MiB 用 23.718 s（约 4.0 MiB/s 的描述量级）。
+  与 §3 的 29.66 MiB / 9.594 s 相比，本文不据此拟合吞吐或宣称线性。
+- compact 在同一档位下的首次 slot 在打开后 450 s；结果见 §4.1。
+
+### 4.1 16/64 MiB 档的首次 compact
+
+数据库在导入后按 idle 策略卸载；重新加载后 `resources.databases[].wal_bytes` 读到 0，
+说明 WAL 已在加载前完全发布。compact 的低水位是 16 MiB，因此即使 450 s 的 slot 已过，
+lane 也不会武装：采样到 `resident_age = 451 s` 时 `index_compact.calls` 仍为 0，
+`blocked.*` 也全为 0（低于低水位是 Skip，不是 block）。
+
+为触发 compact，实验通过公开 SQL 向新表 `e01_compact_probe` 追加 40000 行（15.254 s），
+让 WAL 越过低水位。写入期间 slot 已过，compact 随即被 pick：
+
+| 指标 | 值 |
+|---|---|
+| `index_compact.calls` | 1 |
+| `ns` | 13 075 256 250（13.075 s） |
+| `backfill_bytes` | 95 097 872 |
+| `failures` | 0 |
+| `blocked.*` / `refused.*` | 全 0 |
+| compact 完成后采样到的 `wal_bytes` | 5 121 192 B |
+
+- 5 121 192 B 是采样时探测脚本收尾批次仍在写入的残量；本文不把它归为 compact 未完成，
+  也不宣称这次 compact 后 WAL 归零。
+- compact 后公开 SQL：`SELECT count(*) FROM e01_records` → 220000；
+  `SELECT count(*) FROM e01_compact_probe` → 40000。写入的数据没有丢失。
+- 13.075 s 与 §3.1 的 4.409 s 来自不同数据集与 WAL 大小（95 MB 对 29.66 MB），
+  不构成档位对比，也不用于拟合吞吐。
+
+## 5. 不能从本次运行推出的结论
 
 - 不推出服务端 SQL 吞吐上限：429 来自平台准入，`max_concurrent = 4` 与
   `requests_per_second = 100` 的影响没有分离；数据集只有 100k 行，且是单 branch、单 worker。
-- 不推出 16/64/256 MiB 档位、长期稳定性、多 worker 维护并发、S3 后端或 release 构建的行为。
+- 不推出 16/64/256 MiB 档位的行为：§4 只有一次 16/64 MiB 观测，数据集 220k 行，
+  没有与 4/8 MiB 在同一负载下对照，也没有 256 MiB 档。
+- 不把 §4 的 23.718 s / 90.7 MiB 当作吞吐或线性证据；第一次 pick 的 writer admission
+  拒绝也只有一次观测，不能代表写并发下的维护成功率。
+- 不推出长期稳定性、多 worker 维护并发、S3 后端或 release 构建的行为。
 - 不推出延迟分位数作为 SLO：共享主机、debug 构建、无资源隔离，且延迟统计只覆盖成功操作。
 - 不推出公平性或容量：`throughput.per_session_efficiency` 只是把整体成功速率除以会话数的
   描述量，不是公平性指标。
 - 不把短时过载后的恢复当作机制证明：恢复观测只有一次，且没有定位配额窗口的边界值。
 
-## 5. 证据位置
+## 6. 证据位置
 
 - `~/.peri-e01/stress-20261017/rate100-20261017T1130Z/`：
   `import/import.json`、`arms-maint2/{rate50-c8-r50-40s,rate100-c8-r100-60s,overload-c32-r0-20s-clean,recovery-rate50-c8-r50-20s}/`、
   `samples.ndjson`、`compact-watch/`、`poll-*.json`、`metrics-after-import.json`、
   `metrics-after-arms.json`、`launcher.out`。早前的 `overload-c32-r0-20s` 臂保留了
   探测会话未关闭的状态，只作为 `max_sessions` 计数方式的旁证，不用于本文表格。
+- `~/.peri-e01/stress-20261017/maint16-64-20261017T1145Z/`：
+  `import/import.json`、`metrics-import.json`、`metrics-t2.json`、`metrics-t3.json`、
+  `metrics-compact.json`、`watch/`、`watch2/`、`launcher.out`。运行目录
+  `/tmp/peri-maint-16-64-e12a628`（含 `launch.json`、`launcher-stop.json`、
+  `launcher-terminal.json`、`owned-proof/*.stop.json`）。
 - 运行目录 `/tmp/peri-maint-rate100-e12a628`（含 `launch.json`、`launcher-stop.json`、
   `launcher-terminal.json`、`owned-proof/*.stop.json`）；凭据不在本文与证据 JSON 的公开字段中。
