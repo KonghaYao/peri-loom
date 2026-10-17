@@ -1,7 +1,8 @@
-use super::protocol::{AuthorityCommand, RpcRequest, RpcResponse, MAX_RPC_BYTES, PROTOCOL_VERSION};
+use super::protocol::{AuthorityCommand, RpcRequest, MAX_RPC_BYTES, PROTOCOL_VERSION};
 use crate::object_store::PreconditionFailed;
 use anyhow::{ensure, Context, Result};
 use reqwest::blocking::Client;
+use serde::Deserialize;
 use std::io::Read;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -280,16 +281,18 @@ impl AuthorityClient {
             bytes.len() <= MAX_RPC_BYTES,
             "authority response body limit exceeded"
         );
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
+        // One strict parse covers identity, result presence and the result itself. The wire
+        // protocol always writes `result`, so a reply that omits it is malformed rather than
+        // a null result, while an explicit null stays legitimate.
+        let response: ResponseEnvelope = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("invalid authority response"))?;
-        ensure!(
-            value
-                .as_object()
-                .is_some_and(|object| object.contains_key("result")),
-            "authority result field missing"
-        );
-        let response: RpcResponse = serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("invalid authority response"))?;
+        let result = match response.result {
+            ResponseResult::Missing => {
+                return Err(anyhow::anyhow!("authority result field missing"))
+            }
+            ResponseResult::Null => None,
+            ResponseResult::Value(value) => Some(value),
+        };
         ensure!(
             response.version == PROTOCOL_VERSION && response.request_id == request_id,
             "authority response identity mismatch"
@@ -299,10 +302,10 @@ impl AuthorityClient {
                 !response.precondition_failed && response.error.is_none(),
                 "inconsistent authority response"
             );
-            return Ok(response.result.unwrap_or(serde_json::Value::Null));
+            return Ok(result.unwrap_or(serde_json::Value::Null));
         }
         ensure!(
-            response.result.is_none() && response.error.is_some(),
+            result.is_none() && response.error.is_some(),
             "inconsistent authority error response"
         );
         if response.precondition_failed {
@@ -313,4 +316,42 @@ impl AuthorityClient {
         }
         Err(KnownAuthorityRejection.into())
     }
+}
+
+/// Presence of the wire `result` field, kept apart from its value: the protocol writes the
+/// field even when the value is null, and serde's `Option` would otherwise accept a missing
+/// field as `None`.
+#[derive(Default)]
+enum ResponseResult {
+    #[default]
+    Missing,
+    Null,
+    Value(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ResponseResult {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(
+            match Option::<serde_json::Value>::deserialize(deserializer)? {
+                Some(value) => ResponseResult::Value(value),
+                None => ResponseResult::Null,
+            },
+        )
+    }
+}
+
+/// One strict pass covers every field the caller checks, so a large body is materialized
+/// once instead of once per parse.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResponseEnvelope {
+    version: u32,
+    request_id: String,
+    ok: bool,
+    #[serde(default)]
+    result: ResponseResult,
+    error: Option<String>,
+    precondition_failed: bool,
 }
