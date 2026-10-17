@@ -1,5 +1,6 @@
-//! Optional workload counters for the T0 metric groups: WAL work, authority metadata and
-//! lock/execution time. Off unless `PERI_WORK_METRICS=1`, and off means the call sites skip
+//! Optional workload counters for the T0 metric groups: WAL work, authority metadata,
+//! lock/execution time and SQL result encoding. Off unless `PERI_WORK_METRICS=1`, and off
+//! means the call sites skip
 //! the clock read and the atomic: the counters are not a second copy of work already
 //! measured, they are the same work points reporting into a process-wide sink.
 //!
@@ -490,6 +491,29 @@ pub(crate) fn observe_wal_index_read(encoded_bytes: usize, entries: usize) {
     add(&WAL_INDEX_READ_ENTRIES, entries as u64);
 }
 
+// --- E. SQL result encoding ---------------------------------------------------------------
+
+// Cumulative, not a gauge: rows are materialized inside the engine call before a response
+// exists, so an in-flight byte gauge would either miss that phase or require instrumenting
+// the cursor lifecycle, which this pass deliberately leaves for a later decision.
+
+static RESULT_BATCHES: AtomicU64 = AtomicU64::new(0);
+static RESULT_ROWS: AtomicU64 = AtomicU64::new(0);
+static RESULT_JSON_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// One successful row-bearing SQL result batch: the rows the worker materialized and the JSON
+/// bytes of its `result` payload. The envelope, session state and transport framing are not
+/// included. NDJSON is a gateway materialization, not a worker result format, so it has no
+/// counter here.
+pub(crate) fn observe_result(rows: usize, json_bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    add(&RESULT_BATCHES, 1);
+    add(&RESULT_ROWS, rows as u64);
+    add(&RESULT_JSON_BYTES, json_bytes as u64);
+}
+
 // --- snapshot ----------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -579,11 +603,22 @@ pub(crate) struct MaintenanceWork {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct ResultWork {
+    /// Successful row-bearing SQL result batches serialized, including empty pages.
+    pub batches: u64,
+    /// Materialized rows carried by those batches.
+    pub rows: u64,
+    /// JSON bytes of the `result` payload, excluding the worker envelope and session state.
+    pub json_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct WorkMetricsSnapshot {
     pub wal_workload: WalWorkload,
     pub metadata: MetadataWork,
     pub locks: BTreeMap<&'static str, LockTotals>,
     pub execution: ExecutionWork,
+    pub results: ResultWork,
     pub maintenance: MaintenanceWork,
 }
 
@@ -663,6 +698,11 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             native_execute_calls: load(&EXECUTE_CALLS),
             native_execute_ns: load(&EXECUTE_NANOS),
             native_execute_steps: load(&EXECUTE_STEPS),
+        },
+        results: ResultWork {
+            batches: load(&RESULT_BATCHES),
+            rows: load(&RESULT_ROWS),
+            json_bytes: load(&RESULT_JSON_BYTES),
         },
         maintenance: MaintenanceWork {
             units: units(),

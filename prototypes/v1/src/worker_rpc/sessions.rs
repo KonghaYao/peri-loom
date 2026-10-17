@@ -528,14 +528,29 @@ impl Sessions {
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
-    use super::RefreshLocks;
+    use super::{result_row_count, RefreshLocks};
     use crate::namespace::Namespace;
     use crate::runtime::DatabaseId;
     use crate::session::AdmissionError;
     use crate::worker_rpc::session_entry::StubPhase;
     use crate::worker_rpc::sessions::{Entry, Sessions};
+    use serde_json::json;
     use std::sync::{mpsc, Arc};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn result_row_count_matches_query_and_cursor_result_shapes() {
+        assert_eq!(result_row_count(&json!([[1], [2], [3]])), Some(3));
+        assert_eq!(
+            result_row_count(&json!({"rows": [[1]], "done": true})),
+            Some(1)
+        );
+        assert_eq!(
+            result_row_count(&json!({"rows": [], "done": true})),
+            Some(0)
+        );
+        assert_eq!(result_row_count(&json!({"executed": true})), None);
+    }
 
     #[test]
     fn one_failed_cleanup_still_clears_healthy_sessions_and_reports_the_ledger(
@@ -752,6 +767,17 @@ mod tests {
         assert!(first.elapsed() < Duration::from_millis(250));
         slow.join().expect("slow refresh thread panicked");
         Ok(())
+    }
+}
+
+pub(super) fn result_row_count(result: &JsonValue) -> Option<usize> {
+    match result {
+        JsonValue::Array(rows) => Some(rows.len()),
+        JsonValue::Object(fields) => fields
+            .get("rows")
+            .and_then(JsonValue::as_array)
+            .map(Vec::len),
+        _ => None,
     }
 }
 

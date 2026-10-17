@@ -16,7 +16,7 @@ use super::admission::{Admission, Lane};
 use super::diagnostics::Diagnostics;
 use super::outcome::failure_response;
 use super::protocol::{WorkerCommand, WorkerRequest, WorkerResponse};
-use super::sessions::Sessions;
+use super::sessions::{result_row_count, Sessions};
 use super::transport::{self, read_request, token_matches};
 
 mod shutdown;
@@ -28,6 +28,21 @@ use shutdown::WorkerThreads;
 /// can be reused, a parked one is not work, and letting it spend the execution
 /// budget is what would let idle clients starve real requests.
 const MAX_CONNECTIONS: usize = 256;
+
+/// Counts the bytes a result would encode to without retaining a second copy of the payload.
+#[derive(Default)]
+struct ResultByteCounter(usize);
+
+impl std::io::Write for ResultByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WorkerLimits {
@@ -377,6 +392,15 @@ impl State {
         };
         let version = parsed.version;
         let identifier = parsed.request_id.clone();
+        // Only row-bearing SQL results feed the result counters. Execute has no row payload,
+        // and describe/open-cursor/control responses are not result batches.
+        let row_bearing = matches!(
+            &parsed.command,
+            WorkerCommand::Query { .. }
+                | WorkerCommand::Statement { .. }
+                | WorkerCommand::FetchReadCursor { .. }
+                | WorkerCommand::FetchWriteCursor { .. }
+        );
         let deadline = accepted + Budget::trusted_default().wall_duration();
         let _deadline_scope = crate::session::RequestDeadline::scope(deadline);
         let write_cursor_request = matches!(
@@ -586,7 +610,24 @@ impl State {
             },
             Err(error) => failure_response(version, identifier, control, error, terminal),
         };
+        let result_observation = if row_bearing && crate::work_metrics::enabled() {
+            response.result.as_ref().and_then(|result| {
+                result_row_count(result).map(|rows| {
+                    // Metrics are opt-in, so this traversal is paid only while the counters
+                    // are on. The response itself is still encoded exactly once.
+                    let mut counter = ResultByteCounter::default();
+                    serde_json::to_writer(&mut counter, result)
+                        .expect("successful worker result JSON serializes");
+                    (rows, counter.0)
+                })
+            })
+        } else {
+            None
+        };
         let bytes = serde_json::to_vec(&response)?;
+        if let Some((rows, json_bytes)) = result_observation {
+            crate::work_metrics::observe_result(rows, json_bytes);
+        }
         // A client may send its next request as soon as it receives the receipt.
         // Only write cursors still need the guard to classify a lost reply.
         if !write_cursor_request {

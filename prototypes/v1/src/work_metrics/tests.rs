@@ -82,11 +82,28 @@ fn enabled_sinks_move_the_snapshot() {
 }
 
 #[test]
+fn enabled_result_sink_records_rows_and_json_bytes() {
+    set_enabled(true);
+    let before = snapshot().expect("enabled snapshot");
+    observe_result(3, 128);
+    let after = snapshot().expect("enabled snapshot");
+    assert!(after.results.batches - before.results.batches >= 1);
+    assert!(after.results.rows - before.results.rows >= 3);
+    assert!(after.results.json_bytes - before.results.json_bytes >= 128);
+}
+
+#[test]
 fn snapshot_serializes_every_group_and_reason() {
     set_enabled(true);
     let value = serde_json::to_value(snapshot().expect("enabled snapshot")).expect("serialize");
-    for group in ["wal_workload", "metadata", "locks", "execution"] {
+    for group in ["wal_workload", "metadata", "locks", "execution", "results"] {
         assert!(value.get(group).is_some(), "missing {group}");
+    }
+    for field in ["batches", "rows", "json_bytes"] {
+        assert!(
+            value["results"].get(field).is_some(),
+            "missing results.{field}"
+        );
     }
     for reason in RESET_NAMES {
         assert!(value["wal_workload"]["scan_resets"].get(reason).is_some());
