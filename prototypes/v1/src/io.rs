@@ -2,6 +2,8 @@ mod files;
 mod lock;
 mod native;
 mod native_file;
+#[cfg(test)]
+mod tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -74,10 +76,14 @@ struct FrozenWalAppend {
 }
 
 /// The inputs of one database publication, taken under the state lock so the remote
-/// writes can run after it is released.
+/// writes can run after it is released. The bookkeeping fields are the snapshot the
+/// publication must settle against: the append gate keeps mutators out, so a difference
+/// at settlement means a caller bypassed the gate rather than a legitimate update.
 struct FrozenPublication {
     position: WalPosition,
     applied_lsn: u64,
+    state_position: Option<WalPosition>,
+    dirty: bool,
 }
 
 impl RemoteIO {
@@ -174,8 +180,11 @@ impl RemoteIO {
     }
 
     pub fn resources(&self) -> Result<ResourceUsage> {
-        let state = self.shared.lock()?;
+        // Sample the storage-owned counters before taking the state lock. A publication
+        // holds the storage lock across its remote writes, so waiting for it under the
+        // state lock would stall every WAL reader behind an upload it does not use.
         let mut usage = self.shared.storage.resource_usage()?;
+        let state = self.shared.lock()?;
         usage.wal_bytes = state.image.len();
         usage.pending_wal_bytes = state.batch.operations.iter().try_fold(
             state.frozen_wal_bytes as usize,
@@ -192,8 +201,14 @@ impl RemoteIO {
         Ok(usage)
     }
 
-    /// The maintenance inputs this layer owns, taken under the state lock the request path
-    /// already uses and against no object-store request.
+    /// The maintenance inputs this layer owns, sampled without holding the state lock across
+    /// a storage lock. A publication holds that lock across its remote writes, and the
+    /// scheduler calls this on a periodic driver: taking the two in the other order would
+    /// let an upload stall WAL readers for its whole duration.
+    ///
+    /// The storage figures are read first, so `applied` may lag a publication that finished
+    /// in between. That direction is safe: an older applied LSN can only keep `replay_bytes`
+    /// or `unconfirmed_wal` set, which makes compaction more conservative, never less.
     ///
     /// `unconfirmed_wal` is a conservative reading of the WAL reset precondition: it is set
     /// whenever the durable LSN and the published baseline disagree, or the state is dirty or
@@ -201,8 +216,9 @@ impl RemoteIO {
     /// reading can never make a compaction pass a precondition it would otherwise fail,
     /// because `compact_wal_once` still applies them itself.
     pub(crate) fn maintenance_signals(&self) -> Result<crate::maintenance::MaintenanceSignals> {
-        let state = self.shared.lock()?;
         let usage = self.shared.storage.resource_usage()?;
+        let applied = self.shared.storage.applied_lsn();
+        let state = self.shared.lock()?;
         let pending_wal_bytes = state.batch.operations.iter().try_fold(
             state.frozen_wal_bytes,
             |total, operation| {
@@ -215,7 +231,6 @@ impl RemoteIO {
                     .context("pending WAL payload overflow")
             },
         )?;
-        let applied = self.shared.storage.applied_lsn();
         let wal_bytes = state.image.len() as u64;
         Ok(crate::maintenance::MaintenanceSignals {
             wal_bytes,
@@ -261,7 +276,7 @@ impl RemoteIO {
         let published = self.shared.publish_frozen(&publication);
         let mut state = self.shared.lock()?;
         self.shared
-            .finish_publication(&mut state, published)
+            .finish_publication(&mut state, &publication, published)
             .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))
     }
 
@@ -524,7 +539,6 @@ impl Shared {
     /// state lock across them stalls WAL readers for work they never touch.
     fn freeze_publication(&self, state: &mut State) -> Result<FrozenPublication> {
         self.check_writer()?;
-        state.publication_failed = true;
         ensure!(
             !state.wal_failed && !state.append_in_flight && state.batch.operations.is_empty(),
             "database publication requires durable WAL"
@@ -533,11 +547,16 @@ impl Shared {
             !state.dirty || state.position.is_some() || state.image.len() <= 32,
             "live WAL publication requires native checkpoint position"
         );
+        // Set only after the preconditions hold: a rejected publication must not leave the
+        // flag behind and make the maintenance snapshot report unconfirmed state.
+        state.publication_failed = true;
         Ok(FrozenPublication {
             position: state
                 .position
                 .unwrap_or(self.storage.applied_wal_position()),
             applied_lsn: state.lsn,
+            state_position: state.position,
+            dirty: state.dirty,
         })
     }
 
@@ -547,10 +566,22 @@ impl Shared {
     }
 
     /// Settles the bookkeeping of a finished publication. Only a successful remote
-    /// publication clears `publication_failed`; an error leaves it set so later writes
-    /// fail closed and recovery is required.
-    fn finish_publication(&self, state: &mut State, published: Result<()>) -> Result<()> {
+    /// publication clears `publication_failed`; an error leaves it set. WAL appends stay
+    /// available because they never publish the main database, but reset and compaction
+    /// remain blocked until a later publication succeeds.
+    fn finish_publication(
+        &self,
+        state: &mut State,
+        publication: &FrozenPublication,
+        published: Result<()>,
+    ) -> Result<()> {
         published?;
+        ensure!(
+            state.lsn == publication.applied_lsn
+                && state.position == publication.state_position
+                && state.dirty == publication.dirty,
+            "database state changed while the publication was in flight"
+        );
         state.position = None;
         state.dirty = false;
         state.publication_failed = false;

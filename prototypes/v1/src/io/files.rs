@@ -145,7 +145,8 @@ impl File for RemoteFile {
                 };
                 let published = self.shared.publish_frozen(&publication);
                 let mut state = self.shared.lock()?;
-                self.shared.finish_publication(&mut state, published)?;
+                self.shared
+                    .finish_publication(&mut state, &publication, published)?;
             }
             Ok(0)
         })();
@@ -158,12 +159,15 @@ impl File for RemoteFile {
             .store()
             .validate_local()
             .map_err(super::adapter_error)?;
-        let state = self.shared.lock()?;
-        Ok(if self.wal {
-            state.image.len() as u64
+        // The main database size lives in storage. Read it without the WAL state lock so a
+        // parked publication, which holds the storage lock across its remote writes, cannot
+        // block WAL readers through this file handle.
+        if self.wal {
+            let state = self.shared.lock()?;
+            Ok(state.image.len() as u64)
         } else {
-            self.shared.storage.size()
-        })
+            Ok(self.shared.storage.size())
+        }
     }
 
     fn truncate(&self, len: u64, completion: Completion) -> turso_core::Result<Completion> {
