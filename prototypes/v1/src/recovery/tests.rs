@@ -439,6 +439,10 @@ impl WalStore {
             .bytes)
     }
 
+    fn load_segment(&self, hash: &str) -> Result<Vec<u8>> {
+        self.load(&self.namespace.key(&format!("wal/index-segments/{hash}"))?)
+    }
+
     fn load(&self, key: &str) -> Result<Vec<u8>> {
         Ok(self
             .store
@@ -464,7 +468,12 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
             frame_count: 4,
         }),
     )?;
-    let validated = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    let validated = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
 
     let appended = builder.frame(5, PAGE_SIZE as u32);
     let offset = first.len();
@@ -477,8 +486,13 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
     )?;
 
     reset_recovery_observations();
-    let incremented =
-        validate_index_append(validated, &index, &store.namespace, |key| store.load(key))?;
+    let incremented = validate_index_append(
+        validated,
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
     let observed = recovery_observations();
     assert_eq!(
         observed.scanned_bytes,
@@ -494,7 +508,12 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         first.len() as u64,
         "the growth was not attributed to the append that forced it"
     );
-    let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    let cold = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
     assert_eq!(incremented.commit(), cold.commit());
     assert_eq!(incremented.image.bytes(), cold.image.bytes());
 
@@ -508,8 +527,13 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         }),
     )?;
     reset_recovery_observations();
-    let incremented =
-        validate_index_append(incremented, &index, &store.namespace, |key| store.load(key))?;
+    let incremented = validate_index_append(
+        incremented,
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
     let observed = recovery_observations();
     assert_eq!(
         observed.scanned_bytes,
@@ -520,7 +544,12 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         observed.copied_bytes, 0,
         "the appended image was copied instead of extended in place"
     );
-    let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    let cold = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
     assert_eq!(incremented.commit(), cold.commit());
     assert_eq!(incremented.image.bytes(), cold.image.bytes());
     Ok(())
@@ -541,7 +570,12 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
             frame_count: 4,
         }),
     )?;
-    let validated = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    let validated = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
 
     // Overwrite a byte of an already verified frame. The image it leaves has no committed
     // boundary, so the record carries no commit marker and does not scan at all.
@@ -549,8 +583,13 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
     let mut corrupted = first[damage..damage + 8].to_vec();
     corrupted[0] ^= 0xff;
     let index = store.append(write_at(damage, &corrupted), None)?;
-    let overwritten =
-        validate_index_append(validated, &index, &store.namespace, |key| store.load(key))?;
+    let overwritten = validate_index_append(
+        validated,
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
 
     // Repairing the frame and appending behind it is one record. Its scan must cover the whole
     // image: had the overwriting record left a prefix reusable, only the two new frames would
@@ -572,15 +611,25 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
     )?;
 
     reset_recovery_observations();
-    let chained =
-        validate_index_append(overwritten, &index, &store.namespace, |key| store.load(key))?;
+    let chained = validate_index_append(
+        overwritten,
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
     assert_eq!(
         recovery_observations().scanned_bytes,
         (WAL_HEADER + 6 * FRAME_SIZE) as u64,
         "the overwrite did not invalidate the verified prefix"
     );
 
-    let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    let cold = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
     assert_eq!(chained.commit(), cold.commit());
     assert_eq!(chained.image.bytes(), cold.image.bytes());
     Ok(())
@@ -604,7 +653,12 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
         }),
     )?;
     let mut image_len = first.len();
-    let mut previous = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    let mut previous = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
 
     for page in 4..=40u32 {
         let frame = builder.frame(page, PAGE_SIZE as u32);
@@ -621,28 +675,47 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
         // it, so the incremental path never accepts a state a cold replay rejects.
         let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
         forged["commit"]["position"]["frame_count"] = serde_json::Value::from(page - 1);
-        let fresh = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+        let fresh = validate_index_state(
+            &index,
+            &store.namespace,
+            |hash| store.load_segment(hash),
+            |key| store.load(key),
+        )?;
         assert!(
             validate_index_append(
                 fresh,
                 &serde_json::to_vec(&forged)?,
                 &store.namespace,
+                |hash| store.load_segment(hash),
                 |key| store.load(key)
             )
             .is_err(),
             "the incremental validator accepted a forged candidate at page {page}"
         );
         assert!(
-            validate_index_state(&serde_json::to_vec(&forged)?, &store.namespace, |key| {
-                store.load(key)
-            })
+            validate_index_state(
+                &serde_json::to_vec(&forged)?,
+                &store.namespace,
+                |hash| { store.load_segment(hash) },
+                |key| store.load(key)
+            )
             .is_err(),
             "the cold replay accepted a forged candidate at page {page}"
         );
 
-        let extended =
-            validate_index_append(previous, &next, &store.namespace, |key| store.load(key))?;
-        let cold = validate_index_state(&next, &store.namespace, |key| store.load(key))?;
+        let extended = validate_index_append(
+            previous,
+            &next,
+            &store.namespace,
+            |hash| store.load_segment(hash),
+            |key| store.load(key),
+        )?;
+        let cold = validate_index_state(
+            &next,
+            &store.namespace,
+            |hash| store.load_segment(hash),
+            |key| store.load(key),
+        )?;
         assert_eq!(
             extended.commit(),
             cold.commit(),
@@ -793,6 +866,201 @@ fn scan_fallback_reasons_are_counted() -> Result<()> {
         assert!(
             global.wal_workload.scan_resets[reason] >= 1,
             "reason {reason} never reached the exported sink"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
+    let store = WalStore::open("index-segments")?;
+    let salts = [31, 32];
+    let mut builder = WalBuilder::new(salts);
+    let mut expected = builder.header();
+    let mut previous = None;
+    let mut before_flush = Vec::new();
+    let mut flushed = Vec::new();
+    for ordinal in 1..=514u64 {
+        let frame = builder.frame(1, PAGE_SIZE as u32);
+        let mut bytes = if ordinal == 1 {
+            expected.clone()
+        } else {
+            Vec::new()
+        };
+        bytes.extend_from_slice(&frame);
+        let offset = if ordinal == 1 { 0 } else { expected.len() };
+        expected.extend_from_slice(&frame);
+        let index = store.append(
+            write_at(offset, &bytes),
+            Some(WalPosition {
+                salts,
+                frame_count: ordinal,
+            }),
+        )?;
+        let metadata: WalMetadata = serde_json::from_slice(&index)?;
+        assert_eq!(metadata.entry_count, Some(ordinal));
+        assert!(metadata.entries.len() <= WAL_INDEX_SEGMENT_LIMIT);
+        assert_eq!(metadata.entry_index.is_some(), ordinal > 256);
+        let mut reads = 0;
+        let validated = if let Some(previous) = previous {
+            validate_index_append(
+                previous,
+                &index,
+                &store.namespace,
+                |hash| {
+                    reads += 1;
+                    store.load_segment(hash)
+                },
+                |key| store.load(key),
+            )?
+        } else {
+            validate_index_state(
+                &index,
+                &store.namespace,
+                |hash| store.load_segment(hash),
+                |key| store.load(key),
+            )?
+        };
+        assert_eq!(reads, usize::from(ordinal == 257 || ordinal == 513));
+        assert_eq!(validated.image.bytes(), expected);
+        if ordinal == 512 {
+            before_flush = index.clone();
+        }
+        if ordinal == 513 {
+            flushed = index.clone();
+        }
+        previous = Some(validated);
+    }
+    let index = store.load(&store.namespace.key("wal/index")?)?;
+    let cold = validate_index_state(
+        &index,
+        &store.namespace,
+        |hash| store.load_segment(hash),
+        |key| store.load(key),
+    )?;
+    assert_eq!(cold.image.bytes(), expected);
+    assert_eq!(cold.commit(), previous.unwrap().commit());
+    let mut inline = cold.index.clone();
+    inline.entries = cold.entries.clone();
+    inline.entry_index = None;
+    let legacy = validate_index_state(
+        &serde_json::to_vec(&inline)?,
+        &store.namespace,
+        |_| anyhow::bail!("inline loaded segment"),
+        |key| store.load(key),
+    )?;
+    assert_eq!(legacy.image.bytes(), cold.image.bytes());
+    assert_eq!(legacy.commit(), cold.commit());
+
+    let fresh = || {
+        validate_index_state(
+            &before_flush,
+            &store.namespace,
+            |hash| store.load_segment(hash),
+            |key| store.load(key),
+        )
+    };
+    for fault in [
+        "previous", "entries", "missing", "hash", "count", "version", "empty",
+    ] {
+        let mut candidate: WalMetadata = serde_json::from_slice(&flushed)?;
+        let mut segment: WalIndexSegment =
+            serde_json::from_slice(&store.load_segment(candidate.entry_index.as_ref().unwrap())?)?;
+        match fault {
+            "previous" => segment.previous = None,
+            "entries" => segment.entries[0].hash = "0".repeat(64),
+            "count" => candidate.entry_count = Some(999),
+            "version" => segment.version = 2,
+            "empty" => segment.entries.clear(),
+            _ => {}
+        }
+        let mut bytes = serde_json::to_vec(&segment)?;
+        candidate.entry_index = Some(blake3::hash(&bytes).to_hex().to_string());
+        if fault == "hash" {
+            bytes[0] ^= 1;
+        }
+        let result = validate_index_append(
+            fresh()?,
+            &serde_json::to_vec(&candidate)?,
+            &store.namespace,
+            |_| {
+                if fault == "missing" {
+                    anyhow::bail!("segment missing");
+                }
+                Ok(bytes.clone())
+            },
+            |key| store.load(key),
+        );
+        assert!(result.is_err(), "accepted {fault}");
+    }
+    Ok(())
+}
+
+#[test]
+fn cold_segment_resolution_rejects_corruption_and_count_or_order_changes() -> Result<()> {
+    let hash = "a".repeat(64);
+    let segment = WalIndexSegment {
+        version: 1,
+        previous: None,
+        entries: vec![Entry {
+            lsn: 1,
+            hash: hash.clone(),
+        }],
+    };
+    for fault in [
+        "missing",
+        "digest",
+        "version",
+        "empty",
+        "oversized",
+        "previous",
+        "entry-hash",
+        "count",
+        "gap",
+        "first",
+    ] {
+        let mut segment = segment.clone();
+        let mut index = WalMetadata {
+            last_lsn: 2,
+            entry_count: Some(2),
+            entries: vec![Entry {
+                lsn: 2,
+                hash: hash.clone(),
+            }],
+            ..WalMetadata::default()
+        };
+        match fault {
+            "version" => segment.version = 2,
+            "empty" => segment.entries.clear(),
+            "oversized" => segment.entries = vec![segment.entries[0].clone(); 257],
+            "previous" => segment.previous = Some("INVALID".into()),
+            "entry-hash" => segment.entries[0].hash = "INVALID".into(),
+            "count" => index.entry_count = Some(3),
+            "gap" => {
+                index.entries[0].lsn = 3;
+                index.last_lsn = 3;
+            }
+            "first" => {
+                segment.entries[0].lsn = 2;
+                index.entries[0].lsn = 3;
+                index.last_lsn = 3;
+            }
+            _ => {}
+        }
+        let mut bytes = serde_json::to_vec(&segment)?;
+        index.entry_index = Some(blake3::hash(&bytes).to_hex().to_string());
+        if fault == "digest" {
+            bytes[0] ^= 1;
+        }
+        assert!(
+            resolve_entries(&index, |_| {
+                if fault == "missing" {
+                    anyhow::bail!("missing segment");
+                }
+                Ok(bytes.clone())
+            })
+            .is_err(),
+            "accepted {fault}"
         );
     }
     Ok(())

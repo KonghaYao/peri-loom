@@ -112,14 +112,148 @@ pub struct WalMetadata {
     /// with the digest proof it was originally committed with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) receipt_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) entry_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) entry_index: Option<String>,
     #[serde(default)]
     pub commit: Option<WalCommit>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Entry {
     pub(crate) lsn: u64,
     pub(crate) hash: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WalIndexSegment {
+    pub(crate) version: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) previous: Option<String>,
+    pub(crate) entries: Vec<Entry>,
+}
+
+pub(crate) const WAL_INDEX_SEGMENT_LIMIT: usize = 256;
+
+impl WalIndexSegment {
+    pub(crate) fn decode(hash: &str, bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            valid_entry_index(hash) && blake3::hash(bytes).to_hex().as_str() == hash,
+            "WAL index segment checksum mismatch"
+        );
+        let segment: Self = serde_json::from_slice(bytes)?;
+        ensure!(
+            segment.version == 1
+                && !segment.entries.is_empty()
+                && segment.entries.len() <= WAL_INDEX_SEGMENT_LIMIT,
+            "invalid WAL index segment"
+        );
+        ensure!(
+            segment.previous.as_deref().is_none_or(valid_entry_index),
+            "invalid WAL index segment predecessor"
+        );
+        ensure!(
+            segment
+                .entries
+                .iter()
+                .all(|entry| entry.lsn > 0 && valid_entry_index(&entry.hash)),
+            "invalid WAL index entry hash"
+        );
+        Ok(segment)
+    }
+
+    pub(crate) fn encode(
+        previous: Option<String>,
+        entries: Vec<Entry>,
+    ) -> Result<(String, Vec<u8>)> {
+        ensure!(
+            !entries.is_empty() && entries.len() <= WAL_INDEX_SEGMENT_LIMIT,
+            "invalid WAL index segment size"
+        );
+        ensure!(
+            entries
+                .windows(2)
+                .all(|pair| pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
+                    || (pair[0].lsn == pair[1].lsn && pair[0].lsn > 0)),
+            "unordered WAL index segment"
+        );
+        let segment = Self {
+            version: 1,
+            previous,
+            entries,
+        };
+        let bytes = serde_json::to_vec(&segment)?;
+        Ok((blake3::hash(&bytes).to_hex().to_string(), bytes))
+    }
+}
+
+impl WalMetadata {
+    pub(crate) fn normalize_entries(&mut self) -> Result<()> {
+        ensure!(
+            self.entry_count.is_some() || self.entry_index.is_none(),
+            "missing WAL entry count"
+        );
+        self.entry_count.get_or_insert(self.entries.len() as u64);
+        let count = self.entry_count.unwrap();
+        ensure!(
+            count >= self.entries.len() as u64
+                && (self.entry_index.is_some() || count == self.entries.len() as u64),
+            "invalid WAL entry count"
+        );
+        ensure!(
+            self.entry_index.as_deref().is_none_or(valid_entry_index),
+            "invalid WAL index segment root"
+        );
+        ensure!(
+            self.entries.last().map_or(0, |entry| entry.lsn) == self.last_lsn,
+            "incomplete WAL index"
+        );
+        validate_entry_sequence(&self.entries, self.replay_baseline_lsn)?;
+        if self.last_lsn == 0 {
+            ensure!(
+                count == 0 && self.entry_index.is_none() && self.replay_baseline_lsn == 0,
+                "invalid empty WAL index"
+            );
+        } else {
+            ensure!(
+                !self.entries.is_empty() && self.replay_baseline_lsn <= self.last_lsn,
+                "invalid WAL baseline"
+            );
+            if self.entry_index.is_none() {
+                ensure!(
+                    self.entries[0].lsn == self.replay_baseline_lsn.max(1),
+                    "invalid WAL replay baseline"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_entry_sequence(entries: &[Entry], baseline: u64) -> Result<()> {
+    ensure!(
+        entries
+            .iter()
+            .all(|entry| entry.lsn > 0 && valid_entry_index(&entry.hash)),
+        "invalid WAL entry identity"
+    );
+    ensure!(
+        entries
+            .windows(2)
+            .all(|pair| pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
+                || (baseline > 0 && pair[0].lsn == baseline && pair[1].lsn == baseline)),
+        "unordered WAL index"
+    );
+    Ok(())
+}
+
+pub(crate) fn valid_entry_index(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub struct RemoteWal {
@@ -482,28 +616,8 @@ impl RemoteWal {
         self.store.validate_session()?;
         match self.store.get(&namespace.key("wal/index")?)? {
             Some(object) => {
-                let index: WalMetadata = serde_json::from_slice(&object.bytes)?;
-                ensure!(
-                    index.entries.windows(2).all(|pair| {
-                        pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
-                            || (index.replay_baseline_lsn > 0
-                                && pair[0].lsn == pair[1].lsn
-                                && pair[0].lsn == index.replay_baseline_lsn)
-                    }),
-                    "unordered WAL index"
-                );
-                ensure!(
-                    index.entries.last().map_or(0, |entry| entry.lsn) == index.last_lsn,
-                    "incomplete WAL index"
-                );
-                ensure!(
-                    index.replay_baseline_lsn == 0
-                        || index
-                            .entries
-                            .first()
-                            .is_some_and(|entry| entry.lsn == index.replay_baseline_lsn),
-                    "missing WAL replay baseline"
-                );
+                let mut index: WalMetadata = serde_json::from_slice(&object.bytes)?;
+                index.normalize_entries()?;
                 ensure!(
                     index
                         .receipts
@@ -540,7 +654,13 @@ impl RemoteWal {
                 );
                 Ok((index, Some(object.etag)))
             }
-            None => Ok((WalMetadata::default(), None)),
+            None => Ok((
+                WalMetadata {
+                    entry_count: Some(0),
+                    ..WalMetadata::default()
+                },
+                None,
+            )),
         }
     }
 
@@ -563,6 +683,43 @@ impl RemoteWal {
             );
         }
         Ok(hash.to_owned())
+    }
+
+    fn index_segment(
+        &self,
+        namespace: &Namespace,
+        entries: Vec<Entry>,
+        previous: Option<String>,
+    ) -> Result<String> {
+        let (hash, bytes) = WalIndexSegment::encode(previous, entries)?;
+        let key = namespace.key(&format!("wal/index-segments/{hash}"))?;
+        if let Err(error) = self.store.put(&key, &bytes, PutCondition::Absent) {
+            let existing = self
+                .store
+                .get(&key)?
+                .context("WAL index segment upload failed")?;
+            ensure!(
+                existing.bytes == bytes,
+                "immutable WAL index segment conflict: {error}"
+            );
+        }
+        Ok(hash)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolved_entries(&self, namespace: &Namespace) -> Result<Vec<Entry>> {
+        self.resolve_index(namespace, &self.index(namespace)?.0)
+    }
+
+    fn resolve_index(&self, namespace: &Namespace, index: &WalMetadata) -> Result<Vec<Entry>> {
+        crate::recovery::resolve_entries(index, |hash| {
+            let key = namespace.key(&format!("wal/index-segments/{hash}"))?;
+            Ok(self
+                .store
+                .get(&key)?
+                .context("WAL index segment missing")?
+                .bytes)
+        })
     }
 
     fn commit(
@@ -681,7 +838,23 @@ impl RemoteWal {
                 lsn,
                 hash: encoded.hash().to_owned(),
             };
+            if index.entries.len() >= WAL_INDEX_SEGMENT_LIMIT {
+                for entries in std::mem::take(&mut index.entries).chunks(WAL_INDEX_SEGMENT_LIMIT) {
+                    index.entry_index = Some(self.index_segment(
+                        namespace,
+                        entries.to_vec(),
+                        index.entry_index.clone(),
+                    )?);
+                }
+            }
             index.entries.push(entry);
+            index.entry_count = Some(
+                index
+                    .entry_count
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .context("WAL entry count exhausted")?,
+            );
             index.receipts.insert(append_id.clone(), lsn);
             index
                 .receipt_digests
@@ -777,8 +950,14 @@ impl RemoteWal {
             self.check_writer()?;
             return Ok(receipt.lsn);
         }
-        let entry = index
-            .entries
+        let resolved;
+        let entries = if index.entries.iter().any(|entry| entry.lsn == receipt.lsn) {
+            &index.entries
+        } else {
+            resolved = self.resolve_index(&request.namespace, index)?;
+            &resolved
+        };
+        let entry = entries
             .iter()
             .find(|entry| entry.lsn == receipt.lsn)
             .context("WAL receipt content unavailable; refusing replay")?;
@@ -816,15 +995,10 @@ impl RemoteWal {
     /// Same contract as [`Self::for_each_record`], with the fetch window given rather than
     /// derived from the environment.
     ///
-    /// Chunks are fetched ahead of the delivery cursor and delivered in index order, so
-    /// `visit` sees exactly the sequence a serial replay would produce and the first error
-    /// returned is the one belonging to the lowest LSN — a later chunk that answered
-    /// earlier can neither be visited nor reported first. The index is walked lazily and the
-    /// entry list is never materialised, so what this holds does not grow with the history:
-    /// at most `window` fetches plus the record being handed to the visitor, each charged
-    /// [`WAL_CHUNK_CHARGE`], and a chunk the visitor has seen is not retained. A refill starts
-    /// only after a chunk was accepted, so a rejected chunk never starts work whose result
-    /// nothing reads.
+    /// chunk 按索引顺序交付，错误也按最低 LSN 返回；后续 chunk 即使先返回，
+    /// 也不会提前交付或报错。分段索引按顺序物化为 entries，因此索引内存随历史增长。
+    /// chunk 数据最多保留 `window` 个预取结果及当前交付的 record，各占用
+    /// [`WAL_CHUNK_CHARGE`] 预算。已交付的 chunk 不保留，失败后不再补充预取。
     fn for_each_record_with_window(
         &self,
         namespace: &Namespace,
@@ -838,7 +1012,8 @@ impl RemoteWal {
             from_lsn == 0 || from_lsn >= index.replay_baseline_lsn,
             "requested WAL history was truncated; replay from baseline"
         );
-        let mut pending = index.entries.iter().filter(|entry| entry.lsn >= from_lsn);
+        let entries = self.resolve_index(namespace, &index)?;
+        let mut pending = entries.iter().filter(|entry| entry.lsn >= from_lsn);
         let store: &dyn ObjectStore = &*self.store;
         std::thread::scope(|scope| -> Result<()> {
             let mut in_flight: VecDeque<std::thread::ScopedJoinHandle<'_, Result<WalRecord>>> =
@@ -904,6 +1079,8 @@ impl RemoteWal {
         self.check_writer()?;
         for _ in 0..64 {
             let (mut index, etag) = self.index(namespace)?;
+            index.entries = self.resolve_index(namespace, &index)?;
+            index.entry_index = None;
             let Some(baseline_lsn) = index
                 .entries
                 .iter()
@@ -1019,6 +1196,7 @@ impl RemoteWal {
             }
             index.entries.retain(|entry| entry.lsn >= before_lsn);
             index.entries.splice(0..0, segments);
+            index.entry_count = Some(index.entries.len() as u64);
             index.replay_baseline_lsn = baseline_lsn;
             match self.commit(namespace, &index, etag.clone()) {
                 Ok(()) => return Ok(()),
@@ -1285,10 +1463,17 @@ mod split_tests {
         let index_object = store
             .get(&namespace.key("wal/index")?)?
             .context("split index missing")?;
-        let validated =
-            crate::recovery::validate_index_state(&index_object.bytes, &namespace, |key| {
-                Ok(store.get(key)?.context("split chunk missing")?.bytes)
-            })?;
+        let validated = crate::recovery::validate_index_state(
+            &index_object.bytes,
+            &namespace,
+            |hash| {
+                Ok(store
+                    .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                    .context("split segment missing")?
+                    .bytes)
+            },
+            |key| Ok(store.get(key)?.context("split chunk missing")?.bytes),
+        )?;
         assert_eq!(validated.commit(), Some(WalCommit { lsn: 2, position }));
         Ok(())
     }
@@ -1430,10 +1615,17 @@ mod split_tests {
         let index_object = store
             .get(&namespace.key("wal/index")?)?
             .context("split index missing")?;
-        let validated =
-            crate::recovery::validate_index_state(&index_object.bytes, &namespace, |key| {
-                Ok(store.get(key)?.context("split chunk missing")?.bytes)
-            })?;
+        let validated = crate::recovery::validate_index_state(
+            &index_object.bytes,
+            &namespace,
+            |hash| {
+                Ok(store
+                    .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                    .context("split segment missing")?
+                    .bytes)
+            },
+            |key| Ok(store.get(key)?.context("split chunk missing")?.bytes),
+        )?;
         assert_eq!(validated.commit(), None);
         Ok(())
     }
@@ -1482,12 +1674,18 @@ mod truncate_tests {
         namespace: &Namespace,
     ) -> Result<Option<WalCommit>> {
         let bytes = index_bytes(store, namespace)?;
-        Ok(
-            crate::recovery::validate_index_state(&bytes, namespace, |key| {
-                Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
-            })?
-            .commit(),
-        )
+        Ok(crate::recovery::validate_index_state(
+            &bytes,
+            namespace,
+            |hash| {
+                Ok(store
+                    .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                    .context("missing WAL segment")?
+                    .bytes)
+            },
+            |key| Ok(store.get(key)?.context("missing WAL chunk")?.bytes),
+        )?
+        .commit())
     }
 
     #[test]
@@ -1678,9 +1876,17 @@ mod truncate_tests {
         wal.commit(&namespace, &index, etag)?;
 
         let bytes = index_bytes(&store, &namespace)?;
-        let failure = match crate::recovery::validate_index_state(&bytes, &namespace, |key| {
-            Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
-        }) {
+        let failure = match crate::recovery::validate_index_state(
+            &bytes,
+            &namespace,
+            |hash| {
+                Ok(store
+                    .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                    .context("missing WAL segment")?
+                    .bytes)
+            },
+            |key| Ok(store.get(key)?.context("missing WAL chunk")?.bytes),
+        ) {
             Ok(_) => bail!("forged baseline continuation was accepted"),
             Err(error) => error.to_string(),
         };
@@ -1699,6 +1905,7 @@ mod truncate_tests {
         let (mut index, etag) = wal.index(&namespace)?;
         let last = index.entries.last().unwrap().clone();
         index.entries.push(last);
+        index.entry_count = Some(index.entries.len() as u64);
         wal.commit(&namespace, &index, etag)?;
         assert!(wal
             .index(&namespace)
@@ -1942,6 +2149,8 @@ mod replay_window_tests {
                 receipts: BTreeMap::new(),
                 receipt_digests: BTreeMap::new(),
                 receipt_index: None,
+                entry_count: None,
+                entry_index: None,
                 commit: None,
             };
             Ok(Self {
@@ -2297,6 +2506,120 @@ mod replay_window_tests {
             walls[&4],
             walls[&1] as f64 / walls[&4] as f64
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod index_segment_tests {
+    use super::*;
+    use crate::object_store::MemoryObjectStore;
+
+    #[test]
+    fn segmented_retry_replay_truncate_and_legacy_normalization() -> Result<()> {
+        let store = Arc::new(MemoryObjectStore::default());
+        let wal = RemoteWal::new(store.clone());
+        let namespace = Namespace::new("wal", "index-segments")?;
+        let first = WalAppendRequest {
+            namespace: namespace.clone(),
+            epoch: 1,
+            batch: WalBatch::default(),
+            position: None,
+            append_id: "first".into(),
+            timestamp_millis: 1,
+        };
+        wal.append_local(&first)?;
+        for _ in 1..514 {
+            wal.append(&namespace, 1, WalBatch::default())?;
+        }
+        assert_eq!(wal.resolved_entries(&namespace)?.len(), 514);
+        assert_eq!(wal.read(&namespace, 0)?.len(), 514);
+        assert_eq!(wal.append_local(&first)?, 1);
+        let head = wal.metadata(&namespace)?;
+        assert_eq!(head.entry_count, Some(514));
+        assert_eq!(head.entries.len(), 2);
+        let root = head.entry_index.clone().unwrap();
+        wal.truncate(&namespace, 300)?;
+        let truncated = wal.metadata(&namespace)?;
+        assert!(truncated.entry_index.is_none());
+        assert_eq!(truncated.entry_count, Some(216));
+        assert_eq!(wal.append_local(&first)?, 1);
+        assert!(store
+            .get(&namespace.key(&format!("wal/index-segments/{root}"))?)?
+            .is_some());
+        assert_eq!(wal.read(&namespace, 0)?.len(), 216);
+
+        let mut legacy = serde_json::to_value(&head)?;
+        legacy["entries"] =
+            serde_json::to_value(crate::recovery::resolve_entries(&head, |hash| {
+                Ok(store
+                    .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                    .unwrap()
+                    .bytes)
+            })?)?;
+        legacy.as_object_mut().unwrap().remove("entry_count");
+        legacy.as_object_mut().unwrap().remove("entry_index");
+        store.put(
+            &namespace.key("wal/index")?,
+            &serde_json::to_vec(&legacy)?,
+            PutCondition::Any,
+        )?;
+        assert_eq!(wal.metadata(&namespace)?.entry_count, Some(514));
+        wal.append(&namespace, 1, WalBatch::default())?;
+        assert_eq!(wal.metadata(&namespace)?.entries.len(), 1);
+        assert_eq!(wal.resolved_entries(&namespace)?.len(), 515);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod segmented_baseline_tests {
+    use super::*;
+    use crate::object_store::MemoryObjectStore;
+
+    #[test]
+    fn baseline_continuation_across_segment_boundary_keeps_total_ordinal() -> Result<()> {
+        let store = Arc::new(MemoryObjectStore::default());
+        let wal = RemoteWal::new(store.clone());
+        let namespace = Namespace::new("wal", "segmented-baseline")?;
+        wal.append(
+            &namespace,
+            1,
+            WalBatch {
+                operations: vec![WalOperation::Write {
+                    offset: 0,
+                    bytes: vec![7; 300],
+                }],
+            },
+        )?;
+        wal.truncate_with_part_bytes(&namespace, 2, 1)?;
+        let before = store.get(&namespace.key("wal/index")?)?.unwrap().bytes;
+        let load_segment = |hash: &str| -> Result<Vec<u8>> {
+            Ok(store
+                .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                .context("missing segment")?
+                .bytes)
+        };
+        let load_chunk =
+            |key: &str| -> Result<Vec<u8>> { Ok(store.get(key)?.context("missing chunk")?.bytes) };
+        let previous =
+            crate::recovery::validate_index_state(&before, &namespace, load_segment, load_chunk)?;
+        wal.append(&namespace, 1, WalBatch::default())?;
+        let after = store.get(&namespace.key("wal/index")?)?.unwrap().bytes;
+        crate::recovery::validate_index_append(
+            previous,
+            &after,
+            &namespace,
+            load_segment,
+            load_chunk,
+        )?;
+        assert_eq!(wal.metadata(&namespace)?.entry_count, Some(301));
+        assert_eq!(wal.metadata(&namespace)?.entries.len(), 1);
+        let mut image = Vec::new();
+        wal.for_each_record(&namespace, 0, |record| {
+            apply_batch(&mut image, &record.batch)
+        })?;
+        assert_eq!(image, vec![7; 300]);
         Ok(())
     }
 }

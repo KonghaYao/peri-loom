@@ -98,7 +98,19 @@ fn referenced(
         semantic::registered(root, wal)?;
         let index = semantic::index(&authority.read_metadata_blob(wal)?)?;
         let page_root = index.receipt_index.clone();
-        for chunk in index.entries {
+        let chunks = crate::recovery::resolve_entries(&index, |hash| {
+            let key = format!("wal/index-segments/{hash}");
+            let entry = root
+                .objects
+                .get(&key)?
+                .context("WAL index segment missing")?;
+            semantic::registered(root, &entry)?;
+            ensure!(entry.hash == hash, "WAL index segment digest mismatch");
+            let bytes = authority.read_metadata_blob(&entry)?;
+            entries.insert(key, entry);
+            Ok(bytes)
+        })?;
+        for chunk in chunks {
             let key = format!("wal/chunks/{}", chunk.hash);
             let entry = root.objects.get(&key)?.context("WAL chunk missing")?;
             semantic::registered(root, &entry)?;
@@ -277,6 +289,18 @@ impl BranchStore {
         previous: Option<ValidatedWal>,
         bodies: &[PublicationBody<'_>],
     ) -> Result<ValidatedWal> {
+        let load_segment = |hash: &str| {
+            let key = format!("wal/index-segments/{hash}");
+            let entry = root
+                .objects
+                .get(&key)?
+                .context("WAL index segment missing from candidate catalog")?;
+            semantic::registered(root, &entry)?;
+            if let Some(bytes) = super::staged_body(bodies, &entry) {
+                return Ok(bytes.to_vec());
+            }
+            self.authority.read_metadata_blob(&entry)
+        };
         let load_chunk = |key: &str| {
             let relative = self.relative(key)?;
             let entry = root
@@ -294,12 +318,20 @@ impl BranchStore {
             self.authority.read_metadata_blob(&entry)
         };
         let validated = match previous {
-            Some(previous) => {
-                validate_index_append(previous, bytes, self.authority.namespace(), load_chunk)?
-            }
+            Some(previous) => validate_index_append(
+                previous,
+                bytes,
+                self.authority.namespace(),
+                load_segment,
+                load_chunk,
+            )?,
             None => {
-                let validated =
-                    validate_index_state(bytes, self.authority.namespace(), load_chunk)?;
+                let validated = validate_index_state(
+                    bytes,
+                    self.authority.namespace(),
+                    load_segment,
+                    load_chunk,
+                )?;
                 let load_page = |hash: &str| {
                     let key = format!("wal/receipt-pages/{hash}");
                     let entry = root

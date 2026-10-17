@@ -130,9 +130,17 @@ fn cold_commit(authority: &Arc<Authority>, namespace: &Namespace) -> Result<Opti
         .get(&namespace.key("wal/index")?)?
         .context("missing WAL index")?
         .bytes;
-    Ok(validate_index_state(&index, namespace, |key| {
-        Ok(session.get(key)?.context("missing WAL chunk")?.bytes)
-    })?
+    Ok(validate_index_state(
+        &index,
+        namespace,
+        |hash| {
+            Ok(session
+                .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+                .context("missing WAL segment")?
+                .bytes)
+        },
+        |key| Ok(session.get(key)?.context("missing WAL chunk")?.bytes),
+    )?
     .commit())
 }
 
@@ -683,5 +691,55 @@ fn truncation_archives_receipts_into_pages_the_gc_walk_reaches() -> Result<()> {
         reachable.contains(&page.blob),
         "GC walk did not reach the receipt archive"
     );
+    Ok(())
+}
+
+#[test]
+fn segmented_wal_pins_and_gc_reach_segments_and_chunks() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=513 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("segment-{ordinal}"),
+        )?;
+    }
+    let wal = RemoteWal::new(branch.clone());
+    let index = wal.metadata(&namespace)?;
+    assert_eq!(index.entry_count, Some(513));
+    assert_eq!(index.entries.len(), 1);
+    let snapshot = authority.snapshot()?;
+    let reference = &snapshot.root.branches["main"];
+    let objects = referenced(&authority, &snapshot.root, None, reference.wal.as_ref())?;
+    assert_eq!(
+        objects
+            .keys()
+            .filter(|key| key.starts_with("wal/index-segments/"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        objects
+            .keys()
+            .filter(|key| key.starts_with("wal/chunks/"))
+            .count(),
+        513
+    );
+    let mut unpinned = snapshot.root.clone();
+    unpinned.pins.clear();
+    let reachable = authority.reachable(&unpinned)?;
+    for entry in objects.values() {
+        assert!(reachable.contains(&entry.blob));
+    }
+    let cold = authority.branch_store("main")?;
+    let pinned = authority.snapshot()?;
+    for entry in objects.values() {
+        assert!(pinned.root.pins[&cold.pin]
+            .iter()
+            .any(|pin| pin.blob == entry.blob));
+    }
+    assert_eq!(RemoteWal::new(cold).read(&namespace, 0)?.len(), 513);
     Ok(())
 }

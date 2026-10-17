@@ -43,6 +43,7 @@ impl FencedStore {
                     "manifests/",
                     "wal/chunks/",
                     "wal/receipt-pages/",
+                    "wal/index-segments/",
                 ]
                 .iter()
                 .any(|prefix| relative

@@ -292,6 +292,36 @@ fn wal_receipt_archive_round_trips_through_the_session_rpc() -> Result<()> {
     assert_eq!(wal.append_local(&archived)?, 1);
     assert_eq!(wal.metadata(&namespace)?.last_lsn, 2);
 
+    let remote = provider.open_store(&database, 1)?;
+    for ordinal in 3..=258 {
+        assert_eq!(
+            remote.append_wal(&request(&format!("segmented-{ordinal}"), &[ordinal as u8]))?,
+            Some(ordinal)
+        );
+    }
+    let segmented = crate::wal::RemoteWal::new(remote);
+    let index = segmented.metadata(&namespace)?;
+    assert!(index.entry_index.is_some());
+    assert_eq!(index.entry_count, Some(258));
+    assert!(index.entries.len() <= 256);
+    assert_eq!(segmented.append_local(&request("kept", &[4]))?, 2);
+    let reopened_store = provider.open_store(&database, 1)?;
+    let reopened = crate::wal::RemoteWal::new(reopened_store.clone());
+    assert_eq!(reopened.read(&namespace, 0)?.len(), 258);
+    let bytes = reopened_store
+        .get(&namespace.key("wal/index")?)?
+        .unwrap()
+        .bytes;
+    assert_eq!(
+        crate::recovery::validate_index_commit(&bytes, &namespace, |key| {
+            Ok(reopened_store.get(key)?.unwrap().bytes)
+        })?,
+        None
+    );
+    drop(reopened);
+    drop(reopened_store);
+    drop(segmented);
+
     drop(wal);
     control.call(AuthorityCommand::Shutdown)?;
     handle.join().expect("authority server panicked")?;

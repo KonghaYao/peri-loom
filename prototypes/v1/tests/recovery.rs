@@ -341,18 +341,27 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
     // Extending consumes the accepted state, so every rejected candidate below starts from a
     // freshly derived one: that is the fail-closed contract the authority's cache relies on.
     let cold = || {
-        validate_index_state(&original, &namespace(), |key| {
-            Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
-        })
+        validate_index_state(
+            &original,
+            &namespace(),
+            |_| anyhow::bail!("unexpected segment in inline fixture"),
+            |key| Ok(store.get(key)?.context("missing WAL chunk")?.bytes),
+        )
     };
     let validated = cold()?;
     wal.append(&namespace(), 1, WalBatch::default())?;
     let next = index(store.as_ref())?;
     let mut loaded = Vec::new();
-    let incremented = validate_index_append(validated, &next, &namespace(), |key| {
-        loaded.push(key.to_owned());
-        Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
-    })?;
+    let incremented = validate_index_append(
+        validated,
+        &next,
+        &namespace(),
+        |_| anyhow::bail!("unexpected segment in inline fixture"),
+        |key| {
+            loaded.push(key.to_owned());
+            Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+        },
+    )?;
     assert_eq!(loaded.len(), 1);
     assert_eq!(incremented.commit(), validate(store.as_ref(), &next)?);
 
@@ -367,6 +376,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             cold()?,
             &serde_json::to_vec(&forged)?,
             &namespace(),
+            |_| anyhow::bail!("unexpected segment in inline fixture"),
             |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
         )
         .is_err());
@@ -385,6 +395,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             cold()?,
             &serde_json::to_vec(&forged)?,
             &namespace(),
+            |_| anyhow::bail!("unexpected segment in inline fixture"),
             |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
         )
         .is_err());
@@ -396,6 +407,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
         cold()?,
         &serde_json::to_vec(&forged)?,
         &namespace(),
+        |_| anyhow::bail!("unexpected segment in inline fixture"),
         |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
     )
     .is_err());
@@ -406,23 +418,35 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
         cold()?,
         &serde_json::to_vec(&forged)?,
         &namespace(),
+        |_| anyhow::bail!("unexpected segment in inline fixture"),
         |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
     )
     .is_err());
 
-    assert!(validate_index_state(&next, &namespace(), |key| {
-        let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
-        if key == loaded[0] {
-            bytes[0] ^= 1;
+    assert!(validate_index_state(
+        &next,
+        &namespace(),
+        |_| anyhow::bail!("unexpected segment in inline fixture"),
+        |key| {
+            let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
+            if key == loaded[0] {
+                bytes[0] ^= 1;
+            }
+            Ok(bytes)
         }
-        Ok(bytes)
-    })
+    )
     .is_err());
-    assert!(validate_index_append(cold()?, &next, &namespace(), |key| {
-        let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
-        bytes[0] ^= 1;
-        Ok(bytes)
-    })
+    assert!(validate_index_append(
+        cold()?,
+        &next,
+        &namespace(),
+        |_| anyhow::bail!("unexpected segment in inline fixture"),
+        |key| {
+            let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
+            bytes[0] ^= 1;
+            Ok(bytes)
+        }
+    )
     .is_err());
     Ok(())
 }

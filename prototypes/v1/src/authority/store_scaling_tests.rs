@@ -1671,7 +1671,12 @@ impl CommitArm {
             commit.position.frame_count > 0,
             "commit marker without frames"
         );
-        let cold = crate::recovery::validate_index_state(&index, &namespace, load)?;
+        let cold = crate::recovery::validate_index_state(
+            &index,
+            &namespace,
+            |hash| load(&namespace.key(&format!("wal/index-segments/{hash}"))?),
+            load,
+        )?;
         assert_eq!(
             cold.commit(),
             Some(commit),

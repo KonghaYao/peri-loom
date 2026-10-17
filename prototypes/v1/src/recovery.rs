@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::wal::{
-    apply_batch, ArchivedReceipt, WalBatch, WalCommit, WalMetadata, WalOperation, WalRecord,
+    apply_batch, valid_entry_index, ArchivedReceipt, Entry, WalBatch, WalCommit, WalIndexSegment,
+    WalMetadata, WalOperation, WalRecord, WAL_INDEX_SEGMENT_LIMIT,
 };
 
 pub(crate) const WAL_HEADER: usize = 32;
@@ -456,9 +457,61 @@ impl WalImage {
 pub fn validate_index_commit(
     index_bytes: &[u8],
     namespace: &Namespace,
-    load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
+    load_object: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<Option<WalCommit>> {
-    Ok(validate_index_state(index_bytes, namespace, load_chunk)?.commit())
+    let load = std::cell::RefCell::new(load_object);
+    Ok(validate_index_state(
+        index_bytes,
+        namespace,
+        |hash| load.borrow_mut()(&namespace.key(&format!("wal/index-segments/{hash}"))?),
+        |key| load.borrow_mut()(key),
+    )?
+    .commit())
+}
+
+pub(crate) fn resolve_entries(
+    index: &WalMetadata,
+    mut load_segment: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<Vec<Entry>> {
+    ensure!(
+        index.entry_count.is_some() || index.entry_index.is_none(),
+        "missing WAL entry count"
+    );
+    let entry_count = index.entry_count.unwrap_or(index.entries.len() as u64);
+    ensure!(
+        entry_count >= index.entries.len() as u64,
+        "invalid WAL entry count"
+    );
+    ensure!(
+        index.entry_index.is_some() || entry_count == index.entries.len() as u64,
+        "missing WAL entry segments"
+    );
+    let mut segments = Vec::new();
+    let mut root = index.entry_index.clone();
+    let mut seen = 0u64;
+    while let Some(hash) = root {
+        ensure!(valid_entry_index(&hash), "invalid WAL index segment root");
+        ensure!(
+            seen < entry_count - index.entries.len() as u64,
+            "WAL index segment chain exceeds entry count"
+        );
+        let bytes = load_segment(&hash)?;
+        let segment = WalIndexSegment::decode(&hash, &bytes)?;
+        crate::wal::validate_entry_sequence(&segment.entries, index.replay_baseline_lsn)?;
+        seen = seen
+            .checked_add(segment.entries.len() as u64)
+            .context("WAL index segment count overflow")?;
+        segments.push(segment.entries);
+        root = segment.previous;
+    }
+    ensure!(
+        seen.checked_add(index.entries.len() as u64) == Some(entry_count),
+        "WAL entry count mismatch"
+    );
+    let mut entries = segments.into_iter().rev().flatten().collect::<Vec<_>>();
+    entries.extend(index.entries.clone());
+    validate_layout(index, &entries)?;
+    Ok(entries)
 }
 
 /// Proves a published index's receipt archive is fully present and well formed.
@@ -512,6 +565,7 @@ pub fn validate_receipt_index(
 
 pub struct ValidatedWal {
     index: WalMetadata,
+    entries: Vec<Entry>,
     image: WalImage,
 }
 
@@ -524,16 +578,19 @@ impl ValidatedWal {
 pub fn validate_index_state(
     index_bytes: &[u8],
     namespace: &Namespace,
+    load_segment: impl FnMut(&str) -> Result<Vec<u8>>,
     mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<ValidatedWal> {
     namespace.key("wal/index")?;
-    let index: WalMetadata = serde_json::from_slice(index_bytes)?;
-    validate_layout(&index)?;
+    let mut index: WalMetadata = serde_json::from_slice(index_bytes)?;
+    index.normalize_entries()?;
+    let entries = resolve_entries(&index, load_segment)?;
     let mut image = WalImage::default();
     let mut last_record_commit = None;
-    for entry_index in 0..index.entries.len() {
+    for entry_index in 0..entries.len() {
         last_record_commit = validate_record(
             &index,
+            &entries,
             namespace,
             entry_index,
             &mut image,
@@ -545,7 +602,11 @@ pub fn validate_index_state(
         last_record_commit == index.commit,
         "index and final record commit disagree"
     );
-    Ok(ValidatedWal { index, image })
+    Ok(ValidatedWal {
+        index,
+        entries,
+        image,
+    })
 }
 
 /// Extends an accepted image by one record, consuming the accepted state.
@@ -559,25 +620,29 @@ pub fn validate_index_append(
     previous: ValidatedWal,
     index_bytes: &[u8],
     namespace: &Namespace,
+    load_segment: impl FnMut(&str) -> Result<Vec<u8>>,
     mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<ValidatedWal> {
     namespace.key("wal/index")?;
-    let index: WalMetadata = serde_json::from_slice(index_bytes)?;
-    validate_layout(&index)?;
+    let mut index: WalMetadata = serde_json::from_slice(index_bytes)?;
+    index.normalize_entries()?;
     let ValidatedWal {
         index: old,
+        mut entries,
         mut image,
     } = previous;
+    let mut load_segment = load_segment;
     ensure!(
         index.epoch >= old.epoch
             && index.last_lsn == old.last_lsn.checked_add(1).context("WAL LSN exhausted")?
             && index.replay_baseline_lsn == old.replay_baseline_lsn
             && index.receipt_index == old.receipt_index
-            && index.entries.len() == old.entries.len() + 1
-            && index.entries[..old.entries.len()]
-                .iter()
-                .zip(&old.entries)
-                .all(|(next, previous)| next.lsn == previous.lsn && next.hash == previous.hash)
+            && index.entry_count
+                == Some(
+                    (entries.len() as u64)
+                        .checked_add(1)
+                        .context("WAL entry count exhausted")?
+                )
             && index.receipts.len() == old.receipts.len() + 1
             && old
                 .receipts
@@ -590,22 +655,97 @@ pub fn validate_index_append(
                 .all(|(id, digest)| index.receipt_digests.get(id) == Some(digest)),
         "WAL append changed validated index prefix or receipts"
     );
-    let record = load_record(&index, namespace, old.entries.len(), &mut load_chunk, true)?;
+    // 旧内联格式与截断后的 baseline 可能超过单段上限；仅转换时允许冷校验，
+    // 仍须证明原有 prefix 与 receipts 未改变，不能将任意新索引当作追加。
+    if old.entries.len() > WAL_INDEX_SEGMENT_LIMIT {
+        let cold = validate_index_state(index_bytes, namespace, load_segment, &mut load_chunk)?;
+        ensure!(
+            cold.entries[..entries.len()] == entries,
+            "WAL append changed validated entry prefix"
+        );
+        load_record(
+            &cold.index,
+            &cold.entries,
+            namespace,
+            entries.len(),
+            &mut load_chunk,
+            true,
+        )?;
+        return Ok(cold);
+    }
+    if index.entry_index == old.entry_index {
+        ensure!(
+            index.entries.len() == old.entries.len() + 1
+                && index.entries[..old.entries.len()] == old.entries,
+            "WAL append changed validated entry prefix"
+        );
+    } else {
+        let hash = index
+            .entry_index
+            .as_deref()
+            .context("WAL append removed segment root")?;
+        let segment = WalIndexSegment::decode(hash, &load_segment(hash)?)?;
+        ensure!(
+            segment.previous == old.entry_index
+                && segment.entries == old.entries
+                && index.entries.len() == 1,
+            "WAL append changed flushed entry prefix"
+        );
+    }
+    entries.push(
+        index
+            .entries
+            .last()
+            .context("WAL append missing entry")?
+            .clone(),
+    );
+    let record = load_record(
+        &index,
+        &entries,
+        namespace,
+        entries.len() - 1,
+        &mut load_chunk,
+        true,
+    )?;
     let commit = apply_record(&record, &mut image, false)?;
     ensure!(
         commit == index.commit,
         "index and final record commit disagree"
     );
-    Ok(ValidatedWal { index, image })
+    Ok(ValidatedWal {
+        index,
+        entries,
+        image,
+    })
 }
 
-fn validate_layout(index: &WalMetadata) -> Result<()> {
+fn validate_layout(index: &WalMetadata, entries: &[Entry]) -> Result<()> {
+    crate::wal::validate_entry_sequence(entries, index.replay_baseline_lsn)?;
     ensure!(
         index.entries.last().map_or(0, |entry| entry.lsn) == index.last_lsn,
+        "incomplete WAL tail"
+    );
+    ensure!(
+        index.entry_count.unwrap_or(entries.len() as u64) == entries.len() as u64,
+        "WAL entry count mismatch"
+    );
+    ensure!(
+        index.entry_index.as_deref().is_none_or(valid_entry_index),
+        "invalid WAL index segment root"
+    );
+    ensure!(
+        index.entry_count.unwrap_or(index.entries.len() as u64) >= index.entries.len() as u64
+            && (index.entry_index.is_some()
+                || index.entry_count.unwrap_or(index.entries.len() as u64)
+                    == index.entries.len() as u64),
+        "invalid WAL index tail"
+    );
+    ensure!(
+        entries.last().map_or(0, |entry| entry.lsn) == index.last_lsn,
         "incomplete WAL index"
     );
     ensure!(
-        index.entries.windows(2).all(|pair| {
+        entries.windows(2).all(|pair| {
             pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
                 || (index.replay_baseline_lsn > 0
                     && pair[0].lsn == pair[1].lsn
@@ -613,7 +753,7 @@ fn validate_layout(index: &WalMetadata) -> Result<()> {
         }),
         "noncontiguous WAL index"
     );
-    let first_lsn = index.entries.first().map_or(0, |entry| entry.lsn);
+    let first_lsn = entries.first().map_or(0, |entry| entry.lsn);
     ensure!(
         if index.last_lsn == 0 {
             index.entries.is_empty() && index.replay_baseline_lsn == 0
@@ -657,16 +797,24 @@ fn validate_layout(index: &WalMetadata) -> Result<()> {
 
 fn validate_record(
     index: &WalMetadata,
+    entries: &[Entry],
     namespace: &Namespace,
     entry_index: usize,
     image: &mut WalImage,
     load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
     require_digest: bool,
 ) -> Result<Option<WalCommit>> {
-    let record = load_record(index, namespace, entry_index, load_chunk, require_digest)?;
+    let record = load_record(
+        index,
+        entries,
+        namespace,
+        entry_index,
+        load_chunk,
+        require_digest,
+    )?;
     let baseline_continuation = entry_index > 0
         && index.replay_baseline_lsn > 0
-        && index.entries[entry_index].lsn == index.replay_baseline_lsn;
+        && entries[entry_index].lsn == index.replay_baseline_lsn;
     apply_record(&record, image, baseline_continuation)
 }
 
@@ -675,12 +823,13 @@ fn validate_record(
 /// decides from the loaded batch whether it may reuse that image's verified frames.
 fn load_record(
     index: &WalMetadata,
+    entries: &[Entry],
     namespace: &Namespace,
     entry_index: usize,
     load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
     require_digest: bool,
 ) -> Result<WalRecord> {
-    let entry = &index.entries[entry_index];
+    let entry = &entries[entry_index];
     let chunk = load_chunk(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?;
     ensure!(
         blake3::hash(&chunk).to_hex().as_str() == entry.hash,

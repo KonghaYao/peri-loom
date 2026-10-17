@@ -57,12 +57,15 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
             "receipts",
             "receipt_digests",
             "receipt_index",
+            "entry_count",
+            "entry_index",
             "commit"
         ]
         .contains(&key.as_str())),
         "unknown WAL index field"
     );
-    let index: WalMetadata = serde_json::from_value(value)?;
+    let mut index: WalMetadata = serde_json::from_value(value)?;
+    index.normalize_entries()?;
     ensure!(
         index.entries.last().map_or(0, |entry| entry.lsn) == index.last_lsn,
         "incomplete WAL index"
@@ -80,6 +83,8 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
     ensure!(
         if index.last_lsn == 0 {
             index.entries.is_empty() && index.replay_baseline_lsn == 0
+        } else if index.entry_index.is_some() {
+            true
         } else if index.replay_baseline_lsn == 0 {
             first == 1
         } else {
@@ -256,6 +261,7 @@ impl Authority {
                 .strip_prefix("segments/")
                 .or_else(|| key.strip_prefix("wal/chunks/"))
                 .or_else(|| key.strip_prefix("wal/receipt-pages/"))
+                .or_else(|| key.strip_prefix("wal/index-segments/"))
             {
                 ensure!(
                     valid_hash(hash) && hash == entry.hash,
@@ -459,6 +465,7 @@ impl Authority {
                 .strip_prefix("segments/")
                 .or_else(|| key.strip_prefix("wal/chunks/"))
                 .or_else(|| key.strip_prefix("wal/receipt-pages/"))
+                .or_else(|| key.strip_prefix("wal/index-segments/"))
             {
                 ensure!(
                     valid_hash(hash) && hash == entry.hash,
@@ -633,7 +640,12 @@ impl<'a> Walker<'a> {
             self.direct(wal)?;
             if !self.was_verified('W', wal) {
                 let index = index(&self.bytes(wal)?)?;
-                for chunk in &index.entries {
+                let chunks = crate::recovery::resolve_entries(&index, |hash| {
+                    let entry = self.lookup(&format!("wal/index-segments/{hash}"))?;
+                    ensure!(entry.hash == hash, "WAL index segment digest mismatch");
+                    self.bytes(&entry)
+                })?;
+                for chunk in &chunks {
                     self.wal_chunk(&chunk.hash)?;
                 }
                 self.wal_receipt_pages(&index)?;
