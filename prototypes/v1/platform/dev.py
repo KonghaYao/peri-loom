@@ -383,6 +383,9 @@ class Project:
         sql_duration_ms = getattr(self.arguments, "sql_max_duration_ms", 5000)
         if not 1 <= sql_duration_ms <= (request_timeout_seconds - 10) * 1000:
             raise RuntimeError("SQL duration limit must leave ten seconds for gateway response")
+        wal_replay_bytes = getattr(self.arguments, "wal_replay_bytes", 0)
+        if not 0 <= wal_replay_bytes <= 1 << 34:
+            raise RuntimeError("WAL replay budget must be a positive byte count, or 0 for the worker default")
         if observer and (pathlib.Path(self.arguments.run_dir).is_symlink() or self.directory.is_symlink() or self.directory.exists() and (not self.directory.is_dir() or any(entry.name != "launcher.lock" for entry in self.directory.iterdir()))):
             raise RuntimeError("SQL open observer requires a fresh empty runtime")
         private_directory(self.directory)
@@ -412,6 +415,8 @@ class Project:
                 raise RuntimeError("existing local SQL timeout cannot be silently rebound")
             if self.launch.get("sql_max_duration_ms", 5000) != sql_duration_ms:
                 raise RuntimeError("existing SQL duration limit cannot be silently rebound")
+            if self.launch.get("wal_replay_bytes", 0) != wal_replay_bytes:
+                raise RuntimeError("WAL replay budget cannot be silently rebound")
             if self.arguments.backend == "s3" and self.launch.get("storage_identity") != storage_identity("s3"):
                 raise RuntimeError("existing S3 storage identity cannot be silently rebound")
             self.config = json.loads((self.directory / "platform.json").read_text())
@@ -448,6 +453,7 @@ class Project:
         self.launch["worker_max_request_bytes"] = worker_request_bytes
         self.launch["dev_sql_timeout_seconds"] = request_timeout_seconds
         self.launch["sql_max_duration_ms"] = sql_duration_ms
+        self.launch["wal_replay_bytes"] = wal_replay_bytes
         self.launch["sql_open_observer"] = observer
         worker_auth = {}
         worker_config = []
@@ -644,6 +650,10 @@ class Project:
             environment["PERI_WORKER_WRITER_PROFILE"] = "1" if self.arguments.writer_admission else "0"
             environment["PERI_WORKER_MAX_REQUEST_BYTES"] = str(self.launch["worker_max_request_bytes"])
             environment["PERI_SQL_MAX_DURATION_MS"] = str(self.launch["sql_max_duration_ms"])
+            # Unset means the worker's own default, so the number lives in one place unless an
+            # experiment asks for a different window.
+            if self.launch["wal_replay_bytes"] > 0:
+                environment["PERI_WORKER_WAL_REPLAY_BYTES"] = str(self.launch["wal_replay_bytes"])
             self.start(identity, [str(self.rust), "owned-worker", "http://" + self.launch["authority"], worker["cache"], identity, worker["address"]], environment)
         self.start_maintenance()
         scheme = "https://" if self.arguments.tls else "http://"
@@ -852,6 +862,7 @@ def main():
     parser.add_argument("--writer-admission", action="store_true")
     parser.add_argument("--worker-max-request-bytes", type=int, default=512 * 1024)
     parser.add_argument("--sql-max-duration-ms", type=int, default=5000)
+    parser.add_argument("--wal-replay-bytes", type=int, default=0)
     parser.add_argument("--dev-sql-timeout-seconds", type=int, default=30)
     parser.add_argument("--sql-open-observer", action="store_true")
     parser.add_argument("--shutdown-budget-seconds", type=float, default=SHUTDOWN_BUDGET_SECONDS)

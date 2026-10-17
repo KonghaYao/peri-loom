@@ -35,13 +35,14 @@ class WriterProfileTests(unittest.TestCase):
         self.processes.start()
         self.addCleanup(self.processes.stop)
 
-    def project(self, enabled, backend="local", worker_max_request_bytes=512 * 1024, sql_max_duration_ms=5000, dev_sql_timeout_seconds=30):
+    def project(self, enabled, backend="local", worker_max_request_bytes=512 * 1024, sql_max_duration_ms=5000, dev_sql_timeout_seconds=30, wal_replay_bytes=0):
         return dev.Project(argparse.Namespace(
             run_dir=str(self.root), no_build=True, backend=backend,
             listen="127.0.0.1:19443", tls=False, writer_admission=enabled,
             worker_max_request_bytes=worker_max_request_bytes,
             sql_max_duration_ms=sql_max_duration_ms,
             dev_sql_timeout_seconds=dev_sql_timeout_seconds,
+            wal_replay_bytes=wal_replay_bytes,
         ))
 
     def parse_and_prepare(self, enabled):
@@ -89,6 +90,13 @@ class WriterProfileTests(unittest.TestCase):
         original.prepare()
         self.assertEqual(original.launch["sql_max_duration_ms"], 20000)
         with self.assertRaisesRegex(RuntimeError, "SQL duration limit cannot be silently rebound"):
+            self.project(False).prepare()
+
+    def test_wal_replay_budget_persists_and_cannot_rebind(self):
+        original = self.project(False, wal_replay_bytes=33554432)
+        original.prepare()
+        self.assertEqual(original.launch["wal_replay_bytes"], 33554432)
+        with self.assertRaisesRegex(RuntimeError, "WAL replay budget cannot be silently rebound"):
             self.project(False).prepare()
 
     def test_extended_timeout_requires_loopback_and_cannot_rebind(self):
