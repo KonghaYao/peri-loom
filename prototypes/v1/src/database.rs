@@ -306,10 +306,15 @@ impl RemoteDatabase {
             .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))?;
         let complete = checkpoint.wal_max_frame == checkpoint.wal_total_backfilled;
         if !complete {
-            // A partial backfill is the long-read case: some frame in the WAL is still needed
-            // by a reader, so the checkpoint cannot advance past it. Recording it here, before
-            // `require_complete_backfill` returns, is what makes the block visible; the WAL
+            // A partial backfill is the long-read case: some frame is still needed by a
+            // reader, so the checkpoint cannot advance past it. Recording it before
+            // `require_complete_backfill` returns is what makes the block visible; the WAL
             // index is not truncated afterwards, so the old references are kept.
+            //
+            // Defensive classification only: the fixed native engine reports an incomplete
+            // truncate backfill as `Busy` (the error path above), never as `Ok`, so this
+            // branch becomes observable only if that contract changes. A reader the preflight
+            // cannot see therefore ends up quarantined instead of being mislabelled here.
             self.record_maintenance_block(BlockReason::PartialBackfill);
         }
         Self::require_complete_backfill(complete)?;

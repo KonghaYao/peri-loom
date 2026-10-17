@@ -89,7 +89,8 @@ impl RemoteDatabase {
 mod tests {
     use std::sync::Arc;
 
-    use anyhow::Result;
+    use anyhow::{bail, Result};
+    use turso_core::StepResult;
 
     use crate::database::RemoteDatabase;
     use crate::namespace::Namespace;
@@ -224,6 +225,112 @@ mod tests {
         assert_eq!(
             database.query("SELECT value FROM ledger")?[0][0].to_string(),
             "1"
+        );
+        Ok(())
+    }
+
+    /// The preflight can only see lanes created through `RemoteDatabase::session()`. A native
+    /// connection opened directly on the engine pins a read mark that the preflight cannot see,
+    /// so admission dispatches and the truncate checkpoint itself returns `Busy`. That is an
+    /// unknown outcome, not a classified reader block: the database must be quarantined, the
+    /// WAL index kept, and no `long_reader` or `partial_backfill` claimed.
+    ///
+    /// This is the red-line test for the blind spot: a version that recorded the block without
+    /// seeing the reader, or that treated the native `Busy` as a clean rejection, fails here.
+    #[test]
+    fn a_reader_outside_the_lane_registry_quarantines_instead_of_claiming_a_block() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let namespace = Namespace::new("compaction", "unregistered_reader")?;
+        let database = Arc::new(RemoteDatabase::open(
+            Arc::new(MemoryObjectStore::default()),
+            namespace.clone(),
+            directory.path(),
+            0,
+        )?);
+        database.execute("CREATE TABLE ledger(value INTEGER)")?;
+
+        // Connecting through the engine instead of `session()` skips `register_lane`, which is
+        // exactly the blind spot: the connection holds a native read lock no lane knows about.
+        let engine = {
+            let engine = database
+                .engine
+                .lock()
+                .map_err(|_| AdmissionError::Quarantine)?;
+            engine.as_ref().cloned().ok_or(AdmissionError::Quarantine)?
+        };
+        let reader = engine.connect()?;
+        reader.execute("BEGIN")?;
+        let mut select = reader
+            .query("SELECT value FROM ledger")?
+            .ok_or(AdmissionError::Quarantine)?;
+        loop {
+            match select.step()? {
+                StepResult::Row | StepResult::Done => break,
+                StepResult::IO | StepResult::Yield => select._io().step()?,
+                other => bail!("unexpected step while pinning a reader: {other:?}"),
+            }
+        }
+        assert!(!reader.get_auto_commit());
+        assert!(reader.get_pager().holds_read_lock());
+
+        // The writer advances the WAL while the unregistered reader still pins its snapshot.
+        database.execute("INSERT INTO ledger VALUES(1)")?;
+        let wal = crate::wal::RemoteWal::new(database.storage().store());
+        let index_before = wal.metadata(&namespace)?;
+        let lsn_before = database.io().wal_lsn();
+        let wal_bytes_before = database.resources()?.wal_bytes;
+        assert!(
+            !index_before.entries.is_empty(),
+            "the WAL has frames to keep"
+        );
+
+        // The blind spot is real: the preflight passes even though a reader is pinned, so this
+        // path would otherwise be recorded as a reader block after the fact.
+        database.preflight_compaction()?;
+        let before = database.maintenance_ledger().counters();
+        assert_eq!(before.blocks.get("long_reader"), None);
+
+        let error = database.compact_wal().unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("Database is busy"), "{chain}");
+        assert!(
+            error.downcast_ref::<UnsettledSqlOutcome>().is_some(),
+            "a checkpoint blocked by an invisible reader has an unknown outcome: {chain}"
+        );
+        assert!(
+            database.writer_admission_status()?.quarantined,
+            "an unsettled checkpoint must fail closed: {chain}"
+        );
+
+        let after = database.maintenance_ledger().counters();
+        assert_eq!(
+            after.blocks.get("long_reader"),
+            None,
+            "the reader was never seen, so claiming a measured long reader would be a lie"
+        );
+        assert_eq!(
+            after.blocks.get("partial_backfill"),
+            None,
+            "a native Busy is an unsettled outcome, not a classified partial backfill"
+        );
+        assert_eq!(after.executions, 1);
+
+        let index_after = wal.metadata(&namespace)?;
+        assert_eq!(
+            index_after.replay_baseline_lsn, index_before.replay_baseline_lsn,
+            "the WAL index must not be rebased after an unsettled checkpoint"
+        );
+        assert_eq!(index_after.last_lsn, index_before.last_lsn);
+        assert_eq!(index_after.entries.len(), index_before.entries.len());
+        assert_eq!(database.io().wal_lsn(), lsn_before);
+        assert_eq!(database.resources()?.wal_bytes, wal_bytes_before);
+        assert!(reader.get_pager().holds_read_lock());
+
+        // Fail closed without a retry: the quarantined database rejects the next unit.
+        let retry = database.compact_wal().unwrap_err();
+        assert_eq!(
+            retry.downcast_ref::<AdmissionError>(),
+            Some(&AdmissionError::Quarantine)
         );
         Ok(())
     }
