@@ -23,7 +23,9 @@ use peri_loom_v1::ownership::types::{
 use peri_loom_v1::ownership::OwnershipRuntime;
 use peri_loom_v1::runtime::{DatabaseId, WorkerLimits};
 
-use super::clock_gate::{BlockingStore, CleanupCapture, CleanupObserver, FakeClock, Gate};
+use super::clock_gate::{
+    BlockingStore, CleanupCapture, CleanupObserver, FakeClock, Gate, StorePause,
+};
 
 pub struct Fixture {
     pub runtime: Arc<OwnershipRuntime>,
@@ -31,6 +33,10 @@ pub struct Fixture {
     pub worker_clock: Arc<FakeClock>,
     pub authority_clock: Arc<FakeClock>,
     pub gate: Arc<Gate>,
+    // Only the drain-maintenance test arms this; the shared helper is compiled into several
+    // test binaries.
+    #[allow(dead_code)]
+    pub pause: Arc<StorePause>,
     pub lease: GrantReply,
     pub identifier: DatabaseId,
     grant_rejections: Option<Mutex<RejectionReceiver>>,
@@ -81,10 +87,12 @@ impl Fixture {
         let cleanup = observer
             .as_ref()
             .map(|_| Arc::new(CleanupObserver::default()));
+        let pause = Arc::new(StorePause::default());
         let store = Arc::new(BlockingStore {
             inner: backing.clone(),
             gate: gate.clone(),
             cleanup: cleanup.clone(),
+            pause: pause.clone(),
         });
         let authority = OwnershipAuthority::new(store, authority_clock.clone());
         let worker_id = "worker_c".to_owned();
@@ -142,6 +150,7 @@ impl Fixture {
             worker_clock,
             authority_clock,
             gate,
+            pause,
             lease,
             identifier,
             grant_rejections,

@@ -287,10 +287,37 @@ impl Gate {
     }
 }
 
+/// A controlled slow store: while armed, every authoritative `put` sleeps before it is
+/// applied. A test arms it immediately before a drain so the maintenance publication, not an
+/// earlier command, is the write that pays the delay.
+#[derive(Default)]
+pub struct StorePause {
+    delay: Mutex<Option<Duration>>,
+}
+
+#[allow(dead_code)]
+impl StorePause {
+    pub fn arm(&self, delay: Duration) {
+        *self.delay.lock().unwrap() = Some(delay);
+    }
+
+    pub fn disarm(&self) {
+        *self.delay.lock().unwrap() = None;
+    }
+
+    fn wait(&self) {
+        let delay = *self.delay.lock().unwrap();
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
+    }
+}
+
 pub struct BlockingStore {
     pub inner: Arc<dyn ObjectStore>,
     pub gate: Arc<Gate>,
     pub cleanup: Option<Arc<CleanupObserver>>,
+    pub pause: Arc<StorePause>,
 }
 
 impl ObjectStore for BlockingStore {
@@ -306,6 +333,7 @@ impl ObjectStore for BlockingStore {
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.pause.wait();
         let watch = self
             .cleanup
             .as_ref()
@@ -479,6 +507,7 @@ mod cleanup_tests {
             inner: inner.clone(),
             gate: Arc::new(Gate::default()),
             cleanup: Some(Arc::new(observer)),
+            pause: Arc::new(StorePause::default()),
         };
         root.pins.clear();
         let candidate = encode(&root)?;

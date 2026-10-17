@@ -17,8 +17,12 @@
 //!
 //! `pre_suspend` is the one call that runs a unit on its caller's thread. It exists for the
 //! unload path, where the caller has to know whether the single pre-tidy finished; it still
-//! charges the same budget, opens the same cooldown and treats every refusal as a skip.
+//! charges the same budget, opens the same cooldown and treats every refusal as a skip. The
+//! ownership gate has already moved the lease to `Draining` by then, so the call carries a
+//! thread-local retirement authorization that admits only its `validate_transaction(false)`
+//! and leaves every epoch, role, deadline and quarantine check in place.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -54,10 +58,20 @@ pub(crate) struct MaintenanceDrain {
 }
 
 /// What a suspend-time pre-tidy did, reported so the unload path can log the real outcome
-/// instead of inferring one. `Timeout` and `Failed` are deliberately distinct from the
-/// skipped reasons: they mean the unit may have started, so they must never be described as
-/// "nothing ran". `started` is the ledger's answer to whether the lane's entry point was
-/// reached; a timeout with `started = true` has an unconfirmed completion.
+/// instead of inferring one. `Timeout`, `BudgetExceeded` and `Failed` are deliberately
+/// distinct from the skipped reasons: they mean the unit may have started, so they must never
+/// be described as "nothing ran". `started` is the ledger's answer to whether the lane's entry
+/// point was reached.
+///
+/// The two budget outcomes are not a hard cancellation: a synchronous native checkpoint
+/// cannot be interrupted safely. They say what the caller actually observed:
+///
+/// - `CompletedOverBudget` means the unit returned `Ok` after the budget elapsed. The
+///   completion is real; only the wait bound was missed.
+/// - `BudgetExceeded` means the unit returned an error after the budget elapsed without the
+///   admission deadline being the cause, so its completion is unconfirmed.
+/// - `Timeout` means the admission/operation-gate deadline stopped the unit before a native
+///   completion was observed; completion is likewise unconfirmed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreSuspendReason {
     Disabled,
@@ -66,9 +80,11 @@ pub(crate) enum PreSuspendReason {
     Cooling,
     Refused(BudgetDenied),
     Timeout,
+    BudgetExceeded,
     Failed,
     ProbeFailed,
     Completed,
+    CompletedOverBudget,
 }
 
 impl PreSuspendReason {
@@ -80,9 +96,11 @@ impl PreSuspendReason {
             Self::Cooling => "cooldown",
             Self::Refused(_) => "budget_refused",
             Self::Timeout => "timeout_unconfirmed",
+            Self::BudgetExceeded => "budget_exceeded_unconfirmed",
             Self::Failed => "failed_unconfirmed",
             Self::ProbeFailed => "probe_failed",
             Self::Completed => "completed",
+            Self::CompletedOverBudget => "completed_over_budget",
         }
     }
 }
@@ -122,6 +140,36 @@ impl Drop for PreSuspendSlot<'_> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&self.identity);
+    }
+}
+
+thread_local! {
+    /// Set only while a suspend-time unit is running on this thread. The ownership gate
+    /// consults it to allow the retirement pre-tidy's `validate_transaction(false)` while
+    /// the lease is `Draining`. It never allows a transaction (`true`), and it does not
+    /// bypass any epoch, generation, role, deadline, quarantine or operation-gate check.
+    static RETIRING_MAINTENANCE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn retiring_maintenance_authorized() -> bool {
+    RETIRING_MAINTENANCE.get()
+}
+
+pub(crate) struct RetiringMaintenanceAuthorization {
+    previous: bool,
+}
+
+impl RetiringMaintenanceAuthorization {
+    pub(crate) fn enter() -> Self {
+        Self {
+            previous: RETIRING_MAINTENANCE.replace(true),
+        }
+    }
+}
+
+impl Drop for RetiringMaintenanceAuthorization {
+    fn drop(&mut self) {
+        RETIRING_MAINTENANCE.set(self.previous);
     }
 }
 
@@ -448,9 +496,16 @@ impl MaintenanceScheduler {
         let deadline = started + timeout;
         let result = {
             let _deadline = crate::session::RequestDeadline::scope(deadline);
+            // The unload path has already moved the lease to `Draining` when this unit runs.
+            // A database transaction was refused there, but this unit is not a new
+            // transaction: it is the retirement pre-tidy, and it still goes through the same
+            // epoch, Writer-role, generation, quarantine and operation-gate checks. The
+            // authorization is thread-local and lives only for this call.
+            let _retiring = RetiringMaintenanceAuthorization::enter();
             target.run_maintenance(lane)
         };
         let elapsed = started.elapsed();
+        let over_budget = elapsed >= timeout;
         // The entry point records its own execution before it takes a deadline. Reading the
         // counter here is what lets the caller say "started, completion unconfirmed" instead
         // of the false claim that a timed-out unit never touched the database.
@@ -460,7 +515,14 @@ impl MaintenanceScheduler {
             Ok(()) => {
                 ledger.record_completion(lane);
                 PreSuspendOutcome {
-                    reason: PreSuspendReason::Completed,
+                    // A native completion after the budget is still a completion. Reporting
+                    // it as `Completed` would hide that the caller waited past its bound;
+                    // reporting it as `Timeout` would deny work that actually happened.
+                    reason: if over_budget {
+                        PreSuspendReason::CompletedOverBudget
+                    } else {
+                        PreSuspendReason::Completed
+                    },
                     lane: Some(lane),
                     started: unit_started,
                     elapsed,
@@ -468,13 +530,14 @@ impl MaintenanceScheduler {
                 }
             }
             Err(error) => {
-                let timed_out = elapsed >= timeout
-                    || error.downcast_ref::<crate::session::AdmissionError>()
-                        == Some(&crate::session::AdmissionError::Deadline);
+                let deadline_limited = error.downcast_ref::<crate::session::AdmissionError>()
+                    == Some(&crate::session::AdmissionError::Deadline);
                 ledger.record_failure(lane);
                 PreSuspendOutcome {
-                    reason: if timed_out {
+                    reason: if deadline_limited {
                         PreSuspendReason::Timeout
+                    } else if over_budget {
+                        PreSuspendReason::BudgetExceeded
                     } else {
                         PreSuspendReason::Failed
                     },

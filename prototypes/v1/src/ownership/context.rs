@@ -91,8 +91,14 @@ impl LeaseContext {
             "local ownership revoked or detached"
         );
         if state.mode == OwnershipMode::Draining {
+            // A suspend/migration pre-tidy is not a new transaction: it runs after the lease
+            // has already moved to `Draining`, and refusing it would make the pre-tidy fail
+            // before native dispatch. The authorization is thread-local and is opened only
+            // around that one maintenance call; it admits only `Some(false)` and leaves the
+            // existing `Some(true)` transaction-continuation rule unchanged. Every other
+            // check (epoch, generation, deadline, Writer role, quarantine) still runs.
             ensure!(
-                transaction != Some(false),
+                transaction != Some(false) || crate::maintenance::retiring_maintenance_authorized(),
                 "draining rejects new transactions"
             );
         }

@@ -44,7 +44,9 @@ pub(crate) use budget::BudgetDenied;
 pub(crate) use budget::MaintenanceBudget;
 pub(crate) use ledger::{BlockReason, MaintenanceLedger};
 pub(crate) use policy::MaintenanceLane;
-pub(crate) use scheduler::MaintenanceScheduler;
+#[cfg(test)]
+pub(crate) use scheduler::RetiringMaintenanceAuthorization;
+pub(crate) use scheduler::{retiring_maintenance_authorized, MaintenanceScheduler};
 #[cfg(test)]
 pub(crate) use scheduler::{PreSuspendOutcome, PreSuspendReason};
 pub(crate) use signals::{millis, MaintenanceSignals};

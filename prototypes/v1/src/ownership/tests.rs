@@ -100,6 +100,28 @@ fn backwards_lease_clock_revokes_instead_of_extending_deadline() -> Result<()> {
 }
 
 #[test]
+fn draining_admits_only_the_retirement_maintenance_scope() -> Result<()> {
+    let context = context(Arc::new(FakeClock::default()))?;
+    context.lock()?.mode = OwnershipMode::Draining;
+    assert!(
+        context.check(Some(false)).is_err(),
+        "a normal write after drain must be refused"
+    );
+    {
+        let _retiring = crate::maintenance::RetiringMaintenanceAuthorization::enter();
+        context.check(Some(false))?;
+        // Continuing a transaction was already permitted while draining; the scope's only
+        // effect is to admit the retirement unit's non-transactional validation. It must not
+        // change that existing boundary.
+        context.check(Some(true))?;
+        // The authorization is narrow: an expired lease still revokes.
+        context.lock()?.deadline_ms = 0;
+        assert!(context.check(Some(false)).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn acquiring_status_does_not_expire_uninitialized_deadline() -> Result<()> {
     let clock = Arc::new(FakeClock::default());
     let context = context(clock)?;

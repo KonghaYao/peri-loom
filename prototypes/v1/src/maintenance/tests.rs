@@ -20,33 +20,49 @@ use super::{
 
 /// A target that records what it was asked to run and does nothing else. `signals` returns the
 /// figures the test wants the scheduler to decide on.
+#[derive(Clone, Copy)]
+enum FakeFailure {
+    None,
+    Message,
+    Deadline,
+}
+
 struct FakeTarget {
     name: &'static str,
     ledger: MaintenanceLedger,
     signals: Mutex<MaintenanceSignals>,
     runs: AtomicUsize,
-    fail: bool,
+    failure: FakeFailure,
     delay: Duration,
 }
 
 impl FakeTarget {
     fn new(name: &'static str, wal_bytes: u64) -> Arc<Self> {
-        Self::build(name, wal_bytes, false, Duration::ZERO)
+        Self::build(name, wal_bytes, FakeFailure::None, Duration::ZERO)
     }
 
     fn failing(name: &'static str, wal_bytes: u64) -> Arc<Self> {
-        Self::build(name, wal_bytes, true, Duration::ZERO)
+        Self::build(name, wal_bytes, FakeFailure::Message, Duration::ZERO)
+    }
+
+    fn deadline_failing(name: &'static str, wal_bytes: u64) -> Arc<Self> {
+        Self::build(name, wal_bytes, FakeFailure::Deadline, Duration::ZERO)
     }
 
     fn slow(name: &'static str, wal_bytes: u64, delay: Duration) -> Arc<Self> {
-        Self::build(name, wal_bytes, false, delay)
+        Self::build(name, wal_bytes, FakeFailure::None, delay)
     }
 
     fn slow_failing(name: &'static str, wal_bytes: u64, delay: Duration) -> Arc<Self> {
-        Self::build(name, wal_bytes, true, delay)
+        Self::build(name, wal_bytes, FakeFailure::Message, delay)
     }
 
-    fn build(name: &'static str, wal_bytes: u64, fail: bool, delay: Duration) -> Arc<Self> {
+    fn build(
+        name: &'static str,
+        wal_bytes: u64,
+        failure: FakeFailure,
+        delay: Duration,
+    ) -> Arc<Self> {
         Arc::new(Self {
             name,
             ledger: MaintenanceLedger::default(),
@@ -55,7 +71,7 @@ impl FakeTarget {
                 ..MaintenanceSignals::default()
             }),
             runs: AtomicUsize::new(0),
-            fail,
+            failure,
             delay,
         })
     }
@@ -89,10 +105,11 @@ impl MaintenanceTarget for FakeTarget {
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
         }
-        if self.fail {
-            anyhow::bail!("synthetic maintenance failure");
+        match self.failure {
+            FakeFailure::None => Ok(()),
+            FakeFailure::Message => anyhow::bail!("synthetic maintenance failure"),
+            FakeFailure::Deadline => Err(crate::session::AdmissionError::Deadline.into()),
         }
-        Ok(())
     }
 }
 
@@ -679,16 +696,15 @@ fn a_suspend_pre_tidy_refused_by_the_budget_does_not_start_or_claim_completion()
 }
 
 #[test]
-fn a_timed_out_pre_tidy_is_unconfirmed_and_is_not_retried() {
+fn a_deadline_limited_pre_tidy_is_unconfirmed_and_is_not_retried() {
     let scheduler = pre_suspend_scheduler(true, u64::MAX, Duration::from_millis(5));
-    let target = FakeTarget::slow_failing("suspend_timeout", 4096, Duration::from_millis(30));
+    let target = FakeTarget::deadline_failing("suspend_timeout", 4096);
     let outcome = pre_suspend(&scheduler, &target);
     assert_eq!(outcome.reason, PreSuspendReason::Timeout, "{outcome:?}");
     assert!(
         outcome.started,
         "the entry point was reached, so the work is unconfirmed rather than absent"
     );
-    assert!(outcome.elapsed >= Duration::from_millis(5));
     let counters = target.ledger.counters();
     assert_eq!(counters.executions, 1);
     assert_eq!(counters.failed, 1);
@@ -698,6 +714,47 @@ fn a_timed_out_pre_tidy_is_unconfirmed_and_is_not_retried() {
     let again = pre_suspend(&scheduler, &target);
     assert_eq!(again.reason, PreSuspendReason::Cooling, "{again:?}");
     assert_eq!(target.runs(), 1, "a timeout must not be retried in place");
+}
+
+#[test]
+fn a_pre_tidy_that_outlives_the_budget_is_reported_as_completed_over_budget() {
+    let scheduler = pre_suspend_scheduler(true, u64::MAX, Duration::from_millis(5));
+    let target = FakeTarget::slow("suspend_over_budget", 4096, Duration::from_millis(30));
+    let outcome = pre_suspend(&scheduler, &target);
+    assert_eq!(
+        outcome.reason,
+        PreSuspendReason::CompletedOverBudget,
+        "{outcome:?}"
+    );
+    assert!(
+        outcome.elapsed >= Duration::from_millis(5),
+        "the caller waited past its budget"
+    );
+    assert_eq!(target.runs(), 1);
+    let counters = target.ledger.counters();
+    assert_eq!(counters.completed, 1, "the completion is real");
+    assert_eq!(counters.failed, 0);
+}
+
+#[test]
+fn a_pre_tidy_that_fails_after_the_budget_is_unconfirmed() {
+    let scheduler = pre_suspend_scheduler(true, u64::MAX, Duration::from_millis(5));
+    let target =
+        FakeTarget::slow_failing("suspend_over_budget_fail", 4096, Duration::from_millis(30));
+    let outcome = pre_suspend(&scheduler, &target);
+    assert_eq!(
+        outcome.reason,
+        PreSuspendReason::BudgetExceeded,
+        "{outcome:?}"
+    );
+    assert!(outcome.started);
+    assert!(outcome.elapsed >= Duration::from_millis(5));
+    let counters = target.ledger.counters();
+    assert_eq!(counters.failed, 1);
+    assert_eq!(
+        counters.completed, 0,
+        "an over-budget failure is not a completion"
+    );
 }
 
 #[test]
