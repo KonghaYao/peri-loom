@@ -9,7 +9,7 @@ use turso_core::{Numeric, Value};
 
 use crate::ownership::OwnershipRuntime;
 use crate::runtime::DatabaseId;
-use crate::session::{AdmissionError, Budget};
+use crate::session::{AdmissionError, Budget, RequestDeadline};
 
 use super::protocol::SessionState;
 use super::session_entry::{Entry, SessionCall};
@@ -147,6 +147,13 @@ impl Sessions {
         self.refresh_initial_image(database)?;
         ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         let handle = Arc::new(self.runtime.open_session(database)?);
+        // The cold load is allowed to outrun the RPC deadline: `WorkerRuntime::open`
+        // anchors the session budget after the load returns. The probes below are part
+        // of the same request, so without a new anchor they inherit the RPC deadline the
+        // load has already spent, and a load that succeeded would still fail the open on
+        // a deadline the design explicitly let it exceed.
+        let _session_phase =
+            RequestDeadline::scope(Instant::now() + Budget::trusted_default().wall_duration());
         let readonly = handle.is_readonly()?;
         let mut random = [0u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;

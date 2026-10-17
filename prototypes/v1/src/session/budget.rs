@@ -104,6 +104,23 @@ mod tests {
         assert!(end >= before + budget.max_query_duration);
         assert!(end <= Instant::now() + budget.wall_duration());
     }
+
+    #[test]
+    fn a_new_scope_replaces_a_spent_rpc_deadline() {
+        let _spent = RequestDeadline::scope(Instant::now() - Duration::from_millis(1));
+        assert!(RequestDeadline::new(&Budget::default())
+            .unwrap()
+            .check()
+            .is_err());
+        // The scope is the mechanism that lets a cold load run longer than the request
+        // deadline and still give the work after it a fresh window; a clamp instead of a
+        // replacement would make that work inherit the deadline the load already spent.
+        let _anchored = RequestDeadline::scope(Instant::now() + Duration::from_secs(1));
+        assert!(RequestDeadline::new(&Budget::default())
+            .unwrap()
+            .check()
+            .is_ok());
+    }
 }
 
 pub(crate) struct RequestDeadline {
