@@ -25,7 +25,7 @@ const IDLE_CONNECTIONS: usize = 8;
 /// have in flight. Together with `IDLE_CONNECTIONS` and the sockets the pool is
 /// handing back this is what bounds the client; the authority sizes its own
 /// connection budget against `LIVE_CONNECTIONS + IDLE_CONNECTIONS`.
-const LIVE_CONNECTIONS: usize = 24;
+pub(crate) const LIVE_CONNECTIONS: usize = 24;
 
 /// How long a parked socket may sit idle before this side closes it.
 ///

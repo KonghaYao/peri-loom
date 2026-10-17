@@ -174,8 +174,24 @@ impl ObjectStore for CountingWalReads {
     }
 }
 
+/// Read-ahead ceiling: the widest window any byte budget can buy, plus the one refill a replay
+/// starts before it sees the visitor's answer.
+///
+/// The ledger itself lives in `wal::replay_window_tests` (window = budget / per-chunk charge, that
+/// charge is the raw ceiling of one chunk, and no budget buys more than 8 chunks). What this case
+/// pins end to end is the property those numbers exist for: a replay may read ahead, but the
+/// distance it runs ahead is a small constant rather than the length of the history, records are
+/// still delivered in LSN order, and delivery stops reading as soon as the visitor stops accepting.
+///
+/// The delivery loop refills the window once a chunk was accepted and *before* the visitor sees
+/// it, so a visitor that rejects the first record still observes `window + 1` chunks. The window
+/// cap on its own does not bound what this case counts, and this case does not replace the ledger:
+/// it catches a replay whose read-ahead is the length of the history, not a window one chunk wide.
+const READ_AHEAD_CEILING: usize = 9;
+
 #[test]
-fn wal_replay_visits_a_record_before_fetching_the_next_chunk() -> Result<()> {
+fn wal_replay_reads_ahead_within_its_window_and_stops_with_the_visitor() -> Result<()> {
+    const RECORDS: usize = 32;
     let objects = tempfile::tempdir()?;
     let store = Arc::new(CountingWalReads {
         inner: LocalObjectStore::open(objects.path())?,
@@ -183,8 +199,31 @@ fn wal_replay_visits_a_record_before_fetching_the_next_chunk() -> Result<()> {
     });
     let wal = RemoteWal::new(store.clone());
     let namespace = namespace();
-    wal.append(&namespace, 1, WalBatch::default())?;
-    wal.append(&namespace, 1, WalBatch::default())?;
+    for _ in 0..RECORDS {
+        wal.append(&namespace, 1, WalBatch::default())?;
+    }
+
+    store.chunks.store(0, Ordering::SeqCst);
+    let mut lsns = Vec::new();
+    wal.for_each_record(&namespace, 0, |record| {
+        lsns.push(record.lsn);
+        Ok(())
+    })?;
+    ensure!(
+        lsns.len() == RECORDS,
+        "replayed {} records, expected {RECORDS}",
+        lsns.len()
+    );
+    ensure!(
+        lsns.windows(2).all(|pair| pair[0] < pair[1]),
+        "records were not delivered in LSN order: {lsns:?}"
+    );
+    let full_run = store.chunks.load(Ordering::SeqCst);
+    ensure!(
+        full_run == RECORDS,
+        "a full replay read {full_run} chunks for {RECORDS} records"
+    );
+
     store.chunks.store(0, Ordering::SeqCst);
     let mut visited = 0;
     let stopped = wal.for_each_record(&namespace, 0, |_| {
@@ -193,9 +232,15 @@ fn wal_replay_visits_a_record_before_fetching_the_next_chunk() -> Result<()> {
     });
     ensure!(stopped.is_err(), "visitor error was lost");
     ensure!(visited == 1, "unexpected number of visited records");
+    let fetched = store.chunks.load(Ordering::SeqCst);
     ensure!(
-        store.chunks.load(Ordering::SeqCst) == 1,
-        "replay fetched later records before the visitor finished"
+        fetched <= READ_AHEAD_CEILING,
+        "replay ran {fetched} chunks ahead of its visitor; the ceiling is {READ_AHEAD_CEILING} \
+         (window cap plus the refill started before the visitor answered)"
+    );
+    ensure!(
+        fetched < RECORDS,
+        "replay fetched the whole {RECORDS}-record history after the visitor stopped at one"
     );
     Ok(())
 }
