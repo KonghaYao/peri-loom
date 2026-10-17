@@ -28,12 +28,14 @@
    （第三次运行 `calls 3→5`，`failures` 仍为 3，两个成功单元合计 `ns=133.812854 s`）。
 4. 但维护 checkpoint 用的是 **Full** 模式，不截断 WAL：704,140,992 B 的 WAL 仍在。
    本轮又显式关闭了 index_compact（`Truncate`），因此数据库空闲卸载后的第一次打开仍需支付
-   整段加载；这次加载超过了 `2 × PERI_SQL_MAX_DURATION_MS = 10 s` 的请求截止点，
-   平台收到 `writer admission deadline` 并判为 ambiguous，无法 clean drain。第三次运行同样
-   `outcome=unclean`。
+   整段加载（第三次运行约 26 s）。这次打开以 `writer admission deadline` 失败并被判为
+   ambiguous，无法 clean drain。归因已在 §5.2 修正：加载本身被允许超过 10 s 的 RPC 截止点，
+   失败来自加载返回后 `Sessions::open` 调用 `is_readonly()` 时落回已耗尽的 RPC 截止点；
+   本次提交在同一位置重新锚定预算。
 5. 这三次运行**没有**证明数据损坏，也**没有**证明 Unknown 操作未提交；它们只说明：
    批次切分修复有效，维护能在长事务释放后推进，而“Full checkpoint + 关闭 compact + 冷打开”
-   这一组合在当前数据规模上仍以 unclean 结束。
+   这一组合在当前数据规模上仍以 unclean 结束（修复后的定向探针则在同类冷加载上取得了
+   clean 关栈，见 §5.2）。
 
 ---
 
@@ -233,7 +235,7 @@ platform shutdown incomplete: audit tail not attempted
 `resources()`，因此采样可能在重回填窗口被阻塞。本文只把四次超时当作采样窗口的观测，
 不把它归因为单一锁或数据面故障。
 
-### 5.2 hold 打开失败：截止点在加载之后才被检查
+### 5.2 hold 打开失败：加载后的会话探针落回已耗尽的 RPC 截止点
 
 `hold.out` 的调用栈停在 `platform.open_session`，平台返回 `outcome_unknown`；
 平台日志：
@@ -245,31 +247,49 @@ rpc=ambiguous=true,rejected=false,execution_completed=false observation=writer a
 platform stopped: gateway drain: gateway has unresolved upstream outcomes; terminal proof required
 ```
 
-Worker 侧的实际路径（`prototypes/v1/src/worker_rpc/sessions.rs` 与
-`prototypes/v1/src/runtime.rs`）：
+Worker 侧的实际路径（`prototypes/v1/src/worker_rpc/sessions.rs`、`runtime.rs`、
+`session/lane.rs`）：
 
-1. `Sessions::open` 先 `refresh_initial_image`，再检查 `Instant::now() < deadline`；
-2. `runtime.open_session` 进入 `load_instance`，**加载期间 `RequestDeadline` 被挂起**，
-   只用 `load_budget`（默认 `max(10 s, 60 s) = 60 s`）约束；
-3. 加载耗时约 26 s（sampler 的 `lifecycle=loading` 窗口）；
-4. 加载完成后 `make_handle` → `database.session()` → `RequestDeadline::new` 取
-   “请求级截止点（`accepted + 2 × PERI_SQL_MAX_DURATION_MS = 10 s`）”与自身预算的较小者；
-   此时 10 s 早已用尽，`operation_until` 的 `deadline.check()` 立即返回
+1. `Sessions::open` 用 RPC 截止点（`accepted + 2 × PERI_SQL_MAX_DURATION_MS = 10 s`）约束
+   refresh 和加载前检查；
+2. `runtime.open_session` → `WorkerRuntime::open`：加载在 `RequestDeadline::suspend()` 下进行，
+   只受 60 s 加载预算约束；加载返回后，该函数新建 10 s 的 `RequestDeadline::scope`，
+   `database.session()` 在这个新窗口内完成；
+3. 因此“加载耗尽请求截止点，`database.session()` 立即失败”**不成立**；`database.session()`
+   拿到的是加载结束后的新 10 s；
+4. 但 `Sessions::open` 在 `open_session` 返回后还要调用 `handle.is_readonly()`。第 2 步的
+   scope 已随函数返回而结束，`RemoteSession::is_readonly` → `RequestDeadline::new` 取环境中的
+   RPC 截止点（已过期）与自身 10 s 的较小者；`lane.lock` 的第一句 `deadline.check()` 立即返回
    `AdmissionError::Deadline`，显示文本即 `writer admission deadline`。
 
-因此这条错误**不是** writer 队列等待超时；它是加载完成后的请求截止点检查。
-`ExecutionEvidence` 为 `execution_completed=false`，但平台仍把这次 open 记为 ambiguous
-（`rejected=false, execution_completed=false`）；gateway 无法把它当作可终止的拒绝，
-要求 terminal proof，于是拒绝 clean drain。
+时间线与这条路径一致：sampler 每 2 s 采样，从 04:56:33.97 到 04:56:58.08 的 13 个点都是
+`lifecycle=loading`；hold 于 04:56:32 发起，平台错误在 04:56:59 记录，即加载返回后约 1 s。
+总耗时约 27 s，小于平台 30 s 的 upstream timeout（`sql_upstream.go` 默认 30 s，
+`service.go` 的请求预算同为 30 s，HTTP `WriteTimeout` 为 35 s）。因此平台不是先超时；
+错误文本来自 Worker 的 `AdmissionError::Deadline`。这条错误也不是 writer 队列等待超时：
+维护单元在队列冲突时返回的是 `writer admission conflict`，文本不同。
 
-Worker 日志在关栈阶段还有一条：
+修复（本次提交）：在 `runtime.open_session` 返回后、第一个加载后探针之前重新锚定预算：
 
+```rust
+let _session_phase =
+    RequestDeadline::scope(Instant::now() + Budget::trusted_default().wall_duration());
+let readonly = handle.is_readonly()?;
 ```
-level=error event=ownership_detach outcome=failed database=local_default/demo error=writer admission quarantine
-```
 
-这是关栈阶段 admission 已处于隔离状态的留痕；它与失败打开同属一个收尾序列，
-但现有日志不足以区分因果，本文不作归因。
+定向验证（证据目录 `openfix-20261017T0507Z`）：同一 700000 行数据集、704,140,992 B WAL，
+等待数据库空闲卸载后发起冷打开。sampler 在 05:15:31.72–05:15:57.85 持续看到 `loading`；
+`probe.ndjson` 记录 `open_ok` 用时 27.631 s，随后两次 `SELECT 1`（19 ms / 18 ms）与
+`close_ok` 全部成功；`launcher-stop.json` 最终为 `outcome=clean`、四个 stage
+`exit_code=0`、`unresolved_operations=false`，端口 19946 释放、无残留进程。作为对照，
+修复前同一量级的打开（第三次运行）在约 27 s 处以同一文本失败，栈以 unclean 收尾。
+第三次运行的 Worker 日志在关栈阶段还有一条
+`ownership_detach outcome=failed ... error=writer admission quarantine`；它属于失败打开的
+收尾序列，现有日志不足以区分因果，本文不作归因。
+
+边界：这次修复只覆盖 `Sessions::open` 的加载后阶段，不改变平台 30 s 的 upstream 上限；
+如果加载加探针超过 30 s，平台仍会以 ambiguous 收尾。`opened_state` 等后续步骤当前不取
+截止点；将来若给它们加截止点，必须放在同一个加载后作用域内。
 
 ### 5.3 为什么 WAL 仍有 704 MB
 
@@ -311,18 +331,21 @@ reason: platform exited without a clean proof; worker-a/b/authority skipped grac
 checkpoint 能完成；WAL 水位仍是 704,140,992 B（Full 不截断），因此“成功”不等于
 WAL 被回收；回收需要另一条 `Truncate` 路径（index_compact）。
 
-### 6.3 冷打开失败是加载预算与请求截止点的结构性关系
+### 6.3 冷打开失败的边界：加载预算、请求截止点与平台超时
 
-`2026-10-17-open-load-stall.md` 已在 100k 行、约 16 s 冷加载上记录了同一类失败；
-本轮把它扩展到 700000 行、704 MB WAL、约 26 s 冷加载。关键事实不是某个绝对秒数，而是：
+第三次运行暴露的不是单一“10 s 结构”，而是三个独立窗口：
 
-- 加载不可中断，期间请求截止点被挂起；
-- 加载结束后，后续的 `database.session()` 会立刻用已经耗尽的请求截止点做检查；
-- 因此“加载成功”仍然可以表现为 `writer admission deadline`，并被平台当作 ambiguous；
-- 平台按 fail-closed 规则拒绝 clean shutdown，运行以 unclean 收尾。
+- 加载预算：默认 60 s（`MIN_LOAD_BUDGET` / `PERI_WORKER_LOAD_MS`），加载期间 RPC 截止点
+  被挂起；
+- 请求截止点：RPC 层 10 s，加载后由 `WorkerRuntime::open` 与 `Sessions::open` 分别锚定
+  新窗口；旧代码漏掉了后者，加载后的 `is_readonly()` 因此落回已耗尽的外层截止点；
+- 平台 upstream 超时：默认 30 s，是 Worker 之外的上限。
 
-这条路径是当前“大 WAL + Full checkpoint + 不 compact”组合的直接后果。本文不把它
-归因于 WAL 批次切分或 `e6ba3e9` 的锁序改动。
+修复后，总耗时 27.631 s 的冷打开可以成功并 clean 关栈（§5.2），但这不等于 30 s 足够：
+加载时长随 WAL 大小增长，若加载加探针超过 30 s，平台仍会把打开记为 ambiguous。本文没有
+测量加载时长分布，也没有改变平台超时；不能从一次 27.631 s 的观测外推其他数据规模。
+
+这条路径与 WAL 批次切分、`e6ba3e9` 的锁序改动无关。
 
 ### 6.4 尚未修复的相邻上限（算术推断，未实测）
 
@@ -339,7 +362,8 @@ WAL 被回收；回收需要另一条 `Truncate` 路径（index_compact）。
    本轮没有改。
 
 在修掉 `truncate` baseline 之前，不应在这类数据规模上把 index_compact 重新武装；
-在修掉冷打开与请求截止点的关系之前，也不应把“checkpoint 成功”读成“数据库可立即重开”。
+平台 30 s 的 upstream 上限也仍然意味着“checkpoint 成功”不等于“任意大小的数据库都能
+立即重开”。
 
 ---
 
@@ -351,8 +375,9 @@ WAL 被回收；回收需要另一条 `Truncate` 路径（index_compact）。
 - `0e18e2a` 的切分使同一份 700000 行导入全部提交并回读；
 - 长事务期间 checkpoint 的 `conflict` 是预期行为，事务释放后 checkpoint 能成功推进；
 - Full checkpoint 不截断 WAL，本轮 704,140,992 B 的 WAL 在两次成功 checkpoint 后仍在；
-- 冷打开在 10 s 请求截止点内未完成时，平台得到 ambiguous 的 `writer admission deadline`，
-  并以 unclean 关栈。
+- 冷打开在加载约 26 s 后（第三次运行）以 `writer admission deadline` 失败；归因是
+  `Sessions::open` 在加载返回后调用 `is_readonly()` 时落回已耗尽的 RPC 截止点，而不是
+  `database.session()`；修复后同一量级的冷打开 27.631 s 成功，并以 clean 关栈收尾；
 
 不宣称的：
 
@@ -375,6 +400,7 @@ WAL 被回收；回收需要另一条 `Truncate` 路径（index_compact）。
 | 1 | `maint-256-20261017T1216Z/import/import.json`、`metrics-after-import.json`、`samples.ndjson`、`run.log`；`/tmp/peri-maint-256-e6ba3e9/logs/{platform,worker-b}.log`、`audit/events.json`、`launcher-stop.json` |
 | 2 | `maint-256-20261017T0439Z/import/import.json`、`metrics-after-import.json`、`hold.ndjson`、`run.log`；`/tmp/peri-maint-256-0e18e2a/logs/platform.log`、`launcher-stop.json` |
 | 3 | `maint-256-20261017T0447Z/import/import.json`、`metrics-wait-{1,2,3}.json`、`metrics-final.json`、`samples.ndjson`、`hold.out`、`run.log`；`/tmp/peri-maint-256c-0e18e2a/logs/{platform,worker-b}.log`、`launcher-stop.json` |
+| 探针（修复后） | `openfix-20261017T0507Z/import/`、`samples.ndjson`、`probe.ndjson`、`metrics-before-open.json`、`metrics-after-open.json`、`run.log`；`/tmp/peri-openfix-fix1/logs/`、`launcher-stop.json` |
 
 启动、导入与采样命令只引用本地脚本；凭据从运行目录的私有文件读取，
 未写入 argv、日志或本文。`connection.json` 与 `e01-cred` 不在本文中回显。
