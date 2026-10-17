@@ -96,6 +96,16 @@ pub struct WalAppendRequest {
     pub timestamp_millis: u64,
 }
 
+/// The largest raw `Write` payload and operation count one append record may carry.
+///
+/// These are the limits [`WalAppendRequest::validate`] enforces on the authority. A pending
+/// native batch can legitimately exceed them (a large committing transaction writes more frames
+/// than one RPC body can hold), so the worker splits such a batch before it ever becomes a
+/// request: an over-limit batch is not a reason to fail the database closed.
+pub(crate) const MAX_APPEND_PAYLOAD_BYTES: usize =
+    crate::authority_rpc::protocol::MAX_RPC_BYTES / 2;
+pub(crate) const MAX_APPEND_OPERATIONS: usize = 16_384;
+
 impl WalAppendRequest {
     fn record(&self, lsn: u64) -> WalRecord {
         WalRecord {
@@ -124,7 +134,7 @@ impl WalAppendRequest {
             "invalid WAL append identity"
         );
         ensure!(
-            self.batch.operations.len() <= 16_384,
+            self.batch.operations.len() <= MAX_APPEND_OPERATIONS,
             "WAL operation limit exceeded"
         );
         let mut bytes = 0usize;
@@ -136,11 +146,85 @@ impl WalAppendRequest {
             }
         }
         ensure!(
-            bytes <= crate::authority_rpc::protocol::MAX_RPC_BYTES / 2,
+            bytes <= MAX_APPEND_PAYLOAD_BYTES,
             "WAL payload limit exceeded"
         );
         Ok(())
     }
+}
+
+/// Partitions a batch into records [`WalAppendRequest::validate`] accepts, preserving operation
+/// order.
+///
+/// An append of several records is still one logical write: the caller publishes them in order
+/// and puts the native commit position on the last record only. A prefix that survives an
+/// interrupted append replays as the exact frames the engine wrote without a commit marker, so
+/// recovery ignores the tail instead of inventing a transaction. Splitting one `Write` at a byte
+/// boundary is equivalent because replay applies writes by absolute offset.
+fn split_batch(batch: WalBatch) -> Result<Vec<WalBatch>> {
+    fn flush(current: &mut WalBatch, bytes: &mut usize, chunks: &mut Vec<WalBatch>) {
+        if !current.operations.is_empty() {
+            chunks.push(std::mem::take(current));
+            *bytes = 0;
+        }
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = WalBatch::default();
+    let mut bytes = 0usize;
+    for operation in batch.operations {
+        match operation {
+            WalOperation::Write {
+                offset,
+                bytes: payload,
+            } => {
+                if payload.is_empty() {
+                    if current.operations.len() == MAX_APPEND_OPERATIONS {
+                        flush(&mut current, &mut bytes, &mut chunks);
+                    }
+                    current.operations.push(WalOperation::Write {
+                        offset,
+                        bytes: payload,
+                    });
+                    continue;
+                }
+                let mut rest = payload;
+                let mut cursor = 0usize;
+                while !rest.is_empty() {
+                    if bytes == MAX_APPEND_PAYLOAD_BYTES
+                        || current.operations.len() == MAX_APPEND_OPERATIONS
+                    {
+                        flush(&mut current, &mut bytes, &mut chunks);
+                    }
+                    let take = rest.len().min(MAX_APPEND_PAYLOAD_BYTES - bytes);
+                    let tail = rest.split_off(take);
+                    let at = offset
+                        .checked_add(u64::try_from(cursor)?)
+                        .context("WAL write offset overflow")?;
+                    current.operations.push(WalOperation::Write {
+                        offset: at,
+                        bytes: rest,
+                    });
+                    bytes += take;
+                    cursor += take;
+                    rest = tail;
+                }
+            }
+            WalOperation::Truncate { size } => {
+                if current.operations.len() == MAX_APPEND_OPERATIONS {
+                    flush(&mut current, &mut bytes, &mut chunks);
+                }
+                current.operations.push(WalOperation::Truncate { size });
+            }
+        }
+    }
+    flush(&mut current, &mut bytes, &mut chunks);
+    // An empty batch stays one (empty) record: `append_commit` has always published a record
+    // for it, and callers' receipts are keyed by the append identity.
+    if chunks.is_empty() {
+        chunks.push(WalBatch::default());
+    }
+    Ok(chunks)
 }
 
 /// Bytes a replay may hold, and the window that budget buys.
@@ -435,18 +519,36 @@ impl RemoteWal {
             .duration_since(UNIX_EPOCH)?
             .as_millis()
             .try_into()?;
-        let request = WalAppendRequest {
-            namespace: namespace.clone(),
-            epoch,
-            batch,
-            position,
-            append_id,
-            timestamp_millis,
-        };
-        if let Some(lsn) = self.store.append_wal(&request)? {
+        let chunks = split_batch(batch)?;
+        let records = chunks.len();
+        let mut lsn = 0;
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            // One record keeps the caller's identity so its receipt is unchanged. A split batch
+            // derives one identity per prefix, deterministically: a retry of the same batch
+            // addresses the same records and the authority's receipt check can answer it.
+            let append_id = if records == 1 {
+                append_id.clone()
+            } else {
+                format!("{append_id}-{index}")
+            };
+            let request = WalAppendRequest {
+                namespace: namespace.clone(),
+                epoch,
+                batch: chunk,
+                position: (index + 1 == records).then_some(position).flatten(),
+                append_id,
+                timestamp_millis,
+            };
+            lsn = self.append_one(&request)?;
+        }
+        Ok(lsn)
+    }
+
+    fn append_one(&self, request: &WalAppendRequest) -> Result<u64> {
+        if let Some(lsn) = self.store.append_wal(request)? {
             return Ok(lsn);
         }
-        self.append_local(&request)
+        self.append_local(request)
     }
 
     pub(crate) fn append_local(&self, request: &WalAppendRequest) -> Result<u64> {
@@ -844,6 +946,269 @@ mod receipt_tests {
             .unwrap_err()
             .to_string()
             .contains("unavailable"));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    use crate::object_store::{LocalObjectStore, PutCondition, StoredObject};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn namespace() -> Result<Namespace> {
+        Namespace::new("split", "batch")
+    }
+
+    fn write_bytes(operation: &WalOperation) -> usize {
+        match operation {
+            WalOperation::Write { bytes, .. } => bytes.len(),
+            WalOperation::Truncate { .. } => 0,
+        }
+    }
+
+    fn replay(wal: &RemoteWal, namespace: &Namespace) -> Result<Vec<u8>> {
+        let mut image = Vec::new();
+        wal.for_each_record(namespace, 0, |record| {
+            apply_batch(&mut image, &record.batch)
+        })?;
+        Ok(image)
+    }
+
+    #[test]
+    fn oversized_write_is_split_and_only_the_last_record_commits() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let large = vec![7u8; MAX_APPEND_PAYLOAD_BYTES + 3];
+        let batch = WalBatch {
+            operations: vec![
+                WalOperation::Write {
+                    offset: 0,
+                    bytes: large.clone(),
+                },
+                // A second operation after the split proves the chunks keep the batch order
+                // and that the commit marker describes the final record, not the split point.
+                WalOperation::Write {
+                    offset: large.len() as u64,
+                    bytes: vec![9u8; 5],
+                },
+            ],
+        };
+        let mut expected = Vec::new();
+        apply_batch(&mut expected, &batch)?;
+        let position = WalPosition {
+            salts: [3, 4],
+            frame_count: 11,
+        };
+        assert_eq!(wal.append_commit(&namespace, 1, batch, Some(position))?, 2);
+
+        let (index, _) = wal.index(&namespace)?;
+        assert_eq!(index.entries.len(), 2);
+        assert_eq!(index.last_lsn, 2);
+        assert_eq!(index.commit, Some(WalCommit { lsn: 2, position }));
+        assert_eq!(index.receipts.len(), 2);
+
+        let mut seen = Vec::new();
+        wal.for_each_record(&namespace, 0, |record| {
+            let raw: usize = record.batch.operations.iter().map(write_bytes).sum();
+            assert!(raw <= MAX_APPEND_PAYLOAD_BYTES);
+            assert!(record.batch.operations.len() <= MAX_APPEND_OPERATIONS);
+            seen.push((record.lsn, record.commit));
+            Ok(())
+        })?;
+        assert_eq!(
+            seen,
+            vec![(1, None), (2, Some(WalCommit { lsn: 2, position }))]
+        );
+        for entry in &index.entries {
+            let object = store
+                .get(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?
+                .context("split chunk missing")?;
+            assert!(object.bytes.len() <= crate::authority_rpc::protocol::MAX_RPC_BYTES);
+        }
+        assert_eq!(replay(&wal, &namespace)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_accepts_a_split_record_chain_ending_in_a_commit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let frame_size = crate::recovery::fixture::FRAME_SIZE;
+        // One frame past the payload ceiling forces the split; the last frame is the commit.
+        let frames = MAX_APPEND_PAYLOAD_BYTES / frame_size + 2;
+        let mut builder = crate::recovery::fixture::WalBuilder::new([9, 10]);
+        let image = builder.image(frames);
+        assert!(image.len() > MAX_APPEND_PAYLOAD_BYTES);
+        let position = WalPosition {
+            salts: [9, 10],
+            frame_count: frames as u64,
+        };
+        let batch = WalBatch {
+            operations: vec![WalOperation::Write {
+                offset: 0,
+                bytes: image.clone(),
+            }],
+        };
+        assert_eq!(wal.append_commit(&namespace, 1, batch, Some(position))?, 2);
+        assert_eq!(replay(&wal, &namespace)?, image);
+        let index_object = store
+            .get(&namespace.key("wal/index")?)?
+            .context("split index missing")?;
+        let validated =
+            crate::recovery::validate_index_state(&index_object.bytes, &namespace, |key| {
+                Ok(store.get(key)?.context("split chunk missing")?.bytes)
+            })?;
+        assert_eq!(validated.commit(), Some(WalCommit { lsn: 2, position }));
+        Ok(())
+    }
+
+    #[test]
+    fn operation_limit_is_split_without_reordering() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store);
+        let namespace = namespace()?;
+        let operations = (0..=MAX_APPEND_OPERATIONS)
+            .map(|index| WalOperation::Write {
+                offset: index as u64,
+                bytes: vec![index as u8],
+            })
+            .collect::<Vec<_>>();
+        let batch = WalBatch { operations };
+        let mut expected = Vec::new();
+        apply_batch(&mut expected, &batch)?;
+        assert_eq!(wal.append_commit(&namespace, 1, batch, None)?, 2);
+        let mut counts = Vec::new();
+        wal.for_each_record(&namespace, 0, |record| {
+            counts.push(record.batch.operations.len());
+            Ok(())
+        })?;
+        assert_eq!(counts, vec![MAX_APPEND_OPERATIONS, 1]);
+        assert_eq!(replay(&wal, &namespace)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn authority_limits_reject_an_unsplit_record() {
+        let batch = WalBatch {
+            operations: vec![WalOperation::Write {
+                offset: 0,
+                bytes: vec![0u8; MAX_APPEND_PAYLOAD_BYTES + 1],
+            }],
+        };
+        let request = WalAppendRequest {
+            namespace: Namespace::new("split", "limits").unwrap(),
+            epoch: 1,
+            batch,
+            position: None,
+            append_id: "limit-check".into(),
+            timestamp_millis: 1,
+        };
+        assert!(request
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("WAL payload limit exceeded"));
+        let overflow = WalBatch {
+            operations: (0..=MAX_APPEND_OPERATIONS)
+                .map(|offset| WalOperation::Write {
+                    offset: offset as u64,
+                    bytes: Vec::new(),
+                })
+                .collect(),
+        };
+        let request = WalAppendRequest {
+            batch: overflow,
+            ..request
+        };
+        assert!(request
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("WAL operation limit exceeded"));
+    }
+
+    /// Fails one chunk upload by body, leaving any earlier chunks published. The append must
+    /// stop there: no retry, no commit marker, and a prefix that replay can still read.
+    struct FailChunkUpload {
+        inner: LocalObjectStore,
+        chunks: AtomicUsize,
+        fail_at: usize,
+    }
+
+    impl ObjectStore for FailChunkUpload {
+        fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+            self.inner.get(key)
+        }
+
+        fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+            if key.contains("/wal/chunks/")
+                && self.chunks.fetch_add(1, Ordering::SeqCst) == self.fail_at
+            {
+                bail!("injected chunk upload failure");
+            }
+            self.inner.put(key, bytes, condition)
+        }
+
+        fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+            self.inner.delete(key, expected)
+        }
+
+        fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            self.inner.list(prefix)
+        }
+    }
+
+    #[test]
+    fn interrupted_split_keeps_the_prefix_and_no_commit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(FailChunkUpload {
+            inner: LocalObjectStore::open(directory.path())?,
+            chunks: AtomicUsize::new(0),
+            fail_at: 1,
+        });
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let batch = WalBatch {
+            operations: vec![WalOperation::Write {
+                offset: 0,
+                bytes: vec![7u8; MAX_APPEND_PAYLOAD_BYTES + 10],
+            }],
+        };
+        let position = WalPosition {
+            salts: [1, 2],
+            frame_count: 3,
+        };
+        assert!(wal
+            .append_commit(&namespace, 1, batch, Some(position))
+            .unwrap_err()
+            .to_string()
+            .contains("chunk"));
+        assert_eq!(store.chunks.load(Ordering::SeqCst), 2);
+        let (index, _) = wal.index(&namespace)?;
+        assert_eq!(index.last_lsn, 1);
+        assert_eq!(index.entries.len(), 1);
+        assert_eq!(index.commit, None);
+        let mut image = Vec::new();
+        wal.for_each_record(&namespace, 0, |record| {
+            assert_eq!(record.commit, None);
+            apply_batch(&mut image, &record.batch)
+        })?;
+        assert_eq!(image.len(), MAX_APPEND_PAYLOAD_BYTES);
+        assert!(image.iter().all(|byte| *byte == 7));
+        let index_object = store
+            .get(&namespace.key("wal/index")?)?
+            .context("split index missing")?;
+        let validated =
+            crate::recovery::validate_index_state(&index_object.bytes, &namespace, |key| {
+                Ok(store.get(key)?.context("split chunk missing")?.bytes)
+            })?;
+        assert_eq!(validated.commit(), None);
         Ok(())
     }
 }
