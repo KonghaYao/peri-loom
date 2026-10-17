@@ -324,6 +324,47 @@ fn a_backfill_charge_over_the_byte_budget_skips_the_unit() -> Result<()> {
     Ok(())
 }
 
+/// The admin entry point is not the scheduled lane. It may compact while the durable tail is
+/// not yet published, because the truncate checkpoint is what confirms that tail; the reset
+/// baseline then carries the rows. A cold reopen is the check that the reset did not drop the
+/// tail, and the index check is the check that it did reclaim the old entries.
+#[test]
+fn the_admin_entry_point_compacts_an_unpublished_tail_without_losing_it() -> Result<()> {
+    let fixture = Fixture::open("admin_tail")?;
+    fixture.database.execute("INSERT INTO entries VALUES(4)")?;
+    assert!(
+        fixture.target().signals()?.unconfirmed_wal,
+        "the fixture must carry an unpublished tail for this test to mean anything"
+    );
+    let before = fixture.wal.metadata(&fixture.namespace)?;
+
+    fixture.database.compact_wal()?;
+
+    let compacted = fixture.wal.metadata(&fixture.namespace)?;
+    assert!(
+        compacted.replay_baseline_lsn > before.replay_baseline_lsn,
+        "the admin path must advance the baseline"
+    );
+    assert_eq!(compacted.replay_baseline_lsn, compacted.last_lsn);
+    assert_eq!(compacted.entries.len(), 1);
+    assert_eq!(
+        fixture.values()?,
+        "5",
+        "the unpublished row survived the reset"
+    );
+
+    let store = fixture.store.clone();
+    let namespace = fixture.namespace.clone();
+    drop(fixture.database);
+    let (database, _cache) = reopen(&store, &namespace)?;
+    assert_eq!(
+        database.query("SELECT count(*) FROM entries")?[0][0].to_string(),
+        "5",
+        "a cold start replays the baseline that absorbed the unpublished tail"
+    );
+    Ok(())
+}
+
 /// A reader that still needs the old WAL makes the scheduled compaction fail after dispatch,
 /// and the failure is recorded without truncating the index. The reader keeps its snapshot.
 #[test]

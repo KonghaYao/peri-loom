@@ -225,3 +225,53 @@ fn the_configured_load_budget_is_validated_and_absent_by_default() {
         );
     }
 }
+
+/// The watchdog path, end to end: a tick sees the loaded database, queues the checkpoint
+/// lane, starts the scheduler's own thread once, and the unit runs through the real
+/// `RemoteDatabase` entry point without the test ever calling `drain`. The repeated ticks
+/// also pin that a tick only decides: the cooldown keeps a second unit from starting, so
+/// the execution counter stays at one while the test keeps sweeping.
+#[test]
+fn the_watchdog_starts_one_driver_that_runs_the_queued_unit() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance = Arc::new(
+        crate::maintenance::MaintenanceScheduler::for_tests(Duration::from_millis(10)),
+    );
+    let database = identifier("scheduled")?;
+    let handle = runtime.open(database, 1)?;
+    handle.execute("CREATE TABLE data(value)")?;
+    handle.execute("INSERT INTO data VALUES(1)")?;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let counters = loop {
+        runtime.maintenance_tick()?;
+        let counters = handle.diagnostics()?["maintenance"].clone();
+        let finished =
+            counters["completed"].as_u64().unwrap_or(0) + counters["failed"].as_u64().unwrap_or(0);
+        if finished >= 1 {
+            break counters;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the scheduler thread never ran the queued checkpoint: {counters}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    assert_eq!(counters["executions"], 1);
+    assert_eq!(counters["completed"], 1, "{counters}");
+    assert_eq!(counters["failed"], 0, "{counters}");
+    // Let the driver thread perform several more drains; the cooldown is the only thing
+    // that may keep the next checkpoint from starting, and it is still active.
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(60));
+        runtime.maintenance_tick()?;
+    }
+    let settled = handle.diagnostics()?["maintenance"].clone();
+    assert_eq!(settled["executions"], 1, "{settled}");
+    assert_eq!(
+        handle.query("SELECT value FROM data")?[0][0].to_string(),
+        "1"
+    );
+    Ok(())
+}

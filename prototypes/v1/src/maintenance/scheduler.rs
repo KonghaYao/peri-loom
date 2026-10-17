@@ -73,6 +73,35 @@ impl MaintenanceScheduler {
         }
     }
 
+    /// A scheduler whose checkpoint lane is due `period` after the database opened and whose
+    /// compaction lane never arms. This is what lets a test drive the watchdog wiring — tick,
+    /// queue, driver thread, real entry point — without waiting for the production cadence.
+    #[cfg(test)]
+    pub(crate) fn for_tests(period: Duration) -> Self {
+        use super::policy::Watermark;
+
+        Self::new(
+            MaintenancePolicy::for_tests(
+                true,
+                Watermark {
+                    low_bytes: 0,
+                    high_bytes: 1,
+                    period,
+                    phase: Duration::ZERO,
+                },
+                Watermark {
+                    low_bytes: 0,
+                    high_bytes: u64::MAX,
+                    period: Duration::from_secs(3600),
+                    phase: Duration::ZERO,
+                },
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+            ),
+            MaintenanceBudget::new(1, 1, 64, 64 * 1024 * 1024, Duration::from_secs(60)),
+        )
+    }
+
     pub(crate) fn enabled(&self) -> bool {
         self.policy.enabled()
     }
