@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, ensure, Context, Result};
@@ -168,13 +168,25 @@ pub(crate) const WAL_CHUNK_CHARGE: usize = crate::authority_rpc::protocol::MAX_R
 const WAL_REPLAY_DEFAULT_UNITS: usize = 5;
 const WAL_REPLAY_BYTES_DEFAULT: usize = WAL_REPLAY_DEFAULT_UNITS * WAL_CHUNK_CHARGE;
 const WAL_REPLAY_WINDOW_MAX: usize = 8;
+/// Fetches every WAL replay on this worker may run at once.
+///
+/// A per-replay window bounds one replay, not the worker. Cold opens of *different* databases run
+/// concurrently — the registry merges same-key opens and lets other keys proceed outside its lock
+/// — so `N` of them would each spend a whole window and the reservation below would hold only for
+/// the first. The permits are process-wide for the same reason the gate they protect is: one
+/// authority client per worker.
+const WAL_REPLAY_FETCH_PERMITS: usize = crate::authority_rpc::client::LIVE_CONNECTIONS / 3;
 
-// The cap is only worth the call-slot tradeoff if it keeps one cold open out of the slots the
-// worker's other sessions are using, so the relation is checked where the constant is set rather
-// than in a case that would have to restate both numbers.
+// One replay has to be able to fill its window out of the shared permits, and every replay
+// together — however many databases are cold at once — has to stay inside the fraction of the
+// call gate that the per-replay cap was asserting on its own.
 const _: () = assert!(
-    WAL_REPLAY_WINDOW_MAX * 3 <= crate::authority_rpc::client::LIVE_CONNECTIONS,
-    "a WAL replay may hold at most a third of the authority client call gate"
+    WAL_REPLAY_WINDOW_MAX <= WAL_REPLAY_FETCH_PERMITS,
+    "one WAL replay has to be able to fill its window from the shared fetch permits"
+);
+const _: () = assert!(
+    WAL_REPLAY_FETCH_PERMITS * 3 <= crate::authority_rpc::client::LIVE_CONNECTIONS,
+    "WAL replays may hold at most a third of the authority client call gate"
 );
 
 // The charge has to cover the twice-encoded payload ceiling, or the ledger bounds less than one
@@ -184,6 +196,63 @@ const _: () = assert!(
     WAL_CHUNK_CHARGE * 9 >= 16 * (crate::authority_rpc::protocol::MAX_RPC_BYTES / 2),
     "the fetch charge has to cover the twice-encoded payload ceiling"
 );
+
+/// The shared fetch permits, held by a replay thread across the fetch round trip and the decode
+/// that follows it — the span the authority call slot is occupied for — and released before the
+/// record reaches the visitor.
+///
+/// Delivery residency is deliberately not covered here: a record waiting to be handed over is
+/// charged a whole [`WAL_CHUNK_CHARGE`] by the byte ledger, which is the account that bounds
+/// memory, while this one bounds call slots and nothing else. Charging delivery to both would make
+/// the permit count stop meaning "calls in flight".
+///
+/// A caller that runs out waits for a fetch to finish instead of failing, so the wait is bounded
+/// by the authority request timeout and no caller is admitted past the limit.
+struct FetchPermits {
+    available: Mutex<usize>,
+    released: Condvar,
+}
+
+static WAL_REPLAY_PERMITS: FetchPermits = FetchPermits::new(WAL_REPLAY_FETCH_PERMITS);
+
+struct FetchPermit<'permits>(&'permits FetchPermits);
+
+impl FetchPermits {
+    const fn new(limit: usize) -> Self {
+        Self {
+            available: Mutex::new(limit),
+            released: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> FetchPermit<'_> {
+        let mut available = self.lock();
+        while *available == 0 {
+            available = self
+                .released
+                .wait(available)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *available -= 1;
+        FetchPermit(self)
+    }
+
+    /// A poisoned mutex would otherwise leak a permit permanently; the counter is the only thing
+    /// in here, so recovering it is safe.
+    fn lock(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.available
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Drop for FetchPermit<'_> {
+    fn drop(&mut self) {
+        let mut available = self.0.lock();
+        *available += 1;
+        self.0.released.notify_one();
+    }
+}
 
 /// Illegal values fail closed: replay is on the open path, and a budget silently coerced to
 /// something else would hide the misconfiguration behind a slower or hungrier open.
@@ -220,6 +289,9 @@ fn load_chunk_record(
     namespace: &Namespace,
     entry: &Entry,
 ) -> Result<WalRecord> {
+    // Released when this thread returns, before the record reaches the visitor: the record's
+    // residency is the ledger's account, not this one.
+    let _permit = WAL_REPLAY_PERMITS.acquire();
     let object = store
         .get(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?
         .context("committed WAL chunk missing")?;
@@ -1044,6 +1116,55 @@ mod replay_window_tests {
              budget of {}",
             (peak + 1) * WAL_CHUNK_CHARGE,
             WAL_REPLAY_BYTES_DEFAULT
+        );
+        Ok(())
+    }
+
+    /// The window bounds one replay; the shared permits bound the worker. Two replays at the
+    /// widest window would hold twice the cap without them — which is what the compile-time
+    /// reservation used to assume away by describing a single replay.
+    #[test]
+    fn concurrent_replays_share_one_fetch_budget() -> Result<()> {
+        let plan: Vec<(u64, u64, Chunk)> = (1..=12).map(|lsn| (lsn, 30, Chunk::Present)).collect();
+        let fixture = Fixture::new(&plan)?;
+        let wal = Arc::new(RemoteWal::new(fixture.store.clone()));
+        let replays = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let wal = wal.clone();
+                    let namespace = fixture.namespace.clone();
+                    scope.spawn(move || -> Result<Vec<u64>> {
+                        let mut seen = Vec::new();
+                        wal.for_each_record_with_window(
+                            &namespace,
+                            0,
+                            WAL_REPLAY_WINDOW_MAX,
+                            |record| {
+                                seen.push(record.lsn);
+                                Ok(())
+                            },
+                        )?;
+                        Ok(seen)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for replay in replays {
+            assert_eq!(replay?, (1..=12u64).collect::<Vec<_>>());
+        }
+        let peak = fixture.peak();
+        assert!(
+            peak <= WAL_REPLAY_FETCH_PERMITS,
+            "two replays held {peak} chunks at once, over the {WAL_REPLAY_FETCH_PERMITS} permits \
+             the worker shares between them"
+        );
+        assert!(
+            peak >= 2,
+            "the replays never overlapped a read: peak={peak}"
         );
         Ok(())
     }
