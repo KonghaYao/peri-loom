@@ -15,7 +15,7 @@ spec.loader.exec_module(dev)
 
 class ObserverTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="peri-test-open-observer-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="peri-t-")
         self.addCleanup(self.temporary.cleanup)
         self.root = pathlib.Path(self.temporary.name)
         self.builders = patch.object(dev.subprocess, "run", side_effect=AssertionError("builder forbidden"))
@@ -103,6 +103,45 @@ class ObserverTests(unittest.TestCase):
                 for name, environment in children.items():
                     if name != "platform":
                         self.assertNotIn("PERI_SQL_OPEN_OBSERVER", environment)
+
+    def test_experiment_switches_are_forwarded_by_name_and_scope(self):
+        with patch.dict(dev.os.environ, {
+            "PERI_WORK_METRICS": "1",
+            "PERI_MAINTENANCE_SCHEDULE": "1",
+            "PERI_MAINTENANCE_COOLDOWN_MS": "5000",
+            "PERI_UNRELATED": "not-forwarded",
+        }):
+            authority = dev.experimental_environment({})
+            worker = dev.experimental_environment({}, maintenance=True)
+        self.assertEqual(authority, {"PERI_WORK_METRICS": "1"})
+        self.assertEqual(worker, {
+            "PERI_WORK_METRICS": "1",
+            "PERI_MAINTENANCE_SCHEDULE": "1",
+            "PERI_MAINTENANCE_COOLDOWN_MS": "5000",
+        })
+
+    def test_experiment_switches_reach_authority_and_workers_but_not_platform(self):
+        project = self.project(False)
+        project.directory = self.root / "experiment"
+        project.arguments.run_dir = str(project.directory)
+        children = {}
+
+        def record_start(name, command, environment):
+            children[name] = dict(environment)
+            return {}
+
+        with patch.dict(dev.os.environ, {"PERI_MAINTENANCE_SCHEDULE": "1", "PERI_WORK_METRICS": "1"}), patch.object(project, "start", side_effect=record_start), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
+            with self.assertRaisesRegex(RuntimeError, "offline stop before API"):
+                project.run()
+        self.assertEqual(children["authority"]["PERI_WORK_METRICS"], "1")
+        self.assertNotIn("PERI_MAINTENANCE_SCHEDULE", children["authority"])
+        self.assertNotIn("PERI_WORK_METRICS", children["platform"])
+        self.assertNotIn("PERI_MAINTENANCE_SCHEDULE", children["platform"])
+        workers = [name for name in children if name not in ("authority", "platform")]
+        self.assertTrue(workers)
+        for name in workers:
+            self.assertEqual(children[name]["PERI_WORK_METRICS"], "1")
+            self.assertEqual(children[name]["PERI_MAINTENANCE_SCHEDULE"], "1")
 
     def test_fresh_symlink_is_rejected_before_build(self):
         target = self.root / "empty-target"

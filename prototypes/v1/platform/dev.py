@@ -241,6 +241,20 @@ def safe_environment(capacity_trace=False):
     return environment
 
 
+def experimental_environment(environment, maintenance=False):
+    """Forward the calibration switches by name, never the rest of the caller's environment.
+
+    The maintenance scheduler and the work-metrics snapshot are experiment inputs; they are
+    off unless the operator sets them. Only these names cross into the child, so credentials
+    and unrelated switches still require their own explicit wiring. The scheduler belongs to
+    the data plane, so its switches are forwarded to workers only.
+    """
+    for name, value in os.environ.items():
+        if name == "PERI_WORK_METRICS" or (maintenance and name.startswith("PERI_MAINTENANCE_")):
+            environment[name] = value
+    return environment
+
+
 def bootstrap_credential():
     credential = os.environ.get("PERI_BOOTSTRAP_KEY")
     if credential is None:
@@ -624,6 +638,7 @@ class Project:
         self.acquire_run_lock()
         self.prepare()
         authority_environment = safe_environment(capacity_trace=True)
+        experimental_environment(authority_environment)
         authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
         backend = str(self.directory / "backend")
         if self.arguments.backend == "s3":
@@ -645,7 +660,7 @@ class Project:
         platform_environment["PERI_SHUTDOWN_OUTER_GRACE_MS"] = str(ORCHESTRATION_GRACE_SECONDS * 1000)
         self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], platform_environment)
         for identity, worker in self.launch["workers"].items():
-            environment = safe_environment(capacity_trace=True)
+            environment = experimental_environment(safe_environment(capacity_trace=True), maintenance=True)
             environment.update({"PERI_WORKER_AUTHORITY_TOKEN": worker["authority_token"], "PERI_WORKER_CONTROL_TOKEN": worker["control_token"], "PERI_WORKER_SQL_TOKEN": worker["sql_token"], "PERI_WORKER_KEY_TOKEN": worker["key_token"], "PERI_KMS_ENDPOINT": "http://" + self.config["broker_listen"]})
             environment["PERI_WORKER_WRITER_PROFILE"] = "1" if self.arguments.writer_admission else "0"
             environment["PERI_WORKER_MAX_REQUEST_BYTES"] = str(self.launch["worker_max_request_bytes"])
