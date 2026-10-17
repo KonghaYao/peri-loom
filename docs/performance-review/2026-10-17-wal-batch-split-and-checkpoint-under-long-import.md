@@ -291,6 +291,14 @@ let readonly = handle.is_readonly()?;
 如果加载加探针超过 30 s，平台仍会以 ambiguous 收尾。`opened_state` 等后续步骤当前不取
 截止点；将来若给它们加截止点，必须放在同一个加载后作用域内。
 
+独立静态审阅还发现同一条早退路径上的析构顺序问题：加载成功后若 `is_readonly()` 或标识符
+生成失败，局部 handle 原先会在预算作用域之后声明，因而先于预算恢复而析构；
+`RemoteSession::drop` 的 close 会重新取已耗尽的 RPC 截止点，失败后把 admission 置为
+quarantine。修复把 handle 放入在作用域之后声明的 `Option`，使错误退出时先执行会话清理
+（仍在加载后预算内），成功路径再把 handle 移入 `Entry`。该早退路径目前只有静态审阅证据，
+没有单独运行复现；第三次运行关栈阶段的 `writer admission quarantine` 与它一致，但不能
+据此断言唯一因果。
+
 ### 5.3 为什么 WAL 仍有 704 MB
 
 维护 checkpoint 使用 `CheckpointMode::Full`，回填后**不截断日志**；这一点与
