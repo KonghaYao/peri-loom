@@ -573,7 +573,16 @@ fn s3_group_root_condition_conflict_is_typed_and_not_atomic() -> Result<()> {
     let (store, worker) = mock_with_retries(0, move |listener| {
         let observed = server;
         listener.set_nonblocking(true).unwrap();
-        while let Some(mut stream) = accept_with_timeout(&listener, Duration::from_millis(600)) {
+        // Driven by the expected requests, not by an idle window: the mock answers
+        // `Connection: close`, so the client opens a fresh connection per request, and between the
+        // last body and the root CAS it also joins three upload threads. An idle window would have
+        // to guess how long that takes, and under parallel suites the guess is what fails — the
+        // requests this case counts are then never sent, and the failure surfaces as a transport
+        // error instead of as a missing request. A shortfall still fails the assertions below.
+        while observed.lock().unwrap().len() < BODIES + 1 {
+            let Some(mut stream) = accept_with_timeout(&listener, Duration::from_secs(5)) else {
+                break;
+            };
             let request = read_request(&mut stream);
             verify_signature(&request);
             assert_eq!(request.method, "PUT");
@@ -591,6 +600,12 @@ fn s3_group_root_condition_conflict_is_typed_and_not_atomic() -> Result<()> {
                 reply(&mut stream, 200, &[("ETag", "\"body\"")], b"");
             }
         }
+        // The refused CAS ends the group; anything after it is the anomaly this case exists to
+        // notice, so it is reported as one rather than as a client-side transport failure.
+        assert!(
+            accept_with_timeout(&listener, Duration::from_millis(600)).is_none(),
+            "a request arrived after the refused CAS"
+        );
     });
     // The adapter never claims group atomicity on S3, and a caller must be able to keep
     // relying on that declaration.
