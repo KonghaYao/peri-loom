@@ -592,6 +592,87 @@ fn authority_append_replays_on_cas_conflict_and_cold_session() -> Result<()> {
 }
 
 #[test]
+fn branch_session_warm_cache_accepts_legacy_receipts_and_rolls_them() -> Result<()> {
+    let namespace = Namespace::new("recovery", "branch-legacy")?;
+    let database = DatabaseId::new(namespace.clone(), "main")?;
+    let backend = Arc::new(peri_loom_v1::object_store::MemoryObjectStore::default());
+    let authority = OwnershipAuthority::new(backend, Arc::new(FrozenClock));
+    let intent = GrantIntent {
+        database,
+        worker_id: "worker".into(),
+        epoch: 1,
+        expected_epoch: 0,
+        lease_id: "lease".into(),
+        ttl_ms: 10000,
+        role: AccessRole::Writer,
+    };
+    let nonce = authority
+        .challenge(LeaseIntent::Grant(intent.clone()))?
+        .nonce;
+    let grant = authority.grant(GrantRequest {
+        request_id: "grant".into(),
+        nonce,
+        intent,
+    })?;
+    let session = authority.open_session(&grant.binding, AccessRole::Writer)?;
+    let request = |identity: &str| WalAppendRequest {
+        namespace: namespace.clone(),
+        epoch: 1,
+        append_id: identity.into(),
+        batch: WalBatch::default(),
+        position: None,
+        timestamp_millis: 1,
+    };
+    for ordinal in 1..=256 {
+        assert_eq!(
+            session.append_wal(&request(&format!("legacy-{ordinal}")))?,
+            Some(ordinal)
+        );
+    }
+    let key = namespace.key("wal/index")?;
+    let current = session.get(&key)?.context("missing WAL index")?;
+    let mut index: serde_json::Value = serde_json::from_slice(&current.bytes)?;
+    index["receipt_digests"] = serde_json::json!({});
+    session.put(
+        &key,
+        &serde_json::to_vec(&index)?,
+        PutCondition::Match(current.etag),
+    )?;
+
+    assert_eq!(session.append_wal(&request("ordinary-1"))?, Some(257));
+    assert_eq!(session.append_wal(&request("ordinary-2"))?, Some(258));
+    assert_eq!(session.append_wal(&request("ordinary-2"))?, Some(258));
+
+    let current = session.get(&key)?.context("missing WAL index")?;
+    let index: serde_json::Value = serde_json::from_slice(&current.bytes)?;
+    assert_eq!(index["last_lsn"], 258);
+    assert!(index["receipt_index"].is_string());
+    assert!(index["receipts"]["ordinary-1"].is_null());
+    assert_eq!(index["receipts"]["ordinary-2"], 258);
+
+    let loads = session.clone();
+    let namespace_for_load = namespace.clone();
+    peri_loom_v1::recovery::validate_index_state(
+        &current.bytes,
+        &namespace,
+        |hash| {
+            Ok(loads
+                .get(&namespace_for_load.key(&format!("wal/index-segments/{hash}"))?)?
+                .context("missing WAL index segment")?
+                .bytes)
+        },
+        |key| Ok(loads.get(key)?.context("missing WAL chunk")?.bytes),
+        |hash| {
+            Ok(loads
+                .get(&namespace_for_load.key(&format!("wal/receipt-pages/{hash}"))?)?
+                .context("missing WAL receipt page")?
+                .bytes)
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
 fn pinned_recovery_dependencies_survive_gc_without_pinning_unrelated_objects() -> Result<()> {
     let backend = Arc::new(peri_loom_v1::object_store::MemoryObjectStore::default());
     let authority = Authority::open(backend, namespace())?;

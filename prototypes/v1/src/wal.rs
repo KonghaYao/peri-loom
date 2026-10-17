@@ -310,11 +310,13 @@ pub(crate) const MAX_APPEND_OPERATIONS: usize = 16_384;
 const WAL_BASELINE_PART_BYTES: usize = 12 * 1024 * 1024;
 
 /// Branch-scoped content-addressed pages for receipts whose records were truncated away.
-const WAL_RECEIPT_PAGE_PREFIX: &str = "wal/receipt-pages";
+pub(crate) const WAL_RECEIPT_PAGE_PREFIX: &str = "wal/receipt-pages";
 /// Receipts written per page-tree update. Batching bounds both the page count touched and
 /// the bytes each archive attempt rewrites; the tree itself keeps every page small.
-const WAL_RECEIPT_ARCHIVE_BATCH: usize = 64;
-/// Receipts kept inline in the WAL head. Older receipts with a digest move to the durable
+pub(crate) const WAL_RECEIPT_ARCHIVE_BATCH: usize = 64;
+/// Digested receipts kept inline in the WAL head before older ones roll out. Legacy
+/// receipts without a digest are exempt and remain inline, so the effective inline count is
+/// `legacy_count + 1` while such receipts exist. Older digested receipts move to the durable
 /// page tree in batches, so a normal append only rewrites a bounded hot window.
 pub(crate) const WAL_RECEIPT_INLINE_LIMIT: usize = 256;
 /// Slack left after a roll. Archiving one receipt per append would make every append a roll
@@ -2073,19 +2075,26 @@ mod truncate_tests {
         Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
     }
 
-    fn validate_cold(
+    fn load_validated(
         store: &LocalObjectStore,
         namespace: &Namespace,
         index: &[u8],
-    ) -> Result<Option<WalCommit>> {
-        Ok(crate::recovery::validate_index_state(
+    ) -> Result<crate::recovery::ValidatedWal> {
+        crate::recovery::validate_index_state(
             index,
             namespace,
             |hash| load_segment(store, namespace, hash),
             |key| load_chunk(store, key),
             load_page(store, namespace),
-        )?
-        .commit())
+        )
+    }
+
+    fn validate_cold(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+        index: &[u8],
+    ) -> Result<Option<WalCommit>> {
+        Ok(load_validated(store, namespace, index)?.commit())
     }
 
     fn validate_incremental(
@@ -2094,13 +2103,7 @@ mod truncate_tests {
         before: &[u8],
         candidate: &[u8],
     ) -> Result<Option<WalCommit>> {
-        let previous = crate::recovery::validate_index_state(
-            before,
-            namespace,
-            |hash| load_segment(store, namespace, hash),
-            |key| load_chunk(store, key),
-            load_page(store, namespace),
-        )?;
+        let previous = load_validated(store, namespace, before)?;
         Ok(crate::recovery::validate_index_append(
             previous,
             candidate,
@@ -2156,6 +2159,61 @@ mod truncate_tests {
     }
 
     #[test]
+    fn validated_wal_keeps_archive_state_constant_sized() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let namespace = namespace()?;
+        let baseline = EncodedWalRecord::new(WalRecord {
+            append_id: "baseline-1".into(),
+            namespace: namespace.clone(),
+            epoch: 1,
+            lsn: 1,
+            timestamp_millis: 1,
+            batch: WalBatch {
+                operations: vec![WalOperation::Truncate { size: 0 }],
+            },
+            commit: None,
+        })?;
+        store.put(
+            &namespace.key(&format!("wal/chunks/{}", baseline.hash()))?,
+            baseline.bytes(),
+            PutCondition::Absent,
+        )?;
+        let pages = PagedIndex::with_prefix(store.as_ref(), &namespace, "wal/receipt-pages");
+        let archived = (0..1_200)
+            .map(|ordinal| {
+                (
+                    format!("archived-{ordinal:04}"),
+                    serde_json::to_value(ArchivedReceipt {
+                        lsn: 1,
+                        digest: Some("a".repeat(64)),
+                    })
+                    .unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let index = WalMetadata {
+            epoch: 1,
+            last_lsn: 1,
+            replay_baseline_lsn: 1,
+            entries: vec![Entry {
+                lsn: 1,
+                hash: baseline.hash().to_owned(),
+            }],
+            receipts: BTreeMap::new(),
+            receipt_digests: BTreeMap::new(),
+            receipt_index: Some(pages.insert_many(None, archived)?),
+            entry_count: Some(1),
+            entry_index: None,
+            commit: None,
+        };
+        let validated = load_validated(&store, &namespace, &serde_json::to_vec(&index)?)?;
+        assert_eq!(validated.archive_entries(), 1_200);
+        assert_eq!(validated.archive_root(), index.receipt_index.as_deref());
+        Ok(())
+    }
+
+    #[test]
     fn rolling_append_must_preserve_the_validated_archive() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = Arc::new(LocalObjectStore::open(directory.path())?);
@@ -2176,6 +2234,11 @@ mod truncate_tests {
             .receipt_index
             .clone()
             .context("missing WAL receipt archive")?;
+        let old_root_key = namespace.key(&format!("wal/receipt-pages/{old_root}"))?;
+        let old_root_page = store
+            .get(&old_root_key)?
+            .context("missing WAL receipt archive root page")?
+            .bytes;
         let pages = PagedIndex::with_prefix(store.as_ref(), &namespace, "wal/receipt-pages");
         let old_entries = pages.entries(Some(&old_root))?;
         let old_receipt: ArchivedReceipt =
@@ -2223,10 +2286,7 @@ mod truncate_tests {
             BTreeMap::from([("inline-old".to_owned(), moved_value.clone())]),
         )?);
         let failure = rejection(&omitted)?;
-        assert!(
-            failure.contains("changed an existing archived receipt"),
-            "{failure}"
-        );
+        assert!(failure.contains("not an exact extension"), "{failure}");
 
         let mut tampered = rolling.clone();
         tampered.receipt_index = Some(pages.insert_many(
@@ -2243,10 +2303,7 @@ mod truncate_tests {
             ]),
         )?);
         let failure = rejection(&tampered)?;
-        assert!(
-            failure.contains("changed an existing archived receipt"),
-            "{failure}"
-        );
+        assert!(failure.contains("not an exact extension"), "{failure}");
 
         let mut extra = rolling.clone();
         extra.receipt_index = Some(pages.insert_many(
@@ -2267,10 +2324,7 @@ mod truncate_tests {
             ]),
         )?);
         let failure = rejection(&extra)?;
-        assert!(
-            failure.contains("archived an unexpected receipt"),
-            "{failure}"
-        );
+        assert!(failure.contains("not an exact extension"), "{failure}");
 
         let duplicate = append_candidate("archived-old", &duplicate_hash);
         let failure = rejection(&duplicate)?;
@@ -2292,6 +2346,38 @@ mod truncate_tests {
         let extended = pages.entries(accepted.receipt_index.as_deref())?;
         assert!(extended.contains_key("archived-old"));
         assert!(extended.contains_key("inline-old"));
+
+        let duplicate_bytes = serde_json::to_vec(&duplicate)?;
+        let previous = load_validated(&store, &namespace, &before)?;
+        store.put(&old_root_key, b"tampered", PutCondition::Any)?;
+        let failure = match crate::recovery::validate_index_append(
+            previous,
+            &duplicate_bytes,
+            &namespace,
+            |hash| load_segment(&store, &namespace, hash),
+            |key| load_chunk(&store, key),
+            load_page(&store, &namespace),
+        ) {
+            Ok(_) => bail!("tampered archive page was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(failure.contains("digest"), "{failure}");
+        store.put(&old_root_key, &old_root_page, PutCondition::Any)?;
+
+        let previous = load_validated(&store, &namespace, &before)?;
+        store.delete(&old_root_key, None)?;
+        let failure = match crate::recovery::validate_index_append(
+            previous,
+            &after,
+            &namespace,
+            |hash| load_segment(&store, &namespace, hash),
+            |key| load_chunk(&store, key),
+            load_page(&store, &namespace),
+        ) {
+            Ok(_) => bail!("rolling append accepted a missing old archive page"),
+            Err(error) => error.to_string(),
+        };
+        assert!(failure.contains("missing WAL receipt page"), "{failure}");
         Ok(())
     }
 
@@ -2334,6 +2420,60 @@ mod truncate_tests {
         );
         assert_eq!(wal.append_local(&ordinary)?, lsn);
         assert_eq!(wal.metadata(&namespace)?.last_lsn, lsn);
+        Ok(())
+    }
+
+    #[test]
+    fn three_hundred_legacy_receipts_still_accept_an_ordinary_append() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        for ordinal in 1..=WAL_RECEIPT_INLINE_LIMIT {
+            assert_eq!(
+                wal.append_local(&append_request(
+                    &namespace,
+                    &format!("legacy-{ordinal}"),
+                    &[]
+                ))?,
+                ordinal as u64
+            );
+        }
+        let (mut legacy, etag) = wal.index(&namespace)?;
+        legacy.receipt_digests.clear();
+        wal.commit(&namespace, &legacy, etag)?;
+        for ordinal in (WAL_RECEIPT_INLINE_LIMIT + 1)..=300 {
+            let (mut legacy, etag) = wal.index(&namespace)?;
+            legacy.receipt_digests.clear();
+            wal.commit(&namespace, &legacy, etag)?;
+            assert_eq!(
+                wal.append_local(&append_request(
+                    &namespace,
+                    &format!("legacy-{ordinal}"),
+                    &[]
+                ))?,
+                ordinal as u64
+            );
+        }
+        let (mut legacy, etag) = wal.index(&namespace)?;
+        legacy.receipt_digests.clear();
+        wal.commit(&namespace, &legacy, etag)?;
+        assert_eq!(wal.metadata(&namespace)?.receipts.len(), 300);
+        let before = index_bytes(&store, &namespace)?;
+
+        let ordinary = append_request(&namespace, "ordinary", &[]);
+        let lsn = wal.append_local(&ordinary)?;
+        assert_eq!(lsn, 301);
+        let after = index_bytes(&store, &namespace)?;
+        let metadata = wal.metadata(&namespace)?;
+        assert!(metadata.receipt_index.is_none());
+        assert_eq!(metadata.receipts.get("ordinary"), Some(&lsn));
+        assert_eq!(metadata.receipts.len(), 301);
+        assert_eq!(
+            validate_incremental(&store, &namespace, &before, &after)?,
+            validate_cold(&store, &namespace, &after)?
+        );
+        assert_eq!(wal.append_local(&ordinary)?, lsn);
         Ok(())
     }
 
