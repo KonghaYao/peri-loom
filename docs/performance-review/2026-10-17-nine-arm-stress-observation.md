@@ -20,7 +20,7 @@
 所有被计入的失败（`known_failure`）都是**平台准入拒绝**，客户端看到的错误码统一为 `quota_exceeded`，
 在 `/v1/metrics` 里区分为 `concurrency_limit`（并发准入）与 `session_limit`（会话上限）。
 过载臂（w7）之后回落到低并发的 w8 与重复臂 w9 都能继续服务，且在 w7 后与序列末尾各做一次
-「打开会话 + 只读查询」探针，均成功。**这些只说明该序列里未出现数据面超时或未知结果，
+**只 open/close 的探针**（不发查询，见 §1），均成功。**这些只说明该序列里未出现数据面超时或未知结果，
 不说明容量、公平性或任何 SLO 已被满足。**
 
 ---
@@ -37,6 +37,11 @@
   `w6-open-c100-r100-60s` = 100 并发、100 ops/s、60 s。
 - 客户端**不重试任何 SQL**：`run_platform_queries.py` 在 `unknown` 或超时后按契约停止全部派发
   （`timeout`/`unknown` 一旦出现就 `stop.set()`），会话打开失败也不重试。本序列里两者都未触发。
+- 本文 §0/§3.4/§4 引用的探针全部由 `probe-open.py` 驱动（stress 序列 4 次：
+  `stress.sh:82/86/99/107` 的 probe A / probe B / recovery / idle-reopen；accept 与基线 base 两个
+  序列各 2 次：`accept-open.sh` 的 probe A / probe B）。该脚本**只做 open 与 close，从不派发查询**——
+  对应日志里只有 `open`/`close` 两条记录，没有查询事件。
+  因此探针只覆盖「会话能否建立」，**不覆盖打开后的读写路径**。
 - 凭据只从 run 目录私有文件读取，未进入命令行、日志或本文档。本序列**没有删除任何对象**。
 - 产物位置：逐臂原始 JSON 与 summary 在 `~/.peri-e01/stress-20261017/arms/`，
   日志在 `.../logs/final-stress.out`（含每臂启动行与 metrics 快照指针）、
@@ -48,9 +53,10 @@
 ## 2. 操作结果（`arms/summary.json`）
 
 `attempted` 是**实际派发**的操作数（有事件的操作），不是预算数；预算恒为 4000，
-未派发部分见 `oracle.missing_ops`。
+未派发部分见 `oracle.missing_ops`。`max_seconds` 是**配置**的时间预算，不是实测臂跨度
+（实测整臂 15.1 s–74.0 s，见 §2 末尾）。
 
-| 臂 | 并发 | 速率 | 秒 | attempted | success | known_failure | timeout | unknown | not_dispatched | peak_in_flight |
+| 臂 | 并发 | 速率 | max_seconds | attempted | success | known_failure | timeout | unknown | not_dispatched | peak_in_flight |
 |---|---|---|---|---|---|---|---|---|---|---|
 | w1-ramp | 1 | 0 | 60 | 3482 | 3481 | 0 | 0 | 0 | 1 | 1 |
 | w2-ramp | 8 | 0 | 60 | 4000 | 1206 | 2794 | 0 | 0 | 0 | 8 |
@@ -80,8 +86,16 @@
 | w8 | 8/8 | — | 0 | 1186 / 0 / 0 | VERIFIED_BY_COUNT | 85.39 |
 | w9 | 16/100 | `quota_exceeded` | 84 | 428 / 0 / 3556 | NOT_VERIFIED | 6.652 |
 
-「脚本自报吞吐」是 `throughput_ops_per_second`，即**客户端成功操作数 ÷ 臂墙钟**，
-受客户端侧准入拒绝与时间预算截断影响，**不是服务端容量或 goodput 保证**。
+「脚本自报吞吐」是 `throughput_ops_per_second`，即**客户端成功操作数 ÷ 查询阶段墙钟**
+（`queries.json` 的 `throughput.denominator_ms`，`timing_boundary.throughput_denominator`
+写作 `query phase wall (ms)`；**不是**整臂墙钟，也不含会话打开阶段——后者单独记在 `timing.phases.open`）。
+两点必须注意：
+
+- 分母**不等于表一的 `max_seconds` 列**。开环臂因速率整形与在途操作越过截止线，
+  分母（w5 66.1 s、w6 64.2 s、w9 64.3 s、w7 47.6 s）比配置值大 6%–10%；
+  闭环臂则因 4000 次预算提前耗尽，分母远小于配置值（w2 11.6 s、w3 7.2 s、w4 7.1 s、w8 13.9 s）。
+- 它受客户端侧准入拒绝与时间预算截断影响，**不是服务端容量或 goodput 保证**。
+  各臂整臂墙钟（`timing.total_wall_ms`，含该次运行的 prepare/open/close 等阶段）在 15.1 s–74.0 s。
 
 ---
 
@@ -138,8 +152,8 @@ w4、w5、w6、w7、w9 都请求 100 个会话，**每次都恰好 16 个成功�
 - w2 与 w8 参数完全相同（c=8、r=0、60 s）：`success` 1206/1186（差 1.7%），
   且 w8 是在 w7 过载之后跑的——**过载没有让服务进入不可用状态**，但也没有恢复出比 w2 更好的结果。
 - 过载臂 w7 结束时（`logs/final-stress-recovery.log`）与序列末尾空闲 30 s 后
-  （`logs/final-stress-idle-reopen.log`）各做一次「打开会话 + 只读查询」，两次都 `open: ok`
-  （0.021 s / 0.023 s）。**这是两次单点探针，不是稳定性或恢复时间的测量。**
+  （`logs/final-stress-idle-reopen.log`）各做一次**只 open/close 的探针**，两次都 `open: ok`
+  （0.021 s / 0.023 s）。**这是两次单点探针，只证明会话还能建立，不是稳定性、恢复时间或读写可用性的测量。**
 
 **以上都不能作为稳定性、容量或公平性结论**：两个重复臂一致只说明这两次一致，
 主机负载、后端（本地磁盘）、并发剖面都只覆盖了这一次。
@@ -155,7 +169,7 @@ w4、w5、w6、w7、w9 都请求 100 个会话，**每次都恰好 16 个成功�
 |---|---|---|
 | stress probe A | 导入结束后立即打开 | `open: ok` 0.018 s |
 | stress probe B | 空闲 3.4 s 后打开 | `open: ok` 0.021 s |
-| w7 后 recovery | 过载臂结束后打开 + 只读查询 | `open: ok` 0.021 s |
+| w7 后 recovery | 过载臂结束后 open/close | `open: ok` 0.021 s |
 | idle-reopen | 会话全关、空闲 30 s 后打开 | `open: ok` 0.023 s |
 | accept probe A/B | 同一 accept 序列（另一 run 目录） | `open: ok` 0.019 s / 0.020 s |
 
