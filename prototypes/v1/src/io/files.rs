@@ -136,8 +136,16 @@ impl File for RemoteFile {
             if self.wal {
                 self.shared.sync_wal(&append)?;
             } else {
+                // The publication bookkeeping is frozen under the state lock and settled
+                // under it again, but the segment/manifest/HEAD writes run outside: WAL
+                // readers only need the image and must not wait for them.
+                let publication = {
+                    let mut state = self.shared.lock()?;
+                    self.shared.freeze_publication(&mut state)?
+                };
+                let published = self.shared.publish_frozen(&publication);
                 let mut state = self.shared.lock()?;
-                self.shared.publish(&mut state)?;
+                self.shared.finish_publication(&mut state, published)?;
             }
             Ok(0)
         })();

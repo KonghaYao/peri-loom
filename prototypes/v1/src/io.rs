@@ -73,6 +73,13 @@ struct FrozenWalAppend {
     bytes: u64,
 }
 
+/// The inputs of one database publication, taken under the state lock so the remote
+/// writes can run after it is released.
+struct FrozenPublication {
+    position: WalPosition,
+    applied_lsn: u64,
+}
+
 impl RemoteIO {
     pub(crate) fn native_health(&self) -> serde_json::Value {
         self.native.health()
@@ -233,21 +240,28 @@ impl RemoteIO {
     }
     pub(crate) fn publish_open_header(&self) -> Result<()> {
         let _append = self.shared.append_guard()?;
+        let publication = {
+            let mut state = self.shared.lock()?;
+            if !state.dirty {
+                return Ok(());
+            }
+            ensure!(
+                !state.publication_failed
+                    && !state.wal_failed
+                    && state.position.is_none()
+                    && state.batch.operations.is_empty()
+                    && state.image.len() <= 32
+                    && state.lsn == self.shared.storage.applied_lsn(),
+                "database open has uncommitted WAL or an unsettled publication"
+            );
+            self.shared
+                .freeze_publication(&mut state)
+                .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))
+        }?;
+        let published = self.shared.publish_frozen(&publication);
         let mut state = self.shared.lock()?;
-        if !state.dirty {
-            return Ok(());
-        }
-        ensure!(
-            !state.publication_failed
-                && !state.wal_failed
-                && state.position.is_none()
-                && state.batch.operations.is_empty()
-                && state.image.len() <= 32
-                && state.lsn == self.shared.storage.applied_lsn(),
-            "database open has uncommitted WAL or an unsettled publication"
-        );
         self.shared
-            .publish(&mut state)
+            .finish_publication(&mut state, published)
             .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))
     }
 
@@ -504,7 +518,11 @@ impl Shared {
         }
     }
 
-    fn publish(&self, state: &mut State) -> Result<()> {
+    /// Captures everything a publication needs while the state lock is held. The remote
+    /// writes run in [`Self::publish_frozen`] after the lock is dropped: segment uploads,
+    /// the manifest PUT and the HEAD comparison can take long enough that keeping the
+    /// state lock across them stalls WAL readers for work they never touch.
+    fn freeze_publication(&self, state: &mut State) -> Result<FrozenPublication> {
         self.check_writer()?;
         state.publication_failed = true;
         ensure!(
@@ -515,10 +533,24 @@ impl Shared {
             !state.dirty || state.position.is_some() || state.image.len() <= 32,
             "live WAL publication requires native checkpoint position"
         );
-        let position = state
-            .position
-            .unwrap_or(self.storage.applied_wal_position());
-        self.storage.publish(position, state.lsn)?;
+        Ok(FrozenPublication {
+            position: state
+                .position
+                .unwrap_or(self.storage.applied_wal_position()),
+            applied_lsn: state.lsn,
+        })
+    }
+
+    fn publish_frozen(&self, publication: &FrozenPublication) -> Result<()> {
+        self.storage
+            .publish(publication.position, publication.applied_lsn)
+    }
+
+    /// Settles the bookkeeping of a finished publication. Only a successful remote
+    /// publication clears `publication_failed`; an error leaves it set so later writes
+    /// fail closed and recovery is required.
+    fn finish_publication(&self, state: &mut State, published: Result<()>) -> Result<()> {
+        published?;
         state.position = None;
         state.dirty = false;
         state.publication_failed = false;
