@@ -24,6 +24,8 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -157,12 +159,18 @@ pub(crate) fn retiring_maintenance_authorized() -> bool {
 
 pub(crate) struct RetiringMaintenanceAuthorization {
     previous: bool,
+    /// The authorization is a slot in the *current thread's* TLS. Dropping the guard on a
+    /// different thread would restore that thread's previous value and leave the originating
+    /// thread authorized, so the guard must not be movable across threads. `Rc` is the same
+    /// non-`Send` marker `session::DeadlineScope` uses for its thread-local scope.
+    thread: PhantomData<Rc<()>>,
 }
 
 impl RetiringMaintenanceAuthorization {
     pub(crate) fn enter() -> Self {
         Self {
             previous: RETIRING_MAINTENANCE.replace(true),
+            thread: PhantomData,
         }
     }
 }
@@ -403,15 +411,19 @@ impl MaintenanceScheduler {
         summary
     }
 
-    /// One bounded pre-tidy immediately before a database is retired.
+    /// One pre-tidy immediately before a database is retired.
     ///
     /// This runs on the unload caller's thread, unlike `observe`/`drain`, because a suspend
-    /// has to know whether the one unit it asked for finished. The wait is bounded by
-    /// `pre_suspend_budget`: the budget is installed as the ambient request deadline, which
-    /// every `checkpoint`/`compact_wal` admission and operation-gate wait already honours.
-    /// The unit itself is the same entry point the admin path and the periodic lane use; it is
-    /// never detached, so its native dispatch keeps the fencing and deadline semantics it
-    /// already had instead of running on after the instance has been retired.
+    /// has to know whether the one unit it asked for finished. `pre_suspend_budget` is
+    /// installed as the ambient request deadline. It bounds the admission and operation-gate
+    /// checks that consult that deadline; it is **not** a hard upper bound on the whole call.
+    /// A native checkpoint or compaction that has already been dispatched, ordinary lock
+    /// acquisition, and `finish_maintenance` cleanup retries (which can add up to their own
+    /// 20-second cleanup deadline) are not all interruptible by it. The unit is never
+    /// detached, so its native dispatch keeps the fencing and deadline semantics it already
+    /// had instead of running on after the instance has been retired; the outcome reports
+    /// whether it completed inside or after the budget and whether a completion is
+    /// unconfirmed.
     ///
     /// Nothing here is on the correctness path: a refusal, a timeout or a failure leaves the
     /// WAL where it is and returns an outcome the caller only logs. The caller must still

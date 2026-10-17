@@ -14,8 +14,9 @@ use anyhow::Result;
 use super::budget::{BudgetDenied, MaintenanceBudget};
 use super::policy::{MaintenanceDecision, MaintenancePolicy, MaintenanceSkip, Watermark};
 use super::{
-    BlockReason, MaintenanceLane, MaintenanceLedger, MaintenanceScheduler, MaintenanceSignals,
-    MaintenanceTarget, PreSuspendOutcome, PreSuspendReason,
+    retiring_maintenance_authorized, BlockReason, MaintenanceLane, MaintenanceLedger,
+    MaintenanceScheduler, MaintenanceSignals, MaintenanceTarget, PreSuspendOutcome,
+    PreSuspendReason, RetiringMaintenanceAuthorization,
 };
 
 /// A target that records what it was asked to run and does nothing else. `signals` returns the
@@ -754,6 +755,68 @@ fn a_pre_tidy_that_fails_after_the_budget_is_unconfirmed() {
     assert_eq!(
         counters.completed, 0,
         "an over-budget failure is not a completion"
+    );
+}
+
+/// A compile-time negative bound: the verification closure fails to compile if
+/// `RetiringMaintenanceAuthorization` implements `Send`. The ambiguity trick is the same one
+/// `static_assertions::assert_not_impl_any!` uses; adding a dev dependency for one assertion
+/// would be heavier than the assertion itself.
+#[test]
+fn the_retirement_authorization_is_not_send() {
+    const _: fn() = || {
+        trait AmbiguousIfSend<A> {
+            fn marker() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+        struct SendMarker;
+        impl<T: ?Sized + Send> AmbiguousIfSend<SendMarker> for T {}
+        let _ = <RetiringMaintenanceAuthorization as AmbiguousIfSend<_>>::marker;
+    };
+}
+
+#[test]
+fn a_nested_retirement_authorization_restores_the_outer_scope() {
+    assert!(!retiring_maintenance_authorized());
+    let outer = RetiringMaintenanceAuthorization::enter();
+    assert!(retiring_maintenance_authorized());
+    {
+        let _inner = RetiringMaintenanceAuthorization::enter();
+        assert!(retiring_maintenance_authorized());
+    }
+    assert!(
+        retiring_maintenance_authorized(),
+        "dropping the inner guard must not clear the outer authorization"
+    );
+    drop(outer);
+    assert!(!retiring_maintenance_authorized());
+}
+
+#[test]
+fn a_panicking_retirement_authorization_restores_the_previous_state() {
+    let panic = std::panic::catch_unwind(|| {
+        let _guard = RetiringMaintenanceAuthorization::enter();
+        assert!(retiring_maintenance_authorized());
+        panic!("synthetic maintenance panic");
+    });
+    assert!(panic.is_err());
+    assert!(
+        !retiring_maintenance_authorized(),
+        "unwinding must run the guard's Drop"
+    );
+}
+
+#[test]
+fn the_retirement_authorization_is_thread_local() {
+    assert!(!retiring_maintenance_authorized());
+    let _guard = RetiringMaintenanceAuthorization::enter();
+    assert!(retiring_maintenance_authorized());
+    let observed = std::thread::spawn(retiring_maintenance_authorized)
+        .join()
+        .unwrap();
+    assert!(
+        !observed,
+        "another thread must not inherit the authorization"
     );
 }
 
