@@ -154,7 +154,14 @@ impl Sessions {
         // a deadline the design explicitly let it exceed.
         let _session_phase =
             RequestDeadline::scope(Instant::now() + Budget::trusted_default().wall_duration());
-        let readonly = handle.is_readonly()?;
+        // Declared after the budget so it unwinds before the budget is restored: the
+        // session's own cleanup takes a deadline, and an early error after the load must
+        // not run that close under the spent RPC deadline and quarantine the database.
+        let mut handle = Some(handle);
+        let readonly = handle
+            .as_ref()
+            .context("opened session vanished")?
+            .is_readonly()?;
         let mut random = [0u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
         let identifier = random
@@ -163,7 +170,7 @@ impl Sessions {
             .collect::<String>();
         let entry = Entry::new(
             database.clone(),
-            handle,
+            handle.take().context("opened session vanished")?,
             owner_incarnation,
             request_id.to_owned(),
         )?;
