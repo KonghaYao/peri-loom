@@ -32,6 +32,15 @@ impl Authority {
             next.receipt_index == previous.receipt_index,
             "authority receipt index cannot be mutated"
         );
+        // A surviving pin's registry base is part of the admission state. Replacing the
+        // whole registry (empty, an old snapshot, or a smaller page tree) would carry an
+        // empty change set and hide a removal from change-scoped validation. Additions stay
+        // legal because `extend_pin` grows a live pin; removals and replacements are handled
+        // by the change-scoped checks below.
+        ensure!(
+            next.pin_entries.same_base(&previous.pin_entries),
+            "reader pin registry replacement forbidden"
+        );
         super::ownership::catalog_rules::prepare(self, previous, next)?;
         for (name, branch) in &mut next.branches {
             if let Some(old) = previous.branches.get(name) {

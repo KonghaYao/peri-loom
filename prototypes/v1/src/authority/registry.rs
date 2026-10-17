@@ -105,6 +105,16 @@ impl<V> Registry<V> {
         self.inline.len()
     }
 
+    /// Compare the durable base a transaction started from. A mutation may add
+    /// `changes`, but replacing the base would hide removals from change-scoped
+    /// validation, so the publish path requires this identity to be unchanged.
+    pub(crate) fn same_base(&self, other: &Self) -> bool
+    where
+        V: PartialEq,
+    {
+        self.pointer == other.pointer && self.inline == other.inline
+    }
+
     pub(crate) fn changes(&self) -> impl Iterator<Item = (&String, &Change<V>)> {
         self.changes.iter()
     }

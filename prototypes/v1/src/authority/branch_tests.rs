@@ -995,6 +995,150 @@ fn removing_a_pin_entry_without_removing_its_pin_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn whole_pin_registry_replacements_are_rejected_and_reader_protection_survives() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    let segment = vec![7; crate::manifest::SEGMENT_SIZE];
+    let relative = format!("segments/{}", blake3::hash(&segment).to_hex());
+    branch.put(
+        &namespace.key(&relative)?,
+        &segment,
+        crate::object_store::PutCondition::Absent,
+    )?;
+    branch.delete(&namespace.key(&relative)?, None)?;
+    let pin = branch.pin.clone();
+    let segment_hash = blake3::hash(&segment).to_hex().to_string();
+    let snapshot = authority.snapshot()?;
+    let entries = pin_entries(&snapshot.root, &pin)?;
+    let segment_key = entries
+        .iter()
+        .find(|(_, entry)| entry.hash == segment_hash)
+        .map(|(key, _)| key.clone())
+        .context("pinned segment missing")?;
+    let segment_blob = entries[&segment_key].blob.clone();
+    let old_inline = snapshot.root.pin_entries.clone();
+
+    assert!(authority
+        .transact(None, |root| {
+            root.pin_entries = crate::authority::registry::Registry::inline(BTreeMap::new());
+            Ok(())
+        })
+        .is_err());
+    let mut subset = entries.clone();
+    subset.remove(&segment_key);
+    assert!(authority
+        .transact(None, |root| {
+            root.pin_entries = crate::authority::registry::Registry::inline(subset.clone());
+            Ok(())
+        })
+        .is_err());
+
+    for ordinal in 1..=4 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-replace-{ordinal}"),
+        )?;
+    }
+    assert!(authority
+        .transact(None, |root| {
+            root.pin_entries = old_inline.clone();
+            Ok(())
+        })
+        .is_err());
+
+    for ordinal in 5..=52 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-replace-{ordinal}"),
+        )?;
+    }
+    let paged = authority.snapshot()?.root;
+    assert!(paged.pin_entries.pointer().is_some());
+    let old_paged = paged.pin_entries.clone();
+    for ordinal in 53..=56 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-replace-{ordinal}"),
+        )?;
+    }
+    assert!(authority
+        .transact(None, |root| {
+            root.pin_entries = old_paged.clone();
+            Ok(())
+        })
+        .is_err());
+
+    let root = authority.snapshot()?.root;
+    assert!(root.pins.contains_key(&pin));
+    assert!(pin_entries(&root, &pin)?
+        .values()
+        .any(|entry| entry.blob == segment_blob));
+    assert!(authority.reachable(&root)?.contains(&segment_blob));
+    Ok(())
+}
+
+#[test]
+fn mixed_pin_representations_are_rejected_on_load() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=48 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-mixed-{ordinal}"),
+        )?;
+    }
+    let root = authority.snapshot()?.root;
+    let pin = branch.pin.clone();
+    let entries = pin_entries(&root, &pin)?;
+    let vectors: Vec<ObjectEntry> = entries.values().cloned().collect();
+    drop(branch);
+    let root_key = namespace.key("authority/root")?;
+
+    let mut legacy_with_inline = root.clone();
+    legacy_with_inline.pin_schema = None;
+    legacy_with_inline.pin_entries = crate::authority::registry::Registry::inline(entries.clone());
+    legacy_with_inline.pins.insert(pin.clone(), vectors.clone());
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&legacy_with_inline)?,
+        PutCondition::Any,
+    )?;
+    assert!(Authority::open(store.clone(), namespace.clone()).is_err());
+
+    let mut split_with_vectors = root.clone();
+    split_with_vectors.pin_schema = Some(crate::authority::types::PIN_SCHEMA_VERSION);
+    split_with_vectors.pins.insert(pin.clone(), vectors.clone());
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&split_with_vectors)?,
+        PutCondition::Any,
+    )?;
+    assert!(Authority::open(store.clone(), namespace.clone()).is_err());
+
+    let mut legacy_with_paged = root;
+    legacy_with_paged.pin_schema = None;
+    legacy_with_paged.pins.insert(pin, vectors);
+    assert!(legacy_with_paged.pin_entries.pointer().is_some());
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&legacy_with_paged)?,
+        PutCondition::Any,
+    )?;
+    assert!(Authority::open(store, namespace).is_err());
+    Ok(())
+}
+
+#[test]
 fn unsupported_pin_schema_is_rejected_at_decode_time() -> Result<()> {
     let (_, authority, _, _) = fixture()?;
     let mut root = authority.snapshot()?.root;

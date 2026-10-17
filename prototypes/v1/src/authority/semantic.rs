@@ -60,7 +60,7 @@ pub(super) fn migrate_legacy_pins(root: &mut CatalogRoot) -> Result<()> {
         return Ok(());
     }
     ensure!(
-        root.pin_entries.pointer().is_none(),
+        root.pin_entries.is_empty(),
         "mixed reader pin representations"
     );
     for (pin, entries) in legacy {
