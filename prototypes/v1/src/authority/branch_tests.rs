@@ -1168,6 +1168,41 @@ fn split_transitional_paged_root_loads_and_is_upgraded() -> Result<()> {
 }
 
 #[test]
+fn empty_split_transitional_root_loads_and_is_upgraded() -> Result<()> {
+    let store = Arc::new(FaultStore::default());
+    let namespace = Namespace::new("tenant", DATABASE)?;
+    let authority = Authority::open(store.clone(), namespace.clone())?;
+    let root = authority.snapshot()?.root;
+    assert!(root.pins.is_empty());
+    assert!(root.pin_entries.is_empty());
+    let mut transitional = root;
+    transitional.pin_schema = None;
+
+    let root_key = namespace.key("authority/root")?;
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&transitional)?,
+        PutCondition::Any,
+    )?;
+    let reopened = Authority::open(store.clone(), namespace.clone())?;
+    let loaded = reopened.snapshot()?.root;
+    assert_eq!(
+        loaded.pin_schema,
+        Some(crate::authority::types::PIN_SCHEMA_VERSION)
+    );
+    assert!(loaded.pins.is_empty());
+    assert!(loaded.pin_entries.is_empty());
+
+    reopened.transact(None, |_| Ok(()))?;
+    let stored = store.inner.get(&root_key)?.context("root missing")?;
+    let envelope: serde_json::Value = serde_json::from_slice(&stored.bytes)?;
+    assert_eq!(envelope["root"]["pin_schema"], 1);
+    assert_eq!(envelope["root"]["pins"], serde_json::json!({}));
+    assert_eq!(envelope["root"]["pin_entries"], serde_json::json!({}));
+    Ok(())
+}
+
+#[test]
 fn mixed_pin_representations_are_rejected_on_load() -> Result<()> {
     let (store, authority, branch, namespace) = fixture()?;
     for ordinal in 1..=48 {
