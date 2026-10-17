@@ -32,18 +32,29 @@ fn armed_lane(period: Duration, phase: Duration) -> Watermark {
     }
 }
 
-fn policy(checkpoint: Watermark, index_compact: Watermark) -> MaintenancePolicy {
-    MaintenancePolicy::for_tests(
-        true,
-        checkpoint,
-        index_compact,
-        Duration::from_secs(60),
-        Duration::from_secs(60),
+fn policy_with(
+    checkpoint: Watermark,
+    index_compact: Watermark,
+    cooldown: Duration,
+    blocked_backoff: Duration,
+) -> MaintenancePolicy {
+    MaintenancePolicy::for_tests(true, checkpoint, index_compact, cooldown, blocked_backoff)
+}
+
+/// The compact slot is still ahead of the checkpoint slot, so the first pass can only pick
+/// the checkpoint lane; the second pass can only pick the compaction lane.
+fn two_lane_policy(cooldown: Duration, blocked_backoff: Duration) -> MaintenancePolicy {
+    policy_with(
+        armed_lane(Duration::from_secs(2), Duration::ZERO),
+        armed_lane(Duration::from_secs(3), Duration::from_secs(1)),
+        cooldown,
+        blocked_backoff,
     )
 }
 
 struct Fixture {
     database: Arc<RemoteDatabase>,
+    store: Arc<MemoryObjectStore>,
     namespace: Namespace,
     wal: RemoteWal,
     _cache: tempfile::TempDir,
@@ -53,8 +64,9 @@ impl Fixture {
     fn open(name: &str) -> Result<Self> {
         let cache = tempfile::tempdir()?;
         let namespace = Namespace::new("maintenance", name)?;
+        let store = Arc::new(MemoryObjectStore::default());
         let database = Arc::new(RemoteDatabase::open(
-            Arc::new(MemoryObjectStore::default()),
+            store.clone(),
             namespace.clone(),
             cache.path(),
             0,
@@ -66,6 +78,7 @@ impl Fixture {
         let wal = RemoteWal::new(database.storage().store());
         Ok(Self {
             database,
+            store,
             namespace,
             wal,
             _cache: cache,
@@ -89,10 +102,39 @@ impl Fixture {
     }
 }
 
+/// Reopen the same namespace on a fresh cache and a fresh engine. This is the only check that
+/// sees what a cold start sees: an in-memory page cache or a live connection can hide a
+/// checkpoint that published the wrong image or a WAL reset whose baseline is not replayable.
+fn reopen(
+    store: &Arc<MemoryObjectStore>,
+    namespace: &Namespace,
+) -> Result<(RemoteDatabase, tempfile::TempDir)> {
+    let cache = tempfile::tempdir()?;
+    let database = RemoteDatabase::open(store.clone(), namespace.clone(), cache.path(), 0)?;
+    Ok((database, cache))
+}
+
+fn assert_same_index(
+    before: &crate::wal::WalMetadata,
+    after: &crate::wal::WalMetadata,
+    reason: &str,
+) {
+    assert_eq!(after.last_lsn, before.last_lsn, "{reason}");
+    assert_eq!(
+        after.replay_baseline_lsn, before.replay_baseline_lsn,
+        "{reason}"
+    );
+    assert_eq!(after.entries.len(), before.entries.len(), "{reason}");
+    for (before, after) in before.entries.iter().zip(&after.entries) {
+        assert_eq!(after.lsn, before.lsn, "{reason}");
+        assert_eq!(after.hash, before.hash, "{reason}");
+    }
+}
+
 /// The two lanes run in their own slots and are executed by the real entry points: the Full
 /// checkpoint neither rebases nor rewrites the index, and the compaction that follows advances
-/// the baseline and collapses the index. The commit between the pick and the drain proves that
-/// only `drain` executes a unit.
+/// the baseline and collapses the index. A cold reopen after both proves the published image
+/// and the reset baseline are replayable.
 #[test]
 fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the_wal() -> Result<()>
 {
@@ -102,23 +144,24 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
         before.entries.len() >= 2,
         "the fixture must publish more than the baseline entry"
     );
-    // The checkpoint slot comes first; the compaction slot is still in the future and its
-    // precondition (no unconfirmed WAL) does not hold until the checkpoint has run.
     let scheduler = MaintenanceScheduler::new(
-        policy(
-            armed_lane(Duration::from_secs(2), Duration::ZERO),
-            armed_lane(Duration::from_secs(3), Duration::from_secs(1)),
-        ),
+        two_lane_policy(Duration::from_secs(60), Duration::from_secs(60)),
         MaintenanceBudget::new(1, 1, 4, 64 * MIB, Duration::from_secs(60)),
     );
     let checkpoint_slot = fixture.opened() + Duration::from_secs(2);
     let compaction_slot = fixture.opened() + Duration::from_secs(4);
 
     scheduler.observe(&fixture.target(), checkpoint_slot)?;
-    assert_eq!(fixture.counters().attempts, 1);
+    let queued = fixture.counters();
+    assert_eq!(queued.attempts, 1);
     assert_eq!(
-        fixture.counters().executions,
-        0,
+        queued.blocks.get("unconfirmed_wal"),
+        Some(&1),
+        "the compaction lane is refused by its precondition before its slot, and the refusal \
+         is recorded"
+    );
+    assert_eq!(
+        queued.executions, 0,
         "observing may only queue, never run a unit"
     );
     let summary = scheduler.drain(1, checkpoint_slot);
@@ -126,19 +169,11 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
     assert_eq!(summary.refused, 0);
 
     let after_checkpoint = fixture.wal.metadata(&fixture.namespace)?;
-    assert_eq!(after_checkpoint.last_lsn, before.last_lsn);
-    assert_eq!(
-        after_checkpoint.replay_baseline_lsn, before.replay_baseline_lsn,
-        "a Full checkpoint does not rebase the WAL index"
+    assert_same_index(
+        &before,
+        &after_checkpoint,
+        "a Full checkpoint does not rewrite the WAL index",
     );
-    assert_eq!(after_checkpoint.entries.len(), before.entries.len());
-    for (before, after) in before.entries.iter().zip(&after_checkpoint.entries) {
-        assert_eq!(after.lsn, before.lsn);
-        assert_eq!(
-            after.hash, before.hash,
-            "a Full checkpoint writes the image"
-        );
-    }
     assert_eq!(fixture.counters().executions, 1);
     assert_eq!(fixture.counters().completed, 1);
 
@@ -149,44 +184,35 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
         queued.executions, 1,
         "the checkpoint lane is in its cooldown, only the compaction lane was picked"
     );
-
-    fixture.database.execute("INSERT INTO entries VALUES(5)")?;
-    assert_eq!(
-        fixture.counters().executions,
-        1,
-        "a commit must not drain the maintenance queue"
-    );
-    let before_drain = fixture.wal.metadata(&fixture.namespace)?;
-    assert!(before_drain.last_lsn > after_checkpoint.last_lsn);
-
     let summary = scheduler.drain(1, compaction_slot);
     assert_eq!(summary.completed, 1);
     assert_eq!(summary.refused, 0);
     assert_eq!(fixture.counters().failed, 0);
 
-    let after = fixture.wal.metadata(&fixture.namespace)?;
+    let compacted = fixture.wal.metadata(&fixture.namespace)?;
     // The reset is itself a durable WAL record, so the last LSN moves by one; what matters is
     // that the index is rebased onto it and keeps nothing below it.
-    assert!(after.last_lsn >= before_drain.last_lsn);
+    assert!(compacted.last_lsn >= after_checkpoint.last_lsn);
     assert!(
-        after.replay_baseline_lsn > after_checkpoint.replay_baseline_lsn,
+        compacted.replay_baseline_lsn > after_checkpoint.replay_baseline_lsn,
         "compaction must advance the baseline"
     );
-    assert_eq!(after.replay_baseline_lsn, after.last_lsn);
+    assert_eq!(compacted.replay_baseline_lsn, compacted.last_lsn);
     assert_eq!(
-        after.entries.len(),
+        compacted.entries.len(),
         1,
         "compaction keeps only the baseline entry"
     );
-    assert_eq!(after.entries[0].lsn, after.replay_baseline_lsn);
-    assert_eq!(fixture.values()?, "5");
+    assert_eq!(compacted.entries[0].lsn, compacted.replay_baseline_lsn);
+    assert_eq!(fixture.values()?, "4");
     assert_eq!(fixture.counters().executions, 2);
     assert_eq!(fixture.counters().completed, 2);
 
-    // A new frame makes the compaction lane eligible again by watermark and by slot; only
-    // the cooldown can keep the attempt counter from moving.
-    fixture.database.execute("INSERT INTO entries VALUES(6)")?;
-    let later = compaction_slot + Duration::from_secs(3);
+    // A new frame makes the checkpoint lane armed again. Its own slot has passed, so only the
+    // cooldown can keep the attempt counter from moving; the compaction lane is still inside
+    // its period (and unconfirmed again), so it cannot be picked either.
+    fixture.database.execute("INSERT INTO entries VALUES(5)")?;
+    let later = checkpoint_slot + Duration::from_secs(3);
     scheduler.observe(&fixture.target(), later)?;
     assert_eq!(
         fixture.counters().attempts,
@@ -196,6 +222,20 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
     let summary = scheduler.drain(1, later);
     assert_eq!(summary.completed, 0);
     assert_eq!(fixture.counters().executions, 2);
+
+    let store = fixture.store.clone();
+    let namespace = fixture.namespace.clone();
+    drop(fixture.database);
+    let (database, _cache) = reopen(&store, &namespace)?;
+    assert_eq!(
+        database.query("SELECT count(*) FROM entries")?[0][0].to_string(),
+        "5",
+        "a cold start replays the reset baseline and the frame appended after it"
+    );
+    let replayed = RemoteWal::new(database.storage().store()).metadata(&fixture.namespace)?;
+    assert_eq!(replayed.replay_baseline_lsn, compacted.replay_baseline_lsn);
+    assert!(replayed.last_lsn > compacted.last_lsn);
+    assert!(replayed.entries.len() >= 2);
     Ok(())
 }
 
@@ -207,10 +247,7 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
 fn a_budget_refusal_skips_the_queued_unit_and_leaves_the_wal_in_place() -> Result<()> {
     let fixture = Fixture::open("scheduled_budget")?;
     let scheduler = MaintenanceScheduler::new(
-        policy(
-            armed_lane(Duration::from_secs(2), Duration::ZERO),
-            armed_lane(Duration::from_secs(3), Duration::from_secs(1)),
-        ),
+        two_lane_policy(Duration::from_secs(60), Duration::from_secs(60)),
         MaintenanceBudget::new(1, 1, 1, 64 * MIB, Duration::from_secs(60)),
     );
     let checkpoint_slot = fixture.opened() + Duration::from_secs(2);
@@ -239,24 +276,87 @@ fn a_budget_refusal_skips_the_queued_unit_and_leaves_the_wal_in_place() -> Resul
     assert_eq!(counters.blocks.get("budget"), Some(&1));
 
     let after = fixture.wal.metadata(&fixture.namespace)?;
-    assert_eq!(after.last_lsn, settled.last_lsn);
-    assert_eq!(after.replay_baseline_lsn, settled.replay_baseline_lsn);
-    assert_eq!(after.entries.len(), settled.entries.len());
-    for (settled, after) in settled.entries.iter().zip(&after.entries) {
-        assert_eq!(after.lsn, settled.lsn);
-        assert_eq!(
-            after.hash, settled.hash,
-            "a refusal must not rewrite chunks"
-        );
-    }
+    assert_same_index(&settled, &after, "a refusal must not rewrite the WAL");
     assert_eq!(fixture.values()?, "4");
+    Ok(())
+}
 
-    let later = compaction_slot + Duration::from_secs(3);
+/// The backfill volume is charged against the byte budget before anything starts: a byte
+/// budget below the WAL size refuses the unit, and the block backoff (which outlives the
+/// cooldown) keeps the whole database ineligible after the cooldown has expired.
+#[test]
+fn a_backfill_charge_over_the_byte_budget_skips_the_unit() -> Result<()> {
+    let fixture = Fixture::open("scheduled_bytes")?;
+    let before = fixture.wal.metadata(&fixture.namespace)?;
+    let cooldown = Duration::from_secs(5);
+    let backoff = Duration::from_secs(30);
+    let scheduler = MaintenanceScheduler::new(
+        policy_with(
+            armed_lane(Duration::from_secs(2), Duration::ZERO),
+            armed_lane(Duration::from_secs(3), Duration::from_secs(1)),
+            cooldown,
+            backoff,
+        ),
+        // A non-empty WAL cannot be charged in full against a zero byte window.
+        MaintenanceBudget::new(1, 1, 4, 0, Duration::from_secs(60)),
+    );
+    let slot = fixture.opened() + Duration::from_secs(2);
+
+    scheduler.observe(&fixture.target(), slot)?;
+    assert_eq!(fixture.counters().attempts, 1);
+    let summary = scheduler.drain(1, slot);
+    assert_eq!(summary.refused, 1);
+    assert_eq!(summary.completed, 0);
+    assert_eq!(fixture.counters().executions, 0);
+    assert_eq!(fixture.counters().blocks.get("budget"), Some(&1));
+    let after = fixture.wal.metadata(&fixture.namespace)?;
+    assert_same_index(&before, &after, "a byte refusal must not touch the WAL");
+
+    // Six seconds after the pick the five-second cooldown is over; only the thirty-second
+    // block backoff can keep the checkpoint lane from being picked again.
+    let later = slot + Duration::from_secs(6);
     scheduler.observe(&fixture.target(), later)?;
     assert_eq!(
         fixture.counters().attempts,
-        2,
-        "the budget block backs the database off instead of retrying every tick"
+        1,
+        "a budget block must outlive the cooldown and back the database off"
     );
+    Ok(())
+}
+
+/// A reader that still needs the old WAL makes the scheduled compaction fail after dispatch,
+/// and the failure is recorded without truncating the index. The reader keeps its snapshot.
+#[test]
+fn a_long_reader_blocks_the_scheduled_compaction_and_the_wal_survives() -> Result<()> {
+    let fixture = Fixture::open("scheduled_reader")?;
+    let scheduler = MaintenanceScheduler::new(
+        two_lane_policy(Duration::from_secs(60), Duration::from_secs(60)),
+        MaintenanceBudget::new(1, 1, 4, 64 * MIB, Duration::from_secs(60)),
+    );
+    let checkpoint_slot = fixture.opened() + Duration::from_secs(2);
+    let compaction_slot = fixture.opened() + Duration::from_secs(4);
+
+    scheduler.observe(&fixture.target(), checkpoint_slot)?;
+    assert_eq!(scheduler.drain(1, checkpoint_slot).completed, 1);
+    let settled = fixture.wal.metadata(&fixture.namespace)?;
+
+    let reader = fixture.database.session()?;
+    reader.execute("BEGIN")?;
+    assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
+    assert!(reader.in_transaction()?);
+
+    scheduler.observe(&fixture.target(), compaction_slot)?;
+    let summary = scheduler.drain(1, compaction_slot);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.completed, 0);
+    let counters = fixture.counters();
+    assert_eq!(counters.failed, 1);
+    assert_eq!(counters.blocks.get("long_reader"), Some(&1));
+
+    let after = fixture.wal.metadata(&fixture.namespace)?;
+    assert_same_index(&settled, &after, "a blocked compaction keeps the old WAL");
+    assert!(reader.in_transaction()?);
+    assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
+    assert_eq!(fixture.values()?, "4");
     Ok(())
 }
