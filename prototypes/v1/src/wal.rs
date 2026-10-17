@@ -1741,6 +1741,7 @@ mod truncate_tests {
     use crate::authority::paged_index::PagedIndex;
     use crate::object_store::{LocalObjectStore, PutCondition};
     use crate::recovery::fixture::{WalBuilder, FRAME_SIZE, PAGE_SIZE};
+    use std::collections::BTreeSet;
 
     fn namespace() -> Result<Namespace> {
         Namespace::new("truncate", "split")
@@ -2097,22 +2098,30 @@ mod truncate_tests {
         Ok(load_validated(store, namespace, index)?.commit())
     }
 
-    fn validate_incremental(
+    fn validate_append(
         store: &LocalObjectStore,
         namespace: &Namespace,
         before: &[u8],
         candidate: &[u8],
-    ) -> Result<Option<WalCommit>> {
+    ) -> Result<crate::recovery::ValidatedWal> {
         let previous = load_validated(store, namespace, before)?;
-        Ok(crate::recovery::validate_index_append(
+        crate::recovery::validate_index_append(
             previous,
             candidate,
             namespace,
             |hash| load_segment(store, namespace, hash),
             |key| load_chunk(store, key),
             load_page(store, namespace),
-        )?
-        .commit())
+        )
+    }
+
+    fn validate_incremental(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+        before: &[u8],
+        candidate: &[u8],
+    ) -> Result<Option<WalCommit>> {
+        Ok(validate_append(store, namespace, before, candidate)?.commit())
     }
 
     fn store_record_chunk(
@@ -2229,6 +2238,11 @@ mod truncate_tests {
         );
         wal.truncate_with_part_bytes(&namespace, 2, FRAME_SIZE)?;
         let before = index_bytes(&store, &namespace)?;
+        assert_eq!(
+            load_validated(&store, &namespace, &before)?.archive_entries(),
+            1,
+            "truncate cold load must recount the archive"
+        );
         let (old, _) = wal.index(&namespace)?;
         let old_root = old
             .receipt_index
@@ -2339,8 +2353,14 @@ mod truncate_tests {
             BTreeMap::from([("inline-old".to_owned(), moved_value)]),
         )?);
         let after = serde_json::to_vec(&accepted)?;
+        let accepted_state = validate_append(&store, &namespace, &before, &after)?;
         assert_eq!(
-            validate_incremental(&store, &namespace, &before, &after)?,
+            accepted_state.archive_entries(),
+            2,
+            "rolling must add exactly the removed inline receipt"
+        );
+        assert_eq!(
+            accepted_state.commit(),
             validate_cold(&store, &namespace, &after)?
         );
         let extended = pages.entries(accepted.receipt_index.as_deref())?;
@@ -2378,6 +2398,218 @@ mod truncate_tests {
             Err(error) => error.to_string(),
         };
         assert!(failure.contains("missing WAL receipt page"), "{failure}");
+        Ok(())
+    }
+
+    #[test]
+    fn rolling_append_cannot_reintroduce_an_archived_identity_inline() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        assert_eq!(
+            wal.append_local(&append_request(&namespace, "archived-old", &[]))?,
+            1
+        );
+        assert_eq!(
+            wal.append_local(&append_request(&namespace, "inline-old", &[]))?,
+            2
+        );
+        wal.truncate_with_part_bytes(&namespace, 2, FRAME_SIZE)?;
+        let before = index_bytes(&store, &namespace)?;
+        let (old, _) = wal.index(&namespace)?;
+        let old_root = old
+            .receipt_index
+            .clone()
+            .context("missing WAL receipt archive")?;
+        let pages = PagedIndex::with_prefix(store.as_ref(), &namespace, "wal/receipt-pages");
+        let inline_lsn = old.receipts["inline-old"];
+        let inline_digest = old.receipt_digests["inline-old"].clone();
+        let duplicate_hash = store_record_chunk(&store, &namespace, "archived-old", 3)?;
+        let legal_hash = store_record_chunk(&store, &namespace, "new-append", 3)?;
+
+        let mut candidate = old.clone();
+        candidate.entries.push(Entry {
+            lsn: 3,
+            hash: duplicate_hash.clone(),
+        });
+        candidate.entry_count = Some(candidate.entry_count.unwrap() + 1);
+        candidate.last_lsn = 3;
+        candidate.commit = None;
+        candidate.receipts.remove("inline-old");
+        candidate.receipt_digests.remove("inline-old");
+        candidate.receipts.insert("archived-old".into(), 3);
+        candidate
+            .receipt_digests
+            .insert("archived-old".into(), duplicate_hash);
+        candidate.receipt_index = Some(pages.insert_many(
+            Some(&old_root),
+            BTreeMap::from([(
+                "inline-old".to_owned(),
+                serde_json::to_value(ArchivedReceipt {
+                    lsn: inline_lsn,
+                    digest: Some(inline_digest),
+                })?,
+            )]),
+        )?);
+        let bytes = serde_json::to_vec(&candidate)?;
+        let failure = match validate_append(&store, &namespace, &before, &bytes) {
+            Ok(_) => bail!("rolled append reintroduced an archived identity inline"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            failure.contains("reintroduced an archived receipt inline"),
+            "{failure}"
+        );
+        assert!(
+            validate_cold(&store, &namespace, &bytes).is_err(),
+            "cold validation accepted an identity stored inline and archived"
+        );
+
+        let mut legal = candidate;
+        legal.entries.last_mut().unwrap().hash = legal_hash.clone();
+        legal.receipts.remove("archived-old");
+        legal.receipt_digests.remove("archived-old");
+        legal.receipts.insert("new-append".into(), 3);
+        legal
+            .receipt_digests
+            .insert("new-append".into(), legal_hash);
+        let legal = serde_json::to_vec(&legal)?;
+        let validated = validate_append(&store, &namespace, &before, &legal)?;
+        assert_eq!(validated.archive_entries(), 2);
+        assert_eq!(
+            validated.commit(),
+            validate_cold(&store, &namespace, &legal)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rolling_append_does_not_read_unrelated_archive_pages() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let namespace = namespace()?;
+        let baseline = EncodedWalRecord::new(WalRecord {
+            append_id: "baseline-1".into(),
+            namespace: namespace.clone(),
+            epoch: 1,
+            lsn: 1,
+            timestamp_millis: 1,
+            batch: WalBatch {
+                operations: vec![WalOperation::Truncate { size: 0 }],
+            },
+            commit: None,
+        })?;
+        store.put(
+            &namespace.key(&format!("wal/chunks/{}", baseline.hash()))?,
+            baseline.bytes(),
+            PutCondition::Absent,
+        )?;
+        let inline_hash = store_record_chunk(&store, &namespace, "inline-old", 2)?;
+        let new_hash = store_record_chunk(&store, &namespace, "new-append", 3)?;
+        let pages = PagedIndex::with_prefix(store.as_ref(), &namespace, "wal/receipt-pages");
+        let archived = (0..1_000)
+            .map(|ordinal| {
+                (
+                    format!("archived-{ordinal:04}"),
+                    serde_json::to_value(ArchivedReceipt {
+                        lsn: 1,
+                        digest: Some("a".repeat(64)),
+                    })
+                    .unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let old_root = pages.insert_many(None, archived)?;
+        let old = WalMetadata {
+            epoch: 1,
+            last_lsn: 2,
+            replay_baseline_lsn: 1,
+            entries: vec![
+                Entry {
+                    lsn: 1,
+                    hash: baseline.hash().to_owned(),
+                },
+                Entry {
+                    lsn: 2,
+                    hash: inline_hash.clone(),
+                },
+            ],
+            receipts: BTreeMap::from([("inline-old".to_owned(), 2)]),
+            receipt_digests: BTreeMap::from([("inline-old".to_owned(), inline_hash.clone())]),
+            receipt_index: Some(old_root.clone()),
+            entry_count: Some(2),
+            entry_index: None,
+            commit: None,
+        };
+        let before = serde_json::to_vec(&old)?;
+        let mut candidate = old;
+        candidate.entries.push(Entry {
+            lsn: 3,
+            hash: new_hash.clone(),
+        });
+        candidate.entry_count = Some(3);
+        candidate.last_lsn = 3;
+        candidate.receipts.remove("inline-old");
+        candidate.receipt_digests.remove("inline-old");
+        candidate.receipts.insert("new-append".into(), 3);
+        candidate
+            .receipt_digests
+            .insert("new-append".into(), new_hash);
+        candidate.receipt_index = Some(pages.insert_many(
+            Some(&old_root),
+            BTreeMap::from([(
+                "inline-old".to_owned(),
+                serde_json::to_value(ArchivedReceipt {
+                    lsn: 2,
+                    digest: Some(inline_hash),
+                })?,
+            )]),
+        )?);
+        let candidate = serde_json::to_vec(&candidate)?;
+
+        let mut hot_reads = BTreeSet::new();
+        crate::recovery::validate_index_append(
+            load_validated(&store, &namespace, &before)?,
+            &candidate,
+            &namespace,
+            |hash| load_segment(&store, &namespace, hash),
+            |key| load_chunk(&store, key),
+            |hash| {
+                hot_reads.insert(hash.to_owned());
+                load_page(&store, &namespace)(hash)
+            },
+        )?;
+        let prefix = format!("{}wal/receipt-pages/", namespace.prefix());
+        let sibling = store
+            .list(&prefix)?
+            .into_iter()
+            .find_map(|key| {
+                let hash = key.rsplit('/').next()?.to_owned();
+                (!hot_reads.contains(&hash)).then_some((key, hash))
+            })
+            .context("every archive page was on the rolling insertion path")?;
+        assert_ne!(sibling.1, old_root, "the archive root was not read");
+        let sibling_bytes = store
+            .get(&sibling.0)?
+            .context("missing unread archive page")?
+            .bytes;
+
+        let previous = load_validated(&store, &namespace, &before)?;
+        store.put(&sibling.0, b"tampered", PutCondition::Any)?;
+        crate::recovery::validate_index_append(
+            previous,
+            &candidate,
+            &namespace,
+            |hash| load_segment(&store, &namespace, hash),
+            |key| load_chunk(&store, key),
+            load_page(&store, &namespace),
+        )?;
+        assert!(
+            validate_cold(&store, &namespace, &candidate).is_err(),
+            "cold validation accepted a tampered unread sibling page"
+        );
+        store.put(&sibling.0, &sibling_bytes, PutCondition::Any)?;
         Ok(())
     }
 
@@ -2474,6 +2706,11 @@ mod truncate_tests {
             validate_cold(&store, &namespace, &after)?
         );
         assert_eq!(wal.append_local(&ordinary)?, lsn);
+        assert_eq!(
+            load_validated(&store, &namespace, &after)?.archive_entries(),
+            0,
+            "an undigested legacy window must not grow the archive count"
+        );
         Ok(())
     }
 

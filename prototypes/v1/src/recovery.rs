@@ -686,6 +686,44 @@ where
     }
 }
 
+/// Rejects a newly inline identity that the validated archive still owns.
+///
+/// Only identities absent from the previous inline map are checked, so a normal append pays
+/// one path lookup per new identity and never walks the archive. The lookup verifies every
+/// page digest on its path; the archive root itself is content addressed and was validated
+/// when this state was built.
+fn ensure_new_inline_receipts_are_not_archived<Load>(
+    namespace: &Namespace,
+    archive_root: Option<&str>,
+    previous_receipts: &BTreeMap<String, u64>,
+    candidate_receipts: &BTreeMap<String, u64>,
+    load_page: &mut Load,
+) -> Result<()>
+where
+    Load: FnMut(&str) -> Result<Vec<u8>> + Send,
+{
+    let Some(root) = archive_root else {
+        return Ok(());
+    };
+    let introduced = candidate_receipts
+        .keys()
+        .filter(|identity| !previous_receipts.contains_key(*identity))
+        .collect::<Vec<_>>();
+    if introduced.is_empty() {
+        return Ok(());
+    }
+    let _reads = crate::authority::request_reads::Scope::new();
+    let replay = ReceiptPageReplay::new(namespace, load_page);
+    let pages = PagedIndex::with_prefix(&replay, namespace, WAL_RECEIPT_PAGE_PREFIX);
+    for identity in introduced {
+        ensure!(
+            pages.get(Some(root), identity)?.is_none(),
+            "WAL append reintroduced an archived receipt inline"
+        );
+    }
+    Ok(())
+}
+
 /// Replays the removed inline receipts over the validated archive root.
 ///
 /// Candidates use the same `(lsn, identity)` order and archive batch size as
@@ -931,6 +969,12 @@ pub fn validate_index_append(
         "WAL append changed the archive root without archiving"
     );
     let (archive_root, archive_entries) = if rolled {
+        // The content-addressed root proves the archive is the canonical insertion of the
+        // removed receipts. It does not read old sibling pages outside those insertion
+        // paths (and the new-inline identity lookup below), and the staged-page check covers
+        // only pages this roll rewrote. An external deletion or rewrite of an unread sibling
+        // is outside this hot-path trust boundary; the next cold validation re-walks every
+        // page and rejects it.
         let replay = replay_archive_extension(
             namespace,
             old_archive_root.as_deref(),
@@ -943,6 +987,13 @@ pub fn validate_index_append(
             replay.root == index.receipt_index,
             "WAL append archive is not an exact extension of the validated archive"
         );
+        ensure_new_inline_receipts_are_not_archived(
+            namespace,
+            old_archive_root.as_deref(),
+            &old.receipts,
+            &index.receipts,
+            &mut load_page,
+        )?;
         for (key, expected) in replay.staged {
             let hash = key
                 .rsplit('/')
@@ -965,19 +1016,13 @@ pub fn validate_index_append(
         // identity's lookup path, and every page read verifies its digest. An out-of-band
         // replacement of an unread sibling page is outside this hot-path trust boundary; the
         // next cold validation re-walks the tree and rejects it.
-        if old_archive_root.is_some() {
-            let _reads = crate::authority::request_reads::Scope::new();
-            let replay = ReceiptPageReplay::new(namespace, &mut load_page);
-            let pages = PagedIndex::with_prefix(&replay, namespace, WAL_RECEIPT_PAGE_PREFIX);
-            for identity in index.receipts.keys() {
-                if !old.receipts.contains_key(identity) {
-                    ensure!(
-                        pages.get(old_archive_root.as_deref(), identity)?.is_none(),
-                        "WAL append reintroduced an archived receipt inline"
-                    );
-                }
-            }
-        }
+        ensure_new_inline_receipts_are_not_archived(
+            namespace,
+            old_archive_root.as_deref(),
+            &old.receipts,
+            &index.receipts,
+            &mut load_page,
+        )?;
         (old_archive_root.clone(), old_archive_entries)
     };
     // 旧内联格式与截断后的 baseline 可能超过单段上限；仅转换时允许冷校验，
@@ -1000,6 +1045,8 @@ pub fn validate_index_append(
             namespace,
             entries.len(),
             &mut load_chunk,
+            // Same coverage as the in-place path: the branch checks above bound the new
+            // inline identity and the archive extension before this record is trusted.
             |_| Ok(None),
             true,
         )?;
@@ -1037,6 +1084,9 @@ pub fn validate_index_append(
         namespace,
         entries.len() - 1,
         &mut load_chunk,
+        // The branch above rejected every introduced inline identity the validated archive
+        // already owns, and the archive may only add receipts removed from the inline map,
+        // so this record's receipt has to be the newly inserted inline one.
         |_| Ok(None),
         true,
     )?;
