@@ -83,19 +83,22 @@ impl File for RemoteFile {
     fn pread(&self, pos: u64, completion: Completion) -> turso_core::Result<Completion> {
         let result = (|| {
             self.shared.storage.store().validate_local()?;
-            let state = self.shared.lock()?;
             let buffer = completion.as_read().buf();
             buffer.as_mut_slice().fill(0);
             if self.wal {
+                let state = self.shared.lock()?;
                 let pos = usize::try_from(pos)?;
                 let image = state.image.bytes();
                 let count = buffer.len().min(image.len().saturating_sub(pos));
-                buffer.as_mut_slice().fill(0);
                 if count > 0 {
                     buffer.as_mut_slice()[..count].copy_from_slice(&image[pos..pos + count]);
                 }
                 Ok(count)
             } else {
+                // The main database is served by storage, which pins its revision around the
+                // read and retries if a mutation lands; this file's state carries only WAL
+                // bookkeeping, so holding it here would spread a slow segment fetch across
+                // every reader of the same database.
                 self.shared.storage.read_at(pos, buffer.as_mut_slice())
             }
         })();

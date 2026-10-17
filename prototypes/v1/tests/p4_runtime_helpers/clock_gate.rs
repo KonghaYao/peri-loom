@@ -264,7 +264,7 @@ impl Gate {
         self.changed.notify_all();
     }
 
-    fn pause(&self) -> Result<()> {
+    pub fn pause(&self) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         if state.remaining == 0 {
             return Ok(());

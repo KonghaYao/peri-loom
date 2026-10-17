@@ -8,18 +8,21 @@ mod remote;
 mod scenarios;
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use anyhow::Result;
 use peri_loom_v1::database::RemoteDatabase;
+use peri_loom_v1::io::RemoteIO;
 use peri_loom_v1::manifest::WalPosition;
 use peri_loom_v1::namespace::Namespace;
-use peri_loom_v1::object_store::{LocalObjectStore, ObjectStore};
+use peri_loom_v1::object_store::{LocalObjectStore, ObjectStore, PutCondition, StoredObject};
 use peri_loom_v1::ownership::types::{AccessRole, LeaseClock};
 use peri_loom_v1::ownership::SystemLeaseClock;
 use peri_loom_v1::wal::{DurableWal, RemoteWal, WalBatch};
 use turso_core::io::{Buffer, Completion, FileSyncType, OpenFlags, IO};
 
+use clock_gate::Gate;
 use native::PolicyStore;
 
 fn namespace() -> Result<Namespace> {
@@ -386,4 +389,104 @@ fn dropping_large_unfinished_transaction_does_not_poison_next_writer() -> Result
         "3"
     );
     Ok(())
+}
+
+/// A parked segment fetch for the main database must not stall WAL readers: both files share
+/// the remote I/O state, but only the WAL branch needs the state lock.
+#[test]
+fn slow_main_segment_fetch_does_not_block_wal_reads() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let backing = Arc::new(LocalObjectStore::open(objects.path())?);
+    {
+        let database = RemoteDatabase::open(backing.clone(), namespace()?, cache.path(), 0)?;
+        database
+            .execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")?;
+        database.checkpoint()?;
+    }
+    // A fresh cache root makes the first main-database page read miss the segment cache and
+    // reach the object store, where the gate parks it. Opening the I/O directly (rather than a
+    // database) keeps the engine's own header read from warming that segment first.
+    let cold = tempfile::tempdir()?;
+    let gate = Arc::new(Gate::default());
+    let store: Arc<dyn ObjectStore> = Arc::new(SegmentGateStore {
+        inner: backing,
+        gate: gate.clone(),
+    });
+    let io = RemoteIO::open(
+        store,
+        namespace()?,
+        cold.path(),
+        0,
+        8 * 1024 * 1024,
+        64 * 1024 * 1024,
+    )?;
+    let main = io.open_file(&io.database_path(), OpenFlags::Create, false)?;
+    let wal = io.open_file(
+        &format!("{}-wal", io.database_path()),
+        OpenFlags::Create,
+        false,
+    )?;
+
+    gate.arm(1);
+    let parked = main.clone();
+    let slow = std::thread::spawn(move || -> Result<()> {
+        let header = Arc::new(Buffer::new_temporary(64));
+        assert!(parked
+            .pread(0, Completion::new_read(header, |_| None))?
+            .finished());
+        Ok(())
+    });
+    gate.wait_entered();
+
+    // The WAL read touches only the in-memory image; it must complete while the segment GET
+    // is still parked. The timeout keeps a regression from hanging the suite.
+    let (sender, receiver) = mpsc::channel();
+    let wal_reader = std::thread::spawn(move || {
+        let buffer = Arc::new(Buffer::new_temporary(32));
+        let outcome = wal
+            .pread(0, Completion::new_read(buffer, |_| None))
+            .map(|completion| completion.finished())
+            .map_err(|error| format!("{error:?}"));
+        let _ = sender.send(outcome);
+    });
+    let outcome = receiver.recv_timeout(Duration::from_secs(5));
+    gate.release();
+    let _ = wal_reader.join();
+    match outcome {
+        Ok(Ok(true)) => {}
+        other => panic!("WAL read advanced only after the segment fetch: {other:?}"),
+    }
+    slow.join().unwrap()?;
+    Ok(())
+}
+
+struct SegmentGateStore {
+    inner: Arc<dyn ObjectStore>,
+    gate: Arc<Gate>,
+}
+
+impl ObjectStore for SegmentGateStore {
+    fn supports_strict_fencing(&self) -> bool {
+        self.inner.supports_strict_fencing()
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        if key.contains("segments/") {
+            self.gate.pause()?;
+        }
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
 }
