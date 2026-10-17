@@ -1241,14 +1241,14 @@ fn percentiles(mut samples: Vec<u128>) -> (u128, u128) {
 }
 
 /// E1: what one lease validation pays, split between the head read, the head decode and
-/// the rest of the check, at three idempotency-ledger sizes. Every validation re-reads
-/// the whole head (`ownership_view`), and the ledger the command receipts live in is the
-/// largest part of that head and only ever grows, so a per-request cost that follows it
-/// is a cost that follows how long the namespace has been running. The decode is reused
-/// across validations of one unchanged head (`decode_cache`), which is why the curve
-/// reports a cold decode — a document this process has not parsed — next to the warm one.
-/// Prints one `LEASE_COST` line per size; asserts the structural facts the split rests
-/// on, never a wall-clock threshold.
+/// the rest of the check, in the two head shapes. `legacy-inline` is the pre-v5 shape
+/// where the idempotency ledger lived entirely in the head; `paged` is what the writer
+/// now produces: a bounded inline window over an immutable page tree. Every validation
+/// re-reads and re-decodes the whole head, so only the first shape follows the number of
+/// commands ever issued. The decode is reused across validations of one unchanged head
+/// (`decode_cache`), which is why the curve reports a cold decode — a document this
+/// process has not parsed — next to the warm one. Prints one `LEASE_COST` line per shape
+/// and size; asserts the structural facts the split rests on, never a wall-clock threshold.
 #[test]
 fn lease_validation_cost_curve() -> Result<()> {
     const ITERATIONS: usize = 201;
@@ -1276,85 +1276,126 @@ fn lease_validation_cost_curve() -> Result<()> {
         })?;
         let scoped = control.open_session(&lease.binding, AccessRole::Writer)?;
 
-        let mut document = root.snapshot()?.root;
+        let base = root.snapshot()?.root;
         let receipt = serde_json::to_value(&lease)?;
-        let catalog = document.ownership.as_mut().context("ownership missing")?;
-        // The grant that produced the binding already left its own receipt behind, so
-        // the ledger is grown to the target size rather than by a fixed number.
-        let additions = entries.saturating_sub(catalog.commands.len());
-        for index in 0..additions {
-            catalog.commands.insert(
-                format!("command-{index:016}"),
-                CommandReceipt {
-                    digest: blake3::hash(format!("payload-{index}").as_bytes())
-                        .to_hex()
-                        .to_string(),
-                    result: receipt.clone(),
-                },
-            );
-        }
-        ensure!(
-            document.ownership.as_ref().unwrap().commands.len() == entries,
-            "the ledger under measurement was not grown: {} vs {entries}",
-            document.ownership.as_ref().unwrap().commands.len()
-        );
-        let encoded = codec::encode(&document)?;
         let key = namespace.key("authority/root")?;
-        store.put(&key, &encoded, PutCondition::Any)?;
-        let bytes = store.get(&key)?.context("authority root missing")?.bytes;
-        assert_eq!(bytes.len(), encoded.len());
+        for shape in ["legacy-inline", "paged"] {
+            let mut document = base.clone();
+            let mut archived = 0usize;
+            {
+                let catalog = document.ownership.as_mut().context("ownership missing")?;
+                // The grant that produced the binding already left its own receipt behind,
+                // so the ledger is grown to the target size rather than by a fixed number.
+                let additions = entries.saturating_sub(catalog.commands.len());
+                for index in 0..additions {
+                    catalog.commands.insert(
+                        format!("command-{index:016}"),
+                        CommandReceipt {
+                            digest: blake3::hash(format!("payload-{index}").as_bytes())
+                                .to_hex()
+                                .to_string(),
+                            result: receipt.clone(),
+                        },
+                    );
+                }
+            }
+            match shape {
+                "legacy-inline" => {
+                    document.version = 4;
+                    let catalog = document.ownership.as_mut().context("ownership missing")?;
+                    ensure!(
+                        catalog.command_index.is_none() && catalog.commands.len() == entries,
+                        "the legacy ledger under measurement was not grown: {} vs {entries}",
+                        catalog.commands.len()
+                    );
+                }
+                "paged" => {
+                    let catalog = document.ownership.as_mut().context("ownership missing")?;
+                    let split = catalog.commands.len().saturating_sub(INLINE_COMMANDS_MAX);
+                    let archived_entries: BTreeMap<String, serde_json::Value> = catalog
+                        .commands
+                        .iter()
+                        .take(split)
+                        .map(|(identifier, receipt)| {
+                            Ok((identifier.clone(), serde_json::to_value(receipt)?))
+                        })
+                        .collect::<Result<_>>()?;
+                    let pointer = paged_index::PagedIndex::new(store.as_ref(), &namespace)
+                        .build(archived_entries)?;
+                    let window: BTreeMap<_, _> = catalog
+                        .commands
+                        .iter()
+                        .skip(split)
+                        .map(|(identifier, receipt)| (identifier.clone(), receipt.clone()))
+                        .collect();
+                    catalog.commands = window;
+                    catalog.command_index = pointer;
+                    document.version = 5;
+                    archived = split;
+                    ensure!(
+                        document.ownership.as_ref().unwrap().commands.len() <= INLINE_COMMANDS_MAX,
+                        "the paged window was not bounded"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let encoded = codec::encode(&document)?;
+            store.put(&key, &encoded, PutCondition::Any)?;
+            let bytes = store.get(&key)?.context("authority root missing")?.bytes;
+            assert_eq!(bytes.len(), encoded.len());
 
-        let mut read = Vec::new();
-        let mut warm = Vec::new();
-        let mut validate = Vec::new();
-        let mut session = Vec::new();
-        for _ in 0..ITERATIONS {
-            let started = Instant::now();
-            store.get(&key)?;
-            read.push(started.elapsed().as_micros());
-            let started = Instant::now();
-            codec::decode(&bytes)?;
-            warm.push(started.elapsed().as_micros());
-            // The production shape: `SessionOperation::Validate` reaches the authority as
-            // this call, which reads the head once.
-            let started = Instant::now();
-            control.validate_lease(&lease.binding, AccessRole::Writer)?;
-            validate.push(started.elapsed().as_micros());
-            // The worker-store shape: a fenced session store validates the binding and
-            // then asks its own branch store, which reads the head again.
-            let started = Instant::now();
-            scoped.validate_session()?;
-            session.push(started.elapsed().as_micros());
-        }
-        // A document this process has not parsed, one revision apart from the last so the
-        // bytes differ: the only way to see what the decode costs without the reuse.
-        let mut cold = Vec::new();
-        let mut cold_bytes = Vec::new();
-        for index in 0..COLD_ITERATIONS {
-            document.revision = 1_000_000 + index as u64;
-            cold_bytes.push(codec::encode(&document)?);
-        }
-        for encoded in &cold_bytes {
-            let started = Instant::now();
-            codec::decode(encoded)?;
-            cold.push(started.elapsed().as_micros());
-        }
+            let mut read = Vec::new();
+            let mut warm = Vec::new();
+            let mut validate = Vec::new();
+            let mut session = Vec::new();
+            for _ in 0..ITERATIONS {
+                let started = Instant::now();
+                store.get(&key)?;
+                read.push(started.elapsed().as_micros());
+                let started = Instant::now();
+                codec::decode(&bytes)?;
+                warm.push(started.elapsed().as_micros());
+                // The production shape: `SessionOperation::Validate` reaches the authority as
+                // this call, which reads the head once.
+                let started = Instant::now();
+                control.validate_lease(&lease.binding, AccessRole::Writer)?;
+                validate.push(started.elapsed().as_micros());
+                // The worker-store shape: a fenced session store validates the binding and
+                // then asks its own branch store, which reads the head again.
+                let started = Instant::now();
+                scoped.validate_session()?;
+                session.push(started.elapsed().as_micros());
+            }
+            // A document this process has not parsed, one revision apart from the last so the
+            // bytes differ: the only way to see what the decode costs without the reuse.
+            let mut cold = Vec::new();
+            let mut cold_bytes = Vec::new();
+            for index in 0..COLD_ITERATIONS {
+                document.revision = 1_000_000 + index as u64;
+                cold_bytes.push(codec::encode(&document)?);
+            }
+            for encoded in &cold_bytes {
+                let started = Instant::now();
+                codec::decode(encoded)?;
+                cold.push(started.elapsed().as_micros());
+            }
 
-        let (read_p50, read_p90) = percentiles(read);
-        let (warm_p50, warm_p90) = percentiles(warm);
-        let (cold_p50, cold_p90) = percentiles(cold);
-        let (validate_p50, validate_p90) = percentiles(validate);
-        let (session_p50, session_p90) = percentiles(session);
-        eprintln!(
-            "LEASE_COST entries={entries} head_bytes={} raw_bytes={} receipt_bytes={} read_p50_us={read_p50} read_p90_us={read_p90} decode_cold_p50_us={cold_p50} decode_cold_p90_us={cold_p90} decode_warm_p50_us={warm_p50} decode_warm_p90_us={warm_p90} validate_p50_us={validate_p50} validate_p90_us={validate_p90} session_p50_us={session_p50} session_p90_us={session_p90}",
+            let (read_p50, read_p90) = percentiles(read);
+            let (warm_p50, warm_p90) = percentiles(warm);
+            let (cold_p50, cold_p90) = percentiles(cold);
+            let (validate_p50, validate_p90) = percentiles(validate);
+            let (session_p50, session_p90) = percentiles(session);
+            eprintln!(
+            "LEASE_COST shape={shape} entries={entries} archived={archived} head_bytes={} raw_bytes={} receipt_bytes={} read_p50_us={read_p50} read_p90_us={read_p90} decode_cold_p50_us={cold_p50} decode_cold_p90_us={cold_p90} decode_warm_p50_us={warm_p50} decode_warm_p90_us={warm_p90} validate_p50_us={validate_p50} validate_p90_us={validate_p90} session_p50_us={session_p50} session_p90_us={session_p90}",
             encoded.len(),
             serde_json::to_string(&document)?.len(),
             serde_json::to_vec(&receipt)?.len()
         );
-        ensure!(
-            validate_p50 > 0 && cold_p50 > 0,
-            "the curve was measured below the clock resolution"
-        );
+            ensure!(
+                validate_p50 > 0 && cold_p50 > 0,
+                "the curve was measured below the clock resolution"
+            );
+        }
     }
     Ok(())
 }

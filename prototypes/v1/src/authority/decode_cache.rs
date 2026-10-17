@@ -4,9 +4,11 @@
 //! A lease validation reads the head and decodes it whole, and the worker asks for that
 //! validation once per request, so a process that serves requests re-parses the same
 //! unchanged document request after request. Measured on a 95 KB head (dev profile): the
-//! decode is 2.9 ms of a 4.5 ms validation, and the head is dominated by the idempotency
-//! ledger, which only grows — so the per-request floor follows how long the namespace has
-//! been running (see `LEASE_COST` in the scaling tests for the curve).
+//! decode is 2.9 ms of a 4.5 ms validation, and a pre-v5 head was dominated by the
+//! idempotency ledger, which only grew. The ledger window is now bounded and its overflow
+//! is paged, so the inline head no longer follows how long the namespace has been running
+//! (see `LEASE_COST` in the scaling tests); the cache still removes the repeated parse of
+//! whatever head remains.
 //!
 //! Reusing a decode is sound because the key is computed from the bytes in hand: a hit
 //! can only ever return the decode of the very bytes that were read now, so nothing is
