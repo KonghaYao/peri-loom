@@ -14,8 +14,10 @@ run3 本身的启动输出未记录 sha，见 §5）；§4 的对照还用了含
 
 ## 0. 一句话结论
 
-导入 100k 行后关闭全部会话，**空闲约 1 秒**就会把数据库从 Worker 卸载（`PERI_WORKER_DB_IDLE_UNLOAD_MS` 默认 1000 ms）。
-其后**第一次**打开会话必须重新回放整个远端 WAL，实测耗时 16.1–16.6 s；而这次打开所用的语句预算被请求级
+导入 100k 行后关闭全部会话，**空闲约 1 秒**就会把数据库从 Worker 卸载（`PERI_WORKER_DB_IDLE_UNLOAD_MS`
+默认 1000 ms）——这是基线 `0ecb117` 的默认值，本文"空闲约 1 秒就卸载"的描述都指该基线默认；当前 main 已把该默认
+改为 **60000 ms**（`7c3adab`，见 §3）。
+在基线默认下，其后**第一次**打开会话必须重新回放整个远端 WAL，实测耗时 16.1–16.6 s；而这次打开所用的语句预算被请求级
 截止点夹在 **10 s**（`2 × PERI_SQL_MAX_DURATION_MS`）以内，于是加载完成后立刻被判为
 `writer admission deadline`，Go 平台按既有短语表把它报成 **504 `sql_timeout`**——
 尽管该语句**从未进入执行**（`execution_completed=false`）。
@@ -57,15 +59,16 @@ run3 的 authority 日志显示三次失败对应三次完整的 11-chunk 回放
 
 ### 1.2 触发条件
 
-`src/worker_rpc/sessions.rs:111` 把空闲卸载阈值定为 1000 ms：
+`src/worker_rpc/sessions.rs:111` 把空闲卸载阈值定为 1000 ms——下段取自基线 `0ecb117`：
 
 ```rust
 database_idle: duration_env("PERI_WORKER_DB_IDLE_UNLOAD_MS", 1_000)?,
 ```
 
 `sweep()`（同文件 `:389`）末尾调用 `self.runtime.evict_idle(self.database_idle)?`（`:414`），
-由 watchdog 周期调用（`src/worker_rpc/server.rs:202`）。所以"关闭全部会话约 1 秒后卸载"是**默认行为**，
-与 30 s 的 lease TTL 无关：3.4 s 的空闲窗口已足够越过 1 s 阈值。
+由 watchdog 周期调用（`src/worker_rpc/server.rs:202`）。所以"关闭全部会话约 1 秒后卸载"是**基线 `0ecb117` 默认值下的行为**，
+与 30 s 的 lease TTL 无关：3.4 s 的空闲窗口已足够越过 1 s 阈值。当前 main 已把该默认值改为 **60000 ms**
+（`7c3adab`，见 §3）；本节与 §1.1 的失败观测都出自基线默认。
 
 ### 1.3 一次实验设计缺陷的更正
 
@@ -195,10 +198,11 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 `idle_since` 置成 `Some(now)`（`:452`），只有 `draining && sessions == 0` 才转 `Entry::Retiring`。
 **所以失败的打开并不会把已加载实例丢掉**；把它丢掉的是空闲清扫：watchdog 每 100 ms 走一遍
 （`src/worker_rpc/server.rs:223`），`sweep()` 末尾按 `PERI_WORKER_DB_IDLE_UNLOAD_MS`
-（默认 1000 ms，`src/worker_rpc/sessions.rs:111`）调用 `evict_idle`（`:414`），
-把 `Loaded` 换成 `Retiring` 并释放那份强引用，即**约 1.0–1.1 s 空闲之后实例才消失**。
+调用 `evict_idle`（`:414`），把 `Loaded` 换成 `Retiring` 并释放那份强引用。
+这里引用的是基线 `0ecb117` 的默认值 1000 ms（`src/worker_rpc/sessions.rs:111`），当时观测到的行为是
+**约 1.0–1.1 s 空闲之后实例才消失**；当前 main 已把该默认改为 60000 ms（`7c3adab`，见 §3）。
 
-探针 B/D 之间隔着 3.4 s 空闲，因此 D 必然重付一次冷加载。但**这不能推出"空闲清扫是唯一机制"**：
+探针 B/D 之间隔着 3.4 s 空闲，因此（在基线默认下）D 必然重付一次冷加载；当前 main 的 60000 ms 默认不再满足这个前提。但**这不能推出"空闲清扫是唯一机制"**：
 把 `--sql-max-duration-ms` 压到 2000（请求级截止点 = 受理 + 4 s）后实测，与上一次失败相隔 **0 ms**
 的重开同样重付了一次完整加载（9.26 s）并再次失败——即那次失败发生时条目**已经不在注册表里**。
 能产生这一状态的有两条路径，且都无需"加载成功"：
@@ -234,7 +238,7 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 
 ## 3. 需要改什么（与不需要改什么）
 
-按证据，缺口分布在三处，且互相独立（第三处已落地，见下）：
+按证据，缺口分布在两处，且互相独立；两处各对应一项已落地的改动（见下）：
 
 | 缺口 | 位置 | 为什么必须单独处理 |
 |---|---|---|
@@ -243,18 +247,41 @@ Go 侧 `platform/p6_verify_artifacts_test.go` 同时接受 base64 与整数数�
 
 **已落地**（不改变任何语义，只改编码与界限）：
 
-- `perf(authority_rpc)：对象字节改走 base64`（`be7d0dc`）——`Put.bytes`、`UploadSegments.segments`、
+- `perf(authority_rpc)：对象字节改走 base64`（`9fed133`）——`Put.bytes`、`UploadSegments.segments`、
   `StoredObject.bytes` 三处复用既有的 `object_store::payload` 约定，读方向继续接受旧整数数组。
   实测同一负载的 JSON 文本：4 MiB 对象 14,977,748 → 5,592,489 字节；16 × 128 KiB 段批次
   7,490,140 → 2,796,316 字节（单元测试打印，不是抓包）。
-- `fix(worker)：冷加载独立预算并在加载后重新锚定语句预算`（`4761183`）——加载段用
+  （该提交原在分支 `perf/authority-payload-20261017` 上，hash `be7d0dce`，已 cherry-pick 到 main。）
+- `fix(worker)：冷加载独立预算并在加载后重新锚定语句预算`（`7c3adab`）——加载段用
   `RequestDeadline::suspend()` 摘掉请求级截止点，加载界限改为 `PERI_WORKER_LOAD_MS`
   （默认 `max(2×语句墙钟预算, 60 s)`，非法值 fail-closed），加载后重新锚定语句预算；
   超预算报 `database load budget exceeded (PERI_WORKER_LOAD_MS)` 且带 `SqlEvidence::NotExecuted`，
-  平台侧归入 **503 `sql_unavailable`**；`PERI_WORKER_DB_IDLE_UNLOAD_MS` 默认 1000 → 60000 ms。
+  平台侧归入 **503 `sql_unavailable`**；基线 `0ecb117` 的 `PERI_WORKER_DB_IDLE_UNLOAD_MS` 默认 1000 ms
+  已改为 60000 ms。
+  （该提交原在分支 `perf/open-load-budget-20261017` 上，hash `4761183`，已 cherry-pick 到 main。）
+
+**并发打开的裁决边界**（同一提交引入的行为，一并记录）：超预算的裁决只由**实际执行加载**的那一个打开者承担——
+`src/runtime.rs:216-223` 先 `completion.finish(Ok(()))` 放行等待者，随后才判 `loaded_for > load_budget()`，
+超了才 `release` 并返回 `database load budget exceeded (PERI_WORKER_LOAD_MS)` + `SqlEvidence::NotExecuted`。
+同一时刻等在完成信号上的打开者（`src/runtime.rs:143-149` 只 `completion.wait()` 后 `continue`）醒来会落到
+`Entry::Loaded` 快路径**成功**拿到已驻留实例；这不是漏洞，而是与"超预算时实例保留、供后续复用"同一个意图。
+因此并发冷库上的调用方可能看到"一个 503 `sql_unavailable`（带 `execution_completed=false`），其余成功"，
+本文与 commit message 的措辞不应被读成"对所有打开者都报超预算"。这条边界已由 `src/runtime.rs` 的注释与
+`src/runtime/tests.rs` 的用例 `concurrent_openers_split_on_the_load_budget` 钉住。
 
 **不需要改**：`writer admission deadline` 对**语句执行**超预算的映射仍然正确；`rejected=true`
 表示确定未提交，客户端可以安全重发，这个契约不能动。
+
+**本次不动的相邻项**（记录在案，不在本次改动范围内）：
+
+- worker→platform 方向的 **SQL 结果 BLOB** 仍走整数数组：`src/worker_rpc/sessions.rs:758` 的
+  `json!(bytes.as_slice())`，Go 侧 `platform/hrana_http.go:760` 按 `[]any`→`byte` 解码；
+  实测 4 MiB blob → 14,977,669 字节（约 3.57 字符/字节）。它与 authority 入参方向相反、属另一条协议
+  （worker_rpc），要动必须同时改 Go 解码器与协议版本协商。
+- 由此产生的上限关系：SQL 结果字节预算默认 4 MiB（`PERI_SQL_MAX_RESULT_BYTES`），编码后约 14.3 MiB，
+  仍低于 Go 侧 32 MiB 传输上限（`platform/sql_upstream.go:23` 的 `sqlWireLimit`）；若把
+  `PERI_SQL_MAX_RESULT_BYTES` 抬到约 9 MiB 以上，编码后就会撞上 32 MiB 传输上限，
+  而当前没有任何校验把这两个上限绑在一起。
 
 ---
 
@@ -313,6 +340,20 @@ test result: FAILED. 14 passed; 1 failed
 "在途条数与字节 ≤ 预算 + 顺序 + 提前停止不抓完整历史"，而不是回退成"恰好 1 条"。
 在此之前，预取保留在分支 `perf/wal-prefetch-20261017`（`5fd8be1`）与本次回退提交之前的 `2f729e2` 上。
 
+### 4.2 修复后的验收观测（默认配置，单次）
+
+验收链（stress 序列）：导入 100k 行 → 探针 A（导入后立即打开）**成功 0.018 s** → 空闲 3.4 s 的探针 B
+**成功 0.021 s**（新默认下不再触发冷加载）；随后 9 臂压测跑完、空闲 30 s 后重开**成功 0.023 s**。
+所用二进制为 main 的 debug 构建，sha256 前 16 位 `1dc1c3ee1f2ec548`；同参数的另一次 accept 序列
+（另一 run 目录）给出探针 A 0.019 s、探针 B 0.020 s。
+
+基线对照：同一 accept 序列在 `0ecb117` 二进制上 **FAIL**——探针 A 成功 0.021 s，但空闲 3.4 s 后的
+探针 B 报 `sql_timeout` 16.019 s（`execution_completed=false`、`may_have_committed=false`、`timed_out=false`）。
+落盘证据在 `~/.peri-e01/stress-20261017/logs/base-probe-b.log`（本机私有目录，不在仓库内）。
+
+**口径**：以上都是**单次观测**（每个形态 1 次），只用于判定"成功/失败"，**不是延迟基线**，
+不支持任何加速倍数或百分比，不构成性能或容量结论。
+
 ---
 
 ## 5. 未测量与不可外推
@@ -325,9 +366,10 @@ test result: FAILED. 14 passed; 1 failed
 - 没有在多档数据集规模（10k/1M 行）或不同 `commit-rows` 下重复，因此**不能外推**到其他 WAL 长度。
 - 采样窗口只有 25 s，且只有一个 Worker 进程；没有与控制组做同窗口对比。
 - §2.6 的上限风险只有常量与倍率的算术，没有构造越界用例。
-- §2.5 的"失败路径不丢弃实例、约 1.0–1.1 s 空闲后由清扫驱逐"来自代码路径与常量；
-  由此推出的"失败后 1 s 内重开可复用驻留实例"**尚未实测**，不能当作重试建议的依据。
-- §2.1 的产生点由代码链与一次变异复现（摘掉加载段的 `RequestDeadline::suspend()` 后单测重现
-  同一文本）定案，**没有**来自生产运行的 worker 内部日志；run3 也没有记录当时二进制的 sha256
-  （该次构建已被 07:20 的重建覆盖）。
+- §2.5 的"失败路径不丢弃实例、约 1.0–1.1 s 空闲后由清扫驱逐"（后者的窗口是基线 `0ecb117` 的 1000 ms 默认）
+  来自代码路径与常量；由此推出的"失败后 1 s 内重开可复用驻留实例"**尚未实测**，不能当作重试建议的依据。
+- §2.1 的产生点由代码链定案（`database.rs:152` → `lane.rs:167/174/177` → `budget.rs:147`），
+  **没有**来自生产运行的 worker 内部日志；run3 也没有记录当时二进制的 sha256。
+- §4.2 的验收链与基线 FAIL 对照同为**单次观测**（各 1 次、无重复臂），与 §4 的对照一样
+  只用于判定"成功/失败"，**不能外推**为延迟或容量结论。
 - 容量、公平性、SLO 一律 **NOT MEASURED**。
