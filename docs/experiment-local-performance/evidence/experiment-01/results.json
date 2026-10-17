@@ -1,0 +1,467 @@
+{
+  "schema": 1,
+  "started_unix": 1792204492.9799669,
+  "host": "macOS-26.5.1-arm64-arm-64bit",
+  "processor": "arm",
+  "load_before": [
+    5.57177734375,
+    5.947265625,
+    6.697265625
+  ],
+  "identity": {
+    "baseline_commit": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+    "lab": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk",
+    "repository": "/Users/konghayao/code/ai/peri-loom",
+    "created_utc": "2026-10-17T02:19:39.148979+00:00",
+    "baseline_archive_sha256": "38f86727c29cddb293d4998c2154419e97ef4526f55fd39015f6f41cbef22750",
+    "turso_commit": "24a3a4609683b73935888f8bc30b47727d100aa8",
+    "goal": "At least 1.5x local representative SQL read/write test workload performance; no weakened correctness or durability",
+    "scope": "Both variants build the identical release integration harness. Baseline includes buffer/parser/pread fixes already committed at turn start; candidate includes outstanding WAL state reuse and further reviewed optimizations. Existing services untouched.",
+    "harness_sha256": "99083bf52c60d2c0861a2140f2ef693001cd8bcdd7a1077b345f181036785fef",
+    "target_dir": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/target",
+    "failed_v1": "First smoke failed with unknown namespace; preserved failed-v1 artifacts and logs. No timing result."
+  },
+  "harness_sha256": "99083bf52c60d2c0861a2140f2ef693001cd8bcdd7a1077b345f181036785fef",
+  "binaries": {
+    "baseline": {
+      "path": "/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/bin/baseline-local-performance",
+      "sha256": "a8fdfb33849581d77d9a39e06bce056b054f618b04f2579d0cbf95b2eb2811f3",
+      "source": "1198b18611601f7417f7b9ae4bbb3c370b41ff03"
+    },
+    "candidate": {
+      "path": "/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/bin/candidate-local-performance",
+      "sha256": "ce3744e8b9a5d5f7159f1cfe151d2c06bfe8b9dd86dedb4e8e0bac580a4e9d28",
+      "source": "a3edf74410c9d2a4a32b09c05ab9b04a4365b4b4e0e7b6cf05aca2a9d68f44bb"
+    }
+  },
+  "samples": [
+    {
+      "round": 1,
+      "arm": "baseline",
+      "result": {
+        "authority_boots": 4,
+        "checkpoint_transactions": 8,
+        "checkpoint_updated_rows": 256,
+        "checkpoints": 8,
+        "cold_reopens": 2,
+        "final_epoch": 4,
+        "final_oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+        "fixture_ns": 172288166,
+        "history_commits": 512,
+        "hot_reads": 256,
+        "initial_payload_bytes": 262144,
+        "lease_grants": 4,
+        "long_history_commits": 32,
+        "payload_bytes": 512,
+        "phases": [
+          {
+            "name": "hot_reads",
+            "requests": 256,
+            "returned_rows": 2176,
+            "wall_ns": 31283958
+          },
+          {
+            "name": "small_commits",
+            "requests": 32,
+            "wall_ns": 200832250
+          },
+          {
+            "name": "history_commits",
+            "requests": 512,
+            "wall_ns": 7221682250
+          },
+          {
+            "name": "long_history_commits",
+            "requests": 32,
+            "wall_ns": 632854083
+          },
+          {
+            "epoch": 2,
+            "name": "cold_wal_reopen",
+            "oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 4952882959
+          },
+          {
+            "epoch": 3,
+            "name": "writer_reopen",
+            "requests": 1,
+            "wall_ns": 4961943292
+          },
+          {
+            "name": "checkpoint_updates",
+            "requests": 8,
+            "updated_rows": 256,
+            "wall_ns": 701179000
+          },
+          {
+            "name": "checkpoints",
+            "requests": 8,
+            "wall_ns": 901951084
+          },
+          {
+            "epoch": 4,
+            "name": "cold_checkpoint_reopen",
+            "oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 5023440583
+          }
+        ],
+        "rows": 512,
+        "run": "round-01-baseline",
+        "schema": 1,
+        "seed_transactions": 2,
+        "small_commits": 32,
+        "source": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+        "total_request_ns": 24628049459,
+        "wal_oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+        "warmup_reads": 32,
+        "workload": "local-sql-v1"
+      },
+      "load_after": [
+        4.677734375,
+        5.72119140625,
+        6.59423828125
+      ]
+    },
+    {
+      "round": 1,
+      "arm": "candidate",
+      "result": {
+        "authority_boots": 4,
+        "checkpoint_transactions": 8,
+        "checkpoint_updated_rows": 256,
+        "checkpoints": 8,
+        "cold_reopens": 2,
+        "final_epoch": 4,
+        "final_oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+        "fixture_ns": 181186083,
+        "history_commits": 512,
+        "hot_reads": 256,
+        "initial_payload_bytes": 262144,
+        "lease_grants": 4,
+        "long_history_commits": 32,
+        "payload_bytes": 512,
+        "phases": [
+          {
+            "name": "hot_reads",
+            "requests": 256,
+            "returned_rows": 2176,
+            "wall_ns": 31857208
+          },
+          {
+            "name": "small_commits",
+            "requests": 32,
+            "wall_ns": 202698708
+          },
+          {
+            "name": "history_commits",
+            "requests": 512,
+            "wall_ns": 6991529791
+          },
+          {
+            "name": "long_history_commits",
+            "requests": 32,
+            "wall_ns": 679113416
+          },
+          {
+            "epoch": 2,
+            "name": "cold_wal_reopen",
+            "oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 4804723667
+          },
+          {
+            "epoch": 3,
+            "name": "writer_reopen",
+            "requests": 1,
+            "wall_ns": 4921371250
+          },
+          {
+            "name": "checkpoint_updates",
+            "requests": 8,
+            "updated_rows": 256,
+            "wall_ns": 691053583
+          },
+          {
+            "name": "checkpoints",
+            "requests": 8,
+            "wall_ns": 865131791
+          },
+          {
+            "epoch": 4,
+            "name": "cold_checkpoint_reopen",
+            "oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 4798806667
+          }
+        ],
+        "rows": 512,
+        "run": "round-01-candidate",
+        "schema": 1,
+        "seed_transactions": 2,
+        "small_commits": 32,
+        "source": "a3edf74410c9d2a4a32b09c05ab9b04a4365b4b4e0e7b6cf05aca2a9d68f44bb",
+        "total_request_ns": 23986286081,
+        "wal_oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+        "warmup_reads": 32,
+        "workload": "local-sql-v1"
+      },
+      "load_after": [
+        3.6787109375,
+        5.40478515625,
+        6.4541015625
+      ]
+    },
+    {
+      "round": 2,
+      "arm": "candidate",
+      "result": {
+        "authority_boots": 4,
+        "checkpoint_transactions": 8,
+        "checkpoint_updated_rows": 256,
+        "checkpoints": 8,
+        "cold_reopens": 2,
+        "final_epoch": 4,
+        "final_oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+        "fixture_ns": 199093750,
+        "history_commits": 512,
+        "hot_reads": 256,
+        "initial_payload_bytes": 262144,
+        "lease_grants": 4,
+        "long_history_commits": 32,
+        "payload_bytes": 512,
+        "phases": [
+          {
+            "name": "hot_reads",
+            "requests": 256,
+            "returned_rows": 2176,
+            "wall_ns": 32004625
+          },
+          {
+            "name": "small_commits",
+            "requests": 32,
+            "wall_ns": 197705083
+          },
+          {
+            "name": "history_commits",
+            "requests": 512,
+            "wall_ns": 9523827875
+          },
+          {
+            "name": "long_history_commits",
+            "requests": 32,
+            "wall_ns": 625563833
+          },
+          {
+            "epoch": 2,
+            "name": "cold_wal_reopen",
+            "oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 5511689542
+          },
+          {
+            "epoch": 3,
+            "name": "writer_reopen",
+            "requests": 1,
+            "wall_ns": 5104173458
+          },
+          {
+            "name": "checkpoint_updates",
+            "requests": 8,
+            "updated_rows": 256,
+            "wall_ns": 749810582
+          },
+          {
+            "name": "checkpoints",
+            "requests": 8,
+            "wall_ns": 972228085
+          },
+          {
+            "epoch": 4,
+            "name": "cold_checkpoint_reopen",
+            "oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 5157903333
+          }
+        ],
+        "rows": 512,
+        "run": "round-02-candidate",
+        "schema": 1,
+        "seed_transactions": 2,
+        "small_commits": 32,
+        "source": "a3edf74410c9d2a4a32b09c05ab9b04a4365b4b4e0e7b6cf05aca2a9d68f44bb",
+        "total_request_ns": 27874906416,
+        "wal_oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+        "warmup_reads": 32,
+        "workload": "local-sql-v1"
+      },
+      "load_after": [
+        10.09765625,
+        7.03662109375,
+        7.02294921875
+      ]
+    },
+    {
+      "round": 2,
+      "arm": "baseline",
+      "result": {
+        "authority_boots": 4,
+        "checkpoint_transactions": 8,
+        "checkpoint_updated_rows": 256,
+        "checkpoints": 8,
+        "cold_reopens": 2,
+        "final_epoch": 4,
+        "final_oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+        "fixture_ns": 204322000,
+        "history_commits": 512,
+        "hot_reads": 256,
+        "initial_payload_bytes": 262144,
+        "lease_grants": 4,
+        "long_history_commits": 32,
+        "payload_bytes": 512,
+        "phases": [
+          {
+            "name": "hot_reads",
+            "requests": 256,
+            "returned_rows": 2176,
+            "wall_ns": 32351459
+          },
+          {
+            "name": "small_commits",
+            "requests": 32,
+            "wall_ns": 246947375
+          },
+          {
+            "name": "history_commits",
+            "requests": 512,
+            "wall_ns": 7209845958
+          },
+          {
+            "name": "long_history_commits",
+            "requests": 32,
+            "wall_ns": 644930834
+          },
+          {
+            "epoch": 2,
+            "name": "cold_wal_reopen",
+            "oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 4935929208
+          },
+          {
+            "epoch": 3,
+            "name": "writer_reopen",
+            "requests": 1,
+            "wall_ns": 4824498417
+          },
+          {
+            "name": "checkpoint_updates",
+            "requests": 8,
+            "updated_rows": 256,
+            "wall_ns": 715716292
+          },
+          {
+            "name": "checkpoints",
+            "requests": 8,
+            "wall_ns": 991464334
+          },
+          {
+            "epoch": 4,
+            "name": "cold_checkpoint_reopen",
+            "oracle_digest": "aa4afe61f2e066e8da7a9bb7d712e72dc89d1bfc24c4e377292445a7061ba549",
+            "prior_binding_rejected": true,
+            "requests": 1,
+            "rows": 512,
+            "wall_ns": 5089942375
+          }
+        ],
+        "rows": 512,
+        "run": "round-02-baseline",
+        "schema": 1,
+        "seed_transactions": 2,
+        "small_commits": 32,
+        "source": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+        "total_request_ns": 24691626252,
+        "wal_oracle_digest": "42cb049af25fcda5a22e56a63754c17414dffbc128ebde0fa90ba605d60b4f59",
+        "warmup_reads": 32,
+        "workload": "local-sql-v1"
+      },
+      "load_after": [
+        7.99609375,
+        6.77783203125,
+        6.92822265625
+      ]
+    }
+  ],
+  "summary": {
+    "status": "NOT_YET_1_5X",
+    "paired_rounds": [
+      {
+        "round": 1,
+        "total_speedup": 1.0267554291578451,
+        "phases": {
+          "hot_reads": 0.9820056421768034,
+          "small_commits": 0.990791959068629,
+          "history_commits": 1.032918755391169,
+          "long_history_commits": 0.9318827578573414,
+          "cold_wal_reopen": 1.030836173371966,
+          "writer_reopen": 1.0082440523055438,
+          "checkpoint_updates": 1.0146521445645988,
+          "checkpoints": 1.04255917235158,
+          "cold_checkpoint_reopen": 1.0468103700748652
+        }
+      },
+      {
+        "round": 2,
+        "total_speedup": 0.885801225069842,
+        "phases": {
+          "hot_reads": 1.0108369962153907,
+          "small_commits": 1.2490694283262307,
+          "history_commits": 0.757032366883258,
+          "long_history_commits": 1.0309592722250616,
+          "cold_wal_reopen": 0.8955383227570041,
+          "writer_reopen": 0.9452065954847885,
+          "checkpoint_updates": 0.9545294627490333,
+          "checkpoints": 1.0197857368006398,
+          "cold_checkpoint_reopen": 0.9868239178572445
+        }
+      }
+    ],
+    "median_total_speedup": 0.9562783271138435,
+    "median_phase_speedup": {
+      "hot_reads": 0.9964213191960971,
+      "small_commits": 1.1199306936974298,
+      "history_commits": 0.8949755611372134,
+      "long_history_commits": 0.9814210150412015,
+      "cold_wal_reopen": 0.963187248064485,
+      "writer_reopen": 0.9767253238951661,
+      "checkpoint_updates": 0.9845908036568161,
+      "checkpoints": 1.0311724545761098,
+      "cold_checkpoint_reopen": 1.016817143966055
+    },
+    "phase_regressions_over_10_percent": {
+      "history_commits": 0.8949755611372134
+    }
+  },
+  "finished_unix": 1792204597.505673,
+  "load_after": [
+    7.99609375,
+    6.77783203125,
+    6.92822265625
+  ]
+}

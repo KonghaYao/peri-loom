@@ -30,7 +30,7 @@ struct State {
     head_etag: String,
     size: u64,
     segments: BTreeMap<u64, String>,
-    dirty: BTreeMap<u64, Vec<u8>>,
+    dirty: BTreeMap<u64, Arc<Vec<u8>>>,
     segment_loads: u64,
     /// Bumped by every mutation that can change what a read returns. A read captures it while
     /// resolving identities under the lock and validates it before returning, so a read that
@@ -272,23 +272,45 @@ impl RemoteStorage {
             return Ok(0);
         }
         let mut state = self.state();
-        let mut staged = BTreeMap::new();
+        // Resolve every fallible base read before changing any dirty buffer. Otherwise a
+        // failed fetch at the end of a spanning write could leave its dirty prefix modified.
+        let mut bases = BTreeMap::new();
         let mut completed = 0;
         while completed < data.len() {
             let position = offset + completed as u64;
             let index = position / SEGMENT_SIZE as u64;
             let within = (position % SEGMENT_SIZE as u64) as usize;
             let length = (SEGMENT_SIZE - within).min(data.len() - completed);
-            let mut bytes = if within == 0 && length == SEGMENT_SIZE {
-                vec![0; SEGMENT_SIZE]
-            } else {
-                self.load(&mut state, index)?.as_ref().clone()
-            };
-            bytes[within..within + length].copy_from_slice(&data[completed..completed + length]);
-            staged.insert(index, bytes);
+            if (within != 0 || length != SEGMENT_SIZE) && !state.dirty.contains_key(&index) {
+                bases.insert(index, self.load(&mut state, index)?);
+            }
             completed += length;
         }
-        state.dirty.extend(staged);
+        let mut completed = 0;
+        while completed < data.len() {
+            let position = offset + completed as u64;
+            let index = position / SEGMENT_SIZE as u64;
+            let within = (position % SEGMENT_SIZE as u64) as usize;
+            let length = (SEGMENT_SIZE - within).min(data.len() - completed);
+            if within == 0 && length == SEGMENT_SIZE {
+                state.dirty.insert(
+                    index,
+                    Arc::new(data[completed..completed + length].to_vec()),
+                );
+            } else {
+                let bytes = state.dirty.entry(index).or_insert_with(|| {
+                    bases
+                        .remove(&index)
+                        .expect("partial write base was resolved")
+                });
+                // Readers retain an immutable Arc outside the lock. Only an overlapping read
+                // or a shared published cache entry requires a copy; subsequent writes to an
+                // exclusively owned dirty segment change just the requested range.
+                Arc::make_mut(bytes)[within..within + length]
+                    .copy_from_slice(&data[completed..completed + length]);
+            }
+            completed += length;
+        }
         state.size = state.size.max(end);
         state.revision += 1;
         Ok(data.len())
@@ -307,8 +329,8 @@ impl RemoteStorage {
             if within != 0
                 && (state.dirty.contains_key(&boundary) || state.segments.contains_key(&boundary))
             {
-                let mut bytes = self.load(&mut state, boundary)?.as_ref().clone();
-                bytes[within..].fill(0);
+                let mut bytes = self.load(&mut state, boundary)?;
+                Arc::make_mut(&mut bytes)[within..].fill(0);
                 state.dirty.insert(boundary, bytes);
             }
             let keep = boundary + u64::from(within != 0);
@@ -348,13 +370,22 @@ impl RemoteStorage {
             }
         }
         next.validate()?;
+        // An immutable body only needs one successful existence/integrity check in this
+        // publication. Keep the bytes too: sharing a hash must never hide a collision. This
+        // table is discarded on error or return; a later publication must check again.
+        let mut checked = BTreeMap::<String, &[u8]>::new();
         for (index, bytes) in &state.dirty {
             let hash = digest(bytes);
-            put_immutable(
-                self.store.as_ref(),
-                &self.namespace.key(&format!("segments/{hash}"))?,
-                bytes,
-            )?;
+            let key = self.namespace.key(&format!("segments/{hash}"))?;
+            if let Some(previous) = checked.get(&hash) {
+                ensure!(
+                    *previous == bytes.as_slice(),
+                    "immutable object integrity failure: {key}"
+                );
+            } else {
+                put_immutable(self.store.as_ref(), &key, bytes)?;
+                checked.insert(hash.clone(), bytes.as_slice());
+            }
             next.segments.insert(*index, hash);
         }
         next.validate()?;
@@ -494,8 +525,8 @@ impl RemoteStorage {
 }
 
 /// What one index resolves to under the storage lock: identity, not bytes. A published segment is
-/// named by its content address and read later; staged bytes are copied out inside the lock
-/// because they are the caller's only copy and can still change.
+/// named by its content address and read later; staged bytes retain an immutable snapshot.
+/// Writers copy a staged buffer only while such a snapshot is still in use.
 enum SegmentSource {
     Staged(Arc<Vec<u8>>),
     Published(String),
@@ -504,7 +535,7 @@ enum SegmentSource {
 
 fn resolve_segment(state: &State, index: u64) -> SegmentSource {
     if let Some(bytes) = state.dirty.get(&index) {
-        return SegmentSource::Staged(Arc::new(bytes.clone()));
+        return SegmentSource::Staged(bytes.clone());
     }
     match state.segments.get(&index) {
         Some(hash) => SegmentSource::Published(hash.clone()),
@@ -635,3 +666,7 @@ mod read_path_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "storage_cow_tests.rs"]
+mod cow_tests;

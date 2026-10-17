@@ -1,0 +1,48 @@
+{
+  "archived_at": "2026-10-17T02:03:13.766896+00:00",
+  "identity": {
+    "original_review_sha": "e8beae40291bf61a84acd1aa0a8813ebef8d1234",
+    "experiment_sha": "c8990c406588a23a203a46033cf10103681d188c",
+    "lab": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy",
+    "repository": "/Users/konghayao/code/ai/peri-loom",
+    "initial_status": " M prototypes/v1/platform/operation_commit.go\n M prototypes/v1/src/authority_rpc/client.rs\n?? docs/performance-review/2026-10-17-read-write-diagnosis.md\n",
+    "submodule_sha": "24a3a4609683b73935888f8bc30b47727d100aa8"
+  },
+  "platform": "macOS-26.5.1-arm64-arm-64bit",
+  "cargo_target_dir": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/target-02",
+  "CARGO_BUILD_JOBS": 2,
+  "GOMAXPROCS": 2,
+  "profile": "dev test, unoptimized, debug=1; no timing inference",
+  "source_sha256": {
+    "prototypes/v1/src/io.rs": "442c23f3a2a47505288c712b0276dd45252a62b04909b7c91734c1e9dcba6bc0",
+    "prototypes/v1/src/io/experiment02.rs": "4e72e561edf8c256faf5e4a2a99a4ed924ce78cd21c9e5447218a30dad92c910",
+    "prototypes/v1/src/database.rs": "bcd50277197521833976b676a14bd91c4546b92434bc5fab314764bb4566cebd",
+    "prototypes/v1/src/recovery/tests.rs": "7cc35b42b11eab83424d1cf944a38df0c8ad9082bd628eb2aa717aeb703fe7dd",
+    "prototypes/v1/src/recovery/fixture.rs": "04588640400773e55f6096399ed0b78efb1147a5b700b7c34bf2f4affd7e6011",
+    "prototypes/v1/src/authority/store_scaling_tests.rs": "b698b2ffddfbc7ff2532a4c9386946242817b60c2bc34847b6eaa144041841f4",
+    "prototypes/v1/src/io/files.rs": "f7370012d04e6e2a79ec1a94089593b2da8f34136449fb27a8f71ab9670ce300"
+  },
+  "lock_sha256": "4f13c4671f843d679954a214af34c1bcedfa943f420cc684406d5a0b5f214006",
+  "tools": {
+    "rustc --version": {
+      "exit_code": 0,
+      "stdout": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "stderr": ""
+    },
+    "cargo --version": {
+      "exit_code": 0,
+      "stdout": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+      "stderr": ""
+    },
+    "go version": {
+      "exit_code": 0,
+      "stdout": "go version go1.23.4 darwin/arm64",
+      "stderr": ""
+    },
+    "uname -a": {
+      "exit_code": 0,
+      "stdout": "Darwin MacBook-Pro-2.local 25.5.0 Darwin Kernel Version 25.5.0: Mon Apr 27 20:41:12 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T6050 arm64",
+      "stderr": ""
+    }
+  }
+}

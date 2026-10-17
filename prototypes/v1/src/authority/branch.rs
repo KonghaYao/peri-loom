@@ -338,18 +338,19 @@ impl BranchStore {
 
     pub(super) fn publish_wal_append(
         &self,
-        record: &crate::wal::WalRecord,
+        encoded: &crate::wal::EncodedWalRecord,
         metadata: &crate::wal::WalMetadata,
         expected: Option<String>,
     ) -> Result<()> {
+        let record = encoded.record();
         ensure!(
             record.namespace == *self.authority.namespace()
                 && metadata.epoch == record.epoch
                 && metadata.last_lsn == record.lsn,
             "WAL publication identity mismatch"
         );
-        let chunk_bytes = serde_json::to_vec(record)?;
-        let hash = blake3::hash(&chunk_bytes).to_hex().to_string();
+        let chunk_bytes = encoded.bytes();
+        let hash = encoded.hash();
         let chunk_key = format!("wal/chunks/{hash}");
         let index_bytes = serde_json::to_vec(metadata)?;
         let condition = expected.map_or(PutCondition::Absent, PutCondition::Match);
@@ -363,12 +364,12 @@ impl BranchStore {
         // and uploading the bodies between that revision and the next. The keys are
         // fixed here, before the first attempt, so a retry rewrites the same bytes.
         self.authority.check(MutationStage::Upload)?;
-        let chunk = Authority::upload_entry(&chunk_bytes)?;
+        let chunk = Authority::upload_entry(chunk_bytes)?;
         let index = Authority::upload_entry(&index_bytes)?;
         let bodies = [
             PublicationBody {
                 entry: &chunk,
-                bytes: &chunk_bytes,
+                bytes: chunk_bytes,
             },
             PublicationBody {
                 entry: &index,
@@ -420,22 +421,38 @@ impl BranchStore {
             )?;
             Ok(())
         })?;
-        // Refresh from the root the caller now treats as current, not from the attempt's
-        // candidate: a lost acknowledgement can resolve to a later head whose branch WAL
-        // already moved, and the session must read that index instead of the one it tried to
-        // publish. The pin entries added above are part of that later head too.
-        Self::refresh(
-            &mut view,
-            Self::selected(&published.root, &self.branch)?,
-            added,
-        );
-        if published
-            .root
-            .branches
-            .get(&self.branch)
-            .and_then(|branch| branch.wal.as_ref())
-            == Some(&index)
-        {
+        let mut selected = Self::selected(&published.root, &self.branch)?;
+        if selected.head != view.head || selected.wal.as_ref() != Some(&index) {
+            // A lost acknowledgement can resolve to another writer's later point. Our
+            // publication pinned its own bodies, not that point's HEAD/WAL dependencies.
+            // Select and pin together; even if this pin transaction itself loses its ACK,
+            // refresh from its captured point, never from another unpinned returned root.
+            let publication_blobs: BTreeSet<_> =
+                added.values().map(|entry| entry.blob.clone()).collect();
+            let mut pinned_selected = None;
+            let mut pinned_entries = BTreeMap::new();
+            self.authority.transact(None, |root| {
+                self.bound(root)?;
+                let current = Self::selected(root, &self.branch)?;
+                let mut entries = referenced(
+                    &self.authority,
+                    root,
+                    current.head.as_ref(),
+                    current.wal.as_ref(),
+                )?;
+                // These entries are already durable in this session's pin, even though
+                // the in-memory view has not yet adopted the successful publication.
+                entries.retain(|_, entry| !publication_blobs.contains(&entry.blob));
+                pinned_entries = self.extend_pin(root, &view, entries)?;
+                pinned_selected = Some(current);
+                Ok(())
+            })?;
+            selected = pinned_selected.context("branch refresh pin missing")?;
+            added.extend(pinned_entries);
+        }
+        let keeps_image = selected.wal.as_ref() == Some(&index);
+        Self::refresh(&mut view, selected, added);
+        if keeps_image {
             view.validated_wal = Some((index, validated.context("WAL validation missing")?));
         }
         // Otherwise the observed head names a different index: the image this attempt

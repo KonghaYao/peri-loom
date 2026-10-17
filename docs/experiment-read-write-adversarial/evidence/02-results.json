@@ -1,0 +1,680 @@
+[
+  {
+    "arm": "maintenance_gate",
+    "hypothesis": "H3",
+    "operations_read_available": false,
+    "wal_pread_completed": true,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "hypothesis": "H3",
+    "independent_shared": true,
+    "patched": false,
+    "shared_available_during_GET": false,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "same_io_wal",
+    "completed_before_release": false,
+    "hypothesis": "H3",
+    "outcome": "Err(Timeout)",
+    "patched": false,
+    "started": true,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "same_io_other_segment",
+    "completed_before_release": false,
+    "hypothesis": "H3",
+    "outcome": "Err(Timeout)",
+    "patched": false,
+    "started": true,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "independent_io",
+    "completed_before_release": true,
+    "hypothesis": "H3",
+    "outcome": "Ok(Ok(()))",
+    "patched": false,
+    "started": true,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "direct_storage",
+    "completed_before_release": true,
+    "hypothesis": "H3",
+    "outcome": "Ok(Ok(()))",
+    "patched": false,
+    "started": true,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "sparse_distinct",
+    "dirty_segments": 8,
+    "events": [
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/ed0a32019380ae6b53fb52af5e062488ecf96884736494f791e075fddca839ac",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/ed0a32019380ae6b53fb52af5e062488ecf96884736494f791e075fddca839ac",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/321ed8b900621cbd589fb5d2491d1da3aa1592db4bcc19a165729527ca057e41",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/321ed8b900621cbd589fb5d2491d1da3aa1592db4bcc19a165729527ca057e41",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/643aa628ad297d05e9c843a336334aef012012056d2278d90dafccc467ec0f7f",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/643aa628ad297d05e9c843a336334aef012012056d2278d90dafccc467ec0f7f",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/1aaa07cb3596ecb944e6724ed1fc877897a040c3d57f514bc98be4dc4b8c341d",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/1aaa07cb3596ecb944e6724ed1fc877897a040c3d57f514bc98be4dc4b8c341d",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/55a5b4e41fa06be5cd638a2770cfd833dd4636ea7f7d934bc100327e6d29607e",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/55a5b4e41fa06be5cd638a2770cfd833dd4636ea7f7d934bc100327e6d29607e",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/6e7c4d85428ddecbd9c20502be15e5b2abf4ed3d9ce09b0cc60300c53fcfb21c",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/6e7c4d85428ddecbd9c20502be15e5b2abf4ed3d9ce09b0cc60300c53fcfb21c",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_distinct/segments/6a0b5fe996555391cab2f93827a43908c9aa1f56c0fe4bec07eb90d562ec556d",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_distinct/segments/6a0b5fe996555391cab2f93827a43908c9aa1f56c0fe4bec07eb90d562ec556d",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "manifest",
+        "found": false,
+        "key": "rw02/sparse_distinct/manifests/79d7ce6f3cdf7ca2bb34ef1cf6303062ad2943ffd645289b7df5a92fdc570b56",
+        "op": "GET"
+      },
+      {
+        "bytes": 808,
+        "class": "manifest",
+        "key": "rw02/sparse_distinct/manifests/79d7ce6f3cdf7ca2bb34ef1cf6303062ad2943ffd645289b7df5a92fdc570b56",
+        "op": "PUT"
+      },
+      {
+        "bytes": 79,
+        "class": "HEAD",
+        "key": "rw02/sparse_distinct/HEAD",
+        "op": "PUT"
+      }
+    ],
+    "hypothesis": "H5",
+    "input_bytes": 32768,
+    "totals": {
+      "HEAD_GET_bytes": 0,
+      "HEAD_GET_count": 0,
+      "HEAD_PUT_bytes": 79,
+      "HEAD_PUT_count": 1,
+      "manifest_GET_bytes": 0,
+      "manifest_GET_count": 1,
+      "manifest_PUT_bytes": 808,
+      "manifest_PUT_count": 1,
+      "other_GET_bytes": 0,
+      "other_GET_count": 0,
+      "other_PUT_bytes": 0,
+      "other_PUT_count": 0,
+      "segment_GET_bytes": 0,
+      "segment_GET_count": 8,
+      "segment_PUT_bytes": 1048576,
+      "segment_PUT_count": 8
+    },
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "sparse_identical",
+    "dirty_segments": 8,
+    "events": [
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "PUT"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/sparse_identical/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 0,
+        "class": "manifest",
+        "found": false,
+        "key": "rw02/sparse_identical/manifests/42e60fe9aba86730e805a9504b47340afbc6b24256382402f8a52bc45ad28a2b",
+        "op": "GET"
+      },
+      {
+        "bytes": 808,
+        "class": "manifest",
+        "key": "rw02/sparse_identical/manifests/42e60fe9aba86730e805a9504b47340afbc6b24256382402f8a52bc45ad28a2b",
+        "op": "PUT"
+      },
+      {
+        "bytes": 79,
+        "class": "HEAD",
+        "key": "rw02/sparse_identical/HEAD",
+        "op": "PUT"
+      }
+    ],
+    "hypothesis": "H5",
+    "input_bytes": 32768,
+    "totals": {
+      "HEAD_GET_bytes": 0,
+      "HEAD_GET_count": 0,
+      "HEAD_PUT_bytes": 79,
+      "HEAD_PUT_count": 1,
+      "manifest_GET_bytes": 0,
+      "manifest_GET_count": 1,
+      "manifest_PUT_bytes": 808,
+      "manifest_PUT_count": 1,
+      "other_GET_bytes": 0,
+      "other_GET_count": 0,
+      "other_PUT_bytes": 0,
+      "other_PUT_count": 0,
+      "segment_GET_bytes": 917504,
+      "segment_GET_count": 8,
+      "segment_PUT_bytes": 131072,
+      "segment_PUT_count": 1
+    },
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "already_exists",
+    "dirty_segments": 8,
+    "events": [
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/ed0a32019380ae6b53fb52af5e062488ecf96884736494f791e075fddca839ac",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/321ed8b900621cbd589fb5d2491d1da3aa1592db4bcc19a165729527ca057e41",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/643aa628ad297d05e9c843a336334aef012012056d2278d90dafccc467ec0f7f",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/1aaa07cb3596ecb944e6724ed1fc877897a040c3d57f514bc98be4dc4b8c341d",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/55a5b4e41fa06be5cd638a2770cfd833dd4636ea7f7d934bc100327e6d29607e",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/6e7c4d85428ddecbd9c20502be15e5b2abf4ed3d9ce09b0cc60300c53fcfb21c",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/7820f9c865c912452bb8901aed4ca9c72307dabc724fd96af806f3c4263c8661",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "found": true,
+        "key": "rw02/already_exists/segments/6a0b5fe996555391cab2f93827a43908c9aa1f56c0fe4bec07eb90d562ec556d",
+        "op": "GET"
+      },
+      {
+        "bytes": 0,
+        "class": "manifest",
+        "found": false,
+        "key": "rw02/already_exists/manifests/4944da68056f8bed5dab7c8eca3747fb6ed0b7a0d69dd6e9a22eedd8a9fae1b3",
+        "op": "GET"
+      },
+      {
+        "bytes": 808,
+        "class": "manifest",
+        "key": "rw02/already_exists/manifests/4944da68056f8bed5dab7c8eca3747fb6ed0b7a0d69dd6e9a22eedd8a9fae1b3",
+        "op": "PUT"
+      },
+      {
+        "bytes": 79,
+        "class": "HEAD",
+        "key": "rw02/already_exists/HEAD",
+        "op": "PUT"
+      }
+    ],
+    "hypothesis": "H5",
+    "input_bytes": 32768,
+    "totals": {
+      "HEAD_GET_bytes": 0,
+      "HEAD_GET_count": 0,
+      "HEAD_PUT_bytes": 79,
+      "HEAD_PUT_count": 1,
+      "manifest_GET_bytes": 0,
+      "manifest_GET_count": 1,
+      "manifest_PUT_bytes": 808,
+      "manifest_PUT_count": 1,
+      "other_GET_bytes": 0,
+      "other_GET_count": 0,
+      "other_PUT_bytes": 0,
+      "other_PUT_count": 0,
+      "segment_GET_bytes": 1048576,
+      "segment_GET_count": 8,
+      "segment_PUT_bytes": 0,
+      "segment_PUT_count": 0
+    },
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "full_contiguous",
+    "dirty_segments": 8,
+    "events": [
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/246283d298de53912c39d32bbf2e4d8025497ecc49deaeecc2b7d322cec09305",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/246283d298de53912c39d32bbf2e4d8025497ecc49deaeecc2b7d322cec09305",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/fa03b2ad51833c7c751b59827db10b8fe86a6e9dec3cdd602e50d7914e804d9f",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/fa03b2ad51833c7c751b59827db10b8fe86a6e9dec3cdd602e50d7914e804d9f",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/7ea0239e0b57df93c1a09a6f008cf22d25cb9d7b8264b69059d92c6d2074ea61",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/7ea0239e0b57df93c1a09a6f008cf22d25cb9d7b8264b69059d92c6d2074ea61",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/646d533b117676c53b0bb89b300e7036d5d2976e11d21973f01060fd38562ada",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/646d533b117676c53b0bb89b300e7036d5d2976e11d21973f01060fd38562ada",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/387b5d530afbd065ff5dc6ca209f9e68e827cb726fbeddb97be072333176dce0",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/387b5d530afbd065ff5dc6ca209f9e68e827cb726fbeddb97be072333176dce0",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/f2b3b8831ae90a5f08383f32c7d1b06b1f675f113a4245c4769529528bbbe922",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/f2b3b8831ae90a5f08383f32c7d1b06b1f675f113a4245c4769529528bbbe922",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/7d1884fe1bf129a19a9b8a31321c48430ac86f2c100d5ee095ea9f1fc76758ba",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/7d1884fe1bf129a19a9b8a31321c48430ac86f2c100d5ee095ea9f1fc76758ba",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "segment",
+        "found": false,
+        "key": "rw02/full_contiguous/segments/8d08e3f9c2a39ff05aa406963eb390e42f2f2f7921e99b6ea66ab38eda382f18",
+        "op": "GET"
+      },
+      {
+        "bytes": 131072,
+        "class": "segment",
+        "key": "rw02/full_contiguous/segments/8d08e3f9c2a39ff05aa406963eb390e42f2f2f7921e99b6ea66ab38eda382f18",
+        "op": "PUT"
+      },
+      {
+        "bytes": 0,
+        "class": "manifest",
+        "found": false,
+        "key": "rw02/full_contiguous/manifests/bce151ecd9ec395f78587c3db1264d5ed65de9da23c5e8f9d710e612629305cf",
+        "op": "GET"
+      },
+      {
+        "bytes": 809,
+        "class": "manifest",
+        "key": "rw02/full_contiguous/manifests/bce151ecd9ec395f78587c3db1264d5ed65de9da23c5e8f9d710e612629305cf",
+        "op": "PUT"
+      },
+      {
+        "bytes": 79,
+        "class": "HEAD",
+        "key": "rw02/full_contiguous/HEAD",
+        "op": "PUT"
+      }
+    ],
+    "hypothesis": "H5",
+    "input_bytes": 1048576,
+    "totals": {
+      "HEAD_GET_bytes": 0,
+      "HEAD_GET_count": 0,
+      "HEAD_PUT_bytes": 79,
+      "HEAD_PUT_count": 1,
+      "manifest_GET_bytes": 0,
+      "manifest_GET_count": 1,
+      "manifest_PUT_bytes": 809,
+      "manifest_PUT_count": 1,
+      "other_GET_bytes": 0,
+      "other_GET_count": 0,
+      "other_PUT_bytes": 0,
+      "other_PUT_count": 0,
+      "segment_GET_bytes": 0,
+      "segment_GET_count": 8,
+      "segment_PUT_bytes": 1048576,
+      "segment_PUT_count": 8
+    },
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "no_new_index_rejected",
+    "copied_bytes": 0,
+    "frames": 64,
+    "hypothesis": "H4",
+    "scanned_bytes": 0,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "incremental",
+    "copied_bytes": 34336,
+    "entries": 2,
+    "frame_bytes": 536,
+    "hypothesis": "H4",
+    "image_bytes": 34336,
+    "index_json_bytes": 584,
+    "new_frames": 1,
+    "old_frames": 64,
+    "page_bytes": 512,
+    "receipt_digests": 2,
+    "receipts": 2,
+    "scanned_bytes": 568,
+    "scanned_frames": 1,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "no_new_index_rejected",
+    "copied_bytes": 0,
+    "frames": 1024,
+    "hypothesis": "H4",
+    "scanned_bytes": 0,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "incremental",
+    "copied_bytes": 548896,
+    "entries": 2,
+    "frame_bytes": 536,
+    "hypothesis": "H4",
+    "image_bytes": 548896,
+    "index_json_bytes": 586,
+    "new_frames": 1,
+    "old_frames": 1024,
+    "page_bytes": 512,
+    "receipt_digests": 2,
+    "receipts": 2,
+    "scanned_bytes": 568,
+    "scanned_frames": 1,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "no_new_index_rejected",
+    "copied_bytes": 0,
+    "frames": 8192,
+    "hypothesis": "H4",
+    "scanned_bytes": 0,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "arm": "incremental",
+    "copied_bytes": 4390944,
+    "entries": 2,
+    "frame_bytes": 536,
+    "hypothesis": "H4",
+    "image_bytes": 4390944,
+    "index_json_bytes": 586,
+    "new_frames": 1,
+    "old_frames": 8192,
+    "page_bytes": 512,
+    "receipt_digests": 2,
+    "receipts": 2,
+    "scanned_bytes": 568,
+    "scanned_frames": 1,
+    "raw_file": "02-frozen-raw.log"
+  },
+  {
+    "hypothesis": "H3",
+    "independent_shared": true,
+    "patched": true,
+    "shared_available_during_GET": true,
+    "raw_file": "02-patched-raw.log"
+  },
+  {
+    "arm": "same_io_wal",
+    "completed_before_release": true,
+    "hypothesis": "H3",
+    "outcome": "Ok(Ok(()))",
+    "patched": true,
+    "started": true,
+    "raw_file": "02-patched-raw.log"
+  },
+  {
+    "arm": "same_io_other_segment",
+    "completed_before_release": true,
+    "hypothesis": "H3",
+    "outcome": "Ok(Ok(()))",
+    "patched": true,
+    "started": true,
+    "raw_file": "02-patched-raw.log"
+  },
+  {
+    "arm": "independent_io",
+    "completed_before_release": true,
+    "hypothesis": "H3",
+    "outcome": "Ok(Ok(()))",
+    "patched": true,
+    "started": true,
+    "raw_file": "02-patched-raw.log"
+  },
+  {
+    "arm": "direct_storage",
+    "completed_before_release": true,
+    "hypothesis": "H3",
+    "outcome": "Ok(Ok(()))",
+    "patched": true,
+    "started": true,
+    "raw_file": "02-patched-raw.log"
+  }
+]

@@ -1,0 +1,404 @@
+{
+  "01-go-raw.log": {
+    "actual_sync/batch1/frozen": {
+      "ns/op": {
+        "median": 4429635.5,
+        "mean": 4548175.833333333,
+        "stdev": 1085066.126093966,
+        "min": 3123890.0,
+        "max": 6377843.0
+      },
+      "B/op": {
+        "median": 1050068.0,
+        "mean": 1050098.0,
+        "stdev": 58.12056434688156,
+        "min": 1050051.0,
+        "max": 1050192.0
+      },
+      "allocs/op": {
+        "median": 14.0,
+        "mean": 14.166666666666666,
+        "stdev": 0.408248290463863,
+        "min": 14.0,
+        "max": 15.0
+      },
+      "samples": 6
+    },
+    "actual_sync/batch1/exact": {
+      "ns/op": {
+        "median": 4924442.5,
+        "mean": 4895885.5,
+        "stdev": 1041683.0697007128,
+        "min": 3137164.0,
+        "max": 6135233.0
+      },
+      "B/op": {
+        "median": 1352.0,
+        "mean": 1352.0,
+        "stdev": 0.0,
+        "min": 1352.0,
+        "max": 1352.0
+      },
+      "allocs/op": {
+        "median": 12.0,
+        "mean": 12.0,
+        "stdev": 0.0,
+        "min": 12.0,
+        "max": 12.0
+      },
+      "samples": 6
+    },
+    "buffer_model/batch1/frozen": {
+      "ns/op": {
+        "median": 94579.5,
+        "mean": 94512.33333333333,
+        "stdev": 24741.5093692092,
+        "min": 66286.0,
+        "max": 121347.0
+      },
+      "B/op": {
+        "median": 1048576.0,
+        "mean": 1048576.0,
+        "stdev": 0.0,
+        "min": 1048576.0,
+        "max": 1048576.0
+      },
+      "allocs/op": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "samples": 6
+    },
+    "buffer_model/batch1/exact": {
+      "ns/op": {
+        "median": 35.875,
+        "mean": 41.19166666666667,
+        "stdev": 15.268455608432264,
+        "min": 29.94,
+        "max": 71.25
+      },
+      "B/op": {
+        "median": 176.0,
+        "mean": 176.0,
+        "stdev": 0.0,
+        "min": 176.0,
+        "max": 176.0
+      },
+      "allocs/op": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "samples": 6
+    },
+    "actual_sync/batch32/frozen": {
+      "ns/op": {
+        "median": 4968322.0,
+        "mean": 5031707.5,
+        "stdev": 1418538.198279306,
+        "min": 3487610.0,
+        "max": 6749230.0
+      },
+      "B/op": {
+        "median": 1050041.0,
+        "mean": 1050046.3333333333,
+        "stdev": 44.11197872082669,
+        "min": 1050003.0,
+        "max": 1050119.0
+      },
+      "allocs/op": {
+        "median": 14.0,
+        "mean": 14.166666666666666,
+        "stdev": 0.408248290463863,
+        "min": 14.0,
+        "max": 15.0
+      },
+      "samples": 6
+    },
+    "actual_sync/batch32/exact": {
+      "ns/op": {
+        "median": 3777733.0,
+        "mean": 4221641.0,
+        "stdev": 1123855.1615627345,
+        "min": 3319445.0,
+        "max": 6158115.0
+      },
+      "B/op": {
+        "median": 9368.0,
+        "mean": 9368.0,
+        "stdev": 0.0,
+        "min": 9368.0,
+        "max": 9368.0
+      },
+      "allocs/op": {
+        "median": 12.0,
+        "mean": 12.0,
+        "stdev": 0.0,
+        "min": 12.0,
+        "max": 12.0
+      },
+      "samples": 6
+    },
+    "buffer_model/batch32/frozen": {
+      "ns/op": {
+        "median": 89855.0,
+        "mean": 87209.5,
+        "stdev": 26420.27052662406,
+        "min": 53380.0,
+        "max": 129293.0
+      },
+      "B/op": {
+        "median": 1048576.0,
+        "mean": 1048576.0,
+        "stdev": 0.0,
+        "min": 1048576.0,
+        "max": 1048576.0
+      },
+      "allocs/op": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "samples": 6
+    },
+    "buffer_model/batch32/exact": {
+      "ns/op": {
+        "median": 1204.5,
+        "mean": 1288.8166666666666,
+        "stdev": 256.1299702624952,
+        "min": 998.9,
+        "max": 1647.0
+      },
+      "B/op": {
+        "median": 8192.0,
+        "mean": 8192.0,
+        "stdev": 0.0,
+        "min": 8192.0,
+        "max": 8192.0
+      },
+      "allocs/op": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "samples": 6
+    }
+  },
+  "01-go-full-raw.log": {
+    "actual_sync/batch32/frozen": {
+      "ns/op": {
+        "median": 4535675.0,
+        "mean": 4634186.333333333,
+        "stdev": 631236.925140368,
+        "min": 3921584.0,
+        "max": 5803613.0
+      },
+      "B/op": {
+        "median": 1049885.0,
+        "mean": 1049887.5,
+        "stdev": 25.097808669284255,
+        "min": 1049857.0,
+        "max": 1049928.0
+      },
+      "allocs/op": {
+        "median": 12.0,
+        "mean": 12.333333333333334,
+        "stdev": 0.5163977794943223,
+        "min": 12.0,
+        "max": 13.0
+      },
+      "samples": 6
+    },
+    "actual_sync/batch32/exact": {
+      "ns/op": {
+        "median": 4491809.0,
+        "mean": 4758805.0,
+        "stdev": 681429.1355643667,
+        "min": 4069696.0,
+        "max": 5817418.0
+      },
+      "B/op": {
+        "median": 1049888.0,
+        "mean": 1049900.5,
+        "stdev": 37.52732337910606,
+        "min": 1049867.0,
+        "max": 1049963.0
+      },
+      "allocs/op": {
+        "median": 12.5,
+        "mean": 12.5,
+        "stdev": 0.5477225575051661,
+        "min": 12.0,
+        "max": 13.0
+      },
+      "samples": 6
+    },
+    "buffer_model/batch32/frozen": {
+      "ns/op": {
+        "median": 59787.5,
+        "mean": 61551.333333333336,
+        "stdev": 16961.304721826877,
+        "min": 44196.0,
+        "max": 85221.0
+      },
+      "B/op": {
+        "median": 1048576.0,
+        "mean": 1048576.0,
+        "stdev": 0.0,
+        "min": 1048576.0,
+        "max": 1048576.0
+      },
+      "allocs/op": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "samples": 6
+    },
+    "buffer_model/batch32/exact": {
+      "ns/op": {
+        "median": 57931.0,
+        "mean": 60951.333333333336,
+        "stdev": 15564.469944931201,
+        "min": 45041.0,
+        "max": 86354.0
+      },
+      "B/op": {
+        "median": 1048576.0,
+        "mean": 1048576.0,
+        "stdev": 0.0,
+        "min": 1048576.0,
+        "max": 1048576.0
+      },
+      "allocs/op": {
+        "median": 1.0,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "samples": 6
+    }
+  },
+  "rust": {
+    "112/dual": {
+      "ns/op": {
+        "median": 605.669,
+        "mean": 613.0333333333333,
+        "stdev": 35.96311165995882
+      },
+      "allocated_B/op": {
+        "median": 1975.0,
+        "mean": 1975.0,
+        "stdev": 0.0
+      },
+      "allocs/op": {
+        "median": 15.0,
+        "mean": 15.0,
+        "stdev": 0.0
+      },
+      "samples": 6
+    },
+    "112/single": {
+      "ns/op": {
+        "median": 197.40449999999998,
+        "mean": 196.32766666666666,
+        "stdev": 5.361533499537862
+      },
+      "allocated_B/op": {
+        "median": 647.0,
+        "mean": 647.0,
+        "stdev": 0.0
+      },
+      "allocs/op": {
+        "median": 4.0,
+        "mean": 4.0,
+        "stdev": 0.0
+      },
+      "samples": 6
+    },
+    "1024/dual": {
+      "ns/op": {
+        "median": 800.9025,
+        "mean": 794.3071666666667,
+        "stdev": 22.31934403531309
+      },
+      "allocated_B/op": {
+        "median": 3799.0,
+        "mean": 3799.0,
+        "stdev": 0.0
+      },
+      "allocs/op": {
+        "median": 15.0,
+        "mean": 15.0,
+        "stdev": 0.0
+      },
+      "samples": 6
+    },
+    "1024/single": {
+      "ns/op": {
+        "median": 288.13300000000004,
+        "mean": 286.99016666666665,
+        "stdev": 11.925382935850172
+      },
+      "allocated_B/op": {
+        "median": 1559.0,
+        "mean": 1559.0,
+        "stdev": 0.0
+      },
+      "allocs/op": {
+        "median": 4.0,
+        "mean": 4.0,
+        "stdev": 0.0
+      },
+      "samples": 6
+    },
+    "1048576/dual": {
+      "ns/op": {
+        "median": 194952.5,
+        "mean": 195222.22333333333,
+        "stdev": 6045.709973181537
+      },
+      "allocated_B/op": {
+        "median": 2098903.0,
+        "mean": 2098903.0,
+        "stdev": 0.0
+      },
+      "allocs/op": {
+        "median": 15.0,
+        "mean": 15.0,
+        "stdev": 0.0
+      },
+      "samples": 6
+    },
+    "1048576/single": {
+      "ns/op": {
+        "median": 93872.5,
+        "mean": 96383.89,
+        "stdev": 6489.932380476703
+      },
+      "allocated_B/op": {
+        "median": 1049111.0,
+        "mean": 1049111.0,
+        "stdev": 0.0
+      },
+      "allocs/op": {
+        "median": 4.0,
+        "mean": 4.0,
+        "stdev": 0.0
+      },
+      "samples": 6
+    }
+  }
+}

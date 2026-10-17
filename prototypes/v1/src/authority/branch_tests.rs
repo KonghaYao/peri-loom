@@ -14,7 +14,7 @@ use crate::{
         fixture::{write_at, WalBuilder, FRAME_SIZE, PAGE_SIZE},
         recovery_observations, reset_recovery_observations, validate_index_state, WAL_HEADER,
     },
-    wal::{RemoteWal, WalAppendRequest, WalBatch, WalCommit, WalOperation},
+    wal::{DurableWal, RemoteWal, WalAppendRequest, WalBatch, WalCommit, WalOperation},
 };
 use anyhow::{bail, Context as _, Result};
 use std::sync::{
@@ -117,8 +117,8 @@ fn append(
         append_id: append_id.to_owned(),
         timestamp_millis: 1,
     };
-    RemoteWal::new(branch.clone()).append_using(&request, |record, metadata, expected| {
-        branch.publish_wal_append(record, metadata, expected)
+    RemoteWal::new(branch.clone()).append_using(&request, |encoded, metadata, expected| {
+        branch.publish_wal_append(encoded, metadata, expected)
     })
 }
 
@@ -510,6 +510,97 @@ fn a_lost_acknowledgement_that_resolves_to_a_later_wal_does_not_keep_the_image()
             position: WalPosition {
                 salts: SALTS,
                 frame_count: 7
+            }
+        })
+    );
+    Ok(())
+}
+
+/// The later markerless index has no recovery-history owner. Once it leaves the branch,
+/// only the original session's durable pin can keep that adopted view readable through GC.
+#[test]
+fn a_later_wal_adopted_after_a_lost_ack_is_pinned_through_gc() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    let mut builder = WalBuilder::new(SALTS);
+    let first = builder.image(4);
+    assert_eq!(
+        append(&branch, &namespace, write_at(0, &first), committed(4), "first")?,
+        1
+    );
+
+    let competitor = authority.clone();
+    let later_namespace = namespace.clone();
+    *store.after_root.lock().unwrap() = Some(Box::new(move || {
+        let later = competitor.branch_store("main").unwrap();
+        assert_eq!(
+            append(
+                &later,
+                &later_namespace,
+                WalBatch::default(),
+                None,
+                "later-markerless"
+            )
+            .unwrap(),
+            3
+        );
+        // Its own session pin must disappear before the original session adopts the view.
+        drop(later);
+    }));
+    store.root_fault.store(1, Ordering::SeqCst);
+    let frame5 = builder.frame(5, PAGE_SIZE as u32);
+    assert_eq!(
+        append(
+            &branch,
+            &namespace,
+            write_at(first.len(), &frame5),
+            committed(5),
+            "lost-ack"
+        )?,
+        2
+    );
+
+    let adopted = branch.view.lock().unwrap().wal.clone().unwrap();
+    let snapshot = authority.snapshot()?;
+    assert!(snapshot.root.pins[&branch.pin]
+        .iter()
+        .any(|entry| entry.blob == adopted.blob));
+    assert!(!snapshot.root.branches["main"]
+        .history
+        .iter()
+        .any(|point| point.wal.as_ref() == Some(&adopted)));
+    // Retire the current reference to isolate the reader pin from branch reachability.
+    authority.transact(None, |root| {
+        root.branches.get_mut("main").unwrap().wal = None;
+        Ok(())
+    })?;
+    crate::gc::GarbageCollector::new(authority.clone(), std::time::Duration::ZERO).collect()?;
+
+    let wal = RemoteWal::new(branch.clone());
+    assert_eq!(wal.metadata(&namespace)?.last_lsn, 3);
+    assert_eq!(wal.read(&namespace, 0)?.len(), 3);
+    // Reattach the preserved point, then extend it through the same original session.
+    authority.transact(None, |root| {
+        root.branches.get_mut("main").unwrap().wal = Some(adopted.clone());
+        Ok(())
+    })?;
+    let frame6 = builder.frame(6, PAGE_SIZE as u32);
+    assert_eq!(
+        append(
+            &branch,
+            &namespace,
+            write_at(first.len() + FRAME_SIZE, &frame6),
+            committed(6),
+            "after-gc"
+        )?,
+        4
+    );
+    assert_eq!(
+        cold_commit(&authority, &namespace)?,
+        Some(WalCommit {
+            lsn: 4,
+            position: WalPosition {
+                salts: SALTS,
+                frame_count: 6
             }
         })
     );

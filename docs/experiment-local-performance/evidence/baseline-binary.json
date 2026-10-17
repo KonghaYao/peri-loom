@@ -1,0 +1,6 @@
+{
+  "binary": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/bin/baseline-local-performance",
+  "binary_sha256": "a8fdfb33849581d77d9a39e06bce056b054f618b04f2579d0cbf95b2eb2811f3",
+  "source_commit": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+  "harness_sha256": "99083bf52c60d2c0861a2140f2ef693001cd8bcdd7a1077b345f181036785fef"
+}

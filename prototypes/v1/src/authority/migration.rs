@@ -6,6 +6,10 @@ use super::{
 use crate::object_store::{PreconditionFailed, PutCondition};
 use crate::ownership::types::{AccessRole, GrantState, OwnerRecord};
 
+#[cfg(test)]
+#[path = "boot_admission_tests.rs"]
+mod tests;
+
 pub(crate) enum BootFailure {
     Read(anyhow::Error),
     Unsettled(anyhow::Error),
@@ -25,6 +29,7 @@ impl Authority {
             )));
         }
         let operation = unique_id()?;
+        let key = self.namespace.key("authority/root")?;
         for _ in 0..128 {
             let previous = self.snapshot()?;
             let mut candidate = previous.root.clone();
@@ -90,22 +95,29 @@ impl Authority {
             candidate.uploads.publish(&publishing)?;
             candidate.tombstones.publish(&publishing)?;
             candidate.seal()?;
+            let (encoded, digest) = codec::encode_with_digest(&candidate)?;
             let mut writes = pending.borrow().writes().to_vec();
             writes.push(crate::object_store::GroupWrite::new(
-                self.namespace.key("authority/root")?,
-                codec::encode(&candidate)?,
+                key.clone(),
+                encoded,
                 PutCondition::Match(previous.etag),
             ));
             match self.store.put_group(&writes) {
                 Ok(etags) => {
+                    let etag = etags
+                        .last()
+                        .cloned()
+                        .context("authority root etag missing")
+                        .map_err(BootFailure::Unsettled)?;
+                    // The snapshot was verified before cloning. Boot changes ownership,
+                    // receipts and registry representation, while inheriting every blob,
+                    // branch reference, snapshot and pin unchanged. Only the acknowledged
+                    // group makes this exact encoded candidate eligible for admission.
+                    self.remember(&key, &candidate, &digest);
                     return Ok(RootSnapshot {
                         root: candidate,
-                        etag: etags
-                            .last()
-                            .cloned()
-                            .context("authority root etag missing")
-                            .map_err(BootFailure::Unsettled)?,
-                    })
+                        etag,
+                    });
                 }
                 Err(error) => {
                     if !error.is::<PreconditionFailed>() {

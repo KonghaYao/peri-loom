@@ -1,0 +1,10 @@
+{
+  "source_id": "a3edf74410c9d2a4a32b09c05ab9b04a4365b4b4e0e7b6cf05aca2a9d68f44bb",
+  "head": "042476a9abc4beb0ad35be330202dd99cd47be7f",
+  "files": 723,
+  "created_utc": "2026-10-17T02:31:40.704772+00:00",
+  "archive": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/candidate-source.tar.gz",
+  "archive_sha256": "1754f94e93e4dcca31ccc74f8e0f71b43258686c0a60142eab43939d7a31518f",
+  "tracked_patch_sha256": "67be846bbf402862213c7e1cf6ce15c1f95aa6870114b89a7da2bf2414409a40",
+  "harness_sha256": "99083bf52c60d2c0861a2140f2ef693001cd8bcdd7a1077b345f181036785fef"
+}

@@ -1,0 +1,13 @@
+{
+  "baseline_commit": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+  "lab": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk",
+  "repository": "/Users/konghayao/code/ai/peri-loom",
+  "created_utc": "2026-10-17T02:19:39.148979+00:00",
+  "baseline_archive_sha256": "38f86727c29cddb293d4998c2154419e97ef4526f55fd39015f6f41cbef22750",
+  "turso_commit": "24a3a4609683b73935888f8bc30b47727d100aa8",
+  "goal": "At least 1.5x local representative SQL read/write test workload performance; no weakened correctness or durability",
+  "scope": "Both variants build the identical release integration harness. Baseline includes buffer/parser/pread fixes already committed at turn start; candidate includes outstanding WAL state reuse and further reviewed optimizations. Existing services untouched.",
+  "harness_sha256": "99083bf52c60d2c0861a2140f2ef693001cd8bcdd7a1077b345f181036785fef",
+  "target_dir": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/target",
+  "failed_v1": "First smoke failed with unknown namespace; preserved failed-v1 artifacts and logs. No timing result."
+}

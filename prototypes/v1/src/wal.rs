@@ -45,6 +45,33 @@ pub struct WalRecord {
     pub commit: Option<WalCommit>,
 }
 
+/// One immutable record and the canonical bytes that name its chunk and receipt.
+pub(crate) struct EncodedWalRecord {
+    record: WalRecord,
+    bytes: Vec<u8>,
+    hash: String,
+}
+
+impl EncodedWalRecord {
+    fn new(record: WalRecord) -> Result<Self> {
+        let bytes = serde_json::to_vec(&record)?;
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        Ok(Self { record, bytes, hash })
+    }
+
+    pub(crate) fn record(&self) -> &WalRecord {
+        &self.record
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn hash(&self) -> &str {
+        &self.hash
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalCommit {
     pub lsn: u64,
@@ -455,19 +482,18 @@ impl RemoteWal {
         Ok(self.index(namespace)?.0)
     }
 
-    fn chunk(&self, record: &WalRecord) -> Result<String> {
+    fn chunk(&self, encoded: &EncodedWalRecord) -> Result<String> {
         self.check_writer()?;
-        let bytes = serde_json::to_vec(record)?;
-        let hash = blake3::hash(&bytes).to_hex().to_string();
-        let key = record.namespace.key(&format!("wal/chunks/{hash}"))?;
-        if let Err(error) = self.store.put(&key, &bytes, PutCondition::Absent) {
+        let hash = encoded.hash();
+        let key = encoded.record().namespace.key(&format!("wal/chunks/{hash}"))?;
+        if let Err(error) = self.store.put(&key, encoded.bytes(), PutCondition::Absent) {
             let existing = self.store.get(&key)?.context("WAL chunk upload failed")?;
             ensure!(
-                existing.bytes == bytes,
+                existing.bytes.as_slice() == encoded.bytes(),
                 "immutable WAL chunk conflict: {error}"
             );
         }
-        Ok(hash)
+        Ok(hash.to_owned())
     }
 
     fn commit(
@@ -552,10 +578,10 @@ impl RemoteWal {
     }
 
     pub(crate) fn append_local(&self, request: &WalAppendRequest) -> Result<u64> {
-        self.append_using(request, |record, index, etag| {
-            self.chunk(record)
+        self.append_using(request, |encoded, index, etag| {
+            self.chunk(encoded)
                 .map_err(|error| anyhow::Error::new(ChunkUploadFailure(error)))?;
-            self.commit(&record.namespace, index, etag)
+            self.commit(&encoded.record().namespace, index, etag)
         })
     }
 
@@ -565,7 +591,7 @@ impl RemoteWal {
         mut publish: Publish,
     ) -> Result<u64>
     where
-        Publish: FnMut(&WalRecord, &WalMetadata, Option<String>) -> Result<()>,
+        Publish: FnMut(&EncodedWalRecord, &WalMetadata, Option<String>) -> Result<()>,
     {
         let WalAppendRequest {
             namespace,
@@ -581,25 +607,20 @@ impl RemoteWal {
                 return self.verified_receipt(request, &index, *lsn);
             }
             let lsn = index.last_lsn.checked_add(1).context("WAL LSN exhausted")?;
-            let record = request.record(lsn);
+            let encoded = EncodedWalRecord::new(request.record(lsn))?;
             let entry = Entry {
                 lsn,
-                hash: blake3::hash(&serde_json::to_vec(&record)?)
-                    .to_hex()
-                    .to_string(),
+                hash: encoded.hash().to_owned(),
             };
             index.entries.push(entry);
             index.receipts.insert(append_id.clone(), lsn);
-            index.receipt_digests.insert(
-                append_id.clone(),
-                blake3::hash(&serde_json::to_vec(&record)?)
-                    .to_hex()
-                    .to_string(),
-            );
+            index
+                .receipt_digests
+                .insert(append_id.clone(), encoded.hash().to_owned());
             index.last_lsn = lsn;
             index.epoch = *epoch;
-            index.commit = record.commit;
-            match publish(&record, &index, etag.clone()) {
+            index.commit = encoded.record().commit;
+            match publish(&encoded, &index, etag.clone()) {
                 Ok(()) => return Ok(lsn),
                 Err(error) => {
                     if error.is::<ChunkUploadFailure>() {
@@ -784,7 +805,7 @@ impl DurableWal for RemoteWal {
                     .find(|record| record.lsn == baseline_lsn)
                     .and_then(|record| record.commit),
             };
-            let hash = self.chunk(&baseline)?;
+            let hash = self.chunk(&EncodedWalRecord::new(baseline)?)?;
             index.entries.retain(|entry| entry.lsn >= before_lsn);
             index.entries.insert(
                 0,

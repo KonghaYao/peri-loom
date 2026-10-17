@@ -1,0 +1,659 @@
+diff --git a/prototypes/v1/src/authority/branch.rs b/prototypes/v1/src/authority/branch.rs
+index 9fd54a4..f649cf1 100644
+--- a/prototypes/v1/src/authority/branch.rs
++++ b/prototypes/v1/src/authority/branch.rs
+@@ -338,18 +338,19 @@ impl BranchStore {
+ 
+     pub(super) fn publish_wal_append(
+         &self,
+-        record: &crate::wal::WalRecord,
++        encoded: &crate::wal::EncodedWalRecord,
+         metadata: &crate::wal::WalMetadata,
+         expected: Option<String>,
+     ) -> Result<()> {
++        let record = encoded.record();
+         ensure!(
+             record.namespace == *self.authority.namespace()
+                 && metadata.epoch == record.epoch
+                 && metadata.last_lsn == record.lsn,
+             "WAL publication identity mismatch"
+         );
+-        let chunk_bytes = serde_json::to_vec(record)?;
+-        let hash = blake3::hash(&chunk_bytes).to_hex().to_string();
++        let chunk_bytes = encoded.bytes();
++        let hash = encoded.hash();
+         let chunk_key = format!("wal/chunks/{hash}");
+         let index_bytes = serde_json::to_vec(metadata)?;
+         let condition = expected.map_or(PutCondition::Absent, PutCondition::Match);
+@@ -363,12 +364,12 @@ impl BranchStore {
+         // and uploading the bodies between that revision and the next. The keys are
+         // fixed here, before the first attempt, so a retry rewrites the same bytes.
+         self.authority.check(MutationStage::Upload)?;
+-        let chunk = Authority::upload_entry(&chunk_bytes)?;
++        let chunk = Authority::upload_entry(chunk_bytes)?;
+         let index = Authority::upload_entry(&index_bytes)?;
+         let bodies = [
+             PublicationBody {
+                 entry: &chunk,
+-                bytes: &chunk_bytes,
++                bytes: chunk_bytes,
+             },
+             PublicationBody {
+                 entry: &index,
+@@ -420,22 +421,38 @@ impl BranchStore {
+             )?;
+             Ok(())
+         })?;
+-        // Refresh from the root the caller now treats as current, not from the attempt's
+-        // candidate: a lost acknowledgement can resolve to a later head whose branch WAL
+-        // already moved, and the session must read that index instead of the one it tried to
+-        // publish. The pin entries added above are part of that later head too.
+-        Self::refresh(
+-            &mut view,
+-            Self::selected(&published.root, &self.branch)?,
+-            added,
+-        );
+-        if published
+-            .root
+-            .branches
+-            .get(&self.branch)
+-            .and_then(|branch| branch.wal.as_ref())
+-            == Some(&index)
+-        {
++        let mut selected = Self::selected(&published.root, &self.branch)?;
++        if selected.head != view.head || selected.wal.as_ref() != Some(&index) {
++            // A lost acknowledgement can resolve to another writer's later point. Our
++            // publication pinned its own bodies, not that point's HEAD/WAL dependencies.
++            // Select and pin together; even if this pin transaction itself loses its ACK,
++            // refresh from its captured point, never from another unpinned returned root.
++            let publication_blobs: BTreeSet<_> =
++                added.values().map(|entry| entry.blob.clone()).collect();
++            let mut pinned_selected = None;
++            let mut pinned_entries = BTreeMap::new();
++            self.authority.transact(None, |root| {
++                self.bound(root)?;
++                let current = Self::selected(root, &self.branch)?;
++                let mut entries = referenced(
++                    &self.authority,
++                    root,
++                    current.head.as_ref(),
++                    current.wal.as_ref(),
++                )?;
++                // These entries are already durable in this session's pin, even though
++                // the in-memory view has not yet adopted the successful publication.
++                entries.retain(|_, entry| !publication_blobs.contains(&entry.blob));
++                pinned_entries = self.extend_pin(root, &view, entries)?;
++                pinned_selected = Some(current);
++                Ok(())
++            })?;
++            selected = pinned_selected.context("branch refresh pin missing")?;
++            added.extend(pinned_entries);
++        }
++        let keeps_image = selected.wal.as_ref() == Some(&index);
++        Self::refresh(&mut view, selected, added);
++        if keeps_image {
+             view.validated_wal = Some((index, validated.context("WAL validation missing")?));
+         }
+         // Otherwise the observed head names a different index: the image this attempt
+diff --git a/prototypes/v1/src/authority/branch_tests.rs b/prototypes/v1/src/authority/branch_tests.rs
+index 3164d46..2f38e40 100644
+--- a/prototypes/v1/src/authority/branch_tests.rs
++++ b/prototypes/v1/src/authority/branch_tests.rs
+@@ -14,7 +14,7 @@ use crate::{
+         fixture::{write_at, WalBuilder, FRAME_SIZE, PAGE_SIZE},
+         recovery_observations, reset_recovery_observations, validate_index_state, WAL_HEADER,
+     },
+-    wal::{RemoteWal, WalAppendRequest, WalBatch, WalCommit, WalOperation},
++    wal::{DurableWal, RemoteWal, WalAppendRequest, WalBatch, WalCommit, WalOperation},
+ };
+ use anyhow::{bail, Context as _, Result};
+ use std::sync::{
+@@ -117,8 +117,8 @@ fn append(
+         append_id: append_id.to_owned(),
+         timestamp_millis: 1,
+     };
+-    RemoteWal::new(branch.clone()).append_using(&request, |record, metadata, expected| {
+-        branch.publish_wal_append(record, metadata, expected)
++    RemoteWal::new(branch.clone()).append_using(&request, |encoded, metadata, expected| {
++        branch.publish_wal_append(encoded, metadata, expected)
+     })
+ }
+ 
+@@ -515,3 +515,94 @@ fn a_lost_acknowledgement_that_resolves_to_a_later_wal_does_not_keep_the_image()
+     );
+     Ok(())
+ }
++
++/// The later markerless index has no recovery-history owner. Once it leaves the branch,
++/// only the original session's durable pin can keep that adopted view readable through GC.
++#[test]
++fn a_later_wal_adopted_after_a_lost_ack_is_pinned_through_gc() -> Result<()> {
++    let (store, authority, branch, namespace) = fixture()?;
++    let mut builder = WalBuilder::new(SALTS);
++    let first = builder.image(4);
++    assert_eq!(
++        append(&branch, &namespace, write_at(0, &first), committed(4), "first")?,
++        1
++    );
++
++    let competitor = authority.clone();
++    let later_namespace = namespace.clone();
++    *store.after_root.lock().unwrap() = Some(Box::new(move || {
++        let later = competitor.branch_store("main").unwrap();
++        assert_eq!(
++            append(
++                &later,
++                &later_namespace,
++                WalBatch::default(),
++                None,
++                "later-markerless"
++            )
++            .unwrap(),
++            3
++        );
++        // Its own session pin must disappear before the original session adopts the view.
++        drop(later);
++    }));
++    store.root_fault.store(1, Ordering::SeqCst);
++    let frame5 = builder.frame(5, PAGE_SIZE as u32);
++    assert_eq!(
++        append(
++            &branch,
++            &namespace,
++            write_at(first.len(), &frame5),
++            committed(5),
++            "lost-ack"
++        )?,
++        2
++    );
++
++    let adopted = branch.view.lock().unwrap().wal.clone().unwrap();
++    let snapshot = authority.snapshot()?;
++    assert!(snapshot.root.pins[&branch.pin]
++        .iter()
++        .any(|entry| entry.blob == adopted.blob));
++    assert!(!snapshot.root.branches["main"]
++        .history
++        .iter()
++        .any(|point| point.wal.as_ref() == Some(&adopted)));
++    // Retire the current reference to isolate the reader pin from branch reachability.
++    authority.transact(None, |root| {
++        root.branches.get_mut("main").unwrap().wal = None;
++        Ok(())
++    })?;
++    crate::gc::GarbageCollector::new(authority.clone(), std::time::Duration::ZERO).collect()?;
++
++    let wal = RemoteWal::new(branch.clone());
++    assert_eq!(wal.metadata(&namespace)?.last_lsn, 3);
++    assert_eq!(wal.read(&namespace, 0)?.len(), 3);
++    // Reattach the preserved point, then extend it through the same original session.
++    authority.transact(None, |root| {
++        root.branches.get_mut("main").unwrap().wal = Some(adopted.clone());
++        Ok(())
++    })?;
++    let frame6 = builder.frame(6, PAGE_SIZE as u32);
++    assert_eq!(
++        append(
++            &branch,
++            &namespace,
++            write_at(first.len() + FRAME_SIZE, &frame6),
++            committed(6),
++            "after-gc"
++        )?,
++        4
++    );
++    assert_eq!(
++        cold_commit(&authority, &namespace)?,
++        Some(WalCommit {
++            lsn: 4,
++            position: WalPosition {
++                salts: SALTS,
++                frame_count: 6
++            }
++        })
++    );
++    Ok(())
++}
+diff --git a/prototypes/v1/src/authority/fenced_store.rs b/prototypes/v1/src/authority/fenced_store.rs
+index 3408618..1cb24d0 100644
+--- a/prototypes/v1/src/authority/fenced_store.rs
++++ b/prototypes/v1/src/authority/fenced_store.rs
+@@ -87,11 +87,11 @@ impl ObjectStore for FencedStore {
+         });
+         let lsn = crate::wal::RemoteWal::new(store).append_using(
+             request,
+-            |record, metadata, expected| {
++            |encoded, metadata, expected| {
+                 self.inner
+                     .as_ref()
+                     .unwrap()
+-                    .publish_wal_append(record, metadata, expected)
++                    .publish_wal_append(encoded, metadata, expected)
+             },
+         )?;
+         self.service.live(&self.binding)?;
+diff --git a/prototypes/v1/src/authority/migration.rs b/prototypes/v1/src/authority/migration.rs
+index e1d2526..25596aa 100644
+--- a/prototypes/v1/src/authority/migration.rs
++++ b/prototypes/v1/src/authority/migration.rs
+@@ -6,6 +6,10 @@ use super::{
+ use crate::object_store::{PreconditionFailed, PutCondition};
+ use crate::ownership::types::{AccessRole, GrantState, OwnerRecord};
+ 
++#[cfg(test)]
++#[path = "boot_admission_tests.rs"]
++mod tests;
++
+ pub(crate) enum BootFailure {
+     Read(anyhow::Error),
+     Unsettled(anyhow::Error),
+@@ -25,6 +29,7 @@ impl Authority {
+             )));
+         }
+         let operation = unique_id()?;
++        let key = self.namespace.key("authority/root")?;
+         for _ in 0..128 {
+             let previous = self.snapshot()?;
+             let mut candidate = previous.root.clone();
+@@ -90,22 +95,29 @@ impl Authority {
+             candidate.uploads.publish(&publishing)?;
+             candidate.tombstones.publish(&publishing)?;
+             candidate.seal()?;
++            let (encoded, digest) = codec::encode_with_digest(&candidate)?;
+             let mut writes = pending.borrow().writes().to_vec();
+             writes.push(crate::object_store::GroupWrite::new(
+-                self.namespace.key("authority/root")?,
+-                codec::encode(&candidate)?,
++                key.clone(),
++                encoded,
+                 PutCondition::Match(previous.etag),
+             ));
+             match self.store.put_group(&writes) {
+                 Ok(etags) => {
++                    let etag = etags
++                        .last()
++                        .cloned()
++                        .context("authority root etag missing")
++                        .map_err(BootFailure::Unsettled)?;
++                    // The snapshot was verified before cloning. Boot changes ownership,
++                    // receipts and registry representation, while inheriting every blob,
++                    // branch reference, snapshot and pin unchanged. Only the acknowledged
++                    // group makes this exact encoded candidate eligible for admission.
++                    self.remember(&key, &candidate, &digest);
+                     return Ok(RootSnapshot {
+                         root: candidate,
+-                        etag: etags
+-                            .last()
+-                            .cloned()
+-                            .context("authority root etag missing")
+-                            .map_err(BootFailure::Unsettled)?,
+-                    })
++                        etag,
++                    });
+                 }
+                 Err(error) => {
+                     if !error.is::<PreconditionFailed>() {
+diff --git a/prototypes/v1/src/authority/semantic.rs b/prototypes/v1/src/authority/semantic.rs
+index dfb1b1c..39cda74 100644
+--- a/prototypes/v1/src/authority/semantic.rs
++++ b/prototypes/v1/src/authority/semantic.rs
+@@ -6,6 +6,10 @@ use crate::{
+ use anyhow::{ensure, Context, Result};
+ use std::collections::{BTreeSet, VecDeque};
+ 
++#[cfg(test)]
++#[path = "semantic_wal_chunks_tests.rs"]
++mod wal_chunk_tests;
++
+ pub(super) fn validate_entry(entry: &ObjectEntry) -> Result<()> {
+     ensure!(
+         valid_hash(&entry.blob) && valid_hash(&entry.hash) && valid_hash(&entry.etag),
+@@ -458,11 +462,14 @@ struct Walker<'a> {
+     staged: &'a [super::PublicationBody<'a>],
+     verified: BTreeSet<String>,
+     verified_order: VecDeque<String>,
++    verified_chunks: BTreeSet<String>,
++    verified_chunk_order: VecDeque<String>,
+     collect_reachable: bool,
+     reachable: BTreeSet<String>,
+ }
+ 
+ const VERIFIED_METADATA_IDENTITIES: usize = 128;
++const VERIFIED_WAL_CHUNKS: usize = 4096;
+ 
+ impl<'a> Walker<'a> {
+     fn new(authority: &'a Authority, root: &'a CatalogRoot, collect_reachable: bool) -> Self {
+@@ -472,6 +479,8 @@ impl<'a> Walker<'a> {
+             staged: &[],
+             verified: BTreeSet::new(),
+             verified_order: VecDeque::new(),
++            verified_chunks: BTreeSet::new(),
++            verified_chunk_order: VecDeque::new(),
+             collect_reachable,
+             reachable: BTreeSet::new(),
+         }
+@@ -587,23 +596,38 @@ impl<'a> Walker<'a> {
+     fn wal_chunks(&mut self, wal: Option<&ObjectEntry>) -> Result<()> {
+         if let Some(wal) = wal {
+             self.direct(wal)?;
+-            if !self.was_verified('w', wal) {
++            if !self.was_verified('W', wal) {
+                 let index = index(&self.bytes(wal)?)?;
+                 for chunk in index.entries {
+-                    ensure!(valid_hash(&chunk.hash), "invalid WAL chunk digest");
+-                    let entry = self.lookup(&format!("wal/chunks/{}", chunk.hash))?;
+-                    ensure!(
+-                        entry.hash == chunk.hash,
+-                        "WAL chunk logical digest mismatch"
+-                    );
+-                    self.direct(&entry)?;
++                    self.wal_chunk(&chunk.hash)?;
+                 }
+-                self.remember_verified('w', wal);
++                // A shallow index check does not prove its chunks were registered.
++                self.remember_verified('W', wal);
+             }
+         }
+         Ok(())
+     }
+ 
++    fn wal_chunk(&mut self, hash: &str) -> Result<()> {
++        if self.verified_chunks.contains(hash) {
++            return Ok(());
++        }
++        ensure!(valid_hash(hash), "invalid WAL chunk digest");
++        let entry = self.lookup(&format!("wal/chunks/{hash}"))?;
++        ensure!(entry.hash == hash, "WAL chunk logical digest mismatch");
++        self.direct(&entry)?;
++        // This walker borrows one immutable root. Shared history prefixes resolve to
++        // the same logical mapping and registration, and GC already collected the blob
++        // on its first visit. Failed checks never populate this bounded positive cache.
++        self.verified_chunks.insert(hash.to_owned());
++        self.verified_chunk_order.push_back(hash.to_owned());
++        if self.verified_chunk_order.len() > VERIFIED_WAL_CHUNKS {
++            self.verified_chunks
++                .remove(&self.verified_chunk_order.pop_front().unwrap());
++        }
++        Ok(())
++    }
++
+     fn point(&mut self, point: &RecoveryPoint) -> Result<()> {
+         ensure!(
+             valid_hash(&point.id) && point.timeline > 0,
+diff --git a/prototypes/v1/src/storage.rs b/prototypes/v1/src/storage.rs
+index 9f743b2..9e9b67b 100644
+--- a/prototypes/v1/src/storage.rs
++++ b/prototypes/v1/src/storage.rs
+@@ -30,7 +30,7 @@ struct State {
+     head_etag: String,
+     size: u64,
+     segments: BTreeMap<u64, String>,
+-    dirty: BTreeMap<u64, Vec<u8>>,
++    dirty: BTreeMap<u64, Arc<Vec<u8>>>,
+     segment_loads: u64,
+     /// Bumped by every mutation that can change what a read returns. A read captures it while
+     /// resolving identities under the lock and validates it before returning, so a read that
+@@ -272,23 +272,45 @@ impl RemoteStorage {
+             return Ok(0);
+         }
+         let mut state = self.state();
+-        let mut staged = BTreeMap::new();
++        // Resolve every fallible base read before changing any dirty buffer. Otherwise a
++        // failed fetch at the end of a spanning write could leave its dirty prefix modified.
++        let mut bases = BTreeMap::new();
+         let mut completed = 0;
+         while completed < data.len() {
+             let position = offset + completed as u64;
+             let index = position / SEGMENT_SIZE as u64;
+             let within = (position % SEGMENT_SIZE as u64) as usize;
+             let length = (SEGMENT_SIZE - within).min(data.len() - completed);
+-            let mut bytes = if within == 0 && length == SEGMENT_SIZE {
+-                vec![0; SEGMENT_SIZE]
++            if (within != 0 || length != SEGMENT_SIZE) && !state.dirty.contains_key(&index) {
++                bases.insert(index, self.load(&mut state, index)?);
++            }
++            completed += length;
++        }
++        let mut completed = 0;
++        while completed < data.len() {
++            let position = offset + completed as u64;
++            let index = position / SEGMENT_SIZE as u64;
++            let within = (position % SEGMENT_SIZE as u64) as usize;
++            let length = (SEGMENT_SIZE - within).min(data.len() - completed);
++            if within == 0 && length == SEGMENT_SIZE {
++                state.dirty.insert(
++                    index,
++                    Arc::new(data[completed..completed + length].to_vec()),
++                );
+             } else {
+-                self.load(&mut state, index)?.as_ref().clone()
+-            };
+-            bytes[within..within + length].copy_from_slice(&data[completed..completed + length]);
+-            staged.insert(index, bytes);
++                let bytes = state.dirty.entry(index).or_insert_with(|| {
++                    bases
++                        .remove(&index)
++                        .expect("partial write base was resolved")
++                });
++                // Readers retain an immutable Arc outside the lock. Only an overlapping read
++                // or a shared published cache entry requires a copy; subsequent writes to an
++                // exclusively owned dirty segment change just the requested range.
++                Arc::make_mut(bytes)[within..within + length]
++                    .copy_from_slice(&data[completed..completed + length]);
++            }
+             completed += length;
+         }
+-        state.dirty.extend(staged);
+         state.size = state.size.max(end);
+         state.revision += 1;
+         Ok(data.len())
+@@ -307,8 +329,8 @@ impl RemoteStorage {
+             if within != 0
+                 && (state.dirty.contains_key(&boundary) || state.segments.contains_key(&boundary))
+             {
+-                let mut bytes = self.load(&mut state, boundary)?.as_ref().clone();
+-                bytes[within..].fill(0);
++                let mut bytes = self.load(&mut state, boundary)?;
++                Arc::make_mut(&mut bytes)[within..].fill(0);
+                 state.dirty.insert(boundary, bytes);
+             }
+             let keep = boundary + u64::from(within != 0);
+@@ -348,13 +370,22 @@ impl RemoteStorage {
+             }
+         }
+         next.validate()?;
++        // An immutable body only needs one successful existence/integrity check in this
++        // publication. Keep the bytes too: sharing a hash must never hide a collision. This
++        // table is discarded on error or return; a later publication must check again.
++        let mut checked = BTreeMap::<String, &[u8]>::new();
+         for (index, bytes) in &state.dirty {
+             let hash = digest(bytes);
+-            put_immutable(
+-                self.store.as_ref(),
+-                &self.namespace.key(&format!("segments/{hash}"))?,
+-                bytes,
+-            )?;
++            let key = self.namespace.key(&format!("segments/{hash}"))?;
++            if let Some(previous) = checked.get(&hash) {
++                ensure!(
++                    *previous == bytes.as_slice(),
++                    "immutable object integrity failure: {key}"
++                );
++            } else {
++                put_immutable(self.store.as_ref(), &key, bytes)?;
++                checked.insert(hash.clone(), bytes.as_slice());
++            }
+             next.segments.insert(*index, hash);
+         }
+         next.validate()?;
+@@ -494,8 +525,8 @@ impl RemoteStorage {
+ }
+ 
+ /// What one index resolves to under the storage lock: identity, not bytes. A published segment is
+-/// named by its content address and read later; staged bytes are copied out inside the lock
+-/// because they are the caller's only copy and can still change.
++/// named by its content address and read later; staged bytes retain an immutable snapshot.
++/// Writers copy a staged buffer only while such a snapshot is still in use.
+ enum SegmentSource {
+     Staged(Arc<Vec<u8>>),
+     Published(String),
+@@ -504,7 +535,7 @@ enum SegmentSource {
+ 
+ fn resolve_segment(state: &State, index: u64) -> SegmentSource {
+     if let Some(bytes) = state.dirty.get(&index) {
+-        return SegmentSource::Staged(Arc::new(bytes.clone()));
++        return SegmentSource::Staged(bytes.clone());
+     }
+     match state.segments.get(&index) {
+         Some(hash) => SegmentSource::Published(hash.clone()),
+@@ -635,3 +666,7 @@ mod read_path_tests {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++#[path = "storage_cow_tests.rs"]
++mod cow_tests;
+diff --git a/prototypes/v1/src/wal.rs b/prototypes/v1/src/wal.rs
+index 59d2cf0..ce7cf37 100644
+--- a/prototypes/v1/src/wal.rs
++++ b/prototypes/v1/src/wal.rs
+@@ -45,6 +45,33 @@ pub struct WalRecord {
+     pub commit: Option<WalCommit>,
+ }
+ 
++/// One immutable record and the canonical bytes that name its chunk and receipt.
++pub(crate) struct EncodedWalRecord {
++    record: WalRecord,
++    bytes: Vec<u8>,
++    hash: String,
++}
++
++impl EncodedWalRecord {
++    fn new(record: WalRecord) -> Result<Self> {
++        let bytes = serde_json::to_vec(&record)?;
++        let hash = blake3::hash(&bytes).to_hex().to_string();
++        Ok(Self { record, bytes, hash })
++    }
++
++    pub(crate) fn record(&self) -> &WalRecord {
++        &self.record
++    }
++
++    pub(crate) fn bytes(&self) -> &[u8] {
++        &self.bytes
++    }
++
++    pub(crate) fn hash(&self) -> &str {
++        &self.hash
++    }
++}
++
+ #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+ pub struct WalCommit {
+     pub lsn: u64,
+@@ -371,19 +398,18 @@ impl RemoteWal {
+         Ok(self.index(namespace)?.0)
+     }
+ 
+-    fn chunk(&self, record: &WalRecord) -> Result<String> {
++    fn chunk(&self, encoded: &EncodedWalRecord) -> Result<String> {
+         self.check_writer()?;
+-        let bytes = serde_json::to_vec(record)?;
+-        let hash = blake3::hash(&bytes).to_hex().to_string();
+-        let key = record.namespace.key(&format!("wal/chunks/{hash}"))?;
+-        if let Err(error) = self.store.put(&key, &bytes, PutCondition::Absent) {
++        let hash = encoded.hash();
++        let key = encoded.record().namespace.key(&format!("wal/chunks/{hash}"))?;
++        if let Err(error) = self.store.put(&key, encoded.bytes(), PutCondition::Absent) {
+             let existing = self.store.get(&key)?.context("WAL chunk upload failed")?;
+             ensure!(
+-                existing.bytes == bytes,
++                existing.bytes.as_slice() == encoded.bytes(),
+                 "immutable WAL chunk conflict: {error}"
+             );
+         }
+-        Ok(hash)
++        Ok(hash.to_owned())
+     }
+ 
+     fn commit(
+@@ -450,10 +476,10 @@ impl RemoteWal {
+     }
+ 
+     pub(crate) fn append_local(&self, request: &WalAppendRequest) -> Result<u64> {
+-        self.append_using(request, |record, index, etag| {
+-            self.chunk(record)
++        self.append_using(request, |encoded, index, etag| {
++            self.chunk(encoded)
+                 .map_err(|error| anyhow::Error::new(ChunkUploadFailure(error)))?;
+-            self.commit(&record.namespace, index, etag)
++            self.commit(&encoded.record().namespace, index, etag)
+         })
+     }
+ 
+@@ -463,7 +489,7 @@ impl RemoteWal {
+         mut publish: Publish,
+     ) -> Result<u64>
+     where
+-        Publish: FnMut(&WalRecord, &WalMetadata, Option<String>) -> Result<()>,
++        Publish: FnMut(&EncodedWalRecord, &WalMetadata, Option<String>) -> Result<()>,
+     {
+         let WalAppendRequest {
+             namespace,
+@@ -479,25 +505,20 @@ impl RemoteWal {
+                 return self.verified_receipt(request, &index, *lsn);
+             }
+             let lsn = index.last_lsn.checked_add(1).context("WAL LSN exhausted")?;
+-            let record = request.record(lsn);
++            let encoded = EncodedWalRecord::new(request.record(lsn))?;
+             let entry = Entry {
+                 lsn,
+-                hash: blake3::hash(&serde_json::to_vec(&record)?)
+-                    .to_hex()
+-                    .to_string(),
++                hash: encoded.hash().to_owned(),
+             };
+             index.entries.push(entry);
+             index.receipts.insert(append_id.clone(), lsn);
+-            index.receipt_digests.insert(
+-                append_id.clone(),
+-                blake3::hash(&serde_json::to_vec(&record)?)
+-                    .to_hex()
+-                    .to_string(),
+-            );
++            index
++                .receipt_digests
++                .insert(append_id.clone(), encoded.hash().to_owned());
+             index.last_lsn = lsn;
+             index.epoch = *epoch;
+-            index.commit = record.commit;
+-            match publish(&record, &index, etag.clone()) {
++            index.commit = encoded.record().commit;
++            match publish(&encoded, &index, etag.clone()) {
+                 Ok(()) => return Ok(lsn),
+                 Err(error) => {
+                     if error.is::<ChunkUploadFailure>() {
+@@ -682,7 +703,7 @@ impl DurableWal for RemoteWal {
+                     .find(|record| record.lsn == baseline_lsn)
+                     .and_then(|record| record.commit),
+             };
+-            let hash = self.chunk(&baseline)?;
++            let hash = self.chunk(&EncodedWalRecord::new(baseline)?)?;
+             index.entries.retain(|entry| entry.lsn >= before_lsn);
+             index.entries.insert(
+                 0,
+diff --git a/prototypes/v1/tests/p4_runtime_helpers/scenarios.rs b/prototypes/v1/tests/p4_runtime_helpers/scenarios.rs
+index da2a006..6667bdd 100644
+--- a/prototypes/v1/tests/p4_runtime_helpers/scenarios.rs
++++ b/prototypes/v1/tests/p4_runtime_helpers/scenarios.rs
+@@ -98,7 +98,8 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
+                         match acquired {
+                             Ok(_) => break,
+                             Err(error) if Instant::now() >= timeout => {
+-                                return Err(error).context("watchdog race: acquire retry exhausted")
++                                return Err(error)
++                                    .context("watchdog race: acquire retry exhausted");
+                             }
+                             Err(_) => std::thread::yield_now(),
+                         }

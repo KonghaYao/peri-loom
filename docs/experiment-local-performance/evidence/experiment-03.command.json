@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/Users/konghayao/.pyenv/versions/3.12.8/bin/python3",
+    "/Users/konghayao/code/ai/peri-loom/docs/experiment-local-performance/paired_runner.py",
+    "--baseline-bin",
+    "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/bin/baseline-local-performance",
+    "--candidate-bin",
+    "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/bin/candidate-03-local-performance",
+    "--baseline-source",
+    "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+    "--candidate-source",
+    "e4620e51fa8e987a644aaab867cf4fe19099d662d4e0de2c7fe56b066ea3e3c2",
+    "--rounds",
+    "2",
+    "--output",
+    "/Users/konghayao/code/ai/peri-loom/docs/experiment-local-performance/evidence/experiment-03"
+  ],
+  "runner_sha256": "244f59c9ed7dbde6fe4f75b7fb999953677aade7175638ee2386a06feee2fc98",
+  "pre_run_unix": 1792205636.1340601,
+  "pre_run_competing_build_or_benchmark": false,
+  "candidate_source_id": "e4620e51fa8e987a644aaab867cf4fe19099d662d4e0de2c7fe56b066ea3e3c2",
+  "baseline_binary_sha256": "a8fdfb33849581d77d9a39e06bce056b054f618b04f2579d0cbf95b2eb2811f3",
+  "candidate_binary_sha256": "f03bc6bd2903dd665ae259fc271421815625335a99cc5d6d966dc73f95967e8c",
+  "runner_exit_code": 0,
+  "finished_unix": 1792205707.6544561
+}

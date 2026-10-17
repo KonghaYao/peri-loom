@@ -6,6 +6,10 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use std::collections::{BTreeSet, VecDeque};
 
+#[cfg(test)]
+#[path = "semantic_wal_chunks_tests.rs"]
+mod wal_chunk_tests;
+
 pub(super) fn validate_entry(entry: &ObjectEntry) -> Result<()> {
     ensure!(
         valid_hash(&entry.blob) && valid_hash(&entry.hash) && valid_hash(&entry.etag),
@@ -458,11 +462,14 @@ struct Walker<'a> {
     staged: &'a [super::PublicationBody<'a>],
     verified: BTreeSet<String>,
     verified_order: VecDeque<String>,
+    verified_chunks: BTreeSet<String>,
+    verified_chunk_order: VecDeque<String>,
     collect_reachable: bool,
     reachable: BTreeSet<String>,
 }
 
 const VERIFIED_METADATA_IDENTITIES: usize = 128;
+const VERIFIED_WAL_CHUNKS: usize = 4096;
 
 impl<'a> Walker<'a> {
     fn new(authority: &'a Authority, root: &'a CatalogRoot, collect_reachable: bool) -> Self {
@@ -472,6 +479,8 @@ impl<'a> Walker<'a> {
             staged: &[],
             verified: BTreeSet::new(),
             verified_order: VecDeque::new(),
+            verified_chunks: BTreeSet::new(),
+            verified_chunk_order: VecDeque::new(),
             collect_reachable,
             reachable: BTreeSet::new(),
         }
@@ -587,19 +596,34 @@ impl<'a> Walker<'a> {
     fn wal_chunks(&mut self, wal: Option<&ObjectEntry>) -> Result<()> {
         if let Some(wal) = wal {
             self.direct(wal)?;
-            if !self.was_verified('w', wal) {
+            if !self.was_verified('W', wal) {
                 let index = index(&self.bytes(wal)?)?;
                 for chunk in index.entries {
-                    ensure!(valid_hash(&chunk.hash), "invalid WAL chunk digest");
-                    let entry = self.lookup(&format!("wal/chunks/{}", chunk.hash))?;
-                    ensure!(
-                        entry.hash == chunk.hash,
-                        "WAL chunk logical digest mismatch"
-                    );
-                    self.direct(&entry)?;
+                    self.wal_chunk(&chunk.hash)?;
                 }
-                self.remember_verified('w', wal);
+                // A shallow index check does not prove its chunks were registered.
+                self.remember_verified('W', wal);
             }
+        }
+        Ok(())
+    }
+
+    fn wal_chunk(&mut self, hash: &str) -> Result<()> {
+        if self.verified_chunks.contains(hash) {
+            return Ok(());
+        }
+        ensure!(valid_hash(hash), "invalid WAL chunk digest");
+        let entry = self.lookup(&format!("wal/chunks/{hash}"))?;
+        ensure!(entry.hash == hash, "WAL chunk logical digest mismatch");
+        self.direct(&entry)?;
+        // This walker borrows one immutable root. Shared history prefixes resolve to
+        // the same logical mapping and registration, and GC already collected the blob
+        // on its first visit. Failed checks never populate this bounded positive cache.
+        self.verified_chunks.insert(hash.to_owned());
+        self.verified_chunk_order.push_back(hash.to_owned());
+        if self.verified_chunk_order.len() > VERIFIED_WAL_CHUNKS {
+            self.verified_chunks
+                .remove(&self.verified_chunk_order.pop_front().unwrap());
         }
         Ok(())
     }

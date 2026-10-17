@@ -1,0 +1,42 @@
+diff --git a/prototypes/v1/platform/operation_commit.go b/prototypes/v1/platform/operation_commit.go
+index 9152319..cf466aa 100644
+--- a/prototypes/v1/platform/operation_commit.go
++++ b/prototypes/v1/platform/operation_commit.go
+@@ -192,7 +192,13 @@ func (journal *operationJournal) writeBatchAt(batch []*operationCommit, offset i
+ 	if err := journal.verifyPathIdentity(); err != nil {
+ 		return ErrStateUncertain
+ 	}
+-	run := make([]byte, 0, operationJournalBatchBytes)
++	// Size the run to the batch's actual bytes. Reserving the batch ceiling would charge
++	// every commit, including a lone short terminal record, a 1 MiB allocation.
++	total := 0
++	for _, commit := range batch {
++		total += len(commit.line)
++	}
++	run := make([]byte, 0, total)
+ 	for _, commit := range batch {
+ 		run = append(run, commit.line...)
+ 	}
+diff --git a/prototypes/v1/src/authority_rpc/client.rs b/prototypes/v1/src/authority_rpc/client.rs
+index 687751c..12d0247 100644
+--- a/prototypes/v1/src/authority_rpc/client.rs
++++ b/prototypes/v1/src/authority_rpc/client.rs
+@@ -280,14 +280,10 @@ impl AuthorityClient {
+             bytes.len() <= MAX_RPC_BYTES,
+             "authority response body limit exceeded"
+         );
+-        let value: serde_json::Value = serde_json::from_slice(&bytes)
+-            .map_err(|_| anyhow::anyhow!("invalid authority response"))?;
+-        ensure!(
+-            value
+-                .as_object()
+-                .is_some_and(|object| object.contains_key("result")),
+-            "authority result field missing"
+-        );
++        // One strict parse covers the fields the checks below rely on. `result` is a
++        // required protocol field, so an omitted result is rejected here while an explicit
++        // null stays a legitimate result; parsing the response twice would instead build
++        // the whole body, including large base64 payloads, twice.
+         let response: RpcResponse = serde_json::from_slice(&bytes)
+             .map_err(|_| anyhow::anyhow!("invalid authority response"))?;
+         ensure!(

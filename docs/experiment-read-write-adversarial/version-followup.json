@@ -1,0 +1,26 @@
+{
+  "note": "Read-only observation during adversarial investigation; experiments remain frozen at c8990c4. Concurrent work is not authored or verified by this investigation.",
+  "head_observed": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+  "commits_since_frozen": [
+    "1198b18611601f7417f7b9ae4bbb3c370b41ff03 perf(io)：主库预读不再持 WAL 状态锁，慢段获取不再阻塞同库 WAL 读",
+    "df93605e8c80d87e8f178f8ceb0024ef55f09cb9 perf(authority_rpc)：响应只做一次严格解析，去掉重复的 Value 物化",
+    "94534c5585761fe3b5b98ead2770bd2547a701f0 perf(operation)：批次写缓冲按实际长度分配，不再为每条提交预留 1 MiB"
+  ],
+  "worktree_status_observed": " M prototypes/v1/src/authority/branch.rs\nM  prototypes/v1/src/io.rs\nM  prototypes/v1/src/io/files.rs\n M prototypes/v1/src/recovery.rs\n M prototypes/v1/src/recovery/bench.rs\n M prototypes/v1/src/recovery/fixture.rs\n M prototypes/v1/src/recovery/tests.rs\n M prototypes/v1/src/work_metrics.rs\nM  prototypes/v1/tests/p4_runtime.rs\n M prototypes/v1/tests/p4_runtime_helpers/scenarios.rs\n M prototypes/v1/tests/recovery.rs\n?? docs/experiment-read-write-adversarial/\n?? docs/performance-review/2026-10-17-read-write-diagnosis.md\n?? prototypes/v1/src/authority/branch_tests.rs\n",
+  "last_observation_utc": "2026-10-17T02:10:05.989106+00:00",
+  "business_wip_diff_sha256": "e25c6a7ce0ff2c32c7fbcca73bc118c9ea7cfeeceaceefe7dfa181c4c020f998",
+  "business_wip_numstat": [
+    "20\t6\tprototypes/v1/src/authority/branch.rs",
+    "129\t43\tprototypes/v1/src/io.rs",
+    "7\t3\tprototypes/v1/src/io/files.rs",
+    "41\t12\tprototypes/v1/src/recovery.rs",
+    "160\t0\tprototypes/v1/src/recovery/bench.rs",
+    "10\t10\tprototypes/v1/src/recovery/fixture.rs",
+    "144\t26\tprototypes/v1/src/recovery/tests.rs",
+    "5\t3\tprototypes/v1/src/work_metrics.rs",
+    "173\t0\tprototypes/v1/tests/p4_runtime.rs",
+    "2\t1\tprototypes/v1/tests/p4_runtime_helpers/scenarios.rs",
+    "19\t16\tprototypes/v1/tests/recovery.rs"
+  ],
+  "business_wip_scope": "Read-only observation includes in-place Authority WAL candidate changes and further IO changes; none included in frozen experiments. copied_bytes semantics are changing."
+}

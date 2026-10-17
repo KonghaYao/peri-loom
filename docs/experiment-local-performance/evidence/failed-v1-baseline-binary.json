@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--locked",
+    "--offline",
+    "--manifest-path",
+    "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/v1/Cargo.toml",
+    "--test",
+    "local_performance",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "binary": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/bin/baseline-local-performance",
+  "binary_sha256": "186c3bcae29d5852b3a36da712ebaf42808a15611ced4d77d7deb6754b1ab22b",
+  "source_commit": "1198b18611601f7417f7b9ae4bbb3c370b41ff03",
+  "harness_sha256": "6a64fb10937e9ab5a61b47a3c265e8e953b457eca23c9f6d1c15a7edb9ff4d48"
+}

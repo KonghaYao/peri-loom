@@ -1,0 +1,8 @@
+{
+  "original_review_sha": "e8beae40291bf61a84acd1aa0a8813ebef8d1234",
+  "experiment_sha": "c8990c406588a23a203a46033cf10103681d188c",
+  "lab": "/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy",
+  "repository": "/Users/konghayao/code/ai/peri-loom",
+  "initial_status": " M prototypes/v1/platform/operation_commit.go\n M prototypes/v1/src/authority_rpc/client.rs\n?? docs/performance-review/2026-10-17-read-write-diagnosis.md\n",
+  "submodule_sha": "24a3a4609683b73935888f8bc30b47727d100aa8"
+}

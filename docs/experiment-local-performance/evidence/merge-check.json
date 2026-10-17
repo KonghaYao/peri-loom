@@ -1,0 +1,50 @@
+{
+  "base": "11ad02c222b1b256a0875ed92347b1dd619d5830",
+  "scope": "Integration compile and focused tests on current main plus this task changes; not a new performance sample.",
+  "files": {
+    "prototypes/v1/src/authority/branch.rs": "c4c96effe43b0d90a780c9e1a7029531fb5db7d99a47391776a58f7f4d1fcba2",
+    "prototypes/v1/src/authority/branch_tests.rs": "ab426ecd3dd5cf237c7de59c1d92a9a8763d004912bf85ef6f0a24117f1dfdc2",
+    "prototypes/v1/src/authority/fenced_store.rs": "98dc1b7467255f2f7cb7a965d20e68bacd0d35bf182f76b60254e5b20a089100",
+    "prototypes/v1/src/authority/migration.rs": "ad66aa87f8757fc87d46af4e8e0ffdc23ea68d45f2edf10dab83a7d72430d7b1",
+    "prototypes/v1/src/authority/semantic.rs": "b98428007d1ce48cd43a94a79479f1bfe749c6413e627df6de75f25a20b32c23",
+    "prototypes/v1/src/authority/boot_admission_tests.rs": "5bfca701bd620a76e70c45ecf9536cb3c6fe7de1ce6910e155e783042cd5c006",
+    "prototypes/v1/src/authority/semantic_wal_chunks_tests.rs": "ec0f50c7a3584b98a0239a9254a5b7176736705f6ed3c2d99ca62de5c41e0cbc",
+    "prototypes/v1/src/storage.rs": "9885c9bc3c2750073ace8b989be1dbff586101343e27a0bfa5e357189cabe5b9",
+    "prototypes/v1/src/storage_cow_tests.rs": "cb728277d50c5ac75c341a6e84692ed18f29d485b045ad77afd949e38445efdf",
+    "prototypes/v1/src/wal.rs": "1a4846d8b965d380421532008a55ad70581b4ecb425cd44c01ab53f778935c21",
+    "prototypes/v1/tests/local_performance.rs": "99083bf52c60d2c0861a2140f2ef693001cd8bcdd7a1077b345f181036785fef",
+    "prototypes/v1/tests/storage_local_bench.rs": "b4232eb8c8829b18d6e86f4f491b1275a0432b555b19f6546bc19fca87f6e707"
+  },
+  "results": [
+    {
+      "filter": "authority::migration::tests",
+      "exit": 0,
+      "stdout": "\nrunning 4 tests\ntest authority::migration::tests::a_rejected_boot_candidate_is_not_admitted_before_its_successful_retry ... ok\ntest authority::migration::tests::an_external_root_is_deep_verified_and_invalid_history_still_fails_closed ... ok\ntest authority::migration::tests::an_unknown_boot_never_admits_its_candidate_even_when_the_bytes_landed ... ok\ntest authority::migration::tests::first_state_after_boot_reuses_verified_references_and_retains_the_epoch_floor ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 313 filtered out; finished in 0.00s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "authority::semantic::wal_chunk_tests",
+      "exit": 0,
+      "stdout": "\nrunning 4 tests\ntest authority::semantic::wal_chunk_tests::a_new_root_rechecks_missing_unregistered_tombstoned_and_wrong_hash_chunks ... ok\ntest authority::semantic::wal_chunk_tests::different_history_indexes_share_chunk_validation_and_keep_complete_gc_reachability ... ok\ntest authority::semantic::wal_chunk_tests::shallow_index_validation_does_not_skip_the_later_chunk_sweep ... ok\ntest authority::semantic::wal_chunk_tests::the_chunk_fifo_evicts_and_revalidates_older_entries ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 313 filtered out; finished in 0.21s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "authority::branch::tests",
+      "exit": 0,
+      "stdout": "\nrunning 6 tests\ntest authority::branch::tests::a_cached_image_is_reused_and_a_failed_publication_forces_revalidation ... ok\ntest authority::branch::tests::a_forged_commit_position_discards_the_extended_image ... ok\ntest authority::branch::tests::a_later_wal_adopted_after_a_lost_ack_is_pinned_through_gc ... ok\ntest authority::branch::tests::a_lost_acknowledgement_that_resolves_to_a_later_wal_does_not_keep_the_image ... ok\ntest authority::branch::tests::a_lost_head_race_drops_the_cache_and_the_retry_revalidates ... ok\ntest authority::branch::tests::an_append_that_rewrites_the_prefix_keeps_the_bytes_and_resets_the_scan ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 311 filtered out; finished in 0.00s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "wal::",
+      "exit": 0,
+      "stdout": "\nrunning 15 tests\ntest wal::receipt_tests::legacy_receipt_without_original_chunk_refuses_replay ... ok\ntest wal::receipt_tests::receipt_initial_and_publication_error_paths_bind_full_content ... ok\ntest wal::replay_window_tests::concurrent_replays_share_one_fetch_budget ... ok\ntest wal::replay_window_tests::replay_bounds_the_window_plus_the_delivery_to_the_budget ... ok\ntest wal::replay_window_tests::replay_delivers_records_in_lsn_order_when_chunks_finish_in_reverse ... ok\ntest wal::replay_window_tests::replay_reports_the_lowest_lsn_failure_and_stops_delivering ... ok\ntest wal::replay_window_tests::replay_stops_delivering_when_the_visitor_rejects_a_record ... ok\ntest wal::replay_window_tests::the_window_is_the_budget_less_the_delivery_over_the_fetch_charge ... ok\ntest wal::replay_window_tests::wal_replay_wall_clock_against_serial_replay ... ignored, manual fake-store timing comparison; not platform performance evidence\ntest wal::replay_window_tests::wal_replay_window_follows_the_byte_budget ... ok\ntest wal::split_tests::authority_limits_reject_an_unsplit_record ... ok\ntest wal::split_tests::interrupted_split_keeps_the_prefix_and_no_commit ... ok\ntest wal::split_tests::operation_limit_is_split_without_reordering ... ok\ntest wal::split_tests::oversized_write_is_split_and_only_the_last_record_commits ... ok\ntest wal::split_tests::recovery_accepts_a_split_record_chain_ending_in_a_commit ... ok\n\ntest result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 302 filtered out; finished in 2.02s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "storage::",
+      "exit": 0,
+      "stdout": "\nrunning 8 tests\ntest storage::cow_tests::cached_published_bytes_remain_immutable_across_partial_writes ... ok\ntest storage::cow_tests::dirty_read_snapshot_survives_overlapping_partial_and_full_writes ... ok\ntest storage::cow_tests::dirty_read_snapshot_survives_truncate_and_extend ... ok\ntest storage::cow_tests::failed_publish_discards_duplicate_checks_and_preserves_dirty_image ... ok\ntest storage::cow_tests::repeated_segment_bodies_are_checked_once_per_publish_and_rechecked_next_time ... ok\ntest storage::image_tests::detects_external_initial_image_publication ... ok\ntest storage::image_tests::skips_the_initial_image_probe_once_the_image_is_published ... ok\ntest storage::read_path_tests::a_finished_fetch_leaves_no_entry_in_the_in_flight_table ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.01s\n\n",
+      "stderr": ""
+    }
+  ]
+}

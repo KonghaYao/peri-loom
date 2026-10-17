@@ -1,0 +1,58 @@
+[
+  {
+    "args": [
+      "--lib",
+      "storage::"
+    ],
+    "exit": 0,
+    "log": "correctness-0.log"
+  },
+  {
+    "args": [
+      "--lib",
+      "authority::branch::tests"
+    ],
+    "exit": 0,
+    "log": "correctness-1.log"
+  },
+  {
+    "args": [
+      "--lib",
+      "wal::tests"
+    ],
+    "exit": 0,
+    "log": "correctness-2.log"
+  },
+  {
+    "args": [
+      "--test",
+      "remote_storage"
+    ],
+    "exit": 0,
+    "log": "correctness-3.log"
+  },
+  {
+    "args": [
+      "--test",
+      "recovery"
+    ],
+    "exit": 0,
+    "log": "correctness-4.log"
+  },
+  {
+    "args": [
+      "--test",
+      "p4_runtime"
+    ],
+    "exit": 0,
+    "log": "correctness-5.log"
+  },
+  {
+    "args": [
+      "--lib",
+      "wal::receipt_tests"
+    ],
+    "exit": 0,
+    "log": "correctness-receipt.log"
+  }
+]

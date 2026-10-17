@@ -1,0 +1,48 @@
+{
+  "platform": "macOS-26.5.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "source_sha256": {
+    "prototypes/v1/platform/operation_commit.go": "d1f050ea0dd0762494c6ca4391dfdc32c0e52e9020f4a9870f18bf960f2aedfa",
+    "prototypes/v1/platform/operation_journal.go": "b10dc4302de02a8f05bd5ed1fdb05a660dd712f572af941b191e9b05c7ec09a7",
+    "prototypes/v1/src/authority_rpc/client.rs": "86892d563aeb47562052f485eda5b409f3f3818c3dbeb4d9594e849e0f0f163e",
+    "prototypes/v1/src/authority_rpc/protocol.rs": "9f87998c08459e938de89e6ec61096f76711c974a2e048e359f7d3e47fad9c15"
+  },
+  "commands": {
+    "go version": "go version go1.23.4 darwin/arm64\n",
+    "rustc --version": "rustc 1.98.1 (48a229cea 2026-09-01)\n",
+    "cargo --version": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n",
+    "sysctl -n machdep.cpu.brand_string": "Apple M5 Pro\n",
+    "df -T /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy": "",
+    "git status --short": "fatal: not a git repository (or any of the parent directories): .git\n",
+    "go env GOFLAGS GOEXPERIMENT GOTOOLCHAIN": "\n\nlocal\n"
+  },
+  "build": {
+    "go": "normal optimized go test (no -gcflags), GOMAXPROCS=2, GOPROXY=off, GOSUMDB=off",
+    "rust": "cargo build --release --offline, CARGO_BUILD_JOBS=2, default release opt-level=3",
+    "order": "Go six process runs forward/reverse alternating; Rust six in-process rounds alternating dual/single"
+  },
+  "timing": "Go/Rust runs serial; local temporary files, filesystem type unverified; no HTTP/full-stack load",
+  "build_environment": {
+    "RUSTFLAGS": "",
+    "CARGO_ENCODED_RUSTFLAGS": "",
+    "CARGO_PROFILE_RELEASE_OPT_LEVEL": "",
+    "GOFLAGS": ""
+  },
+  "filesystem_evidence": {
+    "type": "unverified",
+    "probe": "df -T returned no usable filesystem type evidence; original collector did not retain exit status",
+    "correction": "Original local APFS wording was an unsupported assumption and has been removed."
+  },
+  "rust_dependency_version_boundary": {
+    "frozen_project": {
+      "serde": "1.0.229",
+      "serde_json": "1.0.151"
+    },
+    "harness": {
+      "serde": "1.0.229",
+      "serde_json": "1.0.154"
+    },
+    "scope": "Costs and contract cases are a copied-logic microbenchmark on serde_json 1.0.154, not an unchanged production-parser measurement."
+  },
+  "go_source_archive_boundary": "Initial sparse runs logged verification at line 78; after adding near-capacity setup the archived final source logs at line 82. Original sparse source/binary hashes were not captured. See 01-evidence-notes.md."
+}
