@@ -31,6 +31,8 @@ mod scheduler;
 mod signals;
 
 #[cfg(test)]
+mod integration_tests;
+#[cfg(test)]
 mod tests;
 
 use anyhow::Result;
