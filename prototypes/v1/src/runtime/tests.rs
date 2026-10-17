@@ -1,4 +1,5 @@
 use super::{WorkerLimits, WorkerRuntime};
+use crate::maintenance::{MaintenanceBudget, MaintenanceScheduler};
 use crate::namespace::Namespace;
 use crate::object_store::{MemoryObjectStore, ObjectStore, PutCondition, StoredObject};
 use crate::provider::LocalAuthorityProvider;
@@ -273,5 +274,165 @@ fn the_watchdog_starts_one_driver_that_runs_the_queued_unit() -> Result<()> {
         handle.query("SELECT value FROM data")?[0][0].to_string(),
         "1"
     );
+    Ok(())
+}
+
+fn suspend_scheduler(
+    enabled: bool,
+    bytes_per_window: u64,
+    timeout: Duration,
+) -> Arc<MaintenanceScheduler> {
+    Arc::new(MaintenanceScheduler::for_suspend_tests(
+        enabled,
+        MaintenanceBudget::new(1, 1, 16, bytes_per_window, Duration::from_secs(60)),
+        timeout,
+    ))
+}
+
+fn loaded_database(
+    runtime: &WorkerRuntime,
+    identifier: &DatabaseId,
+) -> Arc<crate::database::RemoteDatabase> {
+    runtime
+        .native_instances
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(id, _)| id == identifier)
+        .and_then(|(_, database)| database.upgrade())
+        .expect("the database must be resident")
+}
+
+#[test]
+fn a_suspend_with_the_schedule_off_does_not_run_maintenance() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance =
+        suspend_scheduler(false, u64::MAX, Duration::from_secs(1));
+    let identifier = identifier("suspend_off")?;
+    let handle = runtime.open(identifier.clone(), 1)?;
+    handle.execute("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let database = loaded_database(&runtime, &identifier);
+    drop(handle);
+    assert!(runtime.drain(&identifier)?);
+    let counters = database.maintenance_ledger().counters();
+    assert_eq!(counters.attempts, 0);
+    assert_eq!(counters.executions, 0);
+    assert_eq!(counters.completed, 0);
+    Ok(())
+}
+
+#[test]
+fn a_suspend_runs_one_pre_tidy_inside_the_budget() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance =
+        suspend_scheduler(true, u64::MAX, Duration::from_secs(2));
+    let identifier = identifier("suspend_ok")?;
+    let handle = runtime.open(identifier.clone(), 1)?;
+    handle.execute("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let database = loaded_database(&runtime, &identifier);
+    assert!(database.io().maintenance_signals()?.wal_bytes > 0);
+    drop(handle);
+    assert!(runtime.drain(&identifier)?);
+    let counters = database.maintenance_ledger().counters();
+    assert_eq!(counters.executions, 1);
+    assert_eq!(counters.completed, 1);
+    assert_eq!(counters.failed, 0);
+    drop(database);
+
+    // The unload still completed, and the checkpoint/compaction did not change the rows.
+    let reopened = runtime.open(identifier.clone(), 1)?;
+    assert_eq!(
+        reopened.query("SELECT value FROM data")?[0][0].to_string(),
+        "1"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_budget_refusal_does_not_block_the_suspend() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance =
+        suspend_scheduler(true, 0, Duration::from_secs(1));
+    let identifier = identifier("suspend_refused")?;
+    let handle = runtime.open(identifier.clone(), 1)?;
+    handle.execute("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let database = loaded_database(&runtime, &identifier);
+    assert!(database.io().maintenance_signals()?.wal_bytes > 0);
+    drop(handle);
+    assert!(runtime.drain(&identifier)?);
+    let counters = database.maintenance_ledger().counters();
+    assert_eq!(counters.executions, 0);
+    assert_eq!(counters.completed, 0);
+    assert_eq!(counters.refused, 1);
+    assert_eq!(runtime.status()?.loaded_databases, 0);
+    Ok(())
+}
+
+#[test]
+fn a_timed_out_pre_tidy_does_not_block_the_suspend_or_claim_completion() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance =
+        suspend_scheduler(true, u64::MAX, Duration::ZERO);
+    let identifier = identifier("suspend_timeout")?;
+    let handle = runtime.open(identifier.clone(), 1)?;
+    handle.execute("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let database = loaded_database(&runtime, &identifier);
+    drop(handle);
+    assert!(runtime.drain(&identifier)?);
+    let counters = database.maintenance_ledger().counters();
+    assert_eq!(
+        counters.executions, 1,
+        "the unit reached its entry point before the deadline"
+    );
+    assert_eq!(counters.completed, 0, "a timeout is not a completion");
+    assert_eq!(counters.failed, 1);
+    assert_eq!(runtime.status()?.loaded_databases, 0);
+    Ok(())
+}
+
+#[test]
+fn a_draining_database_runs_the_pre_tidy_when_the_last_session_leaves() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance =
+        suspend_scheduler(true, u64::MAX, Duration::from_secs(2));
+    let identifier = identifier("suspend_release")?;
+    let handle = runtime.open(identifier.clone(), 1)?;
+    handle.execute("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let database = loaded_database(&runtime, &identifier);
+
+    assert!(runtime.drain(&identifier)?);
+    assert_eq!(
+        database.maintenance_ledger().counters().executions,
+        0,
+        "a database with a session is only marked draining"
+    );
+    drop(handle);
+    let counters = database.maintenance_ledger().counters();
+    assert_eq!(counters.executions, 1);
+    assert_eq!(counters.completed, 1);
+    assert_eq!(runtime.status()?.loaded_databases, 0);
+    Ok(())
+}
+
+#[test]
+fn repeated_drain_runs_the_pre_tidy_once() -> Result<()> {
+    let (_cache, _store, mut runtime) = fixture(Duration::from_millis(1))?;
+    Arc::get_mut(&mut runtime).unwrap().maintenance =
+        suspend_scheduler(true, u64::MAX, Duration::from_secs(2));
+    let identifier = identifier("suspend_repeat")?;
+    let handle = runtime.open(identifier.clone(), 1)?;
+    handle.execute("CREATE TABLE data(value); INSERT INTO data VALUES(1)")?;
+    let database = loaded_database(&runtime, &identifier);
+    drop(handle);
+
+    assert!(runtime.drain(&identifier)?);
+    assert!(
+        !runtime.drain(&identifier)?,
+        "the retired instance is gone, so a repeated suspend is a no-op"
+    );
+    let counters = database.maintenance_ledger().counters();
+    assert_eq!(counters.executions, 1, "a repeated suspend must not re-run");
+    assert_eq!(counters.completed, 1);
+    assert_eq!(runtime.status()?.loaded_databases, 0);
     Ok(())
 }

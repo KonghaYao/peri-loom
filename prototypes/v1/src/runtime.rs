@@ -346,6 +346,10 @@ impl WorkerRuntime {
         }
     }
 
+    /// Explicit unload. This deliberately does not pre-tidy: it is also the path an image
+    /// replacement uses to drop a local instance, and publishing a local checkpoint there
+    /// could race the replacement. The suspend/migrate transitions (`drain` and the
+    /// last-session release) run the bounded pre-tidy instead.
     pub fn close(&self, identifier: &DatabaseId) -> Result<bool> {
         identifier.validate()?;
         let mut registry = self.lock()?;
@@ -373,6 +377,7 @@ impl WorkerRuntime {
         let Some(entry) = registry.entries.get_mut(identifier) else {
             return Ok(false);
         };
+        let mut database = None;
         let remove = match entry {
             Entry::Retiring(_) => return Ok(true),
             Entry::Loading(loading) => {
@@ -381,7 +386,12 @@ impl WorkerRuntime {
             }
             Entry::Loaded(loaded) => {
                 loaded.draining = true;
-                loaded.sessions == 0
+                if loaded.sessions == 0 {
+                    database = Some(loaded.database.clone());
+                    true
+                } else {
+                    false
+                }
             }
         };
         let epoch = entry.epoch();
@@ -393,7 +403,11 @@ impl WorkerRuntime {
             None
         };
         drop(registry);
+        if let Some(database) = &database {
+            self.pre_suspend(identifier, database);
+        }
         drop(removed);
+        drop(database);
         Ok(true)
     }
 
@@ -530,6 +544,14 @@ impl WorkerRuntime {
             false
         };
         registry.sessions -= 1;
+        let database = if remove {
+            match registry.entries.get(identifier) {
+                Some(Entry::Loaded(loaded)) => Some(loaded.database.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let removed = if remove {
             let epoch = registry.entries.get(identifier).unwrap().epoch();
             registry
@@ -539,7 +561,41 @@ impl WorkerRuntime {
             None
         };
         drop(registry);
+        if let Some(database) = &database {
+            self.pre_suspend(identifier, database);
+        }
         drop(removed);
+        drop(database);
+    }
+
+    /// One bounded pre-tidy before an instance leaves the loaded set. It is an optimisation:
+    /// every failure, refusal or timeout is logged and the unload still happens. Nothing here
+    /// reaches the request path, and with the schedule switch off it costs one boolean read.
+    fn pre_suspend(&self, identifier: &DatabaseId, database: &Arc<Instance>) {
+        if !self.maintenance.enabled() {
+            return;
+        }
+        let database = match database.database() {
+            Ok(database) => database,
+            Err(error) => {
+                eprintln!(
+                    "维护预整理结果：database={identifier:?} lane=none \
+                     outcome=database_unavailable started=false elapsed_ms=0 detail={error:#}"
+                );
+                return;
+            }
+        };
+        let target: Arc<dyn crate::maintenance::MaintenanceTarget> = database;
+        let outcome = self.maintenance.pre_suspend(&target);
+        eprintln!(
+            "维护预整理结果：database={:?} lane={} outcome={} started={} elapsed_ms={} detail={}",
+            identifier,
+            outcome.lane.map_or("none", |lane| lane.name()),
+            outcome.reason.name(),
+            outcome.started,
+            outcome.elapsed.as_millis(),
+            outcome.detail.as_deref().unwrap_or("-"),
+        );
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Registry>> {

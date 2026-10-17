@@ -15,7 +15,7 @@ use super::budget::{BudgetDenied, MaintenanceBudget};
 use super::policy::{MaintenanceDecision, MaintenancePolicy, MaintenanceSkip, Watermark};
 use super::{
     BlockReason, MaintenanceLane, MaintenanceLedger, MaintenanceScheduler, MaintenanceSignals,
-    MaintenanceTarget,
+    MaintenanceTarget, PreSuspendOutcome, PreSuspendReason,
 };
 
 /// A target that records what it was asked to run and does nothing else. `signals` returns the
@@ -26,18 +26,27 @@ struct FakeTarget {
     signals: Mutex<MaintenanceSignals>,
     runs: AtomicUsize,
     fail: bool,
+    delay: Duration,
 }
 
 impl FakeTarget {
     fn new(name: &'static str, wal_bytes: u64) -> Arc<Self> {
-        Self::build(name, wal_bytes, false)
+        Self::build(name, wal_bytes, false, Duration::ZERO)
     }
 
     fn failing(name: &'static str, wal_bytes: u64) -> Arc<Self> {
-        Self::build(name, wal_bytes, true)
+        Self::build(name, wal_bytes, true, Duration::ZERO)
     }
 
-    fn build(name: &'static str, wal_bytes: u64, fail: bool) -> Arc<Self> {
+    fn slow(name: &'static str, wal_bytes: u64, delay: Duration) -> Arc<Self> {
+        Self::build(name, wal_bytes, false, delay)
+    }
+
+    fn slow_failing(name: &'static str, wal_bytes: u64, delay: Duration) -> Arc<Self> {
+        Self::build(name, wal_bytes, true, delay)
+    }
+
+    fn build(name: &'static str, wal_bytes: u64, fail: bool, delay: Duration) -> Arc<Self> {
         Arc::new(Self {
             name,
             ledger: MaintenanceLedger::default(),
@@ -47,6 +56,7 @@ impl FakeTarget {
             }),
             runs: AtomicUsize::new(0),
             fail,
+            delay,
         })
     }
 
@@ -71,8 +81,14 @@ impl MaintenanceTarget for FakeTarget {
             .unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
-    fn run_maintenance(&self, _lane: MaintenanceLane) -> Result<()> {
+    fn run_maintenance(&self, lane: MaintenanceLane) -> Result<()> {
+        // The real entry points record execution before doing any work; mirroring that here
+        // is what makes "started but unconfirmed" observable in the scheduler tests.
+        self.ledger.record_execution(lane);
         self.runs.fetch_add(1, Ordering::SeqCst);
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
         if self.fail {
             anyhow::bail!("synthetic maintenance failure");
         }
@@ -597,4 +613,109 @@ fn the_reader_age_is_an_upper_bound_that_survives_the_reader() {
     ledger.observe_reader_age(Duration::from_millis(10));
     assert_eq!(ledger.counters().oldest_reader_peak_ms, 4200);
     assert_eq!(ledger.readers().peak(), Duration::from_millis(4200));
+}
+
+fn pre_suspend_scheduler(
+    enabled: bool,
+    bytes: u64,
+    timeout: Duration,
+) -> Arc<MaintenanceScheduler> {
+    Arc::new(MaintenanceScheduler::new_for_tests(
+        policy(enabled),
+        budget(1, 1, 4, bytes),
+        timeout,
+    ))
+}
+
+fn pre_suspend(scheduler: &MaintenanceScheduler, target: &Arc<FakeTarget>) -> PreSuspendOutcome {
+    let target: Arc<dyn MaintenanceTarget> = target.clone();
+    scheduler.pre_suspend(&target)
+}
+
+#[test]
+fn a_suspend_pre_tidy_does_nothing_while_the_schedule_is_off() {
+    let scheduler = pre_suspend_scheduler(false, u64::MAX, Duration::from_secs(1));
+    let target = FakeTarget::new("suspend_disabled", 4096);
+    let outcome = pre_suspend(&scheduler, &target);
+    assert_eq!(outcome.reason, PreSuspendReason::Disabled);
+    assert_eq!(outcome.lane, None);
+    assert!(!outcome.started);
+    assert_eq!(target.runs(), 0);
+    assert_eq!(target.ledger.counters().executions, 0);
+}
+
+#[test]
+fn a_suspend_pre_tidy_runs_one_unit_inside_the_budget() {
+    let scheduler = pre_suspend_scheduler(true, u64::MAX, Duration::from_secs(1));
+    let target = FakeTarget::new("suspend_ok", 4096);
+    let outcome = pre_suspend(&scheduler, &target);
+    assert_eq!(outcome.reason, PreSuspendReason::Completed, "{outcome:?}");
+    assert_eq!(outcome.lane, Some(MaintenanceLane::IndexCompact));
+    assert!(outcome.started);
+    assert_eq!(target.runs(), 1);
+    let counters = target.ledger.counters();
+    assert_eq!(counters.executions, 1);
+    assert_eq!(counters.completed, 1);
+    assert_eq!(counters.failed, 0);
+    assert_eq!(counters.refused, 0);
+}
+
+#[test]
+fn a_suspend_pre_tidy_refused_by_the_budget_does_not_start_or_claim_completion() {
+    let scheduler = pre_suspend_scheduler(true, 0, Duration::from_secs(1));
+    let target = FakeTarget::new("suspend_refused", 4096);
+    let outcome = pre_suspend(&scheduler, &target);
+    assert_eq!(
+        outcome.reason,
+        PreSuspendReason::Refused(BudgetDenied::Bytes)
+    );
+    assert!(!outcome.started);
+    assert_eq!(target.runs(), 0, "a refused unit must not reach the target");
+    let counters = target.ledger.counters();
+    assert_eq!(counters.executions, 0);
+    assert_eq!(counters.completed, 0);
+    assert_eq!(counters.refused, 1);
+    assert_eq!(counters.blocks.get("budget"), Some(&1));
+}
+
+#[test]
+fn a_timed_out_pre_tidy_is_unconfirmed_and_is_not_retried() {
+    let scheduler = pre_suspend_scheduler(true, u64::MAX, Duration::from_millis(5));
+    let target = FakeTarget::slow_failing("suspend_timeout", 4096, Duration::from_millis(30));
+    let outcome = pre_suspend(&scheduler, &target);
+    assert_eq!(outcome.reason, PreSuspendReason::Timeout, "{outcome:?}");
+    assert!(
+        outcome.started,
+        "the entry point was reached, so the work is unconfirmed rather than absent"
+    );
+    assert!(outcome.elapsed >= Duration::from_millis(5));
+    let counters = target.ledger.counters();
+    assert_eq!(counters.executions, 1);
+    assert_eq!(counters.failed, 1);
+    assert_eq!(counters.completed, 0);
+
+    // The pick opened the cooldown, so a second suspend does not silently retry the unit.
+    let again = pre_suspend(&scheduler, &target);
+    assert_eq!(again.reason, PreSuspendReason::Cooling, "{again:?}");
+    assert_eq!(target.runs(), 1, "a timeout must not be retried in place");
+}
+
+#[test]
+fn only_one_pre_tidy_per_database_is_in_flight() {
+    let scheduler = pre_suspend_scheduler(true, u64::MAX, Duration::from_secs(2));
+    let target = FakeTarget::slow("suspend_single", 4096, Duration::from_millis(500));
+    let first = {
+        let scheduler = scheduler.clone();
+        let target = target.clone();
+        std::thread::spawn(move || pre_suspend(&scheduler, &target))
+    };
+    // `run_maintenance` increments this before it sleeps, so the first call holds the
+    // per-database slot by the time the second call starts.
+    while target.runs() == 0 {
+        std::thread::yield_now();
+    }
+    let second = pre_suspend(&scheduler, &target);
+    assert_eq!(second.reason, PreSuspendReason::InFlight, "{second:?}");
+    assert_eq!(first.join().unwrap().reason, PreSuspendReason::Completed);
+    assert_eq!(target.runs(), 1);
 }

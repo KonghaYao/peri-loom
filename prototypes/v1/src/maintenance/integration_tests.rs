@@ -13,7 +13,7 @@ use anyhow::Result;
 
 use super::budget::MaintenanceBudget;
 use super::policy::{MaintenancePolicy, Watermark};
-use super::{MaintenanceScheduler, MaintenanceTarget};
+use super::{MaintenanceLane, MaintenanceScheduler, MaintenanceTarget, PreSuspendReason};
 use crate::database::RemoteDatabase;
 use crate::namespace::Namespace;
 use crate::object_store::MemoryObjectStore;
@@ -396,6 +396,53 @@ fn a_long_reader_blocks_the_scheduled_compaction_and_the_wal_survives() -> Resul
 
     let after = fixture.wal.metadata(&fixture.namespace)?;
     assert_same_index(&settled, &after, "a blocked compaction keeps the old WAL");
+    assert!(reader.in_transaction()?);
+    assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
+    assert_eq!(fixture.values()?, "4");
+    Ok(())
+}
+
+/// The suspend-time unit takes the same precondition path as the scheduled one: a Full
+/// checkpoint first makes the publication current, then a reader blocks the compaction, which
+/// is reported as a failed unit with the long-reader block already recorded by the real
+/// preflight. Nothing is truncated and the rows stay readable.
+#[test]
+fn a_suspend_pre_tidy_blocked_by_a_reader_records_the_long_reader() -> Result<()> {
+    let fixture = Fixture::open("suspend_reader")?;
+    let scheduler = MaintenanceScheduler::new(
+        policy_with(
+            armed_lane(Duration::from_secs(1), Duration::ZERO),
+            armed_lane(Duration::from_secs(2), Duration::from_secs(1)),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        ),
+        MaintenanceBudget::new(1, 1, 16, 64 * MIB, Duration::from_secs(60)),
+    );
+
+    let checkpoint = scheduler.pre_suspend(&fixture.target());
+    assert_eq!(
+        checkpoint.reason,
+        PreSuspendReason::Completed,
+        "{checkpoint:?}"
+    );
+    assert_eq!(checkpoint.lane, Some(MaintenanceLane::Checkpoint));
+    let settled = fixture.wal.metadata(&fixture.namespace)?;
+
+    let reader = fixture.database.session()?;
+    reader.execute("BEGIN")?;
+    assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
+
+    let compact = scheduler.pre_suspend(&fixture.target());
+    assert_eq!(compact.reason, PreSuspendReason::Failed, "{compact:?}");
+    assert_eq!(compact.lane, Some(MaintenanceLane::IndexCompact));
+    assert!(compact.started);
+    let counters = fixture.counters();
+    assert_eq!(counters.failed, 1);
+    assert_eq!(counters.completed, 1);
+    assert_eq!(counters.blocks.get("long_reader"), Some(&1));
+
+    let after = fixture.wal.metadata(&fixture.namespace)?;
+    assert_same_index(&settled, &after, "a blocked pre-tidy keeps the old WAL");
     assert!(reader.in_transaction()?);
     assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
     assert_eq!(fixture.values()?, "4");

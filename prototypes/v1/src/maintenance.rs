@@ -8,10 +8,12 @@
 //!
 //! Three properties are deliberate and are what the tests pin down:
 //!
-//! 1. Nothing in the request path calls this module. The only driver is
+//! 1. Nothing in the request path calls this module. The periodic driver is
 //!    `WorkerRuntime::maintenance_tick`, called from the worker watchdog, and the units it
 //!    decides on are executed on the scheduler's own thread. A commit never waits for a
-//!    checkpoint or a compaction.
+//!    checkpoint or a compaction. The one synchronous caller is a database unload
+//!    (`pre_suspend`), which is already retiring the instance; its wait is bounded and a
+//!    failure there never blocks the unload.
 //! 2. Every unit is decided by low/high watermarks plus a cooldown, so crossing a threshold
 //!    does not turn into "do the heavy work on every commit". A unit that just ran, or that
 //!    was blocked, is not eligible again until its cooldown or backoff expires.
@@ -38,9 +40,13 @@ mod tests;
 use anyhow::Result;
 
 pub(crate) use budget::BudgetDenied;
+#[cfg(test)]
+pub(crate) use budget::MaintenanceBudget;
 pub(crate) use ledger::{BlockReason, MaintenanceLedger};
 pub(crate) use policy::MaintenanceLane;
 pub(crate) use scheduler::MaintenanceScheduler;
+#[cfg(test)]
+pub(crate) use scheduler::{PreSuspendOutcome, PreSuspendReason};
 pub(crate) use signals::{millis, MaintenanceSignals};
 
 /// What the scheduler needs from a database, and nothing else.

@@ -147,6 +147,14 @@ impl MaintenanceLedger {
         self.lock().lanes[lane.index()].last_due
     }
 
+    /// Units that reached the lane's entry point. A suspend-time pre-tidy reads this around
+    /// its call to tell "the unit never started" apart from "the unit started and its
+    /// completion is unconfirmed": a timeout must never be reported as maintenance that did
+    /// not happen.
+    pub(crate) fn executions(&self, lane: MaintenanceLane) -> u64 {
+        self.lock().lanes[lane.index()].executions
+    }
+
     pub(crate) fn next_allowed(&self, lane: MaintenanceLane) -> Option<Instant> {
         self.lock().lanes[lane.index()].next_allowed
     }

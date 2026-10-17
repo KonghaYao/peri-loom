@@ -14,15 +14,19 @@
 //! `drain` is also where a budget refusal becomes a *skip*: the unit is dropped from the
 //! queue with a recorded reason and its backoff, the WAL is left alone, and nothing is
 //! partially applied.
+//!
+//! `pre_suspend` is the one call that runs a unit on its caller's thread. It exists for the
+//! unload path, where the caller has to know whether the single pre-tidy finished; it still
+//! charges the same budget, opens the same cooldown and treats every refusal as a skip.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::budget::MaintenanceBudget;
+use super::budget::{BudgetDenied, MaintenanceBudget};
 use super::policy::{MaintenanceDecision, MaintenanceLane, MaintenancePolicy, MaintenanceSkip};
 use super::{BlockReason, MaintenanceTarget};
 
@@ -34,11 +38,91 @@ const DRIVER_INTERVAL: Duration = Duration::from_millis(50);
 /// driver thread and makes the global concurrency budget the only way to have two in flight.
 const UNITS_PER_DRAIN: usize = 1;
 
+/// How long a suspend may spend on its pre-tidy. This is an experiment input, not a measured
+/// value: it bounds the wait for the maintenance admission and the operation gate, and it
+/// keeps a control-plane unload from inheriting an unbounded statement window. The switch is
+/// off by default, so the default only applies when `PERI_MAINTENANCE_SCHEDULE=1`.
+const DEFAULT_PRE_SUSPEND_BUDGET: Duration = Duration::from_secs(2);
+const MAX_PRE_SUSPEND_BUDGET_MS: u64 = 30_000;
+const PRE_SUSPEND_BUDGET_ENV: &str = "PERI_MAINTENANCE_SUSPEND_BUDGET_MS";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MaintenanceDrain {
     pub completed: usize,
     pub failed: usize,
     pub refused: usize,
+}
+
+/// What a suspend-time pre-tidy did, reported so the unload path can log the real outcome
+/// instead of inferring one. `Timeout` and `Failed` are deliberately distinct from the
+/// skipped reasons: they mean the unit may have started, so they must never be described as
+/// "nothing ran". `started` is the ledger's answer to whether the lane's entry point was
+/// reached; a timeout with `started = true` has an unconfirmed completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreSuspendReason {
+    Disabled,
+    InFlight,
+    NothingToDo,
+    Cooling,
+    Refused(BudgetDenied),
+    Timeout,
+    Failed,
+    ProbeFailed,
+    Completed,
+}
+
+impl PreSuspendReason {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::InFlight => "in_flight",
+            Self::NothingToDo => "nothing_to_do",
+            Self::Cooling => "cooldown",
+            Self::Refused(_) => "budget_refused",
+            Self::Timeout => "timeout_unconfirmed",
+            Self::Failed => "failed_unconfirmed",
+            Self::ProbeFailed => "probe_failed",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreSuspendOutcome {
+    pub(crate) reason: PreSuspendReason,
+    pub(crate) lane: Option<MaintenanceLane>,
+    pub(crate) started: bool,
+    pub(crate) elapsed: Duration,
+    pub(crate) detail: Option<String>,
+}
+
+impl PreSuspendOutcome {
+    fn skipped(reason: PreSuspendReason, lane: Option<MaintenanceLane>, elapsed: Duration) -> Self {
+        Self {
+            reason,
+            lane,
+            started: false,
+            elapsed,
+            detail: None,
+        }
+    }
+}
+
+/// One pre-tidy per database, independent of the configured per-database concurrency. The
+/// budget may admit two units to one database when an operator raises its limit, but a
+/// suspend must still not race itself.
+struct PreSuspendSlot<'scheduler> {
+    active: &'scheduler Mutex<BTreeSet<String>>,
+    identity: String,
+}
+
+impl Drop for PreSuspendSlot<'_> {
+    fn drop(&mut self) {
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.identity);
+    }
 }
 
 struct Queued {
@@ -52,25 +136,61 @@ struct Queued {
 pub(crate) struct MaintenanceScheduler {
     policy: MaintenancePolicy,
     budget: MaintenanceBudget,
+    pre_suspend_budget: Duration,
+    pre_suspend_active: Mutex<BTreeSet<String>>,
     queue: Mutex<VecDeque<Queued>>,
     started: AtomicBool,
 }
 
 impl MaintenanceScheduler {
     pub(crate) fn configured() -> Result<Self> {
-        Ok(Self::new(
-            MaintenancePolicy::configured()?,
-            MaintenanceBudget::configured()?,
+        let policy = MaintenancePolicy::configured()?;
+        let budget = MaintenanceBudget::configured()?;
+        // With the schedule off the unload path never calls `pre_suspend`, so the knob is not
+        // consulted at all: a default deployment keeps exactly the old behaviour even if the
+        // variable is present or malformed.
+        let pre_suspend_budget = if policy.enabled() {
+            pre_suspend_budget_setting()?
+        } else {
+            DEFAULT_PRE_SUSPEND_BUDGET
+        };
+        Ok(Self::with_pre_suspend_budget(
+            policy,
+            budget,
+            pre_suspend_budget,
         ))
     }
 
+    /// Only tests construct a scheduler from a policy directly; the worker uses `configured`.
+    #[cfg(test)]
     pub(crate) fn new(policy: MaintenancePolicy, budget: MaintenanceBudget) -> Self {
+        Self::with_pre_suspend_budget(policy, budget, DEFAULT_PRE_SUSPEND_BUDGET)
+    }
+
+    fn with_pre_suspend_budget(
+        policy: MaintenancePolicy,
+        budget: MaintenanceBudget,
+        pre_suspend_budget: Duration,
+    ) -> Self {
         Self {
             policy,
             budget,
+            pre_suspend_budget,
+            pre_suspend_active: Mutex::new(BTreeSet::new()),
             queue: Mutex::new(VecDeque::new()),
             started: AtomicBool::new(false),
         }
+    }
+
+    /// The production timeout is read from the environment; tests need a constructor that can
+    /// arm a timeout short enough to observe without sleeping for the default.
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
+        policy: MaintenancePolicy,
+        budget: MaintenanceBudget,
+        pre_suspend_budget: Duration,
+    ) -> Self {
+        Self::with_pre_suspend_budget(policy, budget, pre_suspend_budget)
     }
 
     /// A scheduler whose checkpoint lane is due `period` after the database opened and whose
@@ -99,6 +219,39 @@ impl MaintenanceScheduler {
                 Duration::from_secs(60),
             ),
             MaintenanceBudget::new(1, 1, 64, 64 * 1024 * 1024, Duration::from_secs(60)),
+        )
+    }
+
+    /// A scheduler for the unload-path tests: the switch and both lanes are real, and the
+    /// pre-tidy timeout is short enough to observe without waiting for the production value.
+    #[cfg(test)]
+    pub(crate) fn for_suspend_tests(
+        enabled: bool,
+        budget: MaintenanceBudget,
+        pre_suspend_budget: Duration,
+    ) -> Self {
+        use super::policy::Watermark;
+
+        Self::with_pre_suspend_budget(
+            MaintenancePolicy::for_tests(
+                enabled,
+                Watermark {
+                    low_bytes: 0,
+                    high_bytes: 1,
+                    period: Duration::from_secs(1),
+                    phase: Duration::ZERO,
+                },
+                Watermark {
+                    low_bytes: 0,
+                    high_bytes: 1,
+                    period: Duration::from_secs(2),
+                    phase: Duration::from_secs(1),
+                },
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+            ),
+            budget,
+            pre_suspend_budget,
         )
     }
 
@@ -202,6 +355,153 @@ impl MaintenanceScheduler {
         summary
     }
 
+    /// One bounded pre-tidy immediately before a database is retired.
+    ///
+    /// This runs on the unload caller's thread, unlike `observe`/`drain`, because a suspend
+    /// has to know whether the one unit it asked for finished. The wait is bounded by
+    /// `pre_suspend_budget`: the budget is installed as the ambient request deadline, which
+    /// every `checkpoint`/`compact_wal` admission and operation-gate wait already honours.
+    /// The unit itself is the same entry point the admin path and the periodic lane use; it is
+    /// never detached, so its native dispatch keeps the fencing and deadline semantics it
+    /// already had instead of running on after the instance has been retired.
+    ///
+    /// Nothing here is on the correctness path: a refusal, a timeout or a failure leaves the
+    /// WAL where it is and returns an outcome the caller only logs. The caller must still
+    /// proceed with the unload. The lane's cooldown is opened at the pick, so neither this
+    /// path nor the periodic driver retries immediately, and a lane that the driver already
+    /// queued makes this call a no-op instead of stacking a second backfill.
+    pub(crate) fn pre_suspend(&self, target: &Arc<dyn MaintenanceTarget>) -> PreSuspendOutcome {
+        if !self.policy.enabled() {
+            return PreSuspendOutcome::skipped(PreSuspendReason::Disabled, None, Duration::ZERO);
+        }
+        let started = Instant::now();
+        let identity = target.identity();
+        let Some(_slot) = self.begin_pre_suspend(identity.clone()) else {
+            return PreSuspendOutcome::skipped(PreSuspendReason::InFlight, None, started.elapsed());
+        };
+        let signals = match target.signals() {
+            Ok(signals) => signals,
+            Err(error) => {
+                return PreSuspendOutcome {
+                    reason: PreSuspendReason::ProbeFailed,
+                    lane: None,
+                    started: false,
+                    elapsed: started.elapsed(),
+                    detail: Some(format!("{error:#}")),
+                };
+            }
+        };
+        // A confirmed WAL is compacted; an unconfirmed one still allows a Full checkpoint,
+        // which is the unit that makes the publication current. The compaction precondition is
+        // left to the unit itself as well, so a race between the probe and dispatch is still
+        // refused before the WAL index is touched.
+        let lane = if signals.unconfirmed_wal {
+            MaintenanceLane::Checkpoint
+        } else {
+            MaintenanceLane::IndexCompact
+        };
+        if signals.wal_bytes == 0 {
+            return PreSuspendOutcome::skipped(
+                PreSuspendReason::NothingToDo,
+                Some(lane),
+                started.elapsed(),
+            );
+        }
+        let ledger = target.ledger();
+        // The driver's pick already opened this window, and a pick that was refused by the
+        // budget did too. Skipping here is what keeps a suspend from stacking on top of a
+        // queued or in-flight periodic unit.
+        if ledger
+            .next_allowed(lane)
+            .is_some_and(|allowed| started < allowed)
+        {
+            return PreSuspendOutcome::skipped(
+                PreSuspendReason::Cooling,
+                Some(lane),
+                started.elapsed(),
+            );
+        }
+        ledger.record_start(lane, started, self.policy.cooldown());
+        let lease = match self
+            .budget
+            .acquire(&identity, signals.backfill_bytes(), started)
+        {
+            Ok(lease) => lease,
+            Err(denied) => {
+                ledger.record_block(
+                    BlockReason::Budget,
+                    Some(self.policy.blocked_until(started)),
+                );
+                ledger.record_refused(lane);
+                crate::work_metrics::observe_maintenance_refused(denied);
+                return PreSuspendOutcome {
+                    reason: PreSuspendReason::Refused(denied),
+                    lane: Some(lane),
+                    started: false,
+                    elapsed: started.elapsed(),
+                    detail: Some(denied.name().to_owned()),
+                };
+            }
+        };
+        let executions_before = ledger.executions(lane);
+        let timeout = self.pre_suspend_budget;
+        let deadline = started + timeout;
+        let result = {
+            let _deadline = crate::session::RequestDeadline::scope(deadline);
+            target.run_maintenance(lane)
+        };
+        let elapsed = started.elapsed();
+        // The entry point records its own execution before it takes a deadline. Reading the
+        // counter here is what lets the caller say "started, completion unconfirmed" instead
+        // of the false claim that a timed-out unit never touched the database.
+        let unit_started = ledger.executions(lane) > executions_before;
+        drop(lease);
+        match result {
+            Ok(()) => {
+                ledger.record_completion(lane);
+                PreSuspendOutcome {
+                    reason: PreSuspendReason::Completed,
+                    lane: Some(lane),
+                    started: unit_started,
+                    elapsed,
+                    detail: None,
+                }
+            }
+            Err(error) => {
+                let timed_out = elapsed >= timeout
+                    || error.downcast_ref::<crate::session::AdmissionError>()
+                        == Some(&crate::session::AdmissionError::Deadline);
+                ledger.record_failure(lane);
+                PreSuspendOutcome {
+                    reason: if timed_out {
+                        PreSuspendReason::Timeout
+                    } else {
+                        PreSuspendReason::Failed
+                    },
+                    lane: Some(lane),
+                    started: unit_started,
+                    elapsed,
+                    detail: Some(format!("{error:#}")),
+                }
+            }
+        }
+    }
+
+    fn begin_pre_suspend(&self, identity: String) -> Option<PreSuspendSlot<'_>> {
+        let mut active = self
+            .pre_suspend_active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !active.insert(identity.clone()) {
+            return None;
+        }
+        drop(active);
+        Some(PreSuspendSlot {
+            active: &self.pre_suspend_active,
+            identity,
+        })
+    }
+
     /// Starts the driver thread once. The owner calls this; `observe` deliberately does not,
     /// so a caller always knows whether an executor exists.
     ///
@@ -231,5 +531,24 @@ impl MaintenanceScheduler {
         self.queue
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+fn pre_suspend_budget_setting() -> Result<Duration> {
+    use anyhow::{ensure, Context};
+
+    match std::env::var(PRE_SUSPEND_BUDGET_ENV) {
+        Ok(value) => {
+            let millis = value
+                .parse::<u64>()
+                .with_context(|| format!("invalid maintenance {PRE_SUSPEND_BUDGET_ENV}"))?;
+            ensure!(
+                millis > 0 && millis <= MAX_PRE_SUSPEND_BUDGET_MS,
+                "invalid maintenance {PRE_SUSPEND_BUDGET_ENV}"
+            );
+            Ok(Duration::from_millis(millis))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_PRE_SUSPEND_BUDGET),
+        Err(error) => Err(error.into()),
     }
 }
