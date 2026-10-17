@@ -88,7 +88,7 @@ pub struct WalCommit {
 /// request that produced `lsn` without retaining the record itself. Legacy indexes predate
 /// `receipt_digests`, so an archived legacy receipt has no digest and a retry must fail
 /// closed instead of appending a second copy.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ArchivedReceipt {
     pub(crate) lsn: u64,
@@ -714,9 +714,16 @@ impl RemoteWal {
 
     /// Moves the oldest digested receipts into the page archive before the head CAS.
     ///
-    /// A legacy receipt without a digest stays inline: moving it would leave no proof that a
-    /// retry is the original request, so that rare format keeps its old unbounded-inline edge.
-    fn roll_receipts(&self, namespace: &Namespace, index: &mut WalMetadata) -> Result<()> {
+    /// The receipt this append adds stays inline: a roll must move at least one older receipt,
+    /// so a legacy head whose inline window is entirely undigested never changes the archive
+    /// root without a removal. A legacy receipt itself stays inline because moving it would
+    /// leave no proof that a retry is the original request.
+    fn roll_receipts(
+        &self,
+        namespace: &Namespace,
+        index: &mut WalMetadata,
+        appended: Option<&str>,
+    ) -> Result<()> {
         let excess = index
             .receipts
             .len()
@@ -728,7 +735,9 @@ impl RemoteWal {
         let mut candidates = index
             .receipts
             .iter()
-            .filter(|(identity, _)| index.receipt_digests.contains_key(*identity))
+            .filter(|(identity, _)| {
+                appended != Some(identity.as_str()) && index.receipt_digests.contains_key(*identity)
+            })
             .map(|(identity, lsn)| (*lsn, identity.clone()))
             .collect::<Vec<_>>();
         candidates.sort();
@@ -942,7 +951,7 @@ impl RemoteWal {
             index
                 .receipt_digests
                 .insert(append_id.clone(), encoded.hash().to_owned());
-            self.roll_receipts(namespace, &mut index)?;
+            self.roll_receipts(namespace, &mut index, Some(append_id))?;
             index.last_lsn = lsn;
             index.epoch = *epoch;
             index.commit = encoded.record().commit;
@@ -1282,7 +1291,7 @@ impl RemoteWal {
                 }
                 index.receipt_index = root;
             }
-            self.roll_receipts(namespace, &mut index)?;
+            self.roll_receipts(namespace, &mut index, None)?;
             index.entries.retain(|entry| entry.lsn >= before_lsn);
             index.entries.splice(0..0, segments);
             index.entry_count = Some(index.entries.len() as u64);
@@ -1727,7 +1736,8 @@ mod split_tests {
 #[cfg(test)]
 mod truncate_tests {
     use super::*;
-    use crate::object_store::LocalObjectStore;
+    use crate::authority::paged_index::PagedIndex;
+    use crate::object_store::{LocalObjectStore, PutCondition};
     use crate::recovery::fixture::{WalBuilder, FRAME_SIZE, PAGE_SIZE};
 
     fn namespace() -> Result<Namespace> {
@@ -2048,6 +2058,83 @@ mod truncate_tests {
         }
     }
 
+    fn load_segment(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+        hash: &str,
+    ) -> Result<Vec<u8>> {
+        Ok(store
+            .get(&namespace.key(&format!("wal/index-segments/{hash}"))?)?
+            .context("missing WAL index segment")?
+            .bytes)
+    }
+
+    fn load_chunk(store: &LocalObjectStore, key: &str) -> Result<Vec<u8>> {
+        Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+    }
+
+    fn validate_cold(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+        index: &[u8],
+    ) -> Result<Option<WalCommit>> {
+        Ok(crate::recovery::validate_index_state(
+            index,
+            namespace,
+            |hash| load_segment(store, namespace, hash),
+            |key| load_chunk(store, key),
+            load_page(store, namespace),
+        )?
+        .commit())
+    }
+
+    fn validate_incremental(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+        before: &[u8],
+        candidate: &[u8],
+    ) -> Result<Option<WalCommit>> {
+        let previous = crate::recovery::validate_index_state(
+            before,
+            namespace,
+            |hash| load_segment(store, namespace, hash),
+            |key| load_chunk(store, key),
+            load_page(store, namespace),
+        )?;
+        Ok(crate::recovery::validate_index_append(
+            previous,
+            candidate,
+            namespace,
+            |hash| load_segment(store, namespace, hash),
+            |key| load_chunk(store, key),
+            load_page(store, namespace),
+        )?
+        .commit())
+    }
+
+    fn store_record_chunk(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+        append_id: &str,
+        lsn: u64,
+    ) -> Result<String> {
+        let encoded = EncodedWalRecord::new(WalRecord {
+            append_id: append_id.into(),
+            namespace: namespace.clone(),
+            epoch: 1,
+            lsn,
+            timestamp_millis: 1,
+            batch: WalBatch::default(),
+            commit: None,
+        })?;
+        store.put(
+            &namespace.key(&format!("wal/chunks/{}", encoded.hash()))?,
+            encoded.bytes(),
+            PutCondition::Absent,
+        )?;
+        Ok(encoded.hash().to_owned())
+    }
+
     fn append_request(namespace: &Namespace, append_id: &str, bytes: &[u8]) -> WalAppendRequest {
         WalAppendRequest {
             namespace: namespace.clone(),
@@ -2066,6 +2153,188 @@ mod truncate_tests {
             append_id: append_id.into(),
             timestamp_millis: 1,
         }
+    }
+
+    #[test]
+    fn rolling_append_must_preserve_the_validated_archive() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        assert_eq!(
+            wal.append_local(&append_request(&namespace, "archived-old", &[]))?,
+            1
+        );
+        assert_eq!(
+            wal.append_local(&append_request(&namespace, "inline-old", &[]))?,
+            2
+        );
+        wal.truncate_with_part_bytes(&namespace, 2, FRAME_SIZE)?;
+        let before = index_bytes(&store, &namespace)?;
+        let (old, _) = wal.index(&namespace)?;
+        let old_root = old
+            .receipt_index
+            .clone()
+            .context("missing WAL receipt archive")?;
+        let pages = PagedIndex::with_prefix(store.as_ref(), &namespace, "wal/receipt-pages");
+        let old_entries = pages.entries(Some(&old_root))?;
+        let old_receipt: ArchivedReceipt =
+            serde_json::from_value(old_entries["archived-old"].clone())?;
+        let inline_lsn = old.receipts["inline-old"];
+        let inline_digest = old.receipt_digests["inline-old"].clone();
+        let new_hash = store_record_chunk(&store, &namespace, "new-append", 3)?;
+        let duplicate_hash = store_record_chunk(&store, &namespace, "archived-old", 3)?;
+
+        let append_candidate = |identity: &str, hash: &str| -> WalMetadata {
+            let mut index = old.clone();
+            index.entries.push(Entry {
+                lsn: 3,
+                hash: hash.to_owned(),
+            });
+            index.entry_count = Some(index.entry_count.unwrap() + 1);
+            index.last_lsn = 3;
+            index.commit = None;
+            index.receipts.insert(identity.to_owned(), 3);
+            index
+                .receipt_digests
+                .insert(identity.to_owned(), hash.to_owned());
+            index
+        };
+        let moved = ArchivedReceipt {
+            lsn: inline_lsn,
+            digest: Some(inline_digest),
+        };
+        let moved_value = serde_json::to_value(&moved)?;
+        let mut rolling = append_candidate("new-append", &new_hash);
+        rolling.receipts.remove("inline-old");
+        rolling.receipt_digests.remove("inline-old");
+
+        let rejection = |candidate: &WalMetadata| -> Result<String> {
+            let bytes = serde_json::to_vec(candidate)?;
+            match validate_incremental(&store, &namespace, &before, &bytes) {
+                Ok(_) => bail!("rolling candidate was accepted"),
+                Err(error) => Ok(error.to_string()),
+            }
+        };
+
+        let mut omitted = rolling.clone();
+        omitted.receipt_index = Some(pages.insert_many(
+            None,
+            BTreeMap::from([("inline-old".to_owned(), moved_value.clone())]),
+        )?);
+        let failure = rejection(&omitted)?;
+        assert!(
+            failure.contains("changed an existing archived receipt"),
+            "{failure}"
+        );
+
+        let mut tampered = rolling.clone();
+        tampered.receipt_index = Some(pages.insert_many(
+            None,
+            BTreeMap::from([
+                (
+                    "archived-old".to_owned(),
+                    serde_json::to_value(ArchivedReceipt {
+                        lsn: old_receipt.lsn,
+                        digest: Some("0".repeat(64)),
+                    })?,
+                ),
+                ("inline-old".to_owned(), moved_value.clone()),
+            ]),
+        )?);
+        let failure = rejection(&tampered)?;
+        assert!(
+            failure.contains("changed an existing archived receipt"),
+            "{failure}"
+        );
+
+        let mut extra = rolling.clone();
+        extra.receipt_index = Some(pages.insert_many(
+            None,
+            BTreeMap::from([
+                (
+                    "archived-old".to_owned(),
+                    serde_json::to_value(&old_receipt)?,
+                ),
+                ("inline-old".to_owned(), moved_value.clone()),
+                (
+                    "extra-archived".to_owned(),
+                    serde_json::to_value(ArchivedReceipt {
+                        lsn: inline_lsn,
+                        digest: Some("1".repeat(64)),
+                    })?,
+                ),
+            ]),
+        )?);
+        let failure = rejection(&extra)?;
+        assert!(
+            failure.contains("archived an unexpected receipt"),
+            "{failure}"
+        );
+
+        let duplicate = append_candidate("archived-old", &duplicate_hash);
+        let failure = rejection(&duplicate)?;
+        assert!(
+            failure.contains("reintroduced an archived receipt inline"),
+            "{failure}"
+        );
+
+        let mut accepted = rolling;
+        accepted.receipt_index = Some(pages.insert_many(
+            Some(&old_root),
+            BTreeMap::from([("inline-old".to_owned(), moved_value)]),
+        )?);
+        let after = serde_json::to_vec(&accepted)?;
+        assert_eq!(
+            validate_incremental(&store, &namespace, &before, &after)?,
+            validate_cold(&store, &namespace, &after)?
+        );
+        let extended = pages.entries(accepted.receipt_index.as_deref())?;
+        assert!(extended.contains_key("archived-old"));
+        assert!(extended.contains_key("inline-old"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_inline_window_does_not_reject_an_ordinary_append() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        for ordinal in 1..=WAL_RECEIPT_INLINE_LIMIT {
+            assert_eq!(
+                wal.append_local(&append_request(
+                    &namespace,
+                    &format!("legacy-{ordinal}"),
+                    &[]
+                ))?,
+                ordinal as u64
+            );
+        }
+        let (mut legacy, etag) = wal.index(&namespace)?;
+        assert_eq!(legacy.receipts.len(), WAL_RECEIPT_INLINE_LIMIT);
+        legacy.receipt_digests.clear();
+        wal.commit(&namespace, &legacy, etag)?;
+        let before = index_bytes(&store, &namespace)?;
+
+        let ordinary = append_request(&namespace, "ordinary", &[]);
+        let lsn = wal.append_local(&ordinary)?;
+        assert_eq!(lsn, (WAL_RECEIPT_INLINE_LIMIT + 1) as u64);
+        let after = index_bytes(&store, &namespace)?;
+        let metadata = wal.metadata(&namespace)?;
+        assert!(
+            metadata.receipt_index.is_none(),
+            "an append must not archive its own receipt without moving an older one"
+        );
+        assert_eq!(metadata.receipts.get("ordinary"), Some(&lsn));
+        assert_eq!(metadata.receipts.len(), WAL_RECEIPT_INLINE_LIMIT + 1);
+        assert_eq!(
+            validate_incremental(&store, &namespace, &before, &after)?,
+            validate_cold(&store, &namespace, &after)?
+        );
+        assert_eq!(wal.append_local(&ordinary)?, lsn);
+        assert_eq!(wal.metadata(&namespace)?.last_lsn, lsn);
+        Ok(())
     }
 
     #[test]

@@ -582,12 +582,64 @@ pub struct ValidatedWal {
     index: WalMetadata,
     entries: Vec<Entry>,
     image: WalImage,
+    /// The archive contents this state was validated against. A rolling append proves its
+    /// replacement is an exact extension of this map without re-reading the old pages; an
+    /// unchanged root uses it to reject a new inline identity the archive already owns.
+    archived: BTreeMap<String, ArchivedReceipt>,
 }
 
 impl ValidatedWal {
     pub fn commit(&self) -> Option<WalCommit> {
         self.index.commit
     }
+}
+
+/// Proves a rolling append replaced the archive by an exact extension of the validated one.
+///
+/// Every previously archived entry must survive byte-for-byte in the new tree, and the only
+/// entries the new tree may add are receipts moved out of this append's inline window. Those
+/// moved receipts still need their digest proof, so a legacy inline receipt cannot disappear
+/// into an archive that has no way to answer a retry.
+fn validate_archive_roll(
+    old: &BTreeMap<String, ArchivedReceipt>,
+    new: &BTreeMap<String, ArchivedReceipt>,
+    removed: &BTreeSet<String>,
+    old_receipts: &BTreeMap<String, u64>,
+    old_digests: &BTreeMap<String, String>,
+) -> Result<()> {
+    for (identity, receipt) in old {
+        ensure!(
+            new.get(identity) == Some(receipt),
+            "WAL append changed an existing archived receipt"
+        );
+    }
+    for identity in new.keys() {
+        ensure!(
+            old.contains_key(identity) || removed.contains(identity),
+            "WAL append archived an unexpected receipt"
+        );
+    }
+    for identity in removed {
+        ensure!(
+            !old.contains_key(identity),
+            "WAL append moved an already archived receipt inline"
+        );
+        let lsn = old_receipts
+            .get(identity)
+            .copied()
+            .context("WAL receipt is not inline")?;
+        let digest = old_digests
+            .get(identity)
+            .context("cannot archive a legacy WAL receipt without a digest")?;
+        let archived = new
+            .get(identity)
+            .context("WAL receipt is neither inline nor archived")?;
+        ensure!(
+            archived.lsn == lsn && archived.digest.as_ref() == Some(digest),
+            "archived WAL receipt disagrees with the removed inline receipt"
+        );
+    }
+    Ok(())
 }
 
 pub fn validate_index_state(
@@ -650,6 +702,7 @@ pub fn validate_index_state(
         index,
         entries,
         image,
+        archived,
     })
 }
 
@@ -675,6 +728,7 @@ pub fn validate_index_append(
         index: old,
         mut entries,
         mut image,
+        archived: old_archived,
     } = previous;
     let mut load_segment = load_segment;
     ensure!(
@@ -690,11 +744,6 @@ pub fn validate_index_append(
         "WAL append changed validated index prefix"
     );
     let rolled = index.receipt_index != old.receipt_index;
-    let archived = if rolled {
-        receipt_archive(&index, &mut load_page)?
-    } else {
-        BTreeMap::new()
-    };
     let mut removed = std::collections::BTreeSet::new();
     for (identity, lsn) in &old.receipts {
         match index.receipts.get(identity) {
@@ -718,20 +767,30 @@ pub fn validate_index_append(
         !rolled || !removed.is_empty(),
         "WAL append changed the archive root without archiving"
     );
-    for identity in &removed {
-        let lsn = old.receipts[identity];
-        let digest = old
-            .receipt_digests
-            .get(identity)
-            .context("cannot archive a legacy WAL receipt without a digest")?;
-        let archived = archived
-            .get(identity)
-            .context("WAL receipt is neither inline nor archived")?;
-        ensure!(
-            archived.lsn == lsn && archived.digest.as_ref() == Some(digest),
-            "archived WAL receipt disagrees with the removed inline receipt"
-        );
-    }
+    let archived = if rolled {
+        let archived = receipt_archive(&index, &mut load_page)?;
+        validate_archive_roll(
+            &old_archived,
+            &archived,
+            &removed,
+            &old.receipts,
+            &old.receipt_digests,
+        )?;
+        archived
+    } else {
+        // The archive root is unchanged, so its validated contents are unchanged too. A
+        // newly inline identity must not name an entry the archive already owns; otherwise
+        // a retry would resolve to one receipt while a replay expects a different record.
+        for identity in index.receipts.keys() {
+            if !old.receipts.contains_key(identity) {
+                ensure!(
+                    !old_archived.contains_key(identity),
+                    "WAL append reintroduced an archived receipt inline"
+                );
+            }
+        }
+        old_archived
+    };
     // 旧内联格式与截断后的 baseline 可能超过单段上限；仅转换时允许冷校验，
     // 仍须证明原有 prefix 与 receipts 未改变，不能将任意新索引当作追加。
     if old.entries.len() > WAL_INDEX_SEGMENT_LIMIT {
@@ -789,7 +848,7 @@ pub fn validate_index_append(
         namespace,
         entries.len() - 1,
         &mut load_chunk,
-        None,
+        Some(&archived),
         true,
     )?;
     for (identity, lsn) in &index.receipts {
@@ -809,6 +868,7 @@ pub fn validate_index_append(
         index,
         entries,
         image,
+        archived,
     })
 }
 
