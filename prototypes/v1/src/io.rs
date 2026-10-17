@@ -41,6 +41,10 @@ struct Shared {
     namespace: Namespace,
     epoch: u64,
     gate: Mutex<State>,
+    /// Serializes WAL appends against publication, reset and main-database writes.
+    /// Readers do not take it: the WAL image stays readable while an append is in
+    /// flight, because the frozen batch was removed before the remote call.
+    append_gate: Mutex<()>,
     _directory_lock: DirectoryLock,
 }
 
@@ -54,6 +58,19 @@ struct State {
     wal_failed: bool,
     position: Option<WalPosition>,
     last_commit: Option<WalPosition>,
+    /// Set while a frozen batch is being appended to durable WAL. Publication and
+    /// reset must not treat the empty `batch` as "durable" in that window.
+    append_in_flight: bool,
+    frozen_wal_bytes: u64,
+}
+
+/// A batch taken out of [`State`] under the lock so the remote append can run without
+/// blocking readers of the WAL image.
+struct FrozenWalAppend {
+    batch: WalBatch,
+    position: Option<WalPosition>,
+    started: std::time::Instant,
+    bytes: u64,
 }
 
 impl RemoteIO {
@@ -109,6 +126,7 @@ impl RemoteIO {
                 namespace,
                 epoch,
                 gate: Mutex::new(state),
+                append_gate: Mutex::new(()),
                 _directory_lock: directory_lock,
             }),
             path,
@@ -152,20 +170,18 @@ impl RemoteIO {
         let state = self.shared.lock()?;
         let mut usage = self.shared.storage.resource_usage()?;
         usage.wal_bytes = state.image.len();
-        usage.pending_wal_bytes =
-            state
-                .batch
-                .operations
-                .iter()
-                .try_fold(0usize, |total, operation| {
-                    let bytes = match operation {
-                        crate::wal::WalOperation::Write { bytes, .. } => bytes.len(),
-                        crate::wal::WalOperation::Truncate { .. } => 0,
-                    };
-                    total
-                        .checked_add(bytes)
-                        .context("pending WAL payload overflow")
-                })?;
+        usage.pending_wal_bytes = state.batch.operations.iter().try_fold(
+            state.frozen_wal_bytes as usize,
+            |total, operation| {
+                let bytes = match operation {
+                    crate::wal::WalOperation::Write { bytes, .. } => bytes.len(),
+                    crate::wal::WalOperation::Truncate { .. } => 0,
+                };
+                total
+                    .checked_add(bytes)
+                    .context("pending WAL payload overflow")
+            },
+        )?;
         Ok(usage)
     }
 
@@ -180,20 +196,18 @@ impl RemoteIO {
     pub(crate) fn maintenance_signals(&self) -> Result<crate::maintenance::MaintenanceSignals> {
         let state = self.shared.lock()?;
         let usage = self.shared.storage.resource_usage()?;
-        let pending_wal_bytes =
-            state
-                .batch
-                .operations
-                .iter()
-                .try_fold(0u64, |total, operation| {
-                    let bytes = match operation {
-                        crate::wal::WalOperation::Write { bytes, .. } => bytes.len() as u64,
-                        crate::wal::WalOperation::Truncate { .. } => 0,
-                    };
-                    total
-                        .checked_add(bytes)
-                        .context("pending WAL payload overflow")
-                })?;
+        let pending_wal_bytes = state.batch.operations.iter().try_fold(
+            state.frozen_wal_bytes,
+            |total, operation| {
+                let bytes = match operation {
+                    crate::wal::WalOperation::Write { bytes, .. } => bytes.len() as u64,
+                    crate::wal::WalOperation::Truncate { .. } => 0,
+                };
+                total
+                    .checked_add(bytes)
+                    .context("pending WAL payload overflow")
+            },
+        )?;
         let applied = self.shared.storage.applied_lsn();
         let wal_bytes = state.image.len() as u64;
         Ok(crate::maintenance::MaintenanceSignals {
@@ -209,6 +223,7 @@ impl RemoteIO {
                 || state.dirty
                 || state.wal_failed
                 || state.publication_failed
+                || state.append_in_flight
                 || !state.batch.operations.is_empty(),
         })
     }
@@ -217,6 +232,7 @@ impl RemoteIO {
         self.shared.check_writer()
     }
     pub(crate) fn publish_open_header(&self) -> Result<()> {
+        let _append = self.shared.append_guard()?;
         let mut state = self.shared.lock()?;
         if !state.dirty {
             return Ok(());
@@ -238,13 +254,17 @@ impl RemoteIO {
     pub(crate) fn check_compaction(&self) -> Result<()> {
         let state = self.shared.lock()?;
         ensure!(
-            !state.wal_failed && !state.publication_failed && state.batch.operations.is_empty(),
+            !state.wal_failed
+                && !state.publication_failed
+                && !state.append_in_flight
+                && state.batch.operations.is_empty(),
             "WAL compaction requires confirmed durability and no pending operations"
         );
         Ok(())
     }
 
     pub(crate) fn compact_wal(&self) -> Result<()> {
+        let _append = self.shared.append_guard()?;
         let mut state = self.shared.lock()?;
         self.shared.allow_reset(&state)?;
         ensure!(
@@ -317,7 +337,17 @@ impl Shared {
             .map_err(|_| adapter_error("remote IO mutex poisoned"))
     }
 
+    fn append_guard(&self) -> turso_core::Result<std::sync::MutexGuard<'_, ()>> {
+        self.append_gate
+            .lock()
+            .map_err(|_| adapter_error("remote IO append mutex poisoned"))
+    }
+
     fn allow_reset(&self, state: &State) -> Result<()> {
+        ensure!(
+            !state.append_in_flight,
+            "WAL reset requires the in-flight append to settle"
+        );
         ensure!(
             !state.dirty
                 && !state.publication_failed
@@ -336,14 +366,42 @@ impl Shared {
         Ok(())
     }
 
-    fn sync_wal(&self, state: &mut State) -> Result<()> {
+    /// Appends the pending batch without holding the state lock across the remote call.
+    /// The caller holds [`Self::append_guard`], which keeps appends, publication, resets
+    /// and main-database writes in the same order as before; readers only need the state
+    /// lock and never observe the frozen batch. Publication and reset additionally check
+    /// `append_in_flight`, so a caller that forgets the gate fails closed instead of
+    /// mistaking the emptied batch for durable state.
+    fn sync_wal(&self, _append: &std::sync::MutexGuard<'_, ()>) -> Result<()> {
+        let mut state = self.lock()?;
+        let Some(mut frozen) = self.freeze_wal(&mut state)? else {
+            return Ok(());
+        };
+        drop(state);
+        let appended = self.append_frozen(&mut frozen);
+        let mut state = self.lock()?;
+        self.finish_wal(&mut state, frozen, appended)
+    }
+
+    /// Appends while the caller holds the state lock. Reset paths that mutate the WAL
+    /// image and append in the same critical section use this so readers never observe
+    /// the mutation before its durable record is settled.
+    fn sync_wal_locked(&self, state: &mut State) -> Result<()> {
+        let Some(mut frozen) = self.freeze_wal(state)? else {
+            return Ok(());
+        };
+        let appended = self.append_frozen(&mut frozen);
+        self.finish_wal(state, frozen, appended)
+    }
+
+    fn freeze_wal(&self, state: &mut State) -> Result<Option<FrozenWalAppend>> {
         self.check_writer()?;
         ensure!(
             !state.wal_failed,
             "WAL durability failure requires cold recovery"
         );
         if state.batch.operations.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         // The scan resumes at the frames the pending batch added: bytes an earlier commit
         // verified are never re-read, and a write inside them already reset the state.
@@ -379,20 +437,34 @@ impl Shared {
             bytes,
             position.map_or(0, |position| position.frame_count),
         );
-        let started = std::time::Instant::now();
-        let appended =
-            self.wal
-                .append_commit(&self.namespace, self.epoch, state.batch.clone(), position);
-        let elapsed = started.elapsed();
+        let batch = std::mem::take(&mut state.batch);
+        state.append_in_flight = true;
+        state.frozen_wal_bytes = bytes;
+        Ok(Some(FrozenWalAppend {
+            batch,
+            position,
+            started: std::time::Instant::now(),
+            bytes,
+        }))
+    }
+
+    fn append_frozen(&self, frozen: &mut FrozenWalAppend) -> Result<u64> {
+        let appended = self.wal.append_commit(
+            &self.namespace,
+            self.epoch,
+            frozen.batch.clone(),
+            frozen.position,
+        );
+        let elapsed = frozen.started.elapsed();
         let metrics = Metrics::global();
-        let transferred = if appended.is_ok() { bytes } else { 0 };
+        let transferred = if appended.is_ok() { frozen.bytes } else { 0 };
         metrics.record(
             Operation::WalDurability,
             elapsed,
             appended.is_ok(),
             transferred,
         );
-        if position.is_some() {
+        if frozen.position.is_some() {
             metrics.record(
                 Operation::NativeCommitDurability,
                 elapsed,
@@ -400,17 +472,33 @@ impl Shared {
                 transferred,
             );
         }
+        appended
+    }
+
+    fn finish_wal(
+        &self,
+        state: &mut State,
+        mut frozen: FrozenWalAppend,
+        appended: Result<u64>,
+    ) -> Result<()> {
+        state.append_in_flight = false;
+        state.frozen_wal_bytes = 0;
         match appended {
             Ok(lsn) => {
                 state.lsn = lsn;
-                if position.is_some() {
-                    state.last_commit = position;
+                if frozen.position.is_some() {
+                    state.last_commit = frozen.position;
                 }
-                state.batch.operations.clear();
                 Ok(())
             }
+            // The unconfirmed batch stays visible so resource accounting and maintenance
+            // keep seeing the bytes the failed append did not settle. No path retries it:
+            // `wal_failed` already closes every write and forces cold recovery.
             Err(error) => {
                 state.wal_failed = true;
+                let mut restored = std::mem::take(&mut frozen.batch.operations);
+                restored.append(&mut state.batch.operations);
+                state.batch.operations = restored;
                 Err(error)
             }
         }
@@ -420,7 +508,7 @@ impl Shared {
         self.check_writer()?;
         state.publication_failed = true;
         ensure!(
-            !state.wal_failed && state.batch.operations.is_empty(),
+            !state.wal_failed && !state.append_in_flight && state.batch.operations.is_empty(),
             "database publication requires durable WAL"
         );
         ensure!(
@@ -486,6 +574,7 @@ impl IO for RemoteIO {
             Some(false) => Err(adapter_error("cannot remove virtual database")),
             Some(true) => {
                 self.shared.check_local_writer().map_err(adapter_error)?;
+                let _append = self.shared.append_guard()?;
                 let mut state = self.shared.lock()?;
                 self.shared.allow_reset(&state).map_err(adapter_error)?;
                 state.image.clear();
@@ -493,7 +582,9 @@ impl IO for RemoteIO {
                     .batch
                     .operations
                     .push(crate::wal::WalOperation::Truncate { size: 0 });
-                self.shared.sync_wal(&mut state).map_err(adapter_error)
+                self.shared
+                    .sync_wal_locked(&mut state)
+                    .map_err(adapter_error)
             }
             None if is_temporary(path) => self.platform.remove_file(path),
             None => Err(adapter_error("cannot remove non-temporary host file")),

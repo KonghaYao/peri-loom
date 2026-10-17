@@ -490,3 +490,179 @@ impl ObjectStore for SegmentGateStore {
         self.inner.list(prefix)
     }
 }
+
+/// A parked WAL chunk upload must not stall readers of the WAL image: the append is
+/// frozen under the state lock and then runs outside it.
+#[test]
+fn slow_wal_append_does_not_block_wal_reads() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let backing = Arc::new(LocalObjectStore::open(objects.path())?);
+    {
+        let database = RemoteDatabase::open(backing.clone(), namespace()?, cache.path(), 0)?;
+        database
+            .execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")?;
+        database.checkpoint()?;
+    }
+    let cold = tempfile::tempdir()?;
+    let gate = Arc::new(Gate::default());
+    let store: Arc<dyn ObjectStore> = Arc::new(WalChunkGateStore {
+        inner: backing,
+        gate: gate.clone(),
+        fail: false,
+    });
+    let io = RemoteIO::open(
+        store,
+        namespace()?,
+        cold.path(),
+        0,
+        8 * 1024 * 1024,
+        64 * 1024 * 1024,
+    )?;
+    let wal = io.open_file(
+        &format!("{}-wal", io.database_path()),
+        OpenFlags::Create,
+        false,
+    )?;
+    let frame = Arc::new(Buffer::new_temporary(64));
+    frame.as_mut_slice().fill(0);
+    assert!(wal
+        .pwrite(
+            0,
+            frame,
+            Completion::new_write(|result| { assert_eq!(result.unwrap(), 64) })
+        )?
+        .finished());
+
+    gate.arm(1);
+    let parked = wal.clone();
+    let appender = std::thread::spawn(move || -> Result<()> {
+        drop(parked.sync(
+            Completion::new_sync(|result| {
+                result.expect("WAL sync");
+            }),
+            FileSyncType::Fsync,
+        )?);
+        Ok(())
+    });
+    gate.wait_entered();
+
+    let (sender, receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let buffer = Arc::new(Buffer::new_temporary(32));
+        let outcome = wal
+            .pread(0, Completion::new_read(buffer, |_| None))
+            .map(|completion| completion.finished())
+            .map_err(|error| format!("{error:?}"));
+        let _ = sender.send(outcome);
+    });
+    let outcome = receiver.recv_timeout(Duration::from_secs(5));
+    gate.release();
+    let _ = reader.join();
+    match outcome {
+        Ok(Ok(true)) => {}
+        other => panic!("WAL read advanced only after the chunk upload: {other:?}"),
+    }
+    appender.join().unwrap()?;
+    Ok(())
+}
+
+/// A failed remote append still closes every write path and leaves the mirror readable;
+/// the frozen batch is not retried because durability is unknown.
+#[test]
+fn failed_wal_append_requires_cold_recovery() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let backing = Arc::new(LocalObjectStore::open(objects.path())?);
+    {
+        let database = RemoteDatabase::open(backing.clone(), namespace()?, cache.path(), 0)?;
+        database
+            .execute("CREATE TABLE items(id INTEGER PRIMARY KEY); INSERT INTO items VALUES(1)")?;
+        database.checkpoint()?;
+    }
+    let cold = tempfile::tempdir()?;
+    let store: Arc<dyn ObjectStore> = Arc::new(WalChunkGateStore {
+        inner: backing,
+        gate: Arc::new(Gate::default()),
+        fail: true,
+    });
+    let io = RemoteIO::open(
+        store,
+        namespace()?,
+        cold.path(),
+        0,
+        8 * 1024 * 1024,
+        64 * 1024 * 1024,
+    )?;
+    let wal = io.open_file(
+        &format!("{}-wal", io.database_path()),
+        OpenFlags::Create,
+        false,
+    )?;
+    let frame = Arc::new(Buffer::new_temporary(64));
+    frame.as_mut_slice().fill(0);
+    assert!(wal
+        .pwrite(
+            0,
+            frame,
+            Completion::new_write(|result| { assert_eq!(result.unwrap(), 64) })
+        )?
+        .finished());
+    let error = wal
+        .sync(Completion::new_sync(|_| {}), FileSyncType::Fsync)
+        .unwrap_err();
+    assert!(
+        format!("{error:?}").contains("WAL chunk upload failed"),
+        "{error:?}"
+    );
+    // The failed batch remains accounted for; discarding it would under-report the
+    // unconfirmed bytes while cold recovery is still owed.
+    assert!(io.resources()?.pending_wal_bytes > 0);
+    let buffer = Arc::new(Buffer::new_temporary(16));
+    assert!(wal
+        .pread(0, Completion::new_read(buffer, |_| None))?
+        .finished());
+    let frame = Arc::new(Buffer::new_temporary(64));
+    let error = wal
+        .pwrite(0, frame, Completion::new_write(|_| {}))
+        .unwrap_err();
+    assert!(
+        format!("{error:?}").contains("WAL durability failure requires cold recovery"),
+        "{error:?}"
+    );
+    Ok(())
+}
+
+struct WalChunkGateStore {
+    inner: Arc<dyn ObjectStore>,
+    gate: Arc<Gate>,
+    fail: bool,
+}
+
+impl ObjectStore for WalChunkGateStore {
+    fn supports_strict_fencing(&self) -> bool {
+        self.inner.supports_strict_fencing()
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if key.contains("wal/chunks/") {
+            self.gate.pause()?;
+            if self.fail {
+                anyhow::bail!("injected WAL chunk failure");
+            }
+        }
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}

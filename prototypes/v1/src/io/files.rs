@@ -33,6 +33,7 @@ impl RemoteFile {
         for buffer in buffers {
             bytes.extend_from_slice(buffer.as_slice());
         }
+        let _append = self.shared.append_guard().map_err(super::adapter_error)?;
         let mut state = self.shared.lock()?;
         if self.wal {
             ensure!(
@@ -69,6 +70,7 @@ impl File for RemoteFile {
         self.shared
             .check_local_writer()
             .map_err(super::adapter_error)?;
+        let _append = self.shared.append_guard().map_err(super::adapter_error)?;
         self.shared.lock()?.position = Some(WalPosition { salts, frame_count });
         Ok(())
     }
@@ -130,10 +132,11 @@ impl File for RemoteFile {
     ) -> turso_core::Result<Completion> {
         let result = (|| {
             self.shared.check_writer()?;
-            let mut state = self.shared.lock()?;
+            let append = self.shared.append_guard()?;
             if self.wal {
-                self.shared.sync_wal(&mut state)?;
+                self.shared.sync_wal(&append)?;
             } else {
+                let mut state = self.shared.lock()?;
                 self.shared.publish(&mut state)?;
             }
             Ok(0)
@@ -159,6 +162,7 @@ impl File for RemoteFile {
         let result = (|| {
             self.shared.check_local_writer()?;
             ensure!(!self.readonly, "file opened read-only");
+            let _append = self.shared.append_guard().map_err(super::adapter_error)?;
             let mut state = self.shared.lock()?;
             if self.wal {
                 self.shared.allow_reset(&state)?;
@@ -168,7 +172,7 @@ impl File for RemoteFile {
                     .batch
                     .operations
                     .push(WalOperation::Truncate { size: len });
-                self.shared.sync_wal(&mut state)?;
+                self.shared.sync_wal_locked(&mut state)?;
             } else {
                 state.dirty = true;
                 self.shared.storage.truncate(len)?;
