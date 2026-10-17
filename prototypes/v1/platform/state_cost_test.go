@@ -33,6 +33,21 @@ func TestStateOperationCostIsObservable(test *testing.T) {
 	if counter("operation_journal_syncs_total")-syncs != 8 {
 		test.Fatalf("syncs = %d, want one barrier per commit", counter("operation_journal_syncs_total")-syncs)
 	}
+	// The barrier is split into its separable costs so a slow batch can be attributed
+	// without timing the request path. Every phase must have been exercised by commits
+	// that actually reached the file.
+	for _, name := range []string{
+		"operation_journal_encode_ns_total",
+		"operation_journal_verify_ns_total",
+		"operation_journal_assemble_ns_total",
+		"operation_journal_write_ns_total",
+		"operation_journal_sync_ns_total",
+		"operation_journal_witness_ns_total",
+	} {
+		if counter(name) == 0 {
+			test.Fatalf("%s = 0 after durable commits", name)
+		}
+	}
 	// Two acquisitions per commit: one applies the edit, the other settles the ordered
 	// append. Neither of them covers the barrier, so what this records is lock contention
 	// rather than flush latency.

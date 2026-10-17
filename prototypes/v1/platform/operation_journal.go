@@ -233,7 +233,15 @@ type operationJournal struct {
 	batchMaximum int
 	coalesced    uint64
 	waitNS       uint64
-	waitMaxNS    uint64
+	// One batch pays several separable costs. They are accumulated apart so a slow
+	// device, a large encode, or an identity check can be told apart in metrics.
+	encodeNS   uint64
+	verifyNS   uint64
+	assembleNS uint64
+	writeNS    uint64
+	syncNS     uint64
+	witnessNS  uint64
+	waitMaxNS  uint64
 	// testPopGate holds the committer before it chooses a batch, and testWriteGate holds it
 	// inside one, so a test can make either side of the queue deterministic. Production
 	// leaves both nil; no request path observes them.

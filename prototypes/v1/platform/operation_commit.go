@@ -68,6 +68,7 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 		return nil, ErrOperationCapacity
 	}
 	mutation := journalMutation{Version: operationJournalVersion, Revision: revision + 1, BaseRevision: view.Revision, Previous: previous, Sequence: view.OperationSequence, Evictions: view.OperationEvictions, Set: delta.Set, Remove: delta.Remove}
+	encodeStarted := time.Now()
 	encoded, err := json.Marshal(mutation)
 	if err != nil || len(encoded) > operationJournalMaximumRecordBytes {
 		return nil, errors.New("invalid operation mutation")
@@ -77,6 +78,7 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 	if err != nil {
 		return nil, errors.New("invalid operation mutation")
 	}
+	journal.encodeNS += uint64(time.Since(encodeStarted))
 	commit := &operationCommit{revision: mutation.Revision, payload: mutation, line: append(line, '\n'), hash: hash, settled: make(chan struct{})}
 	journal.commits = append(journal.commits, commit)
 	journal.ordered++
@@ -143,10 +145,16 @@ func (journal *operationJournal) flush() {
 		failure := journal.available()
 		journal.mutex.Unlock()
 		err := failure
+		var timings operationWriteTimings
 		if err == nil {
-			err = journal.writeBatchAt(batch, offset)
+			timings, err = journal.writeBatchAt(batch, offset)
 		}
 		journal.mutex.Lock()
+		journal.verifyNS += timings.verify
+		journal.assembleNS += timings.assemble
+		journal.writeNS += timings.write
+		journal.syncNS += timings.sync
+		journal.witnessNS += timings.witness
 		journal.writing = false
 		if err == nil {
 			journal.recordBatchLocked(batch)
@@ -185,15 +193,30 @@ func (journal *operationJournal) takeBatchLocked() []*operationCommit {
 // writeBatchAt writes the batch as one run of bytes at the offset the queue reserved for it
 // and pays one barrier for all of them. The caller holds the write lock and has already
 // reserved that offset, so no other writer can be interleaved.
-func (journal *operationJournal) writeBatchAt(batch []*operationCommit, offset int64) error {
+// operationWriteTimings separates the costs one barrier batch pays. The counters are
+// accumulated under the queue lock by the committer, so a reader can tell an encode-heavy
+// batch from a slow device without adding timing to the request path.
+type operationWriteTimings struct {
+	verify   uint64
+	assemble uint64
+	write    uint64
+	sync     uint64
+	witness  uint64
+}
+
+func (journal *operationJournal) writeBatchAt(batch []*operationCommit, offset int64) (operationWriteTimings, error) {
+	var timings operationWriteTimings
 	if journal.testWriteGate != nil {
 		journal.testWriteGate()
 	}
+	started := time.Now()
 	if err := journal.verifyPathIdentity(); err != nil {
-		return ErrStateUncertain
+		return timings, ErrStateUncertain
 	}
+	timings.verify = uint64(time.Since(started))
 	// Size the run to the batch's actual bytes. Reserving the batch ceiling would charge
 	// every commit, including a lone short terminal record, a 1 MiB allocation.
+	started = time.Now()
 	total := 0
 	for _, commit := range batch {
 		total += len(commit.line)
@@ -202,13 +225,23 @@ func (journal *operationJournal) writeBatchAt(batch []*operationCommit, offset i
 	for _, commit := range batch {
 		run = append(run, commit.line...)
 	}
+	timings.assemble = uint64(time.Since(started))
+	started = time.Now()
 	if _, err := journal.file.WriteAt(run, offset); err != nil {
-		return ErrStateUncertain
+		timings.write = uint64(time.Since(started))
+		return timings, ErrStateUncertain
 	}
+	timings.write = uint64(time.Since(started))
+	started = time.Now()
 	if err := journal.file.Sync(); err != nil {
-		return ErrStateUncertain
+		timings.sync = uint64(time.Since(started))
+		return timings, ErrStateUncertain
 	}
-	return journal.writeWitnessFor(batch[len(batch)-1])
+	timings.sync = uint64(time.Since(started))
+	started = time.Now()
+	err := journal.writeWitnessFor(batch[len(batch)-1])
+	timings.witness = uint64(time.Since(started))
+	return timings, err
 }
 
 // recordBatchLocked advances the chain state a written batch owns. The caller holds the
