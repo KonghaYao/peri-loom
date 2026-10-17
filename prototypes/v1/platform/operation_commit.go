@@ -192,7 +192,13 @@ func (journal *operationJournal) writeBatchAt(batch []*operationCommit, offset i
 	if err := journal.verifyPathIdentity(); err != nil {
 		return ErrStateUncertain
 	}
-	run := make([]byte, 0, operationJournalBatchBytes)
+	// Size the run to the batch's actual bytes. Reserving the batch ceiling would charge
+	// every commit, including a lone short terminal record, a 1 MiB allocation.
+	total := 0
+	for _, commit := range batch {
+		total += len(commit.line)
+	}
+	run := make([]byte, 0, total)
 	for _, commit := range batch {
 		run = append(run, commit.line...)
 	}
