@@ -539,7 +539,7 @@ pub fn validate_index_append(
         "WAL append changed validated index prefix or receipts"
     );
     let record = load_record(&index, namespace, old.entries.len(), &mut load_chunk, true)?;
-    let commit = apply_record(&record, &mut image)?;
+    let commit = apply_record(&record, &mut image, false)?;
     ensure!(
         commit == index.commit,
         "index and final record commit disagree"
@@ -553,10 +553,12 @@ fn validate_layout(index: &WalMetadata) -> Result<()> {
         "incomplete WAL index"
     );
     ensure!(
-        index
-            .entries
-            .windows(2)
-            .all(|pair| pair[0].lsn.checked_add(1) == Some(pair[1].lsn)),
+        index.entries.windows(2).all(|pair| {
+            pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
+                || (index.replay_baseline_lsn > 0
+                    && pair[0].lsn == pair[1].lsn
+                    && pair[0].lsn == index.replay_baseline_lsn)
+        }),
         "noncontiguous WAL index"
     );
     let first_lsn = index.entries.first().map_or(0, |entry| entry.lsn);
@@ -595,7 +597,10 @@ fn validate_record(
     require_digest: bool,
 ) -> Result<Option<WalCommit>> {
     let record = load_record(index, namespace, entry_index, load_chunk, require_digest)?;
-    apply_record(&record, image)
+    let baseline_continuation = entry_index > 0
+        && index.replay_baseline_lsn > 0
+        && index.entries[entry_index].lsn == index.replay_baseline_lsn;
+    apply_record(&record, image, baseline_continuation)
 }
 
 /// Loads the record an index entry names and checks its identity, receipt and replay
@@ -619,15 +624,28 @@ fn load_record(
         record.namespace == *namespace && record.lsn == entry.lsn && record.epoch <= index.epoch,
         "WAL record identity mismatch"
     );
-    let baseline = entry_index == 0 && index.replay_baseline_lsn > 0;
+    // Every part of a split baseline shares the baseline LSN. The first part resets the image;
+    // a later part must only extend it, or replay would silently drop the bytes before it.
+    let baseline = index.replay_baseline_lsn > 0 && entry.lsn == index.replay_baseline_lsn;
     if baseline {
-        ensure!(
-            matches!(
-                record.batch.operations.first(),
-                Some(WalOperation::Truncate { size: 0 })
-            ),
-            "WAL baseline must reset the replay image"
-        );
+        if entry_index == 0 {
+            ensure!(
+                matches!(
+                    record.batch.operations.first(),
+                    Some(WalOperation::Truncate { size: 0 })
+                ),
+                "WAL baseline must reset the replay image"
+            );
+        } else {
+            ensure!(
+                !record
+                    .batch
+                    .operations
+                    .iter()
+                    .any(|operation| matches!(operation, WalOperation::Truncate { .. })),
+                "WAL baseline continuation must not reset the replay image"
+            );
+        }
     } else {
         ensure!(
             index.receipts.get(&record.append_id) == Some(&record.lsn),
@@ -652,7 +670,11 @@ fn load_record(
     Ok(record)
 }
 
-fn apply_record(record: &WalRecord, image: &mut WalImage) -> Result<Option<WalCommit>> {
+fn apply_record(
+    record: &WalRecord,
+    image: &mut WalImage,
+    baseline_continuation: bool,
+) -> Result<Option<WalCommit>> {
     image.apply(&record.batch)?;
     if let Some(commit) = record.commit {
         ensure!(
@@ -663,8 +685,12 @@ fn apply_record(record: &WalRecord, image: &mut WalImage) -> Result<Option<WalCo
             image.committed_position()? == Some(commit.position),
             "commit does not match replayed WAL boundary"
         );
+        // A continued baseline writes only the tail of the replay image, so the commit frame
+        // may live in an earlier part. Its identity is still proven by the record LSN and by
+        // the replayed boundary; every other record must carry the frame itself.
         ensure!(
-            batch_covers_position(&record.batch, image.bytes(), commit.position)?,
+            baseline_continuation
+                || batch_covers_position(&record.batch, image.bytes(), commit.position)?,
             "commit frame was not written by this record"
         );
     }

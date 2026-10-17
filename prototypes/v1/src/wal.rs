@@ -56,7 +56,11 @@ impl EncodedWalRecord {
     fn new(record: WalRecord) -> Result<Self> {
         let bytes = serde_json::to_vec(&record)?;
         let hash = blake3::hash(&bytes).to_hex().to_string();
-        Ok(Self { record, bytes, hash })
+        Ok(Self {
+            record,
+            bytes,
+            hash,
+        })
     }
 
     pub(crate) fn record(&self) -> &WalRecord {
@@ -132,6 +136,15 @@ pub struct WalAppendRequest {
 pub(crate) const MAX_APPEND_PAYLOAD_BYTES: usize =
     crate::authority_rpc::protocol::MAX_RPC_BYTES / 2;
 pub(crate) const MAX_APPEND_OPERATIONS: usize = 16_384;
+
+/// The largest raw replay image a single baseline record may carry.
+///
+/// A baseline record is uploaded as one object whose `Write` payload is base64 in JSON, and
+/// the object-store RPC encodes that body once more. 12 MiB stays well below `MAX_RPC_BYTES`
+/// after both expansions, so truncating a large WAL no longer depends on the image fitting in
+/// one request. Every part shares the baseline LSN: LSNs name logical records, and the parts
+/// are one logical baseline record split for transport.
+const WAL_BASELINE_PART_BYTES: usize = 12 * 1024 * 1024;
 
 impl WalAppendRequest {
     fn record(&self, lsn: u64) -> WalRecord {
@@ -437,10 +450,12 @@ impl RemoteWal {
             Some(object) => {
                 let index: WalMetadata = serde_json::from_slice(&object.bytes)?;
                 ensure!(
-                    index
-                        .entries
-                        .windows(2)
-                        .all(|pair| pair[0].lsn < pair[1].lsn),
+                    index.entries.windows(2).all(|pair| {
+                        pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
+                            || (index.replay_baseline_lsn > 0
+                                && pair[0].lsn == pair[1].lsn
+                                && pair[0].lsn == index.replay_baseline_lsn)
+                    }),
                     "unordered WAL index"
                 );
                 ensure!(
@@ -485,7 +500,10 @@ impl RemoteWal {
     fn chunk(&self, encoded: &EncodedWalRecord) -> Result<String> {
         self.check_writer()?;
         let hash = encoded.hash();
-        let key = encoded.record().namespace.key(&format!("wal/chunks/{hash}"))?;
+        let key = encoded
+            .record()
+            .namespace
+            .key(&format!("wal/chunks/{hash}"))?;
         if let Err(error) = self.store.put(&key, encoded.bytes(), PutCondition::Absent) {
             let existing = self.store.get(&key)?.context("WAL chunk upload failed")?;
             ensure!(
@@ -764,56 +782,106 @@ impl DurableWal for RemoteWal {
     }
 
     fn truncate(&self, namespace: &Namespace, before_lsn: u64) -> Result<()> {
+        self.truncate_with_part_bytes(namespace, before_lsn, WAL_BASELINE_PART_BYTES)
+    }
+}
+
+impl RemoteWal {
+    /// Truncates history below `before_lsn` into a replay baseline.
+    ///
+    /// `part_bytes` is injectable so a test can force several parts with a small image. Every
+    /// part is written before the index CAS; a failed or losing attempt leaves only immutable,
+    /// unreferenced chunks, which the next attempt reuses by content address.
+    fn truncate_with_part_bytes(
+        &self,
+        namespace: &Namespace,
+        before_lsn: u64,
+        part_bytes: usize,
+    ) -> Result<()> {
+        ensure!(part_bytes > 0, "invalid WAL baseline part size");
         self.check_writer()?;
         for _ in 0..64 {
             let (mut index, etag) = self.index(namespace)?;
-            let removed: Vec<_> = index
+            let Some(baseline_lsn) = index
                 .entries
                 .iter()
                 .filter(|entry| entry.lsn < before_lsn)
-                .collect();
-            let Some(last) = removed.last() else {
+                .map(|entry| entry.lsn)
+                .max()
+            else {
                 return Ok(());
             };
-            let baseline_lsn = last.lsn;
-            let records = self.read(namespace, 0)?;
-            if self.index(namespace)?.1 != etag {
-                continue;
+            let mut image = Vec::new();
+            let mut timestamp_millis = None;
+            let mut baseline_commit = None;
+            for entry in index
+                .entries
+                .iter()
+                .filter(|entry| entry.lsn <= baseline_lsn)
+            {
+                let object = self
+                    .store
+                    .get(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?
+                    .context("missing baseline record")?;
+                ensure!(
+                    blake3::hash(&object.bytes).to_hex().as_str() == entry.hash,
+                    "WAL baseline chunk checksum mismatch"
+                );
+                let record: WalRecord = serde_json::from_slice(&object.bytes)?;
+                ensure!(
+                    record.namespace == *namespace
+                        && record.lsn == entry.lsn
+                        && record.epoch <= index.epoch,
+                    "WAL baseline record identity mismatch"
+                );
+                if entry.lsn == baseline_lsn {
+                    timestamp_millis = Some(record.timestamp_millis);
+                    baseline_commit = record.commit;
+                }
+                apply_batch(&mut image, &record.batch)?;
             }
-            let mut bytes = Vec::new();
-            for record in records.iter().filter(|record| record.lsn <= baseline_lsn) {
-                apply_batch(&mut bytes, &record.batch)?;
-            }
-            let baseline = WalRecord {
-                append_id: format!("baseline-{baseline_lsn}"),
-                namespace: namespace.clone(),
-                epoch: index.epoch,
-                lsn: baseline_lsn,
-                timestamp_millis: records
-                    .iter()
-                    .find(|record| record.lsn == baseline_lsn)
-                    .context("missing baseline record")?
-                    .timestamp_millis,
-                batch: WalBatch {
-                    operations: vec![
-                        WalOperation::Truncate { size: 0 },
-                        WalOperation::Write { offset: 0, bytes },
-                    ],
-                },
-                commit: records
-                    .iter()
-                    .find(|record| record.lsn == baseline_lsn)
-                    .and_then(|record| record.commit),
-            };
-            let hash = self.chunk(&EncodedWalRecord::new(baseline)?)?;
-            index.entries.retain(|entry| entry.lsn >= before_lsn);
-            index.entries.insert(
-                0,
-                Entry {
+            let timestamp_millis = timestamp_millis.context("missing baseline record")?;
+            let parts = image.len().div_ceil(part_bytes).max(1);
+            let mut segments = Vec::with_capacity(parts);
+            for part in 0..parts {
+                let start = part * part_bytes;
+                let end = (start + part_bytes).min(image.len());
+                let mut operations = Vec::with_capacity(2);
+                if part == 0 {
+                    operations.push(WalOperation::Truncate { size: 0 });
+                }
+                operations.push(WalOperation::Write {
+                    offset: start as u64,
+                    bytes: image[start..end].to_vec(),
+                });
+                let record = WalRecord {
+                    append_id: format!("baseline-{baseline_lsn}-{part}"),
+                    namespace: namespace.clone(),
+                    epoch: index.epoch,
+                    lsn: baseline_lsn,
+                    timestamp_millis,
+                    batch: WalBatch { operations },
+                    // Only the final part is the end of this logical record, so only it may
+                    // carry the commit marker the baseline record had.
+                    commit: if part + 1 == parts {
+                        baseline_commit
+                    } else {
+                        None
+                    },
+                };
+                let encoded = EncodedWalRecord::new(record)?;
+                ensure!(
+                    encoded.bytes().len() <= crate::authority_rpc::protocol::MAX_RPC_BYTES,
+                    "WAL baseline part exceeds the RPC limit"
+                );
+                let hash = self.chunk(&encoded)?;
+                segments.push(Entry {
                     lsn: baseline_lsn,
                     hash,
-                },
-            );
+                });
+            }
+            index.entries.retain(|entry| entry.lsn >= before_lsn);
+            index.entries.splice(0..0, segments);
             index.replay_baseline_lsn = baseline_lsn;
             match self.commit(namespace, &index, etag.clone()) {
                 Ok(()) => return Ok(()),
@@ -1230,6 +1298,276 @@ mod split_tests {
                 Ok(store.get(key)?.context("split chunk missing")?.bytes)
             })?;
         assert_eq!(validated.commit(), None);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::*;
+    use crate::object_store::LocalObjectStore;
+    use crate::recovery::fixture::{WalBuilder, FRAME_SIZE, PAGE_SIZE};
+
+    fn namespace() -> Result<Namespace> {
+        Namespace::new("truncate", "split")
+    }
+
+    fn position(frame_count: u64) -> Option<WalPosition> {
+        Some(WalPosition {
+            salts: [3, 4],
+            frame_count,
+        })
+    }
+
+    fn append(wal: &RemoteWal, namespace: &Namespace, offset: u64, len: usize) -> Result<u64> {
+        wal.append_commit(
+            namespace,
+            1,
+            WalBatch {
+                operations: vec![WalOperation::Write {
+                    offset,
+                    bytes: vec![7u8; len],
+                }],
+            },
+            position(len as u64),
+        )
+    }
+
+    fn index_bytes(store: &LocalObjectStore, namespace: &Namespace) -> Result<Vec<u8>> {
+        Ok(store
+            .get(&namespace.key("wal/index")?)?
+            .context("missing WAL index")?
+            .bytes)
+    }
+
+    fn validated_commit(
+        store: &LocalObjectStore,
+        namespace: &Namespace,
+    ) -> Result<Option<WalCommit>> {
+        let bytes = index_bytes(store, namespace)?;
+        Ok(
+            crate::recovery::validate_index_state(&bytes, namespace, |key| {
+                Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+            })?
+            .commit(),
+        )
+    }
+
+    #[test]
+    fn baseline_is_split_into_parts_that_replay_as_one_image() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let mut builder = WalBuilder::new([3, 4]);
+        let header = builder.header();
+        let mut image = Vec::new();
+        let mut records = Vec::new();
+        let mut page = 0u32;
+        for (index, frames) in [3usize, 3, 3, 1].into_iter().enumerate() {
+            let mut bytes = if index == 0 {
+                header.clone()
+            } else {
+                Vec::new()
+            };
+            for frame in 0..frames {
+                page += 1;
+                let commit = if frame + 1 == frames {
+                    PAGE_SIZE as u32
+                } else {
+                    0
+                };
+                bytes.extend_from_slice(&builder.frame(page, commit));
+            }
+            records.push((image.len() as u64, bytes.clone(), page as u64));
+            image.extend_from_slice(&bytes);
+        }
+        for (offset, bytes, frame_count) in &records {
+            wal.append_commit(
+                &namespace,
+                1,
+                WalBatch {
+                    operations: vec![WalOperation::Write {
+                        offset: *offset,
+                        bytes: bytes.clone(),
+                    }],
+                },
+                position(*frame_count),
+            )?;
+        }
+        assert_eq!(wal.index(&namespace)?.0.last_lsn, 4);
+
+        wal.truncate_with_part_bytes(&namespace, 4, 2 * FRAME_SIZE)?;
+
+        let (index, _) = wal.index(&namespace)?;
+        assert_eq!(index.last_lsn, 4);
+        assert_eq!(index.replay_baseline_lsn, 3);
+        let baseline_parts = index
+            .entries
+            .iter()
+            .take_while(|entry| entry.lsn == 3)
+            .count();
+        let baseline_bytes = builder.header().len() + 9 * FRAME_SIZE;
+        assert_eq!(
+            baseline_parts,
+            baseline_bytes.div_ceil(2 * FRAME_SIZE),
+            "{baseline_bytes} baseline bytes at two frames per part"
+        );
+        assert!(index.entries[baseline_parts..]
+            .iter()
+            .all(|entry| entry.lsn >= 4));
+        assert_eq!(
+            index.commit,
+            Some(WalCommit {
+                lsn: 4,
+                position: position(10).unwrap()
+            })
+        );
+
+        let validated = validated_commit(&store, &namespace)?;
+        assert_eq!(validated, index.commit);
+        let mut replayed = Vec::new();
+        wal.for_each_record(&namespace, 0, |record| {
+            apply_batch(&mut replayed, &record.batch)
+        })?;
+        assert_eq!(replayed, image);
+        for entry in &index.entries {
+            let object = store
+                .get(&namespace.key(&format!("wal/chunks/{}", entry.hash))?)?
+                .context("missing WAL chunk")?;
+            assert!(object.bytes.len() <= crate::authority_rpc::protocol::MAX_RPC_BYTES);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_that_removes_every_record_keeps_the_final_commit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let mut builder = WalBuilder::new([3, 4]);
+        let header = builder.header();
+        let mut image = Vec::new();
+        let mut records = Vec::new();
+        let mut page = 0u32;
+        for (index, frames) in [2usize, 2].into_iter().enumerate() {
+            let mut bytes = if index == 0 {
+                header.clone()
+            } else {
+                Vec::new()
+            };
+            for frame in 0..frames {
+                page += 1;
+                let commit = if frame + 1 == frames {
+                    PAGE_SIZE as u32
+                } else {
+                    0
+                };
+                bytes.extend_from_slice(&builder.frame(page, commit));
+            }
+            records.push((image.len() as u64, bytes.clone(), page as u64));
+            image.extend_from_slice(&bytes);
+        }
+        for (offset, bytes, frame_count) in &records {
+            wal.append_commit(
+                &namespace,
+                1,
+                WalBatch {
+                    operations: vec![WalOperation::Write {
+                        offset: *offset,
+                        bytes: bytes.clone(),
+                    }],
+                },
+                position(*frame_count),
+            )?;
+        }
+
+        wal.truncate_with_part_bytes(&namespace, 3, FRAME_SIZE)?;
+
+        let (index, _) = wal.index(&namespace)?;
+        assert_eq!(index.last_lsn, 2);
+        assert_eq!(index.replay_baseline_lsn, 2);
+        assert!(index.entries.iter().all(|entry| entry.lsn == 2));
+        assert_eq!(
+            index.entries.len(),
+            image.len().div_ceil(FRAME_SIZE),
+            "{} bytes at one frame per part",
+            image.len()
+        );
+        assert_eq!(
+            index.commit,
+            Some(WalCommit {
+                lsn: 2,
+                position: position(4).unwrap()
+            })
+        );
+
+        let validated = validated_commit(&store, &namespace)?;
+        assert_eq!(validated, index.commit);
+        let mut replayed = Vec::new();
+        wal.for_each_record(&namespace, 0, |record| {
+            apply_batch(&mut replayed, &record.batch)
+        })?;
+        assert_eq!(replayed, image);
+        Ok(())
+    }
+
+    #[test]
+    fn baseline_continuation_may_not_reset_the_replay_image() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        for part in 0..3 {
+            append(&wal, &namespace, part * 300, 300)?;
+        }
+        wal.truncate_with_part_bytes(&namespace, 3, 256)?;
+        let (mut index, etag) = wal.index(&namespace)?;
+        assert!(index.entries.len() > 1 && index.entries[0].lsn == index.entries[1].lsn);
+        let forged = WalRecord {
+            append_id: "forged-baseline".into(),
+            namespace: namespace.clone(),
+            epoch: index.epoch,
+            lsn: index.replay_baseline_lsn,
+            timestamp_millis: 1,
+            batch: WalBatch {
+                operations: vec![WalOperation::Truncate { size: 0 }],
+            },
+            commit: None,
+        };
+        let hash = wal.chunk(&EncodedWalRecord::new(forged)?)?;
+        index.entries[1].hash = hash;
+        wal.commit(&namespace, &index, etag)?;
+
+        let bytes = index_bytes(&store, &namespace)?;
+        let failure = match crate::recovery::validate_index_state(&bytes, &namespace, |key| {
+            Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+        }) {
+            Ok(_) => bail!("forged baseline continuation was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(failure.contains("continuation must not reset"), "{failure}");
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_lsn_outside_the_baseline_is_rejected() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        append(&wal, &namespace, 0, 64)?;
+        append(&wal, &namespace, 64, 64)?;
+        let (mut index, etag) = wal.index(&namespace)?;
+        let last = index.entries.last().unwrap().clone();
+        index.entries.push(last);
+        wal.commit(&namespace, &index, etag)?;
+        assert!(wal
+            .index(&namespace)
+            .unwrap_err()
+            .to_string()
+            .contains("unordered"));
         Ok(())
     }
 }

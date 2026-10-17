@@ -67,10 +67,12 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
         "incomplete WAL index"
     );
     ensure!(
-        index
-            .entries
-            .windows(2)
-            .all(|pair| pair[0].lsn.checked_add(1) == Some(pair[1].lsn)),
+        index.entries.windows(2).all(|pair| {
+            pair[0].lsn.checked_add(1) == Some(pair[1].lsn)
+                || (index.replay_baseline_lsn > 0
+                    && pair[0].lsn == pair[1].lsn
+                    && pair[0].lsn == index.replay_baseline_lsn)
+        }),
         "noncontiguous WAL index"
     );
     let first = index.entries.first().map_or(0, |entry| entry.lsn);
