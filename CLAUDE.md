@@ -54,7 +54,8 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 
 1. **仓库根没有 Rust workspace** —— 所有 cargo 命令必须带 `--manifest-path prototypes/v1/Cargo.toml`
    （或 `prototypes/p0/Cargo.toml`）。直接跑 `cargo check` 会报 no manifest。
-2. **Turso fork 是固定 submodule** —— 当前 gitlink 为 `d0c23d6a16f457d382059a84f84f9c4463c85a84`，远端已可获取。
+2. **Turso fork 是固定 submodule** —— 当前 gitlink 为 `24a3a4609683b73935888f8bc30b47727d100aa8`
+   （`ee6df32` 提升到该 commit，其内容为「允许非提交准入读取内置只读虚拟表」），远端已可获取。
    首次构建前 `git submodule update --init prototypes/p0/turso`，不要自行移动 gitlink。
 3. **Go 测试依赖已构建的 Rust 二进制** —— 只跑 Go 侧测试要显式给 `PERI_RUST_BINARY`；
    省略时按默认路径 `prototypes/v1/target/debug/peri-loom-v1` 查找，未构建则失败。
