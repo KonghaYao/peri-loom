@@ -207,9 +207,11 @@ fn concurrent_same_key_opens_coalesce_one_engine() -> Result<()> {
         let opened = opened.clone();
         tasks.push(thread::spawn(move || {
             start.wait();
-            let handle = runtime.open(identifier("shared"), 1).unwrap();
+            let handle = runtime.open(identifier("shared"), 1);
+            // The result is carried past the barrier: unwrapping before it would leave the
+            // other participants waiting for a thread that already panicked.
             opened.wait();
-            drop(handle);
+            drop(handle.unwrap());
         }));
     }
     start.wait();

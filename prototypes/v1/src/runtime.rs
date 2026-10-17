@@ -207,6 +207,12 @@ impl WorkerRuntime {
                         }),
                     );
                     drop(registry);
+                    // Waiters are released before the budget is checked, so the budget only
+                    // judges the open that paid the load: an open that arrived while this one
+                    // was loading either waits here or finds the instance resident, and both
+                    // paths succeed. Retaining the instance for them is the same intent as
+                    // retaining it below — an overrunning load is never paid twice, and the
+                    // overrun error belongs to the open that asked for it.
                     completion.finish(Ok(()));
                     if loaded_for > self.load_budget() {
                         // The load itself succeeded and only overran its budget. The instance

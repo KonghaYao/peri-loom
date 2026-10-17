@@ -6,15 +6,18 @@ use crate::runtime::DatabaseId;
 use crate::session::{Budget, RequestDeadline, SqlEvidence, UnsettledSqlOutcome};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// A store whose reads can be held. A cold load pays one remote round trip per WAL chunk,
-/// so this is what makes a load outlast any statement budget.
+/// so this is what makes a load outlast any statement budget. A held read announces itself
+/// before it sleeps, which is what lets a test open a second session mid-load.
 struct SlowStore {
     inner: MemoryObjectStore,
     delay: Duration,
     held: AtomicBool,
+    started: Mutex<usize>,
+    progress: Condvar,
 }
 
 impl SlowStore {
@@ -23,17 +26,33 @@ impl SlowStore {
             inner: MemoryObjectStore::default(),
             delay,
             held: AtomicBool::new(false),
+            started: Mutex::new(0),
+            progress: Condvar::new(),
         }
     }
 
     fn hold(&self, held: bool) {
         self.held.store(held, Ordering::SeqCst);
     }
+
+    /// Waits for a held read to start. The load registers its `Loading` entry before it reads
+    /// anything, so a load observed here is one that a second open has to coalesce with. The
+    /// timeout keeps a load that never reaches the store from hanging the test.
+    fn wait_for_read(&self) {
+        let started = self.started.lock().unwrap();
+        let (started, timeout) = self
+            .progress
+            .wait_timeout_while(started, Duration::from_secs(10), |started| *started == 0)
+            .unwrap();
+        assert!(*started > 0 && !timeout.timed_out(), "the load never read");
+    }
 }
 
 impl ObjectStore for SlowStore {
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         if self.held.load(Ordering::SeqCst) {
+            *self.started.lock().unwrap() += 1;
+            self.progress.notify_all();
             std::thread::sleep(self.delay);
         }
         self.inner.get(key)
@@ -128,6 +147,56 @@ fn the_default_load_budget_covers_a_cold_load() -> Result<()> {
     // The measured cold load that made this budget necessary took 16.6 s.
     assert!(runtime.load_budget() >= Duration::from_secs(60));
     assert!(runtime.load_budget() >= Budget::compatibility().wall_duration());
+    Ok(())
+}
+
+/// The load budget judges the open that paid for the load. An open that coalesces with it runs
+/// no load of its own, so it must not be failed for the overrun, and it must not be left waiting
+/// for a verdict the overrun path never publishes.
+#[test]
+fn concurrent_openers_split_on_the_load_budget() -> Result<()> {
+    let (_cache, store, mut runtime) = fixture(Duration::from_millis(250))?;
+    Arc::get_mut(&mut runtime).unwrap().load_budget = Some(Duration::from_millis(1));
+    let database = identifier("split")?;
+    store.hold(true);
+
+    let loader = {
+        let runtime = runtime.clone();
+        let database = database.clone();
+        std::thread::spawn(move || runtime.open(database, 1))
+    };
+    store.wait_for_read();
+    let waiter = {
+        let runtime = runtime.clone();
+        let database = database.clone();
+        std::thread::spawn(move || runtime.open(database, 1))
+    };
+
+    let error = match loader.join().unwrap() {
+        Ok(_) => panic!("the open that paid the overrunning load must report it"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:#}").contains("database load budget exceeded"),
+        "{error:#}"
+    );
+    assert!(proven_not_executed(&error), "{error:#}");
+    let handle = waiter
+        .join()
+        .unwrap()
+        .expect("an open that coalesced with the load reuses the resident instance");
+    assert!(!handle.in_transaction()?);
+    drop(handle);
+
+    let status = runtime.status()?;
+    assert_eq!(
+        status.loaded_databases, 1,
+        "the loaded instance was dropped"
+    );
+    assert_eq!(status.active_sessions, 0);
+    // The overrun is not paid twice: the next open finds the retained instance.
+    let reused = runtime.open(database, 1)?;
+    assert!(!reused.in_transaction()?);
     Ok(())
 }
 
