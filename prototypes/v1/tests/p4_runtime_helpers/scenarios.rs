@@ -41,6 +41,14 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
         .context("watchdog race: setup execute")?;
     drop(handle);
     let stopping = Arc::new(AtomicBool::new(false));
+    // Stopping the watchdog must survive an early return or a panic in the body below; a plain
+    // statement would not.
+    struct StopWatchdog(Arc<AtomicBool>);
+    impl Drop for StopWatchdog {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     std::thread::scope(|scope| -> Result<()> {
         let runtime = fixture.runtime.clone();
         let stopped = stopping.clone();
@@ -53,69 +61,74 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
             }
             Ok(())
         });
-        let result = (|| -> Result<()> {
-            let mut previous_lease = fixture.lease.clone();
-            for epoch in 2..=5 {
-                let cleanup = fixture
-                    .arm_cleanup(&previous_lease.binding)
-                    .context("watchdog race: arm old cleanup")?;
-                fixture
-                    .runtime
-                    .command(OwnershipCommand::RevokeDatabase {
-                        database: fixture.identifier.clone(),
-                        expected_epoch: epoch - 1,
-                    })
-                    .context("watchdog race: revoke")?;
-                fixture
-                    .await_cleanup(cleanup, &previous_lease.binding)
-                    .context("watchdog race: await old cleanup")?;
-                assert_eq!(
-                    fixture.runtime.status()?.databases[0].mode,
-                    OwnershipMode::Revoked
-                );
-                let lease = fixture
-                    .grant_next_diagnosed(epoch)
-                    .context("watchdog race: next grant")?;
-                let timeout = Instant::now() + Duration::from_secs(5);
-                loop {
-                    let acquired = fixture.runtime.command(OwnershipCommand::AcquireDatabase {
-                        lease: lease.clone(),
-                        role: AccessRole::Writer,
-                    });
-                    match acquired {
-                        Ok(_) => break,
-                        Err(error) if Instant::now() >= timeout => {
-                            return Err(error).context("watchdog race: acquire retry exhausted")
-                        }
-                        Err(_) => std::thread::yield_now(),
-                    }
-                }
-                let handle = fixture
-                    .runtime
-                    .open_session(&fixture.identifier)
-                    .context("watchdog race: acquired open session")?;
-                assert_eq!(
-                    handle
-                        .query("SELECT id FROM items")
-                        .context("watchdog race: acquired query")?[0][0]
-                        .to_string(),
-                    "1"
-                );
-                drop(handle);
-                assert_eq!(
+        // The guard is scoped to the body alone so that it stops the watchdog before the join
+        // below, on both the success and the unwind path (the scope would otherwise join a
+        // watchdog that nothing stops, turning a failing assertion into a hang).
+        let result = {
+            let _stop = StopWatchdog(stopping.clone());
+            (|| -> Result<()> {
+                let mut previous_lease = fixture.lease.clone();
+                for epoch in 2..=5 {
+                    let cleanup = fixture
+                        .arm_cleanup(&previous_lease.binding)
+                        .context("watchdog race: arm old cleanup")?;
                     fixture
                         .runtime
-                        .status()
-                        .context("watchdog race: foreground status")?
-                        .databases[0]
-                        .mode,
-                    OwnershipMode::Writer
-                );
-                previous_lease = lease;
-            }
-            Ok(())
-        })();
-        stopping.store(true, Ordering::SeqCst);
+                        .command(OwnershipCommand::RevokeDatabase {
+                            database: fixture.identifier.clone(),
+                            expected_epoch: epoch - 1,
+                        })
+                        .context("watchdog race: revoke")?;
+                    fixture
+                        .await_cleanup(cleanup, &previous_lease.binding)
+                        .context("watchdog race: await old cleanup")?;
+                    assert_eq!(
+                        fixture.runtime.status()?.databases[0].mode,
+                        OwnershipMode::Revoked
+                    );
+                    let lease = fixture
+                        .grant_next_diagnosed(epoch)
+                        .context("watchdog race: next grant")?;
+                    let timeout = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        let acquired = fixture.runtime.command(OwnershipCommand::AcquireDatabase {
+                            lease: lease.clone(),
+                            role: AccessRole::Writer,
+                        });
+                        match acquired {
+                            Ok(_) => break,
+                            Err(error) if Instant::now() >= timeout => {
+                                return Err(error).context("watchdog race: acquire retry exhausted")
+                            }
+                            Err(_) => std::thread::yield_now(),
+                        }
+                    }
+                    let handle = fixture
+                        .runtime
+                        .open_session(&fixture.identifier)
+                        .context("watchdog race: acquired open session")?;
+                    assert_eq!(
+                        handle
+                            .query("SELECT id FROM items")
+                            .context("watchdog race: acquired query")?[0][0]
+                            .to_string(),
+                        "1"
+                    );
+                    drop(handle);
+                    assert_eq!(
+                        fixture
+                            .runtime
+                            .status()
+                            .context("watchdog race: foreground status")?
+                            .databases[0]
+                            .mode,
+                        OwnershipMode::Writer
+                    );
+                    previous_lease = lease;
+                }
+                Ok(())
+            })()
+        };
         watchdog.join().unwrap()?;
         result
     })

@@ -2,9 +2,18 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 
 use super::{AdmissionError, UnsettledSqlOutcome, WriterAdmission};
+
+/// Waits carry a deadline. These waiters live in a `thread::scope`, whose unwind joins them, so
+/// a waiter that nothing ever releases would turn a failing assertion into a hang.
+fn bounded_check(deadline: Instant) -> impl Fn() -> Result<()> {
+    move || {
+        ensure!(Instant::now() < deadline, AdmissionError::Deadline);
+        Ok(())
+    }
+}
 
 fn wait_queue(admission: &WriterAdmission, expected: &[u64]) {
     let started = Instant::now();
@@ -27,12 +36,13 @@ fn native_trace_observes_admission_release_and_cancel_without_changing_fifo() ->
     let holder = admission.register()?;
     let waiter = admission.register()?;
     admission.acquire(&holder, false, || Ok(()))?.settle(true)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
     thread::scope(|scope| -> Result<()> {
         let admission_clone = admission.clone();
         let waiter_clone = waiter.clone();
         let waiting = scope.spawn(move || {
             admission_clone
-                .acquire(&waiter_clone, false, || Ok(()))
+                .acquire(&waiter_clone, false, bounded_check(deadline))
                 .err()
                 .unwrap()
         });
@@ -77,12 +87,13 @@ fn coordinator_model_fifo_cancel_head_and_atomic_hint() -> Result<()> {
     assert!(holder.hint().owner);
     assert_eq!(holder.hint().sequence, 1);
     let (sender, receiver) = mpsc::channel();
+    let deadline = Instant::now() + Duration::from_secs(10);
     thread::scope(|scope| -> Result<()> {
         let cloned = admission.clone();
         let first_control = first.clone();
         let first_sender = sender.clone();
         scope.spawn(move || {
-            let result = cloned.acquire(&first_control, false, || Ok(()));
+            let result = cloned.acquire(&first_control, false, bounded_check(deadline));
             first_sender
                 .send(result.map(|permit| {
                     permit.settle(false).unwrap();
@@ -94,7 +105,7 @@ fn coordinator_model_fifo_cancel_head_and_atomic_hint() -> Result<()> {
         let cloned = admission.clone();
         let second_control = second.clone();
         scope.spawn(move || {
-            let result = cloned.acquire(&second_control, false, || Ok(()));
+            let result = cloned.acquire(&second_control, false, bounded_check(deadline));
             sender
                 .send(result.map(|permit| {
                     permit.settle(false).unwrap();
@@ -151,15 +162,19 @@ fn coordinator_model_queue_cap_and_promotion_are_independent_typed_errors() -> R
         .map(|_| admission.register())
         .collect::<Result<Vec<_>>>()?;
     let overflow = admission.register()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
     thread::scope(|scope| -> Result<()> {
         let mut expected = Vec::new();
         let mut threads = Vec::new();
         for control in &waiters {
             let cloned = admission.clone();
             let waiter = control.clone();
-            threads.push(
-                scope.spawn(move || cloned.acquire(&waiter, false, || Ok(())).err().unwrap()),
-            );
+            threads.push(scope.spawn(move || {
+                cloned
+                    .acquire(&waiter, false, bounded_check(deadline))
+                    .err()
+                    .unwrap()
+            }));
             expected.push(control.id);
             wait_queue(&admission, &expected);
         }

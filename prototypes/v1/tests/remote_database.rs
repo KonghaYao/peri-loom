@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, ensure, Result};
 use peri_loom_v1::database::RemoteDatabase;
@@ -442,16 +443,37 @@ fn native_wal_reset_is_guarded_and_remote_only() -> Result<()> {
 
 struct ContendedStore {
     inner: LocalObjectStore,
-    barrier: std::sync::Barrier,
+    arrivals: Mutex<usize>,
+    ready: Condvar,
     reads: std::sync::atomic::AtomicUsize,
     conflicts: std::sync::atomic::AtomicUsize,
+}
+
+impl ContendedStore {
+    /// Rendezvous for the first eight `wal/index` reads. A `Barrier` would park every thread
+    /// that does arrive when one of them never makes it (an early `?`, a panic before the
+    /// read), and the test would hang instead of failing; a timeout reports that as an error.
+    fn rendezvous(&self) -> Result<()> {
+        let mut arrivals = self.arrivals.lock().unwrap();
+        *arrivals += 1;
+        self.ready.notify_all();
+        let (arrivals, _) = self
+            .ready
+            .wait_timeout_while(arrivals, Duration::from_secs(10), |arrivals| *arrivals < 8)
+            .unwrap();
+        ensure!(
+            *arrivals >= 8,
+            "concurrent wal/index readers did not all arrive"
+        );
+        Ok(())
+    }
 }
 
 impl ObjectStore for ContendedStore {
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         let object = self.inner.get(key)?;
         if key.ends_with("wal/index") && self.reads.fetch_add(1, Ordering::SeqCst) < 8 {
-            self.barrier.wait();
+            self.rendezvous()?;
         }
         Ok(object)
     }
@@ -478,7 +500,8 @@ fn concurrent_cas_appends_assign_unique_lsns_even_for_identical_batches() -> Res
     let objects = tempfile::tempdir()?;
     let store = Arc::new(ContendedStore {
         inner: LocalObjectStore::open(objects.path())?,
-        barrier: std::sync::Barrier::new(8),
+        arrivals: Mutex::new(0),
+        ready: Condvar::new(),
         reads: std::sync::atomic::AtomicUsize::new(0),
         conflicts: std::sync::atomic::AtomicUsize::new(0),
     });
