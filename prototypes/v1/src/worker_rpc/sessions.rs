@@ -111,9 +111,12 @@ impl Sessions {
             // A failed open keeps its instance resident (`WorkerRuntime::release` only frees
             // the session slot of a non-draining entry); what drops the instance is the sweep
             // that reads this window, and that sweep is what made a cold database unopenable
-            // when it ran a second after the last session closed. The window therefore has to
-            // cover the load budget (`PERI_WORKER_LOAD_MS`, never below 60 s), so a database
-            // that just loaded is still resident for the retry that follows it.
+            // when it ran a second after the last session closed. The window therefore covers
+            // the *floor* of the load budget (`PERI_WORKER_LOAD_MS`, never below 60 s), so a
+            // database that just loaded is still resident for the retry that follows it. That
+            // is a floor, not a relation between the two settings: an operator who raises the
+            // budget past this window has to raise this window too, or the retry pays a second
+            // cold load.
             database_idle: duration_env("PERI_WORKER_DB_IDLE_UNLOAD_MS", 60_000)?,
         })
     }
@@ -700,6 +703,8 @@ mod tests {
         let (sessions, _cache) = sessions_with(Vec::new())?;
         // Unloading on a shorter timer makes the next request pay a cold load, and the load
         // budget (`PERI_WORKER_LOAD_MS`, never below 60 s) is the shortest that load can be.
+        // This pins the floor the default window covers, not a relation between the settings:
+        // the budget can be raised past this window by configuration.
         assert!(
             sessions.database_idle >= Duration::from_secs(60),
             "{}",
