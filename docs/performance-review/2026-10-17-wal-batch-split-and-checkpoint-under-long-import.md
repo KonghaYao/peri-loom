@@ -10,9 +10,11 @@
 `0e18e2a` 构建自 detached worktree，未包含 `2609828`。
 
 **本文不宣称 PASS、容量、公平性或 SLO，也不给出任何加速倍数。**
-三次运行都以 `outcome=unclean` 收尾；`performance` 与 `capacity` 恒为 `NOT MEASURED`，
-`correctness` 为 `INCOMPLETE`。文中的秒数都是单次观测，实验期间 `vm.loadavg` 为
-4.00 / 3.26 / 3.14（1 / 5 / 15 分钟），不能当作基线或回归阈值。
+第 1–8 节的三次运行都以 `outcome=unclean` 收尾；§9 的定向复核以 `outcome=clean`
+收尾，但只覆盖冷加载、空闲连接和查询臂的特定路径。全文 `performance` 与 `capacity`
+恒为 `NOT MEASURED`，`correctness` 为 `INCOMPLETE`。文中的秒数都是单次观测，
+实验期间 `vm.loadavg` 为 4.00 / 3.26 / 3.14（1 / 5 / 15 分钟），不能当作基线或回归阈值。
+§9 使用另一组固定二进制（Rust `4a92f85`、Go `85c5682`），与第 1–8 节的二进制不同。
 
 ---
 
@@ -36,6 +38,9 @@
    批次切分修复有效，维护能在长事务释放后推进，而“Full checkpoint + 关闭 compact + 冷打开”
    这一组合在当前数据规模上仍以 unclean 结束（修复后的定向探针则在同类冷加载上取得了
    clean 关栈，见 §5.2）。
+6. §9 在后续固定二进制上补做了一轮 700000 行导入、9 条查询臂、卸载后冷加载与两次
+   clean 关栈的定向复核；它提供了特定路径的运行证据，但不改变本文的性能、容量与
+   SLO 口径，也没有覆盖正常重启或 Unknown 恢复。
 
 ---
 
@@ -412,3 +417,130 @@ WAL 被回收；回收需要另一条 `Truncate` 路径（index_compact）。
 
 启动、导入与采样命令只引用本地脚本；凭据从运行目录的私有文件读取，
 未写入 argv、日志或本文。`connection.json` 与 `e01-cred` 不在本文中回显。
+
+---
+
+## 9. 修复后的定向复核（`4a92f85` / `85c5682`）
+
+本轮使用固定二进制复核修复组合：Rust `peri-loom-v1-4a92f85`
+（`1962e2ba0e0c66ce3df2336847ed6bb47c169f77c62ef4035c8121d33e81800e`）与 Go
+`peri-platform-85c5682`（`ca66dc558cf6fca35f1296ca76630abb6e670ef5bc937fad08024870fed3c1f0`）。
+HEAD `847e85f` 只比这些二进制多一个文档提交。证据目录
+`final-20261017T0523Z/`，运行目录 `/tmp/peri-final-20261017T0523Z`；运行从全新
+run 目录与全新分支开始，不是对旧 run 目录的重启。
+
+`c42f388` 的冷加载后预算与 `85c5682` 的空闲连接退役在本轮获得定向运行观测：
+前者缺少 pre-fix 负对照（差分因果 `NOT PROVEN`），后者只是冒烟级。
+`4a92f85` 针对的是加载成功后的失败早退路径，本 run 的所有 open 均成功，因此该路径
+**未被触发**，仍只有静态审阅证据，记为 `NOT MEASURED`。
+
+### 9.1 输入与并发边界
+
+- 两条全新分支：`maint…` 导入 700000 行，落在 worker-b；`arms…` 导入 100000 行，
+  落在 worker-a。查询臂只读、使用与 100000 行数据匹配的离线 oracle manifest；
+  `maint` 分支只承接导入与卸载后的冷加载，不参与查询臂。
+- 本轮使用 `dev.py` 默认的本地对象存储后端，未覆盖 S3 publication。
+- 维护调度开启，checkpoint 64/256 MiB、60 s；压缩水位抬到 1/2 GiB。WAL 峰值
+  704,140,992 B 低于 1 GiB 低水位，因此 `index_compact` 未被武装、`truncate` 未执行；
+  本轮对二者均无观测。
+- 项目默认配额为 MaxSessions=16、MaxConcurrent=4、RequestsPerSecond=100。
+  c32/c100 是**请求标签**，不是实际准入并发；这一轮的 `quota_exceeded` 是平台按配额
+  拒绝，不是缺陷，也不是容量结论。
+- 行为结论只绑定到上面两个二进制的 sha256。运行日志记录当时主工作区仍有 16 项未提交
+  改动，因此**不宣称**该二进制可由当前工作区逐字节重建。
+
+### 9.2 导入
+
+| 分支 | 行数 | commit_ack | readback | stop_reason |
+|---|---:|---:|---:|---|
+| arms | 100000 | 100000 | 100000 | `planned_rows_reached` |
+| maint | 700000 | 700000 | 700000 | `planned_rows_reached` |
+
+### 9.3 查询臂
+
+9 条臂、每条计划 4000 操作，计划合计 36000：20400 成功、14600
+`quota_exceeded`、16 `not_dispatched`（`time_budget_reached`），其余 984 条因
+速率×墙钟上限未尝试（仅 f5：50/s × 60 s，实际派发 3000）。所有**已派发失败**均为
+`known_failure` 且 `error_class=quota_exceeded`；**事件分类中没有
+`outcome_unknown`、没有 `session_unusable`、没有 close failure**；oracle 已检查
+的 20400 条 mismatch 为 0。另有 436 次 open 被 session 配额拒绝，全部是
+`quota_exceeded`，体现为 f3/f4/f5/f6/f7/f9 的 `partial_admission`。
+
+| 臂 | 准入会话/请求 | peak 在途 | 成功 | quota_exceeded | 结果 |
+|---|---|---:|---:|---:|---|
+| f1 c1 r0 | 1/1 | 1 | 4000 | 0 | `ORACLE_VERIFIED` |
+| f2 c8 r0 | 8/8 | 8 | 1173 | 2827 | `INCOMPLETE` |
+| f3 c32 r0 | 16/32 | 16 | 608 | 3392 | `INCOMPLETE` |
+| f4 c100 r0 | 16/100 | 16 | 586 | 3414 | `INCOMPLETE` |
+| f5 c100 r50 | 16/100 | 5 | 2992 | 8 | `INCOMPLETE` |
+| f6 c100 r100 | 16/100 | 8 | 3895 | 105 | `INCOMPLETE` |
+| f7 c100 r200（45 s） | 16/100 | 15 | 2075 | 1925 | `INCOMPLETE` |
+| f8 c8 r0（恢复） | 8/8 | 8 | 1164 | 2836 | `INCOMPLETE` |
+| f9 c100 r100（重复） | 16/100 | 10 | 3907 | 93 | `INCOMPLETE` |
+
+只有 f1 满足 `ORACLE_VERIFIED` + `VERIFIED_BY_COUNT`；其余臂的
+`partial_admission`/配额拒绝使 `correctness=INCOMPLETE`。这不能写成 c100 通过。
+
+### 9.4 空闲连接探针（`85c5682`）
+
+- 12 轮“open → `SELECT 1` → close”，每轮之后空闲 5.5 s：12/12 成功，0 错误。
+- 补充独立栈：同一会话在两轮 `SELECT 1` 之间各空闲 5.5 s：6/6 成功，close 成功，
+  关栈 clean（`idle-same-20261017T0535Z/`）。
+- 这是“未观察到失败”的冒烟证据，不是 4 s/5 s 之间 1 s 余量的统计证明；
+  主证据仍是代码与 `TestSQLUpstreamRetiresIdleSocketsBeforeWorkerReclamation`。
+- 主证据目录里的 `idle-same-session.ndjson` 是关栈后才启动的无效探针，已在该目录
+  `notes.json` 标注；`idle-gap` 的退出码 1 来自脚本在关闭文件后写 done 标记，
+  12 轮数据均已 flush、有效。
+
+### 9.5 卸载后的冷加载（`c42f388`）
+
+- 采样（`OPERATOR_DIAGNOSTIC_NOT_E01`）显示：`maint` 分支最后一次出现距
+  `cold_probe_start` 约 344 s；卸载确认后持续约 342 s `loaded_databases=0`；
+  重新出现的第一个样本即为 `lifecycle=loading`，13 个 loading 样本跨越 **24.106 s**。
+  这是空闲卸载后的冷加载，不是热缓存。
+- `open` 实测 **27.116 s**，超过默认 10 s wall budget；其中加载后阶段（最后一个
+  loading 样本到 `open_ok`）约 **1.48 s**。随后 `count(*)` 返回 700000（与导入一致）、
+  按 id 的单行 oracle 比对一致、close 成功。平台 30 s upstream 超时没有触发；27.116 s
+  距该上限只剩约 2.884 s，这是正确性边界事实，不是性能结论。
+- 这与 `c42f388` 的预期一致：加载超过 10 s 后，加载后探针仍在重新锚定的 10 s 预算内
+  完成；若没有该 scope，`is_readonly()` 会落回已耗尽的 RPC 截止点。因本轮没有
+  pre-fix 负对照，**差分因果仍记为 `NOT PROVEN`**。
+- `4a92f85` 的失败退出路径没有被本 run 覆盖（所有 open 都成功），仍只有静态审阅证据，
+  记为 `NOT MEASURED`。
+
+### 9.6 维护与关栈
+
+- 采样中 maint 分支的 `wal_bytes` 峰值为 **704,140,992 B**。
+- worker-b 的 checkpoint 为 `calls=2 / failures=2 / backfill_bytes=729,685,024`；
+  `worker-b.log` 的两条均为 `elapsed_ms=0 reason=writer admission conflict`。
+  `backfill_bytes` 与失败并存，**不能据此认定回填成功**。`index_compact` 为 0 是因为
+  WAL 低于低水位、本轮未被武装。即“704 MB WAL 上 checkpoint 仍会失败”这一已知问题
+  没有被三条修复改变。
+- 关栈 `outcome=clean`、`reason=terminal_proof_written`、四 stage `exit_code=0`、
+  `unresolved_operations=false`、`launcher-terminal.json` 存在且其 sha256 链与
+  launch/platform/state 及四个 owned-proof 文件一致、19950 端口释放、无目标 run 的
+  残留进程。补充栈关栈瞬间记录到 `residue=3`，4 分钟后复查为 0；那 3 个进程的
+  身份未落盘，**不能证明其归属**，但没有观察到持续残留。terminal 的 HMAC 真实性未验证。
+- 主 run 的 `stop-summary.json` 是事后派生摘要（生成器对 `stages` 数组有
+  `.items()` 缺陷），不作为独立证据；关栈结论以 `launcher-stop.json` 与
+  `launcher-terminal.json` 原件为准。
+- 本轮的 clean 关栈不改变 §7 对三次更早运行 `outcome=unclean` 的记录；二进制、数据规模
+  与运行目录均不同，不能互相替代。
+- 本轮仍**不宣称**正常重启、Unknown 后恢复、数据页一致性或“无数据丢失”。
+
+### 9.7 证据索引
+
+| 内容 | 文件 |
+|---|---|
+| 导入 | `final-20261017T0523Z/import-{maint,arms}/import.json` |
+| 查询臂 | `final-20261017T0523Z/arms/*/queries.json`、`query-events.ndjson` |
+| 冷加载 | `final-20261017T0523Z/cold-probe.ndjson`、`samples.ndjson`、`metrics-{after-import,before-open,after-open}.json` |
+| 维护日志 | `/tmp/peri-final-20261017T0523Z/logs/worker-b.log`、`worker-a.log` |
+| 关栈原件 | `/tmp/peri-final-20261017T0523Z/launcher-stop.json`、`launcher-terminal.json`；`final-20261017T0523Z/run.log` |
+| 同一会话空闲 | `idle-same-20261017T0535Z/idle-same-session.ndjson`、`stop-summary.json` |
+| 口径说明 | `final-20261017T0523Z/notes.json`、`summary.json` |
+
+主 run 的 `stop-summary.json` 为派生摘要，仅用于索引，不能替代关栈原件。
+Worker `/control` 采样与 Gateway `/v1/metrics` 仅作运维诊断
+（`OPERATOR_DIAGNOSTIC_NOT_E01`），不作为本节的正确性或性能证据；凭据未进入 argv、
+日志或本文。
