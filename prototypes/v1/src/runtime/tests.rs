@@ -72,6 +72,19 @@ fn identifier(database: &str) -> Result<DatabaseId> {
     DatabaseId::new(Namespace::new("load_budget", database)?, "main")
 }
 
+/// Joins a thread with a deadline. A regression that leaves a coalesced open waiting for a verdict
+/// its loader never publishes would otherwise hang the test instead of failing it. The deadline is
+/// generous because a held store sleeps on every read, so this test's load legitimately takes tens
+/// of seconds; only a load that never returns at all is meant to trip it.
+fn join_within<T>(handle: std::thread::JoinHandle<T>, what: &str) -> T {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !handle.is_finished() {
+        assert!(Instant::now() < deadline, "{what} never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.join().unwrap()
+}
+
 fn fixture(delay: Duration) -> Result<(tempfile::TempDir, Arc<SlowStore>, Arc<WorkerRuntime>)> {
     let cache = tempfile::tempdir()?;
     let store = Arc::new(SlowStore::new(delay));
@@ -172,7 +185,7 @@ fn concurrent_openers_split_on_the_load_budget() -> Result<()> {
         std::thread::spawn(move || runtime.open(database, 1))
     };
 
-    let error = match loader.join().unwrap() {
+    let error = match join_within(loader, "the overrunning load") {
         Ok(_) => panic!("the open that paid the overrunning load must report it"),
         Err(error) => error,
     };
@@ -181,9 +194,7 @@ fn concurrent_openers_split_on_the_load_budget() -> Result<()> {
         "{error:#}"
     );
     assert!(proven_not_executed(&error), "{error:#}");
-    let handle = waiter
-        .join()
-        .unwrap()
+    let handle = join_within(waiter, "the coalesced open")
         .expect("an open that coalesced with the load reuses the resident instance");
     assert!(!handle.in_transaction()?);
     drop(handle);
