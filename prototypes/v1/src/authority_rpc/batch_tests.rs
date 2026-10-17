@@ -13,6 +13,7 @@ use crate::ownership::types::{
 };
 use crate::ownership::SystemLeaseClock;
 use crate::runtime::DatabaseProvider;
+use crate::wal::DurableWal;
 use anyhow::Result;
 use std::collections::BTreeMap;
 
@@ -208,6 +209,90 @@ fn authenticated_batches_are_registered_only_by_live_writers() -> Result<()> {
     })?;
     drop(readonly_store);
     drop(scoped);
+    control.call(AuthorityCommand::Shutdown)?;
+    handle.join().expect("authority server panicked")?;
+    Ok(())
+}
+
+#[test]
+fn wal_receipt_archive_round_trips_through_the_session_rpc() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    let raw = Arc::new(MemoryObjectStore::default());
+    let ownership = OwnershipAuthority::new(raw, Arc::new(SystemLeaseClock));
+    let control_token = "a".repeat(64);
+    let worker_token = "b".repeat(64);
+    let auth = AuthConfig::new(
+        control_token.clone(),
+        BTreeMap::from([("archive-worker".to_owned(), worker_token.clone())]),
+    )?;
+    let server = Server::bind(
+        "127.0.0.1:0".parse()?,
+        ownership,
+        auth,
+        AuthorityStartup::acquire(directory.path(), false)?,
+    )?;
+    let endpoint = format!("http://{}/", server.local_addr());
+    let handle = thread::spawn(move || server.run());
+    let control = AuthorityClient::new(&endpoint, control_token)?;
+    let worker = AuthorityClient::new(&endpoint, worker_token)?;
+    let database = DatabaseId::new(Namespace::new("archive", "database")?, "main")?;
+    let intent = GrantIntent {
+        role: AccessRole::Writer,
+        database: database.clone(),
+        worker_id: "archive-worker".to_owned(),
+        epoch: 1,
+        expected_epoch: 0,
+        lease_id: "archive-lease".to_owned(),
+        ttl_ms: 20_000,
+    };
+    let challenge: NonceReply =
+        serde_json::from_value(control.call(AuthorityCommand::Challenge {
+            intent: LeaseIntent::Grant(intent.clone()),
+        })?)?;
+    let lease: GrantReply = serde_json::from_value(control.call(AuthorityCommand::Grant {
+        request: GrantRequest {
+            request_id: "archive-grant".to_owned(),
+            nonce: challenge.nonce,
+            intent,
+        },
+    })?)?;
+    let provider = RemoteAuthorityProvider::new(worker, "archive-worker".to_owned())?;
+    provider.install_lease(lease, AccessRole::Writer)?;
+    let namespace = database.namespace.clone();
+    let wal = crate::wal::RemoteWal::new(provider.open_store(&database, 1)?);
+    let request = |identity: &str, bytes: &[u8]| crate::wal::WalAppendRequest {
+        namespace: namespace.clone(),
+        epoch: 1,
+        batch: crate::wal::WalBatch {
+            operations: vec![crate::wal::WalOperation::Write {
+                offset: 0,
+                bytes: bytes.to_vec(),
+            }],
+        },
+        position: None,
+        append_id: identity.to_owned(),
+        timestamp_millis: 9,
+    };
+
+    let archived = request("archived", &[1, 2, 3]);
+    assert_eq!(wal.append_local(&archived)?, 1);
+    assert_eq!(wal.append_local(&request("kept", &[4]))?, 2);
+
+    wal.truncate(&namespace, 2)?;
+
+    let index = wal.metadata(&namespace)?;
+    assert!(!index.receipts.contains_key("archived"));
+    assert!(index.receipts.contains_key("kept"));
+    assert!(index.receipt_index.is_some());
+    assert_eq!(wal.append_local(&archived)?, 1);
+    assert_eq!(wal.metadata(&namespace)?.last_lsn, 2);
+
+    drop(wal);
     control.call(AuthorityCommand::Shutdown)?;
     handle.join().expect("authority server panicked")?;
     Ok(())

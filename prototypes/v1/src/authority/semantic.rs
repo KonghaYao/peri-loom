@@ -255,6 +255,7 @@ impl Authority {
             } else if let Some(hash) = key
                 .strip_prefix("segments/")
                 .or_else(|| key.strip_prefix("wal/chunks/"))
+                .or_else(|| key.strip_prefix("wal/receipt-pages/"))
             {
                 ensure!(
                     valid_hash(hash) && hash == entry.hash,
@@ -457,6 +458,7 @@ impl Authority {
             } else if let Some(hash) = key
                 .strip_prefix("segments/")
                 .or_else(|| key.strip_prefix("wal/chunks/"))
+                .or_else(|| key.strip_prefix("wal/receipt-pages/"))
             {
                 ensure!(
                     valid_hash(hash) && hash == entry.hash,
