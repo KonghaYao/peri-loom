@@ -5,7 +5,7 @@ use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
 use crate::wal::{apply_batch, WalBatch, WalCommit, WalMetadata, WalOperation, WalRecord};
 
-const WAL_HEADER: usize = 32;
+pub(crate) const WAL_HEADER: usize = 32;
 const WAL_FORMAT: u32 = 3_007_000;
 const WAL_MAGIC_LITTLE_ENDIAN: u32 = 0x377f_0682;
 const WAL_MAGIC_BIG_ENDIAN: u32 = 0x377f_0683;
@@ -14,6 +14,11 @@ const WAL_MAGIC_BIG_ENDIAN: u32 = 0x377f_0683;
 /// frame scans it runs before and after each append, and the image copies a validated WAL
 /// extension pays. Kept separately observable so a review can tell a removed growth term
 /// from one that merely moved out of the timer.
+///
+/// An accepted append extends its image in place, so the steady state copies no image bytes:
+/// `copied_bytes` now counts only the buffer regrowth a batch can still force when it
+/// outgrows the capacity the previous append left behind. The allocator may extend in
+/// place, so that count is an upper bound, not a measurement of a memcpy.
 ///
 /// Counters are per thread, like `request_reads`: the commit that pays the cost is the one
 /// that reads it. A reader on another thread sees zeros until aggregation exists, and this
@@ -119,7 +124,7 @@ fn observed_copy(bytes: usize) {
 #[cfg(test)]
 mod bench;
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 #[cfg(test)]
 mod tests;
 
@@ -381,14 +386,33 @@ impl WalImage {
     /// it. The bytes themselves are still written by `wal::apply_batch`, the single
     /// implementation of write and truncate semantics.
     pub(crate) fn apply(&mut self, batch: &WalBatch) -> Result<()> {
+        let mut end = self.bytes.len();
         for operation in &batch.operations {
             match operation {
-                WalOperation::Write { offset, .. } => {
-                    self.scan.note_write(usize::try_from(*offset)?);
+                WalOperation::Write { offset, bytes } => {
+                    let offset = usize::try_from(*offset)?;
+                    self.scan.note_write(offset);
+                    let write_end = offset
+                        .checked_add(bytes.len())
+                        .context("WAL write overflow")?;
+                    end = end.max(write_end);
                 }
                 WalOperation::Truncate { size } => {
-                    self.scan.note_truncate(usize::try_from(*size)?);
+                    let size = usize::try_from(*size)?;
+                    self.scan.note_truncate(size);
+                    end = end.max(size);
                 }
+            }
+        }
+        // Grow once for the whole batch, the same amortized policy `apply_batch` uses per
+        // operation. One reserve per batch means at most one reallocation, so the copy it
+        // may cause has a single attributable place; the old capacity is an upper bound
+        // because the allocator is allowed to extend the buffer in place.
+        let capacity = self.bytes.capacity();
+        if end > self.bytes.len() {
+            self.bytes.try_reserve(end - self.bytes.len())?;
+            if self.bytes.capacity() != capacity {
+                observed_copy(capacity);
             }
         }
         apply_batch(&mut self.bytes, batch)
@@ -473,8 +497,15 @@ pub fn validate_index_state(
     Ok(ValidatedWal { index, image })
 }
 
+/// Extends an accepted image by one record, consuming the accepted state.
+///
+/// The caller moves the state in, so a rejected or discarded append cannot leave a cached
+/// image describing bytes that were never published: the only copy of that state is dropped
+/// with the error and the next append re-derives it from the store. Extending in place is
+/// what keeps an append from copying the whole image; the scan still pays only for the frames
+/// the record adds, and a record that rewrites bytes inside the prefix resets it first.
 pub fn validate_index_append(
-    previous: &ValidatedWal,
+    previous: ValidatedWal,
     index_bytes: &[u8],
     namespace: &Namespace,
     mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
@@ -482,7 +513,10 @@ pub fn validate_index_append(
     namespace.key("wal/index")?;
     let index: WalMetadata = serde_json::from_slice(index_bytes)?;
     validate_layout(&index)?;
-    let old = &previous.index;
+    let ValidatedWal {
+        index: old,
+        mut image,
+    } = previous;
     ensure!(
         index.epoch >= old.epoch
             && index.last_lsn == old.last_lsn.checked_add(1).context("WAL LSN exhausted")?
@@ -505,11 +539,6 @@ pub fn validate_index_append(
         "WAL append changed validated index prefix or receipts"
     );
     let record = load_record(&index, namespace, old.entries.len(), &mut load_chunk, true)?;
-    // The candidate extends the accepted image, so it starts as a copy: an append that is
-    // rejected must leave the cached state describing exactly the accepted bytes. The scan
-    // is what makes the extension cheap: only the frames this record adds are verified.
-    let mut image = previous.image.clone();
-    observed_copy(image.len());
     let commit = apply_record(&record, &mut image)?;
     ensure!(
         commit == index.commit,

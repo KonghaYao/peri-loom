@@ -448,11 +448,11 @@ impl WalStore {
     }
 }
 
-/// A candidate the index rejects must leave the validated state reusable: appending again from
-/// the same `previous` still resolves, and it pays for the frames it adds rather than for the
-/// whole image, which is what shows the rejected candidate left the verified prefix intact.
+/// An accepted append extends the validated image in place: it verifies only the frames the
+/// record adds, lands on exactly the bytes a cold replay derives, and copies the image only
+/// when the batch outgrows the capacity the previous append left behind.
 #[test]
-fn a_rejected_append_leaves_the_validated_prefix_reusable() -> Result<()> {
+fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
     let store = WalStore::open("prefix")?;
     let mut builder = WalBuilder::new([17, 18]);
     let salts = [17, 18];
@@ -476,34 +476,50 @@ fn a_rejected_append_leaves_the_validated_prefix_reusable() -> Result<()> {
         }),
     )?;
 
-    // The candidate matches the accepted prefix, the receipts and the new record, and is
-    // rejected only for the commit it claims: the copy was already extended when it fails,
-    // which is where a shared prefix would most easily be left describing too much.
-    let mut forged: serde_json::Value = serde_json::from_slice(&index)?;
-    forged["commit"]["position"]["frame_count"] = serde_json::Value::from(3);
-    reset_recovery_observations();
-    assert!(validate_index_append(
-        &validated,
-        &serde_json::to_vec(&forged)?,
-        &store.namespace,
-        |key| store.load(key)
-    )
-    .is_err());
-    assert_eq!(
-        recovery_observations().scanned_bytes,
-        (WAL_HEADER + FRAME_SIZE) as u64,
-        "the rejected candidate did not verify exactly the frames it added"
-    );
-
     reset_recovery_observations();
     let incremented =
-        validate_index_append(&validated, &index, &store.namespace, |key| store.load(key))?;
+        validate_index_append(validated, &index, &store.namespace, |key| store.load(key))?;
+    let observed = recovery_observations();
     assert_eq!(
-        recovery_observations().scanned_bytes,
+        observed.scanned_bytes,
         (WAL_HEADER + FRAME_SIZE) as u64,
-        "the rejected candidate cost the next append its verified prefix"
+        "the append verified more than the frames it added"
     );
+    // The fixture's image was written as one batch, so its capacity equals its length. The
+    // growth this append forces is the only copy a steady-state append can still cause; the
+    // counter reports the old capacity as an upper bound because the allocator may extend in
+    // place. The next append starts with that headroom and copies nothing.
+    assert_eq!(
+        observed.copied_bytes,
+        first.len() as u64,
+        "the growth was not attributed to the append that forced it"
+    );
+    let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+    assert_eq!(incremented.commit(), cold.commit());
+    assert_eq!(incremented.image.bytes(), cold.image.bytes());
 
+    let second = builder.frame(6, PAGE_SIZE as u32);
+    let offset = first.len() + FRAME_SIZE;
+    let index = store.append(
+        write_at(offset, &second),
+        Some(WalPosition {
+            salts,
+            frame_count: 6,
+        }),
+    )?;
+    reset_recovery_observations();
+    let incremented =
+        validate_index_append(incremented, &index, &store.namespace, |key| store.load(key))?;
+    let observed = recovery_observations();
+    assert_eq!(
+        observed.scanned_bytes,
+        (WAL_HEADER + FRAME_SIZE) as u64,
+        "the second append did not reuse the verified prefix"
+    );
+    assert_eq!(
+        observed.copied_bytes, 0,
+        "the appended image was copied instead of extended in place"
+    );
     let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
     assert_eq!(incremented.commit(), cold.commit());
     assert_eq!(incremented.image.bytes(), cold.image.bytes());
@@ -534,7 +550,7 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
     corrupted[0] ^= 0xff;
     let index = store.append(write_at(damage, &corrupted), None)?;
     let overwritten =
-        validate_index_append(&validated, &index, &store.namespace, |key| store.load(key))?;
+        validate_index_append(validated, &index, &store.namespace, |key| store.load(key))?;
 
     // Repairing the frame and appending behind it is one record. Its scan must cover the whole
     // image: had the overwriting record left a prefix reusable, only the two new frames would
@@ -556,9 +572,8 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
     )?;
 
     reset_recovery_observations();
-    let chained = validate_index_append(&overwritten, &index, &store.namespace, |key| {
-        store.load(key)
-    })?;
+    let chained =
+        validate_index_append(overwritten, &index, &store.namespace, |key| store.load(key))?;
     assert_eq!(
         recovery_observations().scanned_bytes,
         (WAL_HEADER + 6 * FRAME_SIZE) as u64,
@@ -568,6 +583,113 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
     let cold = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
     assert_eq!(chained.commit(), cold.commit());
     assert_eq!(chained.image.bytes(), cold.image.bytes());
+    Ok(())
+}
+
+/// The in-place path must accept exactly what a cold replay accepts, derive the same commit
+/// and hold the same bytes across a sequence of real appends. A forged candidate is rejected
+/// by both, and consuming the accepted state on rejection is part of the contract: every
+/// forged attempt below starts from a state re-derived from the store.
+#[test]
+fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> Result<()> {
+    let store = WalStore::open("agreement")?;
+    let mut builder = WalBuilder::new([51, 52]);
+    let salts = [51, 52];
+    let first = builder.image(3);
+    let mut index = store.append(
+        write_at(0, &first),
+        Some(WalPosition {
+            salts,
+            frame_count: 3,
+        }),
+    )?;
+    let mut image_len = first.len();
+    let mut previous = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+
+    for page in 4..=40u32 {
+        let frame = builder.frame(page, PAGE_SIZE as u32);
+        let next = store.append(
+            write_at(image_len, &frame),
+            Some(WalPosition {
+                salts,
+                frame_count: page as u64,
+            }),
+        )?;
+        image_len += FRAME_SIZE;
+
+        // A commit position the appended frame does not produce: both validators must refuse
+        // it, so the incremental path never accepts a state a cold replay rejects.
+        let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
+        forged["commit"]["position"]["frame_count"] = serde_json::Value::from(page - 1);
+        let fresh = validate_index_state(&index, &store.namespace, |key| store.load(key))?;
+        assert!(
+            validate_index_append(
+                fresh,
+                &serde_json::to_vec(&forged)?,
+                &store.namespace,
+                |key| store.load(key)
+            )
+            .is_err(),
+            "the incremental validator accepted a forged candidate at page {page}"
+        );
+        assert!(
+            validate_index_state(&serde_json::to_vec(&forged)?, &store.namespace, |key| {
+                store.load(key)
+            })
+            .is_err(),
+            "the cold replay accepted a forged candidate at page {page}"
+        );
+
+        let extended =
+            validate_index_append(previous, &next, &store.namespace, |key| store.load(key))?;
+        let cold = validate_index_state(&next, &store.namespace, |key| store.load(key))?;
+        assert_eq!(
+            extended.commit(),
+            cold.commit(),
+            "commit diverged at page {page}"
+        );
+        assert_eq!(
+            extended.image.bytes(),
+            cold.image.bytes(),
+            "image bytes diverged at page {page}"
+        );
+        previous = extended;
+        index = next;
+    }
+    Ok(())
+}
+
+/// Geometric growth is the only copy the in-place path still causes. It must stay amortized:
+/// the reserved headroom is never larger than the image it extends, and the capacity growth
+/// an append sequence forces is bounded by a small multiple of the bytes the appends added.
+#[test]
+fn image_growth_stays_within_the_amortized_bound() -> Result<()> {
+    let mut builder = WalBuilder::new([71, 72]);
+    let mut image = WalImage::default();
+    reset_recovery_observations();
+    let header = builder.header();
+    image.apply(&write_at(0, &header))?;
+    let mut added = header.len();
+    for page in 1..=256u32 {
+        let frame = builder.frame(page, if page == 256 { PAGE_SIZE as u32 } else { 0 });
+        let before = image.len();
+        image.apply(&write_at(before, &frame))?;
+        added += image.len() - before;
+        image.committed_position()?;
+    }
+    let observed = recovery_observations();
+    assert!(
+        observed.copied_bytes <= 4 * added as u64,
+        "growing a {}-byte image copied {} bytes for {added} added bytes",
+        image.len(),
+        observed.copied_bytes
+    );
+    assert!(
+        image.bytes.capacity() - image.len() <= image.len(),
+        "the image reserved more headroom than it holds: {} bytes for a {}-byte image",
+        image.bytes.capacity(),
+        image.len()
+    );
     Ok(())
 }
 

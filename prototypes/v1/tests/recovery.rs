@@ -338,13 +338,18 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
     let wal = RemoteWal::new(store.clone());
     wal.append(&namespace(), 1, batch(wal_image(false, &[1])))?;
     let original = index(store.as_ref())?;
-    let validated = validate_index_state(&original, &namespace(), |key| {
-        Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
-    })?;
+    // Extending consumes the accepted state, so every rejected candidate below starts from a
+    // freshly derived one: that is the fail-closed contract the authority's cache relies on.
+    let cold = || {
+        validate_index_state(&original, &namespace(), |key| {
+            Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
+        })
+    };
+    let validated = cold()?;
     wal.append(&namespace(), 1, WalBatch::default())?;
     let next = index(store.as_ref())?;
     let mut loaded = Vec::new();
-    let incremented = validate_index_append(&validated, &next, &namespace(), |key| {
+    let incremented = validate_index_append(validated, &next, &namespace(), |key| {
         loaded.push(key.to_owned());
         Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
     })?;
@@ -359,7 +364,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             serde_json::json!(99)
         };
         assert!(validate_index_append(
-            &validated,
+            cold()?,
             &serde_json::to_vec(&forged)?,
             &namespace(),
             |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
@@ -377,7 +382,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             .clone();
         forged[field].as_object_mut().unwrap().remove(&key);
         assert!(validate_index_append(
-            &validated,
+            cold()?,
             &serde_json::to_vec(&forged)?,
             &namespace(),
             |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
@@ -388,7 +393,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
     let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
     forged["receipt_digests"][&new_id] = serde_json::json!("wrong-digest");
     assert!(validate_index_append(
-        &validated,
+        cold()?,
         &serde_json::to_vec(&forged)?,
         &namespace(),
         |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
@@ -398,7 +403,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
     forged["commit"] =
         serde_json::json!({"lsn": 2, "position": {"salts": [17, 23], "frame_count": 1}});
     assert!(validate_index_append(
-        &validated,
+        cold()?,
         &serde_json::to_vec(&forged)?,
         &namespace(),
         |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
@@ -413,14 +418,12 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
         Ok(bytes)
     })
     .is_err());
-    assert!(
-        validate_index_append(&validated, &next, &namespace(), |key| {
-            let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
-            bytes[0] ^= 1;
-            Ok(bytes)
-        })
-        .is_err()
-    );
+    assert!(validate_index_append(cold()?, &next, &namespace(), |key| {
+        let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
+        bytes[0] ^= 1;
+        Ok(bytes)
+    })
+    .is_err());
     Ok(())
 }
 

@@ -179,9 +179,11 @@ pub(crate) fn observe_scan(scanned_bytes: usize, scanned_frames: usize, elapsed:
     add(&SCAN_NANOS, nanos(elapsed));
 }
 
-/// Bytes of a WAL image this process copied to validate a candidate append. The copy is
-/// `WalImage::clone` on the authority's validated state; the count is the image length, not
-/// the bytes the append itself wrote.
+/// Bytes of a WAL image this process had to copy while validating. An append extends the
+/// accepted image in place, so a steady-state append copies nothing; a batch that outgrows
+/// the buffer may still reallocate, and the old capacity is the upper bound of what that
+/// reallocation can copy (the allocator may also extend in place). The count is image
+/// bytes, not the bytes the append itself wrote.
 pub(crate) fn observe_copy(bytes: usize) {
     if !enabled() {
         return;

@@ -158,3 +158,163 @@ fn wal_scan_paired_curve() {
         }
     }
 }
+
+/// Cumulative image sizes for the append benchmark, as frame counts. The default tiers are
+/// about 8, 64 and 512 MiB at the 536-byte frame the fixtures build.
+const APPEND_TIERS_ENV: &str = "PERI_WAL_APPEND_TIERS";
+const DEFAULT_APPEND_TIERS: &str = "16000,125000,1000000";
+/// The accepted append may copy at most this multiple of the smallest tier's per-append wall.
+const APPEND_WALL_RATIO: f64 = 1.2;
+
+fn append_tiers() -> Vec<usize> {
+    std::env::var(APPEND_TIERS_ENV)
+        .unwrap_or_else(|_| DEFAULT_APPEND_TIERS.into())
+        .split(',')
+        .filter_map(|value| value.trim().parse().ok())
+        .collect()
+}
+
+/// One measured append: a single committing frame behind an image that already has the
+/// headroom its previous append left.
+struct AppendSample {
+    wall_us: u128,
+    copied_bytes: u64,
+}
+
+/// `in_place` extends the image; the control arm clones it first, which is the copy the
+/// publication path used to pay before it could reuse the accepted state. Both arms append
+/// the same frames and end with the same bytes, so the wall difference is the copy.
+fn append_sample(image_bytes: &[u8], frames: &[Vec<u8>], in_place: bool) -> AppendSample {
+    let mut image = WalImage::default();
+    image
+        .apply(&write_at(0, image_bytes))
+        .expect("fixture image");
+    assert!(
+        image.committed_position().expect("fixture scan").is_some(),
+        "fixture image must commit"
+    );
+    // Absorb the one growth the first append can force outside the measurement. A
+    // steady-state image pays that growth once and then appends into its headroom; the
+    // amortized bound of that growth is asserted by the growth test, not measured here.
+    let offset = image.len();
+    image
+        .apply(&write_at(offset, &frames[0]))
+        .expect("warm-up append");
+    assert!(
+        image.committed_position().expect("warm-up scan").is_some(),
+        "warm-up frame must commit"
+    );
+    reset_recovery_observations();
+    let before = recovery_observations();
+    let started = std::time::Instant::now();
+    if in_place {
+        for frame in &frames[1..] {
+            let offset = image.len();
+            image.apply(&write_at(offset, frame)).expect("append");
+            assert!(
+                image.committed_position().expect("append scan").is_some(),
+                "an append lost its commit frame"
+            );
+        }
+    } else {
+        for frame in &frames[1..] {
+            let mut candidate = image.clone();
+            let offset = candidate.len();
+            candidate.apply(&write_at(offset, frame)).expect("append");
+            assert!(
+                candidate
+                    .committed_position()
+                    .expect("append scan")
+                    .is_some(),
+                "an append lost its commit frame"
+            );
+            image = candidate;
+        }
+    }
+    let wall_us = started.elapsed().as_micros();
+    let observed = recovery_observations();
+    assert_eq!(
+        committed_position(image.bytes()).expect("reference scan"),
+        image.committed_position().expect("final scan"),
+        "arms disagree on the fixture"
+    );
+    AppendSample {
+        wall_us,
+        copied_bytes: observed.copied_bytes - before.copied_bytes,
+    }
+}
+
+/// A-min acceptance (V8): appending one frame must not become slower as the image grows. The
+/// in-place arm is the implemented path; the cloning arm is the previous behaviour kept as a
+/// control, and its ratio is reported rather than asserted because it is not the shipped
+/// path. Only the in-place ratio is a gate: the largest tier's median append must stay within
+/// 1.2x of the smallest tier's.
+#[test]
+#[ignore = "WAL 追加对照基准：显式运行时才计时，且默认最大档需要约 2 GiB 内存"]
+fn wal_append_does_not_scale_with_the_image() {
+    let rounds = rounds();
+    let appends = appends();
+    let mut medians: [Vec<(usize, u128)>; 2] = [Vec::new(), Vec::new()];
+    for tier in append_tiers() {
+        let mut builder = WalBuilder::new([93, 94]);
+        let image_bytes = builder.image(tier);
+        let image_bytes_len = image_bytes.len();
+        // One warm-up frame plus the measured appends, generated before the measurement so
+        // the builder's checksum chain is not part of the timed span.
+        let frames = (0..=appends)
+            .map(|_| builder.frame(1, PAGE_SIZE as u32))
+            .collect::<Vec<_>>();
+        for round in 1..=rounds {
+            let order = if round % 2 == 1 { [0, 1] } else { [1, 0] };
+            for index in order {
+                let in_place = index == 0;
+                let sample = append_sample(&image_bytes, &frames, in_place);
+                medians[index].push((tier, sample.wall_us));
+                eprintln!(
+                    "WAL_APPEND_BENCH tier_frames={tier} image_bytes={image_bytes_len} \
+                     frame_bytes={FRAME_SIZE} arm={} round={round} appends={appends} \
+                     wall_us={} per_append_us={} copied_bytes={}",
+                    if in_place { "in-place" } else { "cloned" },
+                    sample.wall_us,
+                    sample.wall_us / appends.max(1) as u128,
+                    sample.copied_bytes,
+                );
+            }
+        }
+    }
+    if medians[0].is_empty() {
+        eprintln!("WAL_APPEND_BENCH no tiers configured");
+        return;
+    }
+    let ratio = |values: &mut Vec<(usize, u128)>, arm: &str| {
+        values.sort_unstable();
+        let mut per_tier: Vec<(usize, Vec<u128>)> = Vec::new();
+        for &(tier, wall) in values.iter() {
+            match per_tier.last_mut() {
+                Some((last, walls)) if *last == tier => walls.push(wall),
+                _ => per_tier.push((tier, vec![wall])),
+            }
+        }
+        let medians = per_tier
+            .into_iter()
+            .map(|(tier, mut walls)| (tier, median(&mut walls)))
+            .collect::<Vec<_>>();
+        let smallest = medians.first().expect("tier").1.max(1);
+        let largest = medians.last().expect("tier").1;
+        let ratio = largest as f64 / smallest as f64;
+        eprintln!(
+            "WAL_APPEND_BENCH_SUMMARY arm={arm} rounds={rounds} tiers={} samples={} \
+             smallest_wall_us={smallest} largest_wall_us={largest} ratio={ratio:.3}",
+            medians.len(),
+            values.len()
+        );
+        ratio
+    };
+    let in_place = ratio(&mut medians[0], "in-place");
+    let cloned = ratio(&mut medians[1], "cloned");
+    eprintln!("WAL_APPEND_BENCH_CONTROL clone_ratio={cloned:.3}");
+    assert!(
+        in_place <= APPEND_WALL_RATIO,
+        "the in-place append scaled with the image: ratio {in_place:.3} > {APPEND_WALL_RATIO}"
+    );
+}

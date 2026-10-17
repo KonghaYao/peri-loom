@@ -1,5 +1,8 @@
 #[path = "branch_publication.rs"]
 mod publication;
+#[cfg(test)]
+#[path = "branch_tests.rs"]
+mod tests;
 
 use super::{
     now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, PublicationBody,
@@ -257,7 +260,7 @@ impl BranchStore {
         root: &mut CatalogRoot,
         bytes: &[u8],
         entry: &ObjectEntry,
-        previous: Option<&ValidatedWal>,
+        previous: Option<ValidatedWal>,
         bodies: &[PublicationBody<'_>],
     ) -> Result<ValidatedWal> {
         let load_chunk = |key: &str| {
@@ -372,10 +375,15 @@ impl BranchStore {
                 bytes: &index_bytes,
             },
         ];
-        let mut selected = None;
         let mut added = BTreeMap::new();
         let mut validated = None;
         let mut attempt = 0;
+        // The accepted image moves into the publication that extends it and only comes back
+        // when that publication confirms this exact index. A failed or retried attempt drops
+        // it instead of restoring it: a cached image that described bytes no publication
+        // landed is worse than a cold replay on the next append, and the ownership move is
+        // what makes the failure path impossible to miss.
+        let mut previous = view.validated_wal.take();
         let published = self.authority.transact_with_bodies(&bodies, |root| {
             attempt += 1;
             Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
@@ -395,8 +403,8 @@ impl BranchStore {
             }
             root.objects.insert(chunk_key.clone(), chunk.clone())?;
             let previous = if attempt == 1 {
-                view.validated_wal.as_ref().and_then(|(entry, state)| {
-                    (self.bound(root).ok()?.wal.as_ref() == Some(entry)).then_some(state)
+                previous.take().and_then(|(entry, state)| {
+                    (self.bound(root).ok()?.wal.as_ref() == Some(&entry)).then_some(state)
                 })
             } else {
                 None
@@ -410,12 +418,15 @@ impl BranchStore {
                     ("wal/index".into(), index.clone()),
                 ]),
             )?;
-            selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
+        // Refresh from the root the caller now treats as current, not from the attempt's
+        // candidate: a lost acknowledgement can resolve to a later head whose branch WAL
+        // already moved, and the session must read that index instead of the one it tried to
+        // publish. The pin entries added above are part of that later head too.
         Self::refresh(
             &mut view,
-            selected.context("WAL publication view missing")?,
+            Self::selected(&published.root, &self.branch)?,
             added,
         );
         if published
@@ -427,6 +438,9 @@ impl BranchStore {
         {
             view.validated_wal = Some((index, validated.context("WAL validation missing")?));
         }
+        // Otherwise the observed head names a different index: the image this attempt
+        // extended describes bytes the branch does not point at, so it is dropped rather
+        // than cached, and the next append validates from the store.
         Ok(())
     }
 }
