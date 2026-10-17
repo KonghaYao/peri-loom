@@ -775,6 +775,21 @@ fn the_retirement_authorization_is_not_send() {
     };
 }
 
+/// `PhantomData<Rc<()>>` also makes the guard `!Sync`; pin that separately so a future change
+/// to a `Send`-only marker cannot silently widen the type.
+#[test]
+fn the_retirement_authorization_is_not_sync() {
+    const _: fn() = || {
+        trait AmbiguousIfSync<A> {
+            fn marker() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+        struct SyncMarker;
+        impl<T: ?Sized + Sync> AmbiguousIfSync<SyncMarker> for T {}
+        let _ = <RetiringMaintenanceAuthorization as AmbiguousIfSync<_>>::marker;
+    };
+}
+
 #[test]
 fn a_nested_retirement_authorization_restores_the_outer_scope() {
     assert!(!retiring_maintenance_authorized());

@@ -349,7 +349,7 @@ impl WorkerRuntime {
     /// Explicit unload. This deliberately does not pre-tidy: it is also the path an image
     /// replacement uses to drop a local instance, and publishing a local checkpoint there
     /// could race the replacement. The suspend/migrate transitions (`drain` and the
-    /// last-session release) run the bounded pre-tidy instead.
+    /// last-session release) run the pre-tidy instead.
     pub fn close(&self, identifier: &DatabaseId) -> Result<bool> {
         identifier.validate()?;
         let mut registry = self.lock()?;
@@ -568,9 +568,11 @@ impl WorkerRuntime {
         drop(database);
     }
 
-    /// One bounded pre-tidy before an instance leaves the loaded set. It is an optimisation:
-    /// every failure, refusal or timeout is logged and the unload still happens. Nothing here
-    /// reaches the request path, and with the schedule switch off it costs one boolean read.
+    /// One pre-tidy before an instance leaves the loaded set. Its budget limits the waits
+    /// that consult the request deadline, not the total duration of the native operation.
+    /// It is an optimisation: every failure, refusal or timeout is logged and the unload
+    /// still happens. Nothing here reaches the request path, and with the schedule switch
+    /// off it costs one boolean read.
     fn pre_suspend(&self, identifier: &DatabaseId, database: &Arc<Instance>) {
         if !self.maintenance.enabled() {
             return;

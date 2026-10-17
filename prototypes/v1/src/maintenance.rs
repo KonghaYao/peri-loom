@@ -12,8 +12,9 @@
 //!    `WorkerRuntime::maintenance_tick`, called from the worker watchdog, and the units it
 //!    decides on are executed on the scheduler's own thread. A commit never waits for a
 //!    checkpoint or a compaction. The one synchronous caller is a database unload
-//!    (`pre_suspend`), which is already retiring the instance; its wait is bounded and a
-//!    failure there never blocks the unload.
+//!    (`pre_suspend`), which is already retiring the instance; its budget limits the waits
+//!    that consult the request deadline rather than the whole call, and a failure there never
+//!    blocks the unload.
 //! 2. Every unit is decided by low/high watermarks plus a cooldown, so crossing a threshold
 //!    does not turn into "do the heavy work on every commit". A unit that just ran, or that
 //!    was blocked, is not eligible again until its cooldown or backoff expires.
