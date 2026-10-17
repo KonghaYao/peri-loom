@@ -187,11 +187,16 @@ impl RemoteStore {
         ensure!(
             relative == "HEAD"
                 || relative == "wal/index"
-                || ["segments/", "manifests/", "wal/chunks/"]
-                    .iter()
-                    .any(|prefix| relative
-                        .strip_prefix(prefix)
-                        .is_some_and(crate::manifest::valid_hash)),
+                || [
+                    "segments/",
+                    "manifests/",
+                    "wal/chunks/",
+                    "wal/receipt-pages/"
+                ]
+                .iter()
+                .any(|prefix| relative
+                    .strip_prefix(prefix)
+                    .is_some_and(crate::manifest::valid_hash)),
             "unauthorized logical object key"
         );
         Ok(())

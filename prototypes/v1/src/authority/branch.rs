@@ -97,11 +97,25 @@ fn referenced(
     if let Some(wal) = wal {
         semantic::registered(root, wal)?;
         let index = semantic::index(&authority.read_metadata_blob(wal)?)?;
+        let page_root = index.receipt_index.clone();
         for chunk in index.entries {
             let key = format!("wal/chunks/{}", chunk.hash);
             let entry = root.objects.get(&key)?.context("WAL chunk missing")?;
             semantic::registered(root, &entry)?;
             entries.insert(key, entry.clone());
+        }
+        if let Some(page_root) = page_root {
+            crate::authority::paged_index::walk_tree(Some(&page_root), |hash| {
+                let key = format!("wal/receipt-pages/{hash}");
+                let entry = root
+                    .objects
+                    .get(&key)?
+                    .context("WAL receipt archive page missing")?;
+                semantic::registered(root, &entry)?;
+                let bytes = authority.read_metadata_blob(&entry)?;
+                entries.insert(key, entry);
+                Ok(bytes)
+            })?;
         }
         entries.insert("wal/index".into(), wal.clone());
     }
@@ -283,7 +297,24 @@ impl BranchStore {
             Some(previous) => {
                 validate_index_append(previous, bytes, self.authority.namespace(), load_chunk)?
             }
-            None => validate_index_state(bytes, self.authority.namespace(), load_chunk)?,
+            None => {
+                let validated =
+                    validate_index_state(bytes, self.authority.namespace(), load_chunk)?;
+                let load_page = |hash: &str| {
+                    let key = format!("wal/receipt-pages/{hash}");
+                    let entry = root
+                        .objects
+                        .get(&key)?
+                        .context("receipt archive page missing from candidate catalog")?;
+                    semantic::registered(root, &entry)?;
+                    if let Some(bytes) = super::staged_body(bodies, &entry) {
+                        return Ok(bytes.to_vec());
+                    }
+                    self.authority.read_metadata_blob(&entry)
+                };
+                crate::recovery::validate_receipt_index(bytes, load_page)?;
+                validated
+            }
         };
         let commit = validated.commit();
         let previous = root.branches[&self.branch]

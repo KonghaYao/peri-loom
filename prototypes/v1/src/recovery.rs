@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
-use crate::wal::{apply_batch, WalBatch, WalCommit, WalMetadata, WalOperation, WalRecord};
+use crate::wal::{
+    apply_batch, ArchivedReceipt, WalBatch, WalCommit, WalMetadata, WalOperation, WalRecord,
+};
 
 pub(crate) const WAL_HEADER: usize = 32;
 const WAL_FORMAT: u32 = 3_007_000;
@@ -459,6 +461,55 @@ pub fn validate_index_commit(
     Ok(validate_index_state(index_bytes, namespace, load_chunk)?.commit())
 }
 
+/// Proves a published index's receipt archive is fully present and well formed.
+///
+/// The head CAS only protects the pointer. Without this walk a head could reference a page
+/// that was never written, or one whose archived entries disagree with the inline receipts
+/// and baseline. Appends keep the pointer unchanged, so only a cold validation pays for it.
+pub fn validate_receipt_index(
+    index_bytes: &[u8],
+    mut load_page: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let index: WalMetadata = serde_json::from_slice(index_bytes)?;
+    let Some(root) = index.receipt_index.as_deref() else {
+        return Ok(());
+    };
+    crate::authority::paged_index::walk_tree_with(
+        Some(root),
+        |hash| load_page(hash),
+        |entries| {
+            for (identity, value) in entries {
+                ensure!(
+                    !identity.is_empty()
+                        && identity.len() <= 128
+                        && identity
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+                    "invalid archived WAL receipt identity"
+                );
+                ensure!(
+                    !index.receipts.contains_key(identity),
+                    "WAL receipt archived and inline"
+                );
+                let archived: ArchivedReceipt = serde_json::from_value(value.clone())?;
+                ensure!(
+                    archived.lsn > 0
+                        && archived.lsn <= index.last_lsn
+                        && archived.lsn <= index.replay_baseline_lsn,
+                    "archived WAL receipt outside the baseline"
+                );
+                if let Some(digest) = archived.digest {
+                    ensure!(
+                        crate::manifest::valid_hash(&digest),
+                        "invalid archived WAL receipt digest"
+                    );
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
 pub struct ValidatedWal {
     index: WalMetadata,
     image: WalImage,
@@ -521,6 +572,7 @@ pub fn validate_index_append(
         index.epoch >= old.epoch
             && index.last_lsn == old.last_lsn.checked_add(1).context("WAL LSN exhausted")?
             && index.replay_baseline_lsn == old.replay_baseline_lsn
+            && index.receipt_index == old.receipt_index
             && index.entries.len() == old.entries.len() + 1
             && index.entries[..old.entries.len()]
                 .iter()
@@ -578,6 +630,21 @@ fn validate_layout(index: &WalMetadata) -> Result<()> {
             .values()
             .all(|lsn| *lsn > 0 && *lsn <= index.last_lsn),
         "invalid WAL append receipt"
+    );
+    ensure!(
+        index
+            .receipt_index
+            .as_deref()
+            .is_none_or(crate::manifest::valid_hash),
+        "invalid WAL receipt archive root"
+    );
+    ensure!(
+        index.receipt_index.is_none()
+            || index
+                .receipts
+                .values()
+                .all(|lsn| *lsn > index.replay_baseline_lsn),
+        "WAL receipt archive overlaps inline receipts"
     );
     if let Some(commit) = index.commit {
         ensure!(

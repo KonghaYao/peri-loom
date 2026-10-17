@@ -53,14 +53,27 @@ enum Page {
 pub(crate) struct PagedIndex<'a> {
     store: &'a dyn ObjectStore,
     namespace: &'a Namespace,
+    prefix: &'static str,
     pending: Option<&'a std::cell::RefCell<PendingPages>>,
 }
 
 impl<'a> PagedIndex<'a> {
     pub(crate) fn new(store: &'a dyn ObjectStore, namespace: &'a Namespace) -> Self {
+        Self::with_prefix(store, namespace, "authority/index-pages")
+    }
+
+    /// Some trees live outside the authority's private namespace: the WAL receipt archive is
+    /// written by the worker through the branch session, so its pages follow the branch key
+    /// shape instead of the authority one.
+    pub(crate) fn with_prefix(
+        store: &'a dyn ObjectStore,
+        namespace: &'a Namespace,
+        prefix: &'static str,
+    ) -> Self {
         Self {
             store,
             namespace,
+            prefix,
             pending: None,
         }
     }
@@ -74,6 +87,7 @@ impl<'a> PagedIndex<'a> {
         PagedIndex {
             store: self.store,
             namespace: self.namespace,
+            prefix: self.prefix,
             pending: Some(pending),
         }
     }
@@ -87,7 +101,7 @@ impl<'a> PagedIndex<'a> {
 
     fn page_key(&self, hash: &str) -> Result<String> {
         validate_hash(hash)?;
-        self.namespace.key(&format!("authority/index-pages/{hash}"))
+        self.namespace.key(&format!("{}/{hash}", self.prefix))
     }
 
     pub(crate) fn get(&self, root: Option<&str>, key: &str) -> Result<Option<Value>> {
@@ -517,6 +531,90 @@ fn nibble(key: &str, depth: u8) -> Result<u8> {
     } else {
         byte & 15
     })
+}
+
+/// Walks every page reachable from `root`, validating content addressing and page shape.
+///
+/// Reachability is a whole-tree property: GC and publication validation must see pages a
+/// key lookup would never touch. `leaf` receives every leaf's entries so a caller can
+/// validate the values it stores; callers that only pin pages ignore them.
+pub(crate) fn walk_tree_with(
+    root: Option<&str>,
+    mut read: impl FnMut(&str) -> Result<Vec<u8>>,
+    mut leaf: impl FnMut(&BTreeMap<String, Value>) -> Result<()>,
+) -> Result<()> {
+    fn walk(
+        hash: &str,
+        depth: u8,
+        prefix: &[u8],
+        read: &mut impl FnMut(&str) -> Result<Vec<u8>>,
+        leaf: &mut impl FnMut(&BTreeMap<String, Value>) -> Result<()>,
+    ) -> Result<()> {
+        validate_hash(hash)?;
+        let bytes = read(hash)?;
+        ensure!(
+            bytes.len() <= PAGE_BYTES && blake3::hash(&bytes).to_hex().as_str() == hash,
+            "index page size or digest mismatch"
+        );
+        match serde_json::from_slice(&bytes)? {
+            Page::Leaf {
+                version,
+                depth: stored,
+                entries,
+            } => {
+                ensure!(
+                    version == 1 && stored == depth && !entries.is_empty(),
+                    "invalid index leaf"
+                );
+                for key in entries.keys() {
+                    validate_key(key)?;
+                    ensure!(
+                        prefix.iter().enumerate().all(|(position, expected)| {
+                            nibble(key, position as u8).is_ok_and(|actual| actual == *expected)
+                        }),
+                        "index leaf outside selected path"
+                    );
+                }
+                leaf(&entries)?;
+            }
+            Page::Branch {
+                version,
+                depth: stored,
+                children,
+            } => {
+                ensure!(
+                    version == 1
+                        && stored == depth
+                        && depth < HASH_NIBBLES
+                        && !children.is_empty()
+                        && children.len() <= 16,
+                    "invalid index branch"
+                );
+                for (selected, child) in &children {
+                    let slot = selected.parse::<u8>()?;
+                    ensure!(
+                        slot < 16 && selected == &slot.to_string(),
+                        "invalid index branch slot"
+                    );
+                    let mut next = prefix.to_vec();
+                    next.push(slot);
+                    walk(child, depth + 1, &next, read, leaf)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    if let Some(root) = root {
+        walk(root, 0, &[], &mut read, &mut leaf)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn walk_tree(
+    root: Option<&str>,
+    read: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    walk_tree_with(root, read, |_| Ok(()))
 }
 
 #[cfg(test)]

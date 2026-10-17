@@ -82,6 +82,20 @@ pub struct WalCommit {
     pub position: WalPosition,
 }
 
+/// A receipt whose record is no longer individually addressable.
+///
+/// `digest` is the chunk identity the append published: it proves a retry carries the exact
+/// request that produced `lsn` without retaining the record itself. Legacy indexes predate
+/// `receipt_digests`, so an archived legacy receipt has no digest and a retry must fail
+/// closed instead of appending a second copy.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ArchivedReceipt {
+    pub(crate) lsn: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) digest: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WalMetadata {
     pub epoch: u64,
@@ -91,6 +105,13 @@ pub struct WalMetadata {
     pub(crate) receipts: BTreeMap<String, u64>,
     #[serde(default)]
     pub(crate) receipt_digests: BTreeMap<String, String>,
+    /// Root of the receipt archive written by `truncate`.
+    ///
+    /// Receipts for records folded into the baseline leave the inline map and become page
+    /// entries here. The head stays small, but a duplicate append id can still be answered
+    /// with the digest proof it was originally committed with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) receipt_index: Option<String>,
     #[serde(default)]
     pub commit: Option<WalCommit>,
 }
@@ -103,6 +124,13 @@ pub(crate) struct Entry {
 
 pub struct RemoteWal {
     store: Arc<dyn ObjectStore>,
+}
+
+/// One idempotency answer, from the inline window or the durable archive.
+struct AppendReceipt {
+    lsn: u64,
+    digest: Option<String>,
+    archived: bool,
 }
 
 #[derive(Debug)]
@@ -145,6 +173,12 @@ pub(crate) const MAX_APPEND_OPERATIONS: usize = 16_384;
 /// one request. Every part shares the baseline LSN: LSNs name logical records, and the parts
 /// are one logical baseline record split for transport.
 const WAL_BASELINE_PART_BYTES: usize = 12 * 1024 * 1024;
+
+/// Branch-scoped content-addressed pages for receipts whose records were truncated away.
+const WAL_RECEIPT_PAGE_PREFIX: &str = "wal/receipt-pages";
+/// Receipts written per page-tree update. Batching bounds both the page count touched and
+/// the bytes each archive attempt rewrites; the tree itself keeps every page small.
+const WAL_RECEIPT_ARCHIVE_BATCH: usize = 64;
 
 impl WalAppendRequest {
     fn record(&self, lsn: u64) -> WalRecord {
@@ -478,6 +512,23 @@ impl RemoteWal {
                     "invalid WAL append receipts"
                 );
                 ensure!(
+                    index.receipt_index.as_deref().is_none_or(|root| {
+                        root.len() == 64
+                            && root
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    }),
+                    "invalid WAL receipt archive"
+                );
+                ensure!(
+                    index.receipt_index.is_none()
+                        || index
+                            .receipts
+                            .values()
+                            .all(|lsn| *lsn > index.replay_baseline_lsn),
+                    "WAL receipt archive overlaps inline receipts"
+                );
+                ensure!(
                     index
                         .commit
                         .is_none_or(|commit| commit.lsn > 0 && commit.lsn == index.last_lsn),
@@ -621,8 +672,8 @@ impl RemoteWal {
         for _ in 0..64 {
             let (mut index, etag) = self.index(namespace)?;
             ensure!(*epoch >= index.epoch, "stale WAL epoch");
-            if let Some(lsn) = index.receipts.get(append_id) {
-                return self.verified_receipt(request, &index, *lsn);
+            if let Some(receipt) = self.receipt(namespace, &index, append_id)? {
+                return self.verified_receipt(request, &index, receipt);
             }
             let lsn = index.last_lsn.checked_add(1).context("WAL LSN exhausted")?;
             let encoded = EncodedWalRecord::new(request.record(lsn))?;
@@ -646,8 +697,8 @@ impl RemoteWal {
                     }
                     let (current, current_etag) = self.index(namespace)?;
                     ensure!(*epoch >= current.epoch, "stale WAL epoch");
-                    if let Some(lsn) = current.receipts.get(append_id) {
-                        return self.verified_receipt(request, &current, *lsn);
+                    if let Some(receipt) = self.receipt(namespace, &current, append_id)? {
+                        return self.verified_receipt(request, &current, receipt);
                     }
                     if current_etag == etag {
                         return Err(error);
@@ -661,24 +712,75 @@ impl RemoteWal {
         bail!("WAL append CAS contention")
     }
 
+    /// Resolves an append identity through the inline window first, then the durable
+    /// archive. A miss in the archive is a genuine new append: the root page and the path
+    /// to the key are verified by content address, so a corrupt or missing page fails the
+    /// append instead of silently treating a duplicate as new.
+    fn receipt(
+        &self,
+        namespace: &Namespace,
+        index: &WalMetadata,
+        append_id: &str,
+    ) -> Result<Option<AppendReceipt>> {
+        if let Some(lsn) = index.receipts.get(append_id) {
+            return Ok(Some(AppendReceipt {
+                lsn: *lsn,
+                digest: index.receipt_digests.get(append_id).cloned(),
+                archived: false,
+            }));
+        }
+        let Some(root) = index.receipt_index.as_deref() else {
+            return Ok(None);
+        };
+        let pages = crate::authority::paged_index::PagedIndex::with_prefix(
+            self.store.as_ref(),
+            namespace,
+            WAL_RECEIPT_PAGE_PREFIX,
+        );
+        let Some(value) = pages.get(Some(root), append_id)? else {
+            return Ok(None);
+        };
+        let archived: ArchivedReceipt = serde_json::from_value(value)?;
+        ensure!(
+            archived.lsn > 0 && archived.lsn <= index.last_lsn,
+            "invalid archived WAL receipt"
+        );
+        Ok(Some(AppendReceipt {
+            lsn: archived.lsn,
+            digest: archived.digest,
+            archived: true,
+        }))
+    }
+
     fn verified_receipt(
         &self,
         request: &WalAppendRequest,
         index: &WalMetadata,
-        lsn: u64,
+        receipt: AppendReceipt,
     ) -> Result<u64> {
         self.check_writer()?;
-        let expected = blake3::hash(&serde_json::to_vec(&request.record(lsn))?);
-        if let Some(digest) = index.receipt_digests.get(&request.append_id) {
+        let expected = blake3::hash(&serde_json::to_vec(&request.record(receipt.lsn))?);
+        if let Some(digest) = &receipt.digest {
             ensure!(
                 digest == expected.to_hex().as_str(),
                 "WAL receipt request identity or content conflict"
             );
         }
+        if receipt.archived {
+            // The record itself is folded into the baseline, so the archived digest is the
+            // remaining proof that this request produced that LSN. Without one (legacy
+            // index) the retry cannot be proven identical and must fail closed.
+            ensure!(
+                receipt.digest.is_some(),
+                "WAL receipt content unavailable; refusing replay"
+            );
+            self.check_writer()?;
+            return Ok(receipt.lsn);
+        }
         let entry = index
             .entries
             .iter()
-            .find(|entry| entry.lsn == lsn)
+            .find(|entry| entry.lsn == receipt.lsn)
             .context("WAL receipt content unavailable; refusing replay")?;
         let object = self
             .store
@@ -699,7 +801,7 @@ impl RemoteWal {
             "WAL receipt request identity or content conflict"
         );
         self.check_writer()?;
-        Ok(lsn)
+        Ok(receipt.lsn)
     }
 
     pub fn for_each_record(
@@ -879,6 +981,41 @@ impl RemoteWal {
                     lsn: baseline_lsn,
                     hash,
                 });
+            }
+            // Receipts for records folded into the baseline leave the inline map here.
+            // Pages are content addressed and uploaded before the head CAS, so a published
+            // index can never point at an archive that was not durable first.
+            let archived: Vec<(String, u64)> = index
+                .receipts
+                .iter()
+                .filter(|(_, lsn)| **lsn < before_lsn)
+                .map(|(identity, lsn)| (identity.clone(), *lsn))
+                .collect();
+            if !archived.is_empty() {
+                let pages = crate::authority::paged_index::PagedIndex::with_prefix(
+                    self.store.as_ref(),
+                    namespace,
+                    WAL_RECEIPT_PAGE_PREFIX,
+                );
+                let mut root = index.receipt_index.clone();
+                for batch in archived.chunks(WAL_RECEIPT_ARCHIVE_BATCH) {
+                    let mut updates = BTreeMap::new();
+                    for (identity, lsn) in batch {
+                        updates.insert(
+                            identity.clone(),
+                            serde_json::to_value(ArchivedReceipt {
+                                lsn: *lsn,
+                                digest: index.receipt_digests.get(identity).cloned(),
+                            })?,
+                        );
+                    }
+                    root = Some(pages.insert_many(root.as_deref(), updates)?);
+                }
+                for (identity, _) in &archived {
+                    index.receipts.remove(identity);
+                    index.receipt_digests.remove(identity);
+                }
+                index.receipt_index = root;
             }
             index.entries.retain(|entry| entry.lsn >= before_lsn);
             index.entries.splice(0..0, segments);
@@ -1570,6 +1707,105 @@ mod truncate_tests {
             .contains("unordered"));
         Ok(())
     }
+
+    fn request(namespace: &Namespace, append_id: &str, bytes: &[u8]) -> WalAppendRequest {
+        WalAppendRequest {
+            namespace: namespace.clone(),
+            epoch: 1,
+            batch: WalBatch {
+                operations: vec![WalOperation::Write {
+                    offset: 0,
+                    bytes: bytes.to_vec(),
+                }],
+            },
+            position: None,
+            append_id: append_id.into(),
+            timestamp_millis: 7,
+        }
+    }
+
+    fn load_page<'a>(
+        store: &'a LocalObjectStore,
+        namespace: &'a Namespace,
+    ) -> impl FnMut(&str) -> Result<Vec<u8>> + 'a {
+        move |hash| {
+            Ok(store
+                .get(&namespace.key(&format!("wal/receipt-pages/{hash}"))?)?
+                .context("missing WAL receipt page")?
+                .bytes)
+        }
+    }
+
+    #[test]
+    fn archived_receipt_answers_a_retry_and_rejects_changed_content() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let original = request(&namespace, "archived-retry", &[1, 2, 3]);
+        assert_eq!(wal.append_local(&original)?, 1);
+        assert_eq!(
+            wal.append_local(&request(&namespace, "kept-retry", &[4, 5]))?,
+            2
+        );
+
+        wal.truncate_with_part_bytes(&namespace, 2, FRAME_SIZE)?;
+
+        let (index, _) = wal.index(&namespace)?;
+        assert_eq!(index.replay_baseline_lsn, 1);
+        assert!(!index.receipts.contains_key("archived-retry"));
+        assert!(index.receipts.contains_key("kept-retry"));
+        assert!(index.receipt_index.is_some());
+
+        // The original request is answered from the archive without a second append.
+        assert_eq!(wal.append_local(&original)?, 1);
+        assert_eq!(wal.index(&namespace)?.0.last_lsn, 2);
+
+        let changed = request(&namespace, "archived-retry", &[9]);
+        let failure = wal.append_local(&changed).unwrap_err().to_string();
+        assert!(failure.contains("conflict"), "{failure}");
+        assert_eq!(wal.index(&namespace)?.0.last_lsn, 2);
+
+        let bytes = index_bytes(&store, &namespace)?;
+        crate::recovery::validate_receipt_index(&bytes, load_page(&store, &namespace))?;
+
+        let root = wal
+            .index(&namespace)?
+            .0
+            .receipt_index
+            .context("missing WAL receipt archive")?;
+        store.delete(&namespace.key(&format!("wal/receipt-pages/{root}"))?, None)?;
+        let failure =
+            crate::recovery::validate_receipt_index(&bytes, load_page(&store, &namespace))
+                .unwrap_err()
+                .to_string();
+        assert!(failure.contains("missing WAL receipt page"), "{failure}");
+        Ok(())
+    }
+
+    #[test]
+    fn archived_legacy_receipt_without_digest_refuses_replay() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(LocalObjectStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = namespace()?;
+        let original = request(&namespace, "legacy-retry", &[1, 2, 3]);
+        assert_eq!(wal.append_local(&original)?, 1);
+        assert_eq!(
+            wal.append_local(&request(&namespace, "kept-retry", &[4, 5]))?,
+            2
+        );
+        let (mut index, etag) = wal.index(&namespace)?;
+        index.receipt_digests.clear();
+        wal.commit(&namespace, &index, etag)?;
+
+        wal.truncate_with_part_bytes(&namespace, 2, FRAME_SIZE)?;
+
+        let failure = wal.append_local(&original).unwrap_err().to_string();
+        assert!(failure.contains("content unavailable"), "{failure}");
+        assert_eq!(wal.index(&namespace)?.0.last_lsn, 2);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1705,6 +1941,7 @@ mod replay_window_tests {
                 entries,
                 receipts: BTreeMap::new(),
                 receipt_digests: BTreeMap::new(),
+                receipt_index: None,
                 commit: None,
             };
             Ok(Self {

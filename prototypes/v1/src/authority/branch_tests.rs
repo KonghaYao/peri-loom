@@ -524,7 +524,13 @@ fn a_later_wal_adopted_after_a_lost_ack_is_pinned_through_gc() -> Result<()> {
     let mut builder = WalBuilder::new(SALTS);
     let first = builder.image(4);
     assert_eq!(
-        append(&branch, &namespace, write_at(0, &first), committed(4), "first")?,
+        append(
+            &branch,
+            &namespace,
+            write_at(0, &first),
+            committed(4),
+            "first"
+        )?,
         1
     );
 
@@ -603,6 +609,79 @@ fn a_later_wal_adopted_after_a_lost_ack_is_pinned_through_gc() -> Result<()> {
                 frame_count: 6
             }
         })
+    );
+    Ok(())
+}
+
+#[test]
+fn truncation_archives_receipts_into_pages_the_gc_walk_reaches() -> Result<()> {
+    let (_store, authority, branch, namespace) = fixture()?;
+    let wal = RemoteWal::new(branch.clone());
+    let request = |identity: &str, bytes: &[u8]| WalAppendRequest {
+        namespace: namespace.clone(),
+        epoch: 1,
+        batch: WalBatch {
+            operations: vec![WalOperation::Write {
+                offset: 0,
+                bytes: bytes.to_vec(),
+            }],
+        },
+        position: None,
+        append_id: identity.into(),
+        timestamp_millis: 3,
+    };
+    let archived = request("archived-receipt", &[1, 2, 3]);
+    assert_eq!(
+        wal.append_using(&archived, |encoded, metadata, expected| {
+            branch.publish_wal_append(encoded, metadata, expected)
+        })?,
+        1
+    );
+    assert_eq!(
+        wal.append_using(
+            &request("kept-receipt", &[4]),
+            |encoded, metadata, expected| {
+                branch.publish_wal_append(encoded, metadata, expected)
+            }
+        )?,
+        2
+    );
+
+    wal.truncate(&namespace, 2)?;
+
+    let index_bytes = branch
+        .get(&namespace.key("wal/index")?)?
+        .context("missing WAL index")?
+        .bytes;
+    let index: crate::wal::WalMetadata = serde_json::from_slice(&index_bytes)?;
+    assert_eq!(index.replay_baseline_lsn, 1);
+    assert!(!index.receipts.contains_key("archived-receipt"));
+    assert!(index.receipts.contains_key("kept-receipt"));
+    let root = index
+        .receipt_index
+        .clone()
+        .context("missing receipt archive")?;
+
+    // A duplicate append is answered from the archive without a second record.
+    assert_eq!(
+        wal.append_using(&archived, |encoded, metadata, expected| {
+            branch.publish_wal_append(encoded, metadata, expected)
+        })?,
+        1
+    );
+    assert_eq!(wal.metadata(&namespace)?.last_lsn, 2);
+
+    let page_key = format!("wal/receipt-pages/{root}");
+    let snapshot = authority.snapshot()?;
+    let page = snapshot
+        .root
+        .objects
+        .get(&page_key)?
+        .context("receipt page not registered")?;
+    let reachable = authority.reachable(&snapshot.root)?;
+    assert!(
+        reachable.contains(&page.blob),
+        "GC walk did not reach the receipt archive"
     );
     Ok(())
 }

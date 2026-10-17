@@ -56,6 +56,7 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
             "entries",
             "receipts",
             "receipt_digests",
+            "receipt_index",
             "commit"
         ]
         .contains(&key.as_str())),
@@ -99,6 +100,18 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
             .iter()
             .all(|(identity, digest)| index.receipts.contains_key(identity) && valid_hash(digest)),
         "invalid WAL receipt digest"
+    );
+    ensure!(
+        index.receipt_index.as_deref().is_none_or(valid_hash),
+        "invalid WAL receipt archive root"
+    );
+    ensure!(
+        index.receipt_index.is_none()
+            || index
+                .receipts
+                .values()
+                .all(|lsn| *lsn > index.replay_baseline_lsn),
+        "WAL receipt archive overlaps inline receipts"
     );
     if let Some(WalCommit { lsn, position }) = index.commit {
         ensure!(
@@ -618,14 +631,58 @@ impl<'a> Walker<'a> {
             self.direct(wal)?;
             if !self.was_verified('W', wal) {
                 let index = index(&self.bytes(wal)?)?;
-                for chunk in index.entries {
+                for chunk in &index.entries {
                     self.wal_chunk(&chunk.hash)?;
                 }
+                self.wal_receipt_pages(&index)?;
                 // A shallow index check does not prove its chunks were registered.
                 self.remember_verified('W', wal);
             }
         }
         Ok(())
+    }
+
+    /// Archived receipts are reachable through the index head, so GC must mark their pages
+    /// or collection could delete the only copy of an idempotency answer.
+    fn wal_receipt_pages(&mut self, index: &crate::wal::WalMetadata) -> Result<()> {
+        let Some(root) = index.receipt_index.as_deref() else {
+            return Ok(());
+        };
+        crate::authority::paged_index::walk_tree_with(
+            Some(root),
+            |hash| {
+                let entry = self.lookup(&format!("wal/receipt-pages/{hash}"))?;
+                ensure!(entry.hash == hash, "WAL receipt page digest mismatch");
+                self.direct(&entry)?;
+                self.authority.read_metadata_blob(&entry)
+            },
+            |entries| {
+                for (identity, value) in entries {
+                    ensure!(
+                        !identity.is_empty()
+                            && identity.len() <= 128
+                            && identity
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+                        "invalid archived WAL receipt identity"
+                    );
+                    ensure!(
+                        !index.receipts.contains_key(identity),
+                        "WAL receipt archived and inline"
+                    );
+                    let archived: crate::wal::ArchivedReceipt =
+                        serde_json::from_value(value.clone())?;
+                    ensure!(
+                        archived.lsn > 0 && archived.lsn <= index.replay_baseline_lsn,
+                        "archived WAL receipt outside the baseline"
+                    );
+                    if let Some(digest) = archived.digest {
+                        ensure!(valid_hash(&digest), "invalid archived WAL receipt digest");
+                    }
+                }
+                Ok(())
+            },
+        )
     }
 
     fn wal_chunk(&mut self, hash: &str) -> Result<()> {
