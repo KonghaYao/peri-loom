@@ -74,6 +74,11 @@ def run_workers(args, sessions, operations, labels, report):
     events, stop, lock = [], threading.Event(), threading.Lock()
     in_flight, peak = 0, 0
     deadline = time.monotonic() + args.max_seconds
+    # The rate is an aggregate arrival rate across sessions, so every operation's slot is
+    # measured from one fixed epoch. Measuring each delay from the current instant would make
+    # the k-th operation wait k/rate *again* after the previous one finished, so the effective
+    # rate would decay with the backlog and a "rate 20" arm would dispatch about 0.8 ops/s.
+    rate_epoch_ns = time.monotonic_ns()
 
     def worker(session):
         nonlocal in_flight, peak
@@ -82,7 +87,9 @@ def run_workers(args, sessions, operations, labels, report):
                 index, operation = work.get_nowait()
             except queue.Empty:
                 return
-            planned = time.monotonic_ns() + (0 if args.rate == 0 else int(index / args.rate * 1e9))
+            planned = rate_epoch_ns + (
+                0 if args.rate == 0 else int(index / args.rate * 1e9)
+            )
             delay = (planned - time.monotonic_ns()) / 1e9
             if delay > 0:
                 time.sleep(delay)
