@@ -143,22 +143,30 @@ impl WalAppendRequest {
     }
 }
 
-/// Bytes a replay may hold in flight, and the window that budget buys.
+/// Bytes a replay may hold, and the window that budget buys.
 ///
 /// Without a window a cold open pays one serial round trip per chunk, so its cost is the whole
-/// history. The window is bounded by *bytes* rather than by chunks because it is memory, not
-/// request count, that must not grow with the history: every in-flight fetch holds one chunk,
-/// and one chunk is at most half the authority RPC ceiling (`WalAppendRequest::validate`).
-/// Charging that ceiling per fetch makes `window * WAL_CHUNK_CHARGE` a provable bound on the
-/// bytes held rather than an estimate from the sizes seen so far — a later chunk may be larger
-/// than any earlier one, so an estimate could be exceeded by the very fetch it admitted. The
-/// window is capped separately as well: every fetch occupies one of the authority client's call
-/// slots (`authority_rpc::client::LIVE_CONNECTIONS`) that the other sessions on this worker need.
+/// history. The budget is stated in *bytes* rather than in chunks because it is memory, not
+/// request count, that must not grow with the history. Charging a constant per unit makes the
+/// bound arithmetic on that constant rather than an estimate from the sizes seen so far — a later
+/// chunk may be larger than any earlier one, so an estimate could be exceeded by the very fetch it
+/// admitted. The window is capped separately as well: every fetch occupies one of the authority
+/// client's call slots (`authority_rpc::client::LIVE_CONNECTIONS`) that the other sessions on this
+/// worker need.
 const WAL_REPLAY_BYTES_ENV: &str = "PERI_WORKER_WAL_REPLAY_BYTES";
-/// What the ledger charges one in-flight fetch: the raw ceiling of one chunk, not its sample.
-pub(crate) const WAL_CHUNK_CHARGE: usize = crate::authority_rpc::protocol::MAX_RPC_BYTES / 2;
-/// Four chunks at the ceiling: the conservative default this replaces, now stated in bytes.
-const WAL_REPLAY_BYTES_DEFAULT: usize = 4 * WAL_CHUNK_CHARGE;
+/// What the ledger charges one unit of residency, in the form the fetch actually holds it.
+///
+/// Deliberately not the payload ceiling `WalAppendRequest::validate` measures. That ceiling caps
+/// the raw `Write` payloads of one append, while the bytes a replay holds are those payloads
+/// encoded twice: a chunk is JSON with each payload base64 encoded (at most 4/3 of them) and the
+/// authority `Get` returning it base64 encodes that chunk again (at most 16/9 of the payloads).
+/// The RPC ceiling covers either form, and it is not a number invented here — it is what the
+/// client refuses to read as a response body, so a larger fetch would fail rather than be held.
+pub(crate) const WAL_CHUNK_CHARGE: usize = crate::authority_rpc::protocol::MAX_RPC_BYTES;
+/// Units of residency the default budget buys: the four fetches of the window this replaces, plus
+/// the record being handed to the visitor.
+const WAL_REPLAY_DEFAULT_UNITS: usize = 5;
+const WAL_REPLAY_BYTES_DEFAULT: usize = WAL_REPLAY_DEFAULT_UNITS * WAL_CHUNK_CHARGE;
 const WAL_REPLAY_WINDOW_MAX: usize = 8;
 
 // The cap is only worth the call-slot tradeoff if it keeps one cold open out of the slots the
@@ -167,6 +175,14 @@ const WAL_REPLAY_WINDOW_MAX: usize = 8;
 const _: () = assert!(
     WAL_REPLAY_WINDOW_MAX * 3 <= crate::authority_rpc::client::LIVE_CONNECTIONS,
     "a WAL replay may hold at most a third of the authority client call gate"
+);
+
+// The charge has to cover the twice-encoded payload ceiling, or the ledger bounds less than one
+// fetch holds — the state this constant was corrected out of, where the conversion from payload
+// bytes to held bytes was left implicit.
+const _: () = assert!(
+    WAL_CHUNK_CHARGE * 9 >= 16 * (crate::authority_rpc::protocol::MAX_RPC_BYTES / 2),
+    "the fetch charge has to cover the twice-encoded payload ceiling"
 );
 
 /// Illegal values fail closed: replay is on the open path, and a budget silently coerced to
@@ -186,11 +202,15 @@ fn wal_replay_window() -> Result<usize> {
     Ok(wal_replay_window_for(budget))
 }
 
-/// The budget expressed as a window. A replay cannot fetch nothing, so every accepted budget
-/// buys at least one chunk even when it is smaller than the charge; the upper cap keeps the
+/// The budget expressed as a window. One of the units it buys is the record the visitor is being
+/// handed rather than a fetch: the refill starts before that delivery, so the window behind it is
+/// still in flight. A replay that fetched nothing cannot make progress, so every accepted budget —
+/// including one smaller than a single charge — buys at least one fetch; the upper cap keeps the
 /// call-slot gate described above intact.
 fn wal_replay_window_for(budget: usize) -> usize {
-    (budget / WAL_CHUNK_CHARGE).clamp(1, WAL_REPLAY_WINDOW_MAX)
+    (budget / WAL_CHUNK_CHARGE)
+        .saturating_sub(1)
+        .clamp(1, WAL_REPLAY_WINDOW_MAX)
 }
 
 /// Reads and verifies one chunk. Runs on a prefetch thread, so it borrows the store and
@@ -486,9 +506,10 @@ impl RemoteWal {
     /// returned is the one belonging to the lowest LSN — a later chunk that answered
     /// earlier can neither be visited nor reported first. The index is walked lazily and the
     /// entry list is never materialised, so what this holds does not grow with the history:
-    /// at most `window` chunks at [`WAL_CHUNK_CHARGE`] bytes each, and a chunk the visitor has
-    /// seen is not retained. A refill starts only after a chunk was accepted, so a rejected
-    /// chunk never starts work whose result nothing reads.
+    /// at most `window` fetches plus the record being handed to the visitor, each charged
+    /// [`WAL_CHUNK_CHARGE`], and a chunk the visitor has seen is not retained. A refill starts
+    /// only after a chunk was accepted, so a rejected chunk never starts work whose result
+    /// nothing reads.
     fn for_each_record_with_window(
         &self,
         namespace: &Namespace,
@@ -1000,7 +1021,7 @@ mod replay_window_tests {
     }
 
     #[test]
-    fn replay_bounds_in_flight_bytes_to_the_budget() -> Result<()> {
+    fn replay_bounds_the_window_plus_the_delivery_to_the_budget() -> Result<()> {
         let plan: Vec<(u64, u64, Chunk)> = (1..=12).map(|lsn| (lsn, 30, Chunk::Present)).collect();
         let fixture = Fixture::new(&plan)?;
         let window = wal_replay_window_for(WAL_REPLAY_BYTES_DEFAULT);
@@ -1014,10 +1035,14 @@ mod replay_window_tests {
             peak >= 2,
             "a {window}-wide window never overlapped a read: peak={peak}"
         );
+        // The delivered record is the unit the budget spends beyond the window, so the ledger
+        // charges `peak + 1`. Charging `peak` alone would describe a replay that never hands a
+        // chunk to its visitor.
         assert!(
-            peak * WAL_CHUNK_CHARGE <= WAL_REPLAY_BYTES_DEFAULT,
-            "held {peak} chunks, which the ledger charges as {} bytes, over a budget of {}",
-            peak * WAL_CHUNK_CHARGE,
+            (peak + 1) * WAL_CHUNK_CHARGE <= WAL_REPLAY_BYTES_DEFAULT,
+            "held {peak} chunks plus one delivery, which the ledger charges as {} bytes, over a \
+             budget of {}",
+            (peak + 1) * WAL_CHUNK_CHARGE,
             WAL_REPLAY_BYTES_DEFAULT
         );
         Ok(())
@@ -1027,17 +1052,23 @@ mod replay_window_tests {
     /// buys. Pinning the arithmetic here keeps the byte bound from drifting away from the
     /// window the replay actually uses.
     #[test]
-    fn the_replay_window_is_the_budget_divided_by_the_per_chunk_charge() {
+    fn the_window_is_the_budget_less_the_delivery_over_the_fetch_charge() {
         assert_eq!(wal_replay_window_for(1), 1);
         assert_eq!(wal_replay_window_for(WAL_CHUNK_CHARGE - 1), 1);
         assert_eq!(wal_replay_window_for(WAL_CHUNK_CHARGE), 1);
         assert_eq!(wal_replay_window_for(WAL_CHUNK_CHARGE + 1), 1);
-        assert_eq!(wal_replay_window_for(2 * WAL_CHUNK_CHARGE), 2);
-        assert_eq!(wal_replay_window_for(WAL_REPLAY_BYTES_DEFAULT), 4);
-        assert_eq!(wal_replay_window_for(usize::MAX), 8);
-        assert!(
-            wal_replay_window_for(WAL_REPLAY_BYTES_DEFAULT) >= 2,
-            "the default budget has to buy a real window, not a serial replay"
+        // `n + 1` charges buy `n` fetches: the last charge is the record being handed over.
+        for window in 1..=WAL_REPLAY_WINDOW_MAX {
+            assert_eq!(
+                wal_replay_window_for((window + 1) * WAL_CHUNK_CHARGE),
+                window
+            );
+        }
+        assert_eq!(wal_replay_window_for(usize::MAX), WAL_REPLAY_WINDOW_MAX);
+        assert_eq!(
+            wal_replay_window_for(WAL_REPLAY_BYTES_DEFAULT),
+            4,
+            "the default budget has to buy the window it replaced, not a serial replay"
         );
     }
 
@@ -1048,11 +1079,11 @@ mod replay_window_tests {
         }
         // The child re-exec is how the environment reaches `for_each_record`: this suite must
         // not mutate the process environment that its own parallel cases read from.
-        let triple = (3 * WAL_CHUNK_CHARGE).to_string();
+        let three_fetches = (4 * WAL_CHUNK_CHARGE).to_string();
         for (value, expected) in [
             (Some("1".to_string()), "outcome=single"),
             (None, "outcome=default"),
-            (Some(triple.clone()), "outcome=triple"),
+            (Some(three_fetches.clone()), "outcome=three_fetches"),
             (Some("0".to_string()), "outcome=rejected"),
             (Some("abc".to_string()), "outcome=rejected"),
             (Some("-1".to_string()), "outcome=rejected"),
@@ -1114,25 +1145,24 @@ mod replay_window_tests {
             }
             (Ok(value), Ok(())) => {
                 assert_eq!(seen, 12);
-                let window = wal_replay_window_for(
-                    value
-                        .parse::<usize>()
-                        .with_context(|| format!("invalid {WAL_REPLAY_BYTES_ENV}"))?,
-                );
+                let budget = value.parse::<usize>()?;
+                let window = wal_replay_window_for(budget);
                 assert_eq!(
                     window, 3,
-                    "the triple-charge budget has to buy a window of 3"
+                    "four charges have to buy a window of three fetches"
                 );
                 assert!(
                     (2..=window).contains(&peak),
                     "a window of {window} replayed with peak={peak}"
                 );
+                // `peak` counts fetches, so the delivery is the unit beyond it.
                 assert!(
-                    peak * WAL_CHUNK_CHARGE <= value.parse::<usize>()?,
-                    "{peak} chunks in flight exceed the {value}-byte budget"
+                    (peak + 1) * WAL_CHUNK_CHARGE <= budget,
+                    "{peak} chunks in flight plus one delivery exceed the {value}-byte budget"
                 );
                 eprintln!(
-                    "WAL_REPLAY_CHILD value={value} outcome=triple peak={peak} window={window}"
+                    "WAL_REPLAY_CHILD value={value} outcome=three_fetches peak={peak} \
+                     window={window}"
                 );
             }
             (Ok(value), Err(error)) => {
