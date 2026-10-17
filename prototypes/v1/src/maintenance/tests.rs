@@ -174,6 +174,39 @@ fn cooldown_does_not_repeat_maintenance() {
 }
 
 #[test]
+fn the_cooldown_opens_when_the_lane_is_picked_not_when_it_finishes() {
+    let policy = policy(true);
+    let scheduler = scheduler(policy.clone(), budget(2, 2, 100, u64::MAX));
+    let target = FakeTarget::new("pick", 4096);
+    let now = armed_now(&target.ledger);
+
+    observe(&scheduler, &target, now);
+    let queued = target.ledger.counters();
+    assert_eq!(queued.attempts, 2, "both due lanes were picked");
+    assert_eq!(queued.executions, 0, "observing only queues");
+    // The window opens at the pick. A unit that outlives its cooldown must not be picked a
+    // second time while it is still running, and a refused unit must not be retried on the
+    // next tick; both require the ledger to record the deadline before `drain` runs.
+    for lane in MaintenanceLane::ALL {
+        assert_eq!(
+            target.ledger.next_allowed(lane),
+            Some(now + policy.cooldown()),
+            "lane {} must be cooling down before its unit starts",
+            lane.name()
+        );
+    }
+
+    assert_eq!(scheduler.drain(2, now).completed, 2);
+    for lane in MaintenanceLane::ALL {
+        assert_eq!(
+            target.ledger.next_allowed(lane),
+            Some(now + policy.cooldown()),
+            "completion must not move the cooldown window",
+        );
+    }
+}
+
+#[test]
 fn watermarks_are_hysteresis_not_a_threshold() {
     let policy = MaintenancePolicy::for_tests(
         true,
@@ -440,6 +473,49 @@ fn the_request_budget_admits_a_rate_and_the_byte_budget_a_ceiling() {
     assert_eq!(
         bytes.acquire("c", 20, now).unwrap_err(),
         BudgetDenied::Bytes
+    );
+}
+
+#[test]
+fn a_full_window_rolls_over_instead_of_refusing_forever() {
+    // Both counters are window sums: a scheduler that never reaches `window` would refuse
+    // every later unit even after the rate should have recovered. The window opens when the
+    // budget is built, so the clock is taken after both budgets exist.
+    let window = Duration::from_secs(60);
+    let requests = MaintenanceBudget::new(4, 4, 1, u64::MAX, window);
+    let bytes = MaintenanceBudget::new(4, 4, 4, 100, window);
+    let now = Instant::now();
+    drop(requests.acquire("a", 0, now).expect("first request"));
+    assert_eq!(
+        requests
+            .acquire("a", 0, now + window - Duration::from_millis(1))
+            .unwrap_err(),
+        BudgetDenied::Requests,
+        "the window must still be closed just before it rolls"
+    );
+    drop(
+        requests
+            .acquire("a", 0, now + window)
+            .expect("the next window admits the same rate again"),
+    );
+    assert_eq!(
+        requests.acquire("a", 0, now + window).unwrap_err(),
+        BudgetDenied::Requests,
+        "the roll admits one request, not an unbounded burst"
+    );
+
+    drop(bytes.acquire("a", 60, now).expect("first batch"));
+    drop(bytes.acquire("b", 40, now).expect("fills the byte window"));
+    assert_eq!(
+        bytes
+            .acquire("c", 1, now + window - Duration::from_millis(1))
+            .unwrap_err(),
+        BudgetDenied::Bytes
+    );
+    drop(
+        bytes
+            .acquire("c", 1, now + window)
+            .expect("the byte sum resets with the window"),
     );
 }
 
