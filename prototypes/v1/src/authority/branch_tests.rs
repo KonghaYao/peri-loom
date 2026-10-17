@@ -111,6 +111,19 @@ fn pin_entries(root: &CatalogRoot, pin: &str) -> Result<BTreeMap<String, ObjectE
         .collect())
 }
 
+fn legacy_inline_root(
+    authority: &Authority,
+    pin: &str,
+) -> Result<(CatalogRoot, BTreeMap<String, ObjectEntry>)> {
+    let mut root = authority.snapshot()?.root;
+    let entries = pin_entries(&root, pin)?;
+    root.pin_entries = crate::authority::registry::Registry::inline(BTreeMap::new());
+    root.pin_schema = None;
+    root.pins
+        .insert(pin.to_owned(), entries.values().cloned().collect());
+    Ok((root, entries))
+}
+
 /// Publishes through the same entry point the fenced worker path uses.
 fn append(
     branch: &Arc<BranchStore>,
@@ -901,5 +914,112 @@ fn pin_entries_fail_closed_when_pages_are_missing_corrupt_or_legacy_inline() -> 
 
     store.inner.delete(&key, None)?;
     assert!(authority.reachable(&authority.snapshot()?.root).is_err());
+    Ok(())
+}
+
+#[test]
+fn legacy_inline_pins_are_migrated_on_load_and_bad_entries_fail_closed() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=8 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-migrate-{ordinal}"),
+        )?;
+    }
+    let pin = branch.pin.clone();
+    let (legacy, expected) = legacy_inline_root(&authority, &pin)?;
+    let root_key = namespace.key("authority/root")?;
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&legacy)?,
+        PutCondition::Any,
+    )?;
+
+    let reopened = Authority::open(store.clone(), namespace.clone())?;
+    let migrated = reopened.snapshot()?.root;
+    assert!(migrated.pins.contains_key(&pin));
+    assert!(migrated.pins[&pin].is_empty());
+    assert_eq!(
+        migrated.pin_schema,
+        Some(crate::authority::types::PIN_SCHEMA_VERSION)
+    );
+    assert_eq!(pin_entries(&migrated, &pin)?, expected);
+
+    let (mut bad, _) = legacy_inline_root(&authority, &pin)?;
+    bad.pins.get_mut(&pin).unwrap()[0].blob = "e".repeat(64);
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&bad)?,
+        PutCondition::Any,
+    )?;
+    assert!(Authority::open(store, namespace).is_err());
+    Ok(())
+}
+
+#[test]
+fn removing_a_pin_entry_without_removing_its_pin_is_rejected() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    let segment = vec![7; crate::manifest::SEGMENT_SIZE];
+    let relative = format!("segments/{}", blake3::hash(&segment).to_hex());
+    branch.put(
+        &namespace.key(&relative)?,
+        &segment,
+        crate::object_store::PutCondition::Absent,
+    )?;
+    branch.delete(&namespace.key(&relative)?, None)?;
+
+    let pin = branch.pin.clone();
+    let snapshot = authority.snapshot()?;
+    let entries = pin_entries(&snapshot.root, &pin)?;
+    let (key, entry) = entries
+        .iter()
+        .find(|(_, entry)| entry.hash == blake3::hash(&segment).to_hex().as_str())
+        .context("pinned segment missing")?;
+    let blob = entry.blob.clone();
+    assert!(authority.reachable(&snapshot.root)?.contains(&blob));
+
+    assert!(authority
+        .transact(None, |root| {
+            root.pin_entries.remove(key)?;
+            Ok(())
+        })
+        .is_err());
+    assert!(authority.snapshot()?.root.pins.contains_key(&pin));
+    assert!(authority
+        .reachable(&authority.snapshot()?.root)?
+        .contains(&blob));
+    Ok(())
+}
+
+#[test]
+fn unsupported_pin_schema_is_rejected_at_decode_time() -> Result<()> {
+    let (_, authority, _, _) = fixture()?;
+    let mut root = authority.snapshot()?.root;
+    root.pin_schema = Some(2);
+    let encoded = crate::authority::codec::encode(&root)?;
+    assert!(crate::authority::codec::decode(&encoded).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_failed_drop_release_is_counted_and_leaves_the_pin_visible() -> Result<()> {
+    let (store, authority, branch, _) = fixture()?;
+    let pin = branch.pin.clone();
+    crate::work_metrics::set_enabled(true);
+    let before = crate::work_metrics::snapshot()
+        .context("work metrics unavailable")?
+        .metadata
+        .pin_release_failures;
+    store.root_fault.store(2, Ordering::SeqCst);
+    drop(branch);
+    let after = crate::work_metrics::snapshot()
+        .context("work metrics unavailable")?
+        .metadata
+        .pin_release_failures;
+    assert!(after.saturating_sub(before) >= 1);
+    assert!(authority.snapshot()?.root.pins.contains_key(&pin));
     Ok(())
 }

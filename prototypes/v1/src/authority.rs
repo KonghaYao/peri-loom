@@ -167,7 +167,9 @@ fn decode_head_with_digest(
     // The publication path attaches its store to the registries, so it needs a head of its
     // own; readers share the decoded one.
     let mut root = (*root).clone();
+    root.pin_schema = Some(types::PIN_SCHEMA_VERSION);
     root.attach(store.clone(), namespace.clone());
+    semantic::migrate_legacy_pins(&mut root)?;
     root.validate_shape()?;
     Ok((root, digest))
 }
@@ -775,9 +777,19 @@ impl Authority {
         self.namespace.key(&format!("authority/blobs/{blob}"))
     }
 
+    /// Physical blob identities reachable from branch, snapshot and reader-pin references.
+    /// Registry page objects (including `pin_entries` pages) are logical metadata under
+    /// `authority/index-pages`; they are neither members of this set nor deleted by GC.
     pub fn reachable(&self, root: &CatalogRoot) -> Result<BTreeSet<String>> {
         self.verify_deep(root)?;
         self.mark(root)
+    }
+
+    /// Number of reader-pin entries currently registered, across every pin. Identity count
+    /// (`GcStats::reader_pins`) is intentionally separate; this is the entry population the
+    /// paged pin registry holds.
+    pub fn pinned_entry_count(&self) -> Result<usize> {
+        Ok(self.snapshot()?.root.pin_entries.entries()?.len())
     }
 
     pub fn delete_tombstone(&self, blob: &str) -> Result<()> {

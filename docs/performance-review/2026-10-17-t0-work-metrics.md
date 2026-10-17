@@ -55,7 +55,8 @@
 | `metadata.root_encoded_bytes` | 编码后的 authority head 文档大小 | B | `authority.rs:400`（`encode_with_digest` 之后） |
 | `metadata.root_publish_attempts` | 走到 head CAS 的发布尝试 | 次 | 同上 |
 | `metadata.root_publish_retries` | head CAS 失败后重试 | 次 | `authority.rs:485` |
-| `metadata.pin_refs` | 发布文档里的 reader pin 条目总数 | 条 | `authority.rs:400` |
+| `metadata.inline_pin_refs` | 发布文档里仍内联的 reader pin 条目数；已分页条目不计入 | 条 | `authority.rs:400` |
+| `metadata.pin_release_failures` | reader pin 释放失败（含 `Drop` 路径） | 次 | `authority/branch.rs`、`authority/fenced_store.rs` |
 | `metadata.root_receipts` | 发布文档里的幂等回执数 | 条 | 同上 |
 | `metadata.wal_index_commits` / `wal_index_bytes` | 发布的 `wal/index` 文档数与编码字节 | 次 / B | `wal.rs:229` |
 | `metadata.wal_index_receipts` | 发布索引携带的幂等回执数 | 条 | 同上 |

@@ -20,7 +20,8 @@ impl Authority {
             next.version == previous.version
                 && next.namespace == previous.namespace
                 && next.incarnation == previous.incarnation
-                && next.revision == previous.revision,
+                && next.revision == previous.revision
+                && next.pin_schema == previous.pin_schema,
             "authority root identity or revision mutation forbidden"
         );
         ensure!(

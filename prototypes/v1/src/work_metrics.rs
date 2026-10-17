@@ -231,7 +231,8 @@ pub(crate) fn observe_append(
 static ROOT_ENCODED_BYTES: AtomicU64 = AtomicU64::new(0);
 static ROOT_PUBLISH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static ROOT_PUBLISH_RETRIES: AtomicU64 = AtomicU64::new(0);
-static PIN_REFS: AtomicU64 = AtomicU64::new(0);
+static INLINE_PIN_REFS: AtomicU64 = AtomicU64::new(0);
+static PIN_RELEASE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static ROOT_RECEIPTS: AtomicU64 = AtomicU64::new(0);
 static WAL_INDEX_COMMITS: AtomicU64 = AtomicU64::new(0);
 static WAL_INDEX_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -242,16 +243,26 @@ static INDEX_PAGE_WRITES: AtomicU64 = AtomicU64::new(0);
 static INDEX_PAGE_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// One encoded authority candidate: the head document size the publication CAS carries,
-/// with the reader pins and receipts the same document holds. Pin refs are counted over
-/// every pin's entries, because that is what the document grows with.
-pub(crate) fn observe_root_publish(encoded_bytes: usize, pin_refs: usize, receipts: usize) {
+/// the inline reader-pin entries left in that document, and its receipts. Paged pin entries
+/// are deliberately not counted here; `metadata.inline_pin_refs` names the cost the head
+/// itself still carries.
+pub(crate) fn observe_root_publish(encoded_bytes: usize, inline_pin_refs: usize, receipts: usize) {
     if !enabled() {
         return;
     }
     add(&ROOT_PUBLISH_ATTEMPTS, 1);
     add(&ROOT_ENCODED_BYTES, encoded_bytes as u64);
-    add(&PIN_REFS, pin_refs as u64);
+    add(&INLINE_PIN_REFS, inline_pin_refs as u64);
     add(&ROOT_RECEIPTS, receipts as u64);
+}
+
+/// A reader-pin release that could not be published. Drop cannot return an error, so the
+/// failure is counted and logged by the caller with the pin identity and full cause.
+pub(crate) fn observe_pin_release_failure() {
+    if !enabled() {
+        return;
+    }
+    add(&PIN_RELEASE_FAILURES, 1);
 }
 
 pub(crate) fn observe_root_publish_retry() {
@@ -544,8 +555,10 @@ pub(crate) struct MetadataWork {
     pub root_publish_attempts: u64,
     /// Attempts that lost the head CAS and retried.
     pub root_publish_retries: u64,
-    /// Reader-pin entries in the published documents.
-    pub pin_refs: u64,
+    /// Inline reader-pin entries in the published documents; paged entries are excluded.
+    pub inline_pin_refs: u64,
+    /// Reader-pin releases that failed while a handle was being dropped.
+    pub pin_release_failures: u64,
     /// Idempotency receipts in the published documents.
     pub root_receipts: u64,
     /// Encoded `wal/index` documents published.
@@ -683,7 +696,8 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             root_encoded_bytes: load(&ROOT_ENCODED_BYTES),
             root_publish_attempts: load(&ROOT_PUBLISH_ATTEMPTS),
             root_publish_retries: load(&ROOT_PUBLISH_RETRIES),
-            pin_refs: load(&PIN_REFS),
+            inline_pin_refs: load(&INLINE_PIN_REFS),
+            pin_release_failures: load(&PIN_RELEASE_FAILURES),
             root_receipts: load(&ROOT_RECEIPTS),
             wal_index_commits: load(&WAL_INDEX_COMMITS),
             wal_index_bytes: load(&WAL_INDEX_BYTES),

@@ -1,4 +1,4 @@
-use super::types::pin_entry_parts;
+use super::types::{pin_entry_key, pin_entry_parts};
 use super::{Authority, CatalogRoot, ObjectEntry, RecoveryPoint};
 use crate::{
     manifest::{valid_hash, Head, Manifest},
@@ -43,6 +43,44 @@ pub(super) fn registered(root: &CatalogRoot, entry: &ObjectEntry) -> Result<()> 
         !root.tombstones.contains(&entry.blob)?,
         "reference to tombstoned physical instance"
     );
+    Ok(())
+}
+
+/// Read-time migration for the pre-split pin representation. It runs with the store handle
+/// attached and applies the same entry and registration checks as a live pin, so a corrupt
+/// legacy root fails the load instead of becoming a source of reachable-looking references.
+pub(super) fn migrate_legacy_pins(root: &mut CatalogRoot) -> Result<()> {
+    let legacy: Vec<(String, Vec<ObjectEntry>)> = root
+        .pins
+        .iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .map(|(pin, entries)| (pin.clone(), entries.clone()))
+        .collect();
+    if legacy.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        root.pin_entries.pointer().is_none(),
+        "mixed reader pin representations"
+    );
+    for (pin, entries) in legacy {
+        ensure!(valid_hash(&pin), "invalid reader pin identity");
+        for entry in entries {
+            validate_entry(&entry)?;
+            registered(root, &entry)?;
+            let key = pin_entry_key(&pin, &entry.blob);
+            match root.pin_entries.get(&key)? {
+                Some(previous) => ensure!(
+                    previous == entry,
+                    "reader pin entry identity mutation during migration"
+                ),
+                None => {
+                    root.pin_entries.insert(key, entry)?;
+                }
+            }
+        }
+        root.pins.insert(pin, Vec::new());
+    }
     Ok(())
 }
 
@@ -143,7 +181,10 @@ impl Authority {
                 && root.revision >= 1
                 && root.namespace == self.namespace
                 && root.incarnation == self.incarnation
-                && valid_hash(&root.incarnation),
+                && valid_hash(&root.incarnation)
+                && root
+                    .pin_schema
+                    .is_none_or(|schema| schema == super::types::PIN_SCHEMA_VERSION),
             "authority root identity mismatch"
         );
         super::migration::validate(root)?;
@@ -202,7 +243,7 @@ impl Authority {
             ensure!(valid_hash(pin), "invalid reader pin identity");
             ensure!(
                 inline.is_empty(),
-                "legacy inline reader pin entries are unsupported"
+                "inline reader pin entries escaped migration"
             );
         }
         Ok(())
@@ -297,7 +338,7 @@ impl Authority {
             ensure!(valid_hash(pin), "invalid reader pin identity");
             ensure!(
                 inline.is_empty(),
-                "legacy inline reader pin entries are unsupported"
+                "inline reader pin entries escaped migration"
             );
         }
         for (key, entry) in root.pin_entries.entries()? {
@@ -455,17 +496,23 @@ impl Authority {
             walker.point(point)?;
         }
         for (key, change) in root.pin_entries.changes() {
-            let super::registry::Change::Added(entry) = change else {
-                continue;
-            };
             let (pin, blob) = pin_entry_parts(key).context("invalid reader pin entry key")?;
             ensure!(
-                valid_hash(pin) && valid_hash(blob) && blob == entry.blob,
+                valid_hash(pin) && valid_hash(blob),
                 "invalid reader pin entry identity"
             );
-            ensure!(root.pins.contains_key(pin), "reader pin entry without pin");
-            validate_entry(entry)?;
-            registered(root, entry)?;
+            match change {
+                super::registry::Change::Added(entry) => {
+                    ensure!(blob == entry.blob, "invalid reader pin entry identity");
+                    ensure!(root.pins.contains_key(pin), "reader pin entry without pin");
+                    validate_entry(entry)?;
+                    registered(root, entry)?;
+                }
+                super::registry::Change::Removed => ensure!(
+                    !root.pins.contains_key(pin),
+                    "reader pin entry removal requires pin removal"
+                ),
+            }
         }
         for (key, change) in root.objects.changes() {
             let super::registry::Change::Added(entry) = change else {
@@ -500,6 +547,9 @@ impl Authority {
         Ok(())
     }
 
+    /// Physical blob identities reachable from the durable references. Registry pages are
+    /// intentionally outside this mark: they are immutable logical metadata, not members of
+    /// the physical blob registry, and this walk does not drive page reclamation.
     pub(super) fn mark(&self, root: &CatalogRoot) -> Result<BTreeSet<String>> {
         let mut walker = Walker::new(self, root, true);
         for branch in root.branches.values() {

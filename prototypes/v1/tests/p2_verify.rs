@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use peri_loom_v1::{
-    authority::Authority,
+    authority::{Authority, BranchStore},
     capabilities::Capabilities,
     database::RemoteDatabase,
     gc::GarbageCollector,
@@ -310,24 +310,20 @@ fn gc_recomputes_after_concurrent_new_read_pin_and_rejects_resurrection() -> Res
     let (relative, blob) = orphan(&authority, 61)?;
     let entry = authority.snapshot()?.root.objects[&relative].clone();
     let concurrent = authority.clone();
-    let pinned = entry.clone();
-    let pin_id = digest(b"independent concurrent pin");
-    let hook_pin = pin_id.clone();
+    let pinned_key = authority.namespace().key(&relative)?;
+    let reader_slot: Arc<Mutex<Option<Arc<BranchStore>>>> = Arc::new(Mutex::new(None));
+    let slot = reader_slot.clone();
     *raw.root_hook.lock().unwrap() = Some(Box::new(move || {
-        concurrent.transact(None, |root| {
-            root.pins.insert(hook_pin.clone(), vec![pinned.clone()]);
-            Ok(())
-        })?;
+        let reader = concurrent.branch_store("main")?;
+        reader.get(&pinned_key)?;
+        *slot.lock().unwrap() = Some(reader);
         Ok(())
     }));
     let collector = GarbageCollector::new(authority.clone(), Duration::ZERO);
     assert_eq!(collector.collect()?.marked, 0);
     assert!(!authority.snapshot()?.root.tombstones.contains_key(&blob));
     assert_eq!(authority.read_blob(&entry)?, vec![61; SEGMENT_SIZE]);
-    authority.transact(None, |root| {
-        root.pins.remove(&pin_id);
-        Ok(())
-    })?;
+    drop(reader_slot.lock().unwrap().take());
     assert!(collector.mark()? > 0);
     assert!(authority
         .transact(None, |root| {
@@ -496,12 +492,10 @@ fn last_reader_handle_protects_lazy_segment_and_corruption_is_not_hidden() -> Re
     drop(session);
     let key = authority.namespace().key(&relative)?;
     assert_eq!(retained.list(&key)?, vec![key.clone()]);
-    assert!(authority
-        .snapshot()?
-        .root
-        .pins
-        .values()
-        .any(|entries| { entries.iter().any(|entry| entry.blob == blob) }));
+    assert!(retained
+        .pinned_entries()?
+        .iter()
+        .any(|entry| entry.blob == blob));
     let collector = GarbageCollector::new(authority.clone(), Duration::ZERO);
     assert_eq!(collector.collect()?.marked, 0);
     assert_eq!(retained.get(&key)?.unwrap().bytes, vec![83; SEGMENT_SIZE]);

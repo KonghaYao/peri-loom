@@ -93,6 +93,7 @@ impl Authority {
             self.validate_head_with(&candidate, Some(&pending))?;
             candidate.blobs.publish(&publishing)?;
             candidate.objects.publish(&publishing)?;
+            candidate.pin_entries.publish(&publishing)?;
             candidate.uploads.publish(&publishing)?;
             candidate.tombstones.publish(&publishing)?;
             candidate.seal()?;

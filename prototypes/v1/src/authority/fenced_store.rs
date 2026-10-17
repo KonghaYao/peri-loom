@@ -1,6 +1,6 @@
 use super::{Permission, Service};
 use crate::{
-    authority::BranchStore,
+    authority::{branch::report_pin_release_failure, BranchStore},
     object_store::{ObjectStore, PutCondition, StoredObject},
     ownership::types::{AccessRole, LeaseBinding},
 };
@@ -180,16 +180,43 @@ impl ObjectStore for FencedStore {
 
 impl Drop for FencedStore {
     fn drop(&mut self) {
-        if let Ok(_barrier) = self.service.gate.write_wait() {
-            if self.service.available().is_ok() {
-                let scoped = self.service.scoped(Permission::Pins);
-                if let Some(inner) = &self.inner {
-                    let _ = inner.release_pin(&scoped);
+        match self.service.gate.write_wait() {
+            Ok(_barrier) => {
+                match self.service.available() {
+                    Ok(()) => {
+                        let scoped = self.service.scoped(Permission::Pins);
+                        if let Some(inner) = &self.inner {
+                            if let Err(error) = inner.release_pin(&scoped) {
+                                report_pin_release_failure(
+                                    inner.pin_identity(),
+                                    "fenced-release",
+                                    &error,
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => report_pin_release_failure(
+                        pin_identity(self.inner.as_deref()),
+                        "fenced-availability",
+                        &error,
+                    ),
                 }
+                drop(self.inner.take());
             }
-            drop(self.inner.take());
+            Err(error) => {
+                report_pin_release_failure(
+                    pin_identity(self.inner.as_deref()),
+                    "fenced-gate",
+                    &error,
+                );
+                drop(self.inner.take());
+            }
         }
     }
+}
+
+fn pin_identity(inner: Option<&BranchStore>) -> &str {
+    inner.map(BranchStore::pin_identity).unwrap_or("<missing>")
 }
 
 struct GatedWalStore {

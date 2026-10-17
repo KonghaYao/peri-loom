@@ -68,6 +68,11 @@ fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
     );
     let root: CatalogRoot = serde_json::from_str(envelope.root.get())?;
     ensure!(
+        root.pin_schema
+            .is_none_or(|schema| schema == super::types::PIN_SCHEMA_VERSION),
+        "unsupported reader pin schema"
+    );
+    ensure!(
         matches!(root.version, 1 | 2 | 4 | 5),
         "unsupported authority root version"
     );

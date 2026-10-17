@@ -62,6 +62,7 @@ fn enabled_sinks_move_the_snapshot() {
     let before = snapshot().expect("enabled snapshot");
     observe_root_publish(128, 3, 7);
     observe_root_publish_retry();
+    observe_pin_release_failure();
     observe_wal_index_commit(64, 5);
     observe_wal_index_retry();
     observe_index_page_read();
@@ -70,7 +71,8 @@ fn enabled_sinks_move_the_snapshot() {
     assert!(after.metadata.root_encoded_bytes - before.metadata.root_encoded_bytes >= 128);
     assert!(after.metadata.root_publish_attempts - before.metadata.root_publish_attempts >= 1);
     assert!(after.metadata.root_publish_retries - before.metadata.root_publish_retries >= 1);
-    assert!(after.metadata.pin_refs - before.metadata.pin_refs >= 3);
+    assert!(after.metadata.inline_pin_refs - before.metadata.inline_pin_refs >= 3);
+    assert!(after.metadata.pin_release_failures - before.metadata.pin_release_failures >= 1);
     assert!(after.metadata.root_receipts - before.metadata.root_receipts >= 7);
     assert!(after.metadata.wal_index_commits - before.metadata.wal_index_commits >= 1);
     assert!(after.metadata.wal_index_bytes - before.metadata.wal_index_bytes >= 64);

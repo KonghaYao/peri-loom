@@ -542,16 +542,7 @@ fn authority_append_replays_on_cas_conflict_and_cold_session() -> Result<()> {
     })?;
     let session = authority.open_session(&grant.binding, AccessRole::Writer)?;
     let root = Authority::open(backend.clone(), namespace.clone())?;
-    let pin_len = |root: &Authority| -> Result<usize> {
-        Ok(root
-            .snapshot()?
-            .root
-            .pins
-            .values()
-            .next()
-            .context("missing session pin")?
-            .len())
-    };
+    let pin_len = |root: &Authority| -> Result<usize> { root.pinned_entry_count() };
     let initial_pin = pin_len(&root)?;
     let request = |id: &str| WalAppendRequest {
         namespace: namespace.clone(),
@@ -636,11 +627,12 @@ fn pinned_recovery_dependencies_survive_gc_without_pinning_unrelated_objects() -
     )?;
     let snapshot = authority.snapshot()?;
     let unrelated_blob = &snapshot.root.objects[&unrelated].blob;
-    assert!(snapshot.root.pins.values().any(|pin| {
-        pin.len() == 2
-            && pin.iter().any(|entry| entry.blob == first_blob)
-            && pin.iter().all(|entry| &entry.blob != unrelated_blob)
-    }));
+    let pinned = reader.pinned_entries()?;
+    assert!(
+        pinned.len() == 2
+            && pinned.iter().any(|entry| entry.blob == first_blob)
+            && pinned.iter().all(|entry| &entry.blob != unrelated_blob)
+    );
 
     capabilities.snapshot("main", "early")?;
     wal.append(&namespace(), 1, WalBatch::default())?;

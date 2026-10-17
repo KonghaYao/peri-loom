@@ -113,6 +113,13 @@ pub(super) struct CatalogDocument {
     pub(super) pin_entries: BTreeMap<String, ObjectEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) pin_index: Option<String>,
+    /// One-way wire boundary for the split pin representation. Absent means the pre-split
+    /// document shape and is migrated on load; `1` is the split shape. A binary predating
+    /// this field rejects the document as an unknown field because the document denies
+    /// unknown fields, so a rollback cannot silently read the new shape. `version` remains
+    /// the ownership/paging schema and is deliberately not overloaded here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pin_schema: Option<u8>,
     pub(super) uploads: BTreeMap<String, ObjectEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) upload_index: Option<String>,
@@ -133,6 +140,11 @@ pub(super) fn pin_entry_parts(key: &str) -> Option<(&str, &str)> {
     (!pin.is_empty() && !blob.is_empty() && !blob.contains('/')).then_some((pin, blob))
 }
 
+/// Wire schema for the split reader-pin representation. A document without this marker is
+/// the pre-split shape and is migrated on load; a document carrying an unknown value is
+/// rejected instead of being decoded under the wrong assumptions.
+pub(super) const PIN_SCHEMA_VERSION: u8 = 1;
+
 /// In-memory authority head. Identity state (branches, snapshots, reader pin identities,
 /// receipt window) stays inline because it is bounded by distinct identities, while volume
 /// state is held by `Registry` handles that page themselves once they outgrow the inline
@@ -152,10 +164,12 @@ pub struct CatalogRoot {
     pub objects: Registry<ObjectEntry>,
     pub branches: BTreeMap<String, BranchRef>,
     pub snapshots: BTreeMap<String, RecoveryPoint>,
-    /// The map values are kept empty: reader entries live in `pin_entries`, and a decoded
-    /// root carrying inline entries is rejected by `semantic::validate_head`.
+    /// The map values are empty in the split representation; reader entries live in
+    /// `pin_entries`. A pre-split document may still carry inline entries, and
+    /// `semantic::migrate_legacy_pins` moves them on load before validation.
     pub pins: BTreeMap<String, Vec<ObjectEntry>>,
     pub(crate) pin_entries: Registry<ObjectEntry>,
+    pub(super) pin_schema: Option<u8>,
     pub uploads: Registry<ObjectEntry>,
     pub tombstones: Registry<Tombstone>,
 }
@@ -176,6 +190,7 @@ impl CatalogRoot {
             snapshots: BTreeMap::new(),
             pins: BTreeMap::new(),
             pin_entries: Registry::inline(BTreeMap::new()),
+            pin_schema: Some(PIN_SCHEMA_VERSION),
             uploads: Registry::inline(BTreeMap::new()),
             tombstones: Registry::inline(BTreeMap::new()),
         }
@@ -261,6 +276,7 @@ impl From<CatalogDocument> for CatalogRoot {
             snapshots: document.snapshots,
             pins: document.pins,
             pin_entries: Registry::paged(document.pin_index, document.pin_entries),
+            pin_schema: document.pin_schema,
             uploads: Registry::paged(document.upload_index, document.uploads),
             tombstones: Registry::paged(document.tombstone_index, document.tombstones),
         }
@@ -291,6 +307,7 @@ impl From<CatalogRoot> for CatalogDocument {
             pins: root.pins,
             pin_entries,
             pin_index,
+            pin_schema: root.pin_schema,
             uploads,
             upload_index,
             tombstones,

@@ -191,6 +191,25 @@ impl BranchStore {
         authority.transact(None, |root| release_pin(root, &self.pin))?;
         Ok(())
     }
+
+    pub(crate) fn pin_identity(&self) -> &str {
+        &self.pin
+    }
+
+    /// Entries this reader pin currently protects, resolved through the published pin
+    /// registry. Used by diagnostics and tests to observe the split representation without
+    /// reaching into the registry itself.
+    pub fn pinned_entries(&self) -> Result<Vec<ObjectEntry>> {
+        let root = self.authority.snapshot()?.root;
+        let prefix = format!("{}/", self.pin);
+        Ok(root
+            .pin_entries
+            .entries()?
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(_, entry)| entry)
+            .collect())
+    }
     fn relative<'a>(&self, key: &'a str) -> Result<&'a str> {
         let prefix = self.authority.namespace.prefix();
         let relative = key
@@ -762,10 +781,20 @@ impl Drop for BranchStore {
         if !self.drop_cleanup.load(Ordering::Acquire) {
             return;
         }
-        let _ = self
+        if let Err(error) = self
             .authority
-            .transact(None, |root| release_pin(root, &self.pin));
+            .transact(None, |root| release_pin(root, &self.pin))
+        {
+            report_pin_release_failure(&self.pin, "branch-drop", &error);
+        }
     }
+}
+
+pub(super) fn report_pin_release_failure(pin: &str, stage: &str, error: &anyhow::Error) {
+    crate::work_metrics::observe_pin_release_failure();
+    eprintln!(
+        "level=error event=reader_pin_release_failed pin={pin} stage={stage} 原因：{error:#}"
+    );
 }
 
 fn release_pin(root: &mut CatalogRoot, pin: &str) -> Result<()> {
