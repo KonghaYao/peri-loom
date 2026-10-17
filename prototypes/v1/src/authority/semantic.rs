@@ -111,14 +111,6 @@ pub(super) fn index(bytes: &[u8]) -> Result<WalMetadata> {
         index.receipt_index.as_deref().is_none_or(valid_hash),
         "invalid WAL receipt archive root"
     );
-    ensure!(
-        index.receipt_index.is_none()
-            || index
-                .receipts
-                .values()
-                .all(|lsn| *lsn > index.replay_baseline_lsn),
-        "WAL receipt archive overlaps inline receipts"
-    );
     if let Some(WalCommit { lsn, position }) = index.commit {
         ensure!(
             lsn > 0 && lsn == index.last_lsn && position.frame_count > 0,
@@ -695,6 +687,7 @@ impl<'a> Walker<'a> {
         let Some(root) = index.receipt_index.as_deref() else {
             return Ok(());
         };
+        let mut archived_identities = BTreeSet::new();
         crate::authority::paged_index::walk_tree_with(
             Some(root),
             |hash| {
@@ -705,6 +698,10 @@ impl<'a> Walker<'a> {
             },
             |entries| {
                 for (identity, value) in entries {
+                    ensure!(
+                        archived_identities.insert(identity.clone()),
+                        "duplicate archived WAL receipt"
+                    );
                     ensure!(
                         !identity.is_empty()
                             && identity.len() <= 128
@@ -720,8 +717,8 @@ impl<'a> Walker<'a> {
                     let archived: crate::wal::ArchivedReceipt =
                         serde_json::from_value(value.clone())?;
                     ensure!(
-                        archived.lsn > 0 && archived.lsn <= index.replay_baseline_lsn,
-                        "archived WAL receipt outside the baseline"
+                        archived.lsn > 0 && archived.lsn <= index.last_lsn,
+                        "archived WAL receipt outside the WAL"
                     );
                     if let Some(digest) = archived.digest {
                         ensure!(valid_hash(&digest), "invalid archived WAL receipt digest");

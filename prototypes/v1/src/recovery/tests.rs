@@ -443,6 +443,10 @@ impl WalStore {
         self.load(&self.namespace.key(&format!("wal/index-segments/{hash}"))?)
     }
 
+    fn load_page(&self, hash: &str) -> Result<Vec<u8>> {
+        self.load(&self.namespace.key(&format!("wal/receipt-pages/{hash}"))?)
+    }
+
     fn load(&self, key: &str) -> Result<Vec<u8>> {
         Ok(self
             .store
@@ -473,6 +477,7 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
 
     let appended = builder.frame(5, PAGE_SIZE as u32);
@@ -492,6 +497,7 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     let observed = recovery_observations();
     assert_eq!(
@@ -513,6 +519,7 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     assert_eq!(incremented.commit(), cold.commit());
     assert_eq!(incremented.image.bytes(), cold.image.bytes());
@@ -533,6 +540,7 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     let observed = recovery_observations();
     assert_eq!(
@@ -549,6 +557,7 @@ fn an_accepted_append_extends_the_validated_image_in_place() -> Result<()> {
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     assert_eq!(incremented.commit(), cold.commit());
     assert_eq!(incremented.image.bytes(), cold.image.bytes());
@@ -575,6 +584,7 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
 
     // Overwrite a byte of an already verified frame. The image it leaves has no committed
@@ -589,6 +599,7 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
 
     // Repairing the frame and appending behind it is one record. Its scan must cover the whole
@@ -617,6 +628,7 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     assert_eq!(
         recovery_observations().scanned_bytes,
@@ -629,6 +641,7 @@ fn an_overwriting_append_forces_the_next_one_to_re_derive_the_prefix() -> Result
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     assert_eq!(chained.commit(), cold.commit());
     assert_eq!(chained.image.bytes(), cold.image.bytes());
@@ -658,6 +671,7 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
 
     for page in 4..=40u32 {
@@ -680,6 +694,7 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
             &store.namespace,
             |hash| store.load_segment(hash),
             |key| store.load(key),
+            |hash| store.load_page(hash),
         )?;
         assert!(
             validate_index_append(
@@ -687,7 +702,8 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
                 &serde_json::to_vec(&forged)?,
                 &store.namespace,
                 |hash| store.load_segment(hash),
-                |key| store.load(key)
+                |key| store.load(key),
+                |hash| store.load_page(hash)
             )
             .is_err(),
             "the incremental validator accepted a forged candidate at page {page}"
@@ -697,7 +713,8 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
                 &serde_json::to_vec(&forged)?,
                 &store.namespace,
                 |hash| { store.load_segment(hash) },
-                |key| store.load(key)
+                |key| store.load(key),
+                |hash| store.load_page(hash)
             )
             .is_err(),
             "the cold replay accepted a forged candidate at page {page}"
@@ -709,12 +726,14 @@ fn in_place_appends_agree_with_a_cold_replay_and_reject_the_same_forgeries() -> 
             &store.namespace,
             |hash| store.load_segment(hash),
             |key| store.load(key),
+            |hash| store.load_page(hash),
         )?;
         let cold = validate_index_state(
             &next,
             &store.namespace,
             |hash| store.load_segment(hash),
             |key| store.load(key),
+            |hash| store.load_page(hash),
         )?;
         assert_eq!(
             extended.commit(),
@@ -912,6 +931,7 @@ fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
                     store.load_segment(hash)
                 },
                 |key| store.load(key),
+                |hash| store.load_page(hash),
             )?
         } else {
             validate_index_state(
@@ -919,6 +939,7 @@ fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
                 &store.namespace,
                 |hash| store.load_segment(hash),
                 |key| store.load(key),
+                |hash| store.load_page(hash),
             )?
         };
         assert_eq!(reads, usize::from(ordinal == 257 || ordinal == 513));
@@ -937,6 +958,7 @@ fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
         &store.namespace,
         |hash| store.load_segment(hash),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     assert_eq!(cold.image.bytes(), expected);
     assert_eq!(cold.commit(), previous.unwrap().commit());
@@ -948,6 +970,7 @@ fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
         &store.namespace,
         |_| anyhow::bail!("inline loaded segment"),
         |key| store.load(key),
+        |hash| store.load_page(hash),
     )?;
     assert_eq!(legacy.image.bytes(), cold.image.bytes());
     assert_eq!(legacy.commit(), cold.commit());
@@ -958,6 +981,7 @@ fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
             &store.namespace,
             |hash| store.load_segment(hash),
             |key| store.load(key),
+            |hash| store.load_page(hash),
         )
     };
     for fault in [
@@ -990,6 +1014,7 @@ fn segmented_entries_replay_and_validate_only_the_new_segment() -> Result<()> {
                 Ok(bytes.clone())
             },
             |key| store.load(key),
+            |hash| store.load_page(hash),
         );
         assert!(result.is_err(), "accepted {fault}");
     }

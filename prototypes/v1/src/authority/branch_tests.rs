@@ -150,6 +150,12 @@ fn cold_commit(authority: &Arc<Authority>, namespace: &Namespace) -> Result<Opti
                 .bytes)
         },
         |key| Ok(session.get(key)?.context("missing WAL chunk")?.bytes),
+        |hash| {
+            Ok(session
+                .get(&namespace.key(&format!("wal/receipt-pages/{hash}"))?)?
+                .context("missing WAL receipt page")?
+                .bytes)
+        },
     )?
     .commit())
 }

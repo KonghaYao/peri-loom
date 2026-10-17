@@ -1,4 +1,5 @@
 use anyhow::{ensure, Context, Result};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use crate::manifest::WalPosition;
@@ -465,6 +466,7 @@ pub fn validate_index_commit(
         namespace,
         |hash| load.borrow_mut()(&namespace.key(&format!("wal/index-segments/{hash}"))?),
         |key| load.borrow_mut()(key),
+        |hash| load.borrow_mut()(&namespace.key(&format!("wal/receipt-pages/{hash}"))?),
     )?
     .commit())
 }
@@ -514,19 +516,20 @@ pub(crate) fn resolve_entries(
     Ok(entries)
 }
 
-/// Proves a published index's receipt archive is fully present and well formed.
+/// Loads and validates the whole archived receipt tree.
 ///
 /// The head CAS only protects the pointer. Without this walk a head could reference a page
-/// that was never written, or one whose archived entries disagree with the inline receipts
-/// and baseline. Appends keep the pointer unchanged, so only a cold validation pays for it.
-pub fn validate_receipt_index(
-    index_bytes: &[u8],
+/// that was never written, or one whose archived entries disagree with the inline receipts.
+/// A cold replay and a rolling append pay for it; a steady append keeps the pointer unchanged
+/// and skips the walk.
+fn receipt_archive(
+    index: &WalMetadata,
     mut load_page: impl FnMut(&str) -> Result<Vec<u8>>,
-) -> Result<()> {
-    let index: WalMetadata = serde_json::from_slice(index_bytes)?;
+) -> Result<BTreeMap<String, ArchivedReceipt>> {
     let Some(root) = index.receipt_index.as_deref() else {
-        return Ok(());
+        return Ok(BTreeMap::new());
     };
+    let mut archived = BTreeMap::new();
     crate::authority::paged_index::walk_tree_with(
         Some(root),
         |hash| load_page(hash),
@@ -544,23 +547,35 @@ pub fn validate_receipt_index(
                     !index.receipts.contains_key(identity),
                     "WAL receipt archived and inline"
                 );
-                let archived: ArchivedReceipt = serde_json::from_value(value.clone())?;
+                let receipt: ArchivedReceipt = serde_json::from_value(value.clone())?;
                 ensure!(
-                    archived.lsn > 0
-                        && archived.lsn <= index.last_lsn
-                        && archived.lsn <= index.replay_baseline_lsn,
-                    "archived WAL receipt outside the baseline"
+                    receipt.lsn > 0 && receipt.lsn <= index.last_lsn,
+                    "archived WAL receipt outside the WAL"
                 );
-                if let Some(digest) = archived.digest {
+                if let Some(digest) = &receipt.digest {
                     ensure!(
-                        crate::manifest::valid_hash(&digest),
+                        crate::manifest::valid_hash(digest),
                         "invalid archived WAL receipt digest"
                     );
                 }
+                ensure!(
+                    archived.insert(identity.clone(), receipt).is_none(),
+                    "duplicate archived WAL receipt"
+                );
             }
             Ok(())
         },
-    )
+    )?;
+    Ok(archived)
+}
+
+/// Proves a published index's receipt archive is fully present and well formed.
+pub fn validate_receipt_index(
+    index_bytes: &[u8],
+    load_page: impl FnMut(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let index: WalMetadata = serde_json::from_slice(index_bytes)?;
+    receipt_archive(&index, load_page).map(|_| ())
 }
 
 pub struct ValidatedWal {
@@ -580,23 +595,52 @@ pub fn validate_index_state(
     namespace: &Namespace,
     load_segment: impl FnMut(&str) -> Result<Vec<u8>>,
     mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
+    mut load_page: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<ValidatedWal> {
     namespace.key("wal/index")?;
     let mut index: WalMetadata = serde_json::from_slice(index_bytes)?;
     index.normalize_entries()?;
     let entries = resolve_entries(&index, load_segment)?;
+    let archived = receipt_archive(&index, &mut load_page)?;
     let mut image = WalImage::default();
+    let mut seen_receipts = BTreeSet::new();
     let mut last_record_commit = None;
     for entry_index in 0..entries.len() {
-        last_record_commit = validate_record(
+        let (commit, append_id) = validate_record(
             &index,
             &entries,
             namespace,
             entry_index,
             &mut image,
             &mut load_chunk,
-            false,
+            ReceiptValidation {
+                archived: Some(&archived),
+                require_digest: false,
+            },
         )?;
+        last_record_commit = commit;
+        if let Some(append_id) = append_id {
+            ensure!(
+                seen_receipts.insert(append_id),
+                "duplicate WAL append identity"
+            );
+        }
+    }
+    for (append_id, lsn) in &index.receipts {
+        if *lsn > index.replay_baseline_lsn {
+            ensure!(
+                seen_receipts.contains(append_id),
+                "inline WAL receipt has no retained record"
+            );
+        }
+    }
+    for (append_id, receipt) in &archived {
+        if receipt.lsn > index.replay_baseline_lsn {
+            ensure!(
+                seen_receipts.contains(append_id),
+                "archived WAL receipt has no retained record"
+            );
+        }
     }
     ensure!(
         last_record_commit == index.commit,
@@ -622,6 +666,7 @@ pub fn validate_index_append(
     namespace: &Namespace,
     load_segment: impl FnMut(&str) -> Result<Vec<u8>>,
     mut load_chunk: impl FnMut(&str) -> Result<Vec<u8>>,
+    mut load_page: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<ValidatedWal> {
     namespace.key("wal/index")?;
     let mut index: WalMetadata = serde_json::from_slice(index_bytes)?;
@@ -636,29 +681,67 @@ pub fn validate_index_append(
         index.epoch >= old.epoch
             && index.last_lsn == old.last_lsn.checked_add(1).context("WAL LSN exhausted")?
             && index.replay_baseline_lsn == old.replay_baseline_lsn
-            && index.receipt_index == old.receipt_index
             && index.entry_count
                 == Some(
                     (entries.len() as u64)
                         .checked_add(1)
                         .context("WAL entry count exhausted")?
-                )
-            && index.receipts.len() == old.receipts.len() + 1
-            && old
-                .receipts
-                .iter()
-                .all(|(id, lsn)| index.receipts.get(id) == Some(lsn))
-            && index.receipt_digests.len() == old.receipt_digests.len() + 1
-            && old
-                .receipt_digests
-                .iter()
-                .all(|(id, digest)| index.receipt_digests.get(id) == Some(digest)),
-        "WAL append changed validated index prefix or receipts"
+                ),
+        "WAL append changed validated index prefix"
     );
+    let rolled = index.receipt_index != old.receipt_index;
+    let archived = if rolled {
+        receipt_archive(&index, &mut load_page)?
+    } else {
+        BTreeMap::new()
+    };
+    let mut removed = std::collections::BTreeSet::new();
+    for (identity, lsn) in &old.receipts {
+        match index.receipts.get(identity) {
+            Some(current) => {
+                ensure!(
+                    current == lsn
+                        && index.receipt_digests.get(identity) == old.receipt_digests.get(identity),
+                    "WAL append changed a retained receipt"
+                );
+            }
+            None => {
+                removed.insert(identity.clone());
+            }
+        }
+    }
+    ensure!(
+        rolled || removed.is_empty(),
+        "WAL append dropped a receipt without rolling the archive"
+    );
+    ensure!(
+        !rolled || !removed.is_empty(),
+        "WAL append changed the archive root without archiving"
+    );
+    for identity in &removed {
+        let lsn = old.receipts[identity];
+        let digest = old
+            .receipt_digests
+            .get(identity)
+            .context("cannot archive a legacy WAL receipt without a digest")?;
+        let archived = archived
+            .get(identity)
+            .context("WAL receipt is neither inline nor archived")?;
+        ensure!(
+            archived.lsn == lsn && archived.digest.as_ref() == Some(digest),
+            "archived WAL receipt disagrees with the removed inline receipt"
+        );
+    }
     // 旧内联格式与截断后的 baseline 可能超过单段上限；仅转换时允许冷校验，
     // 仍须证明原有 prefix 与 receipts 未改变，不能将任意新索引当作追加。
     if old.entries.len() > WAL_INDEX_SEGMENT_LIMIT {
-        let cold = validate_index_state(index_bytes, namespace, load_segment, &mut load_chunk)?;
+        let cold = validate_index_state(
+            index_bytes,
+            namespace,
+            load_segment,
+            &mut load_chunk,
+            &mut load_page,
+        )?;
         ensure!(
             cold.entries[..entries.len()] == entries,
             "WAL append changed validated entry prefix"
@@ -669,6 +752,7 @@ pub fn validate_index_append(
             namespace,
             entries.len(),
             &mut load_chunk,
+            None,
             true,
         )?;
         return Ok(cold);
@@ -705,8 +789,17 @@ pub fn validate_index_append(
         namespace,
         entries.len() - 1,
         &mut load_chunk,
+        None,
         true,
     )?;
+    for (identity, lsn) in &index.receipts {
+        if old.receipts.get(identity) != Some(lsn) {
+            ensure!(
+                identity == &record.append_id && *lsn == record.lsn,
+                "WAL append introduced an unexpected receipt"
+            );
+        }
+    }
     let commit = apply_record(&record, &mut image, false)?;
     ensure!(
         commit == index.commit,
@@ -773,18 +866,17 @@ fn validate_layout(index: &WalMetadata, entries: &[Entry]) -> Result<()> {
     );
     ensure!(
         index
+            .receipt_digests
+            .keys()
+            .all(|identity| index.receipts.contains_key(identity)),
+        "orphan WAL receipt digest"
+    );
+    ensure!(
+        index
             .receipt_index
             .as_deref()
             .is_none_or(crate::manifest::valid_hash),
         "invalid WAL receipt archive root"
-    );
-    ensure!(
-        index.receipt_index.is_none()
-            || index
-                .receipts
-                .values()
-                .all(|lsn| *lsn > index.replay_baseline_lsn),
-        "WAL receipt archive overlaps inline receipts"
     );
     if let Some(commit) = index.commit {
         ensure!(
@@ -795,6 +887,11 @@ fn validate_layout(index: &WalMetadata, entries: &[Entry]) -> Result<()> {
     Ok(())
 }
 
+struct ReceiptValidation<'a> {
+    archived: Option<&'a BTreeMap<String, ArchivedReceipt>>,
+    require_digest: bool,
+}
+
 fn validate_record(
     index: &WalMetadata,
     entries: &[Entry],
@@ -802,20 +899,27 @@ fn validate_record(
     entry_index: usize,
     image: &mut WalImage,
     load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
-    require_digest: bool,
-) -> Result<Option<WalCommit>> {
+    receipt: ReceiptValidation<'_>,
+) -> Result<(Option<WalCommit>, Option<String>)> {
     let record = load_record(
         index,
         entries,
         namespace,
         entry_index,
         load_chunk,
-        require_digest,
+        receipt.archived,
+        receipt.require_digest,
     )?;
+    let append_id = if index.replay_baseline_lsn > 0 && record.lsn == index.replay_baseline_lsn {
+        None
+    } else {
+        Some(record.append_id.clone())
+    };
     let baseline_continuation = entry_index > 0
         && index.replay_baseline_lsn > 0
         && entries[entry_index].lsn == index.replay_baseline_lsn;
-    apply_record(&record, image, baseline_continuation)
+    let commit = apply_record(&record, image, baseline_continuation)?;
+    Ok((commit, append_id))
 }
 
 /// Loads the record an index entry names and checks its identity, receipt and replay
@@ -827,6 +931,7 @@ fn load_record(
     namespace: &Namespace,
     entry_index: usize,
     load_chunk: &mut impl FnMut(&str) -> Result<Vec<u8>>,
+    archived: Option<&BTreeMap<String, ArchivedReceipt>>,
     require_digest: bool,
 ) -> Result<WalRecord> {
     let entry = &entries[entry_index];
@@ -863,17 +968,38 @@ fn load_record(
             );
         }
     } else {
+        let inline = index.receipts.get(&record.append_id);
+        let archived = archived.and_then(|receipts| receipts.get(&record.append_id));
         ensure!(
-            index.receipts.get(&record.append_id) == Some(&record.lsn),
-            "missing WAL append receipt"
+            inline.is_none() || archived.is_none(),
+            "WAL receipt stored inline and archived"
         );
-        if require_digest {
+        if let Some(lsn) = inline {
+            ensure!(*lsn == record.lsn, "WAL receipt LSN mismatch");
+            if require_digest {
+                ensure!(
+                    index.receipt_digests.contains_key(&record.append_id),
+                    "missing new WAL append digest"
+                );
+            }
+            if let Some(digest) = index.receipt_digests.get(&record.append_id) {
+                ensure!(
+                    digest
+                        == blake3::hash(&serde_json::to_vec(&record)?)
+                            .to_hex()
+                            .as_str(),
+                    "WAL receipt request digest mismatch"
+                );
+            }
+        } else if let Some(archived) = archived {
             ensure!(
-                index.receipt_digests.contains_key(&record.append_id),
-                "missing new WAL append digest"
+                archived.lsn == record.lsn,
+                "archived WAL receipt LSN mismatch"
             );
-        }
-        if let Some(digest) = index.receipt_digests.get(&record.append_id) {
+            let digest = archived
+                .digest
+                .as_deref()
+                .context("missing archived WAL receipt digest; refusing replay")?;
             ensure!(
                 digest
                     == blake3::hash(&serde_json::to_vec(&record)?)
@@ -881,6 +1007,8 @@ fn load_record(
                         .as_str(),
                 "WAL receipt request digest mismatch"
             );
+        } else {
+            anyhow::bail!("missing WAL append receipt");
         }
     }
     Ok(record)

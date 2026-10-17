@@ -1676,6 +1676,7 @@ impl CommitArm {
             &namespace,
             |hash| load(&namespace.key(&format!("wal/index-segments/{hash}"))?),
             load,
+            |hash| load(&namespace.key(&format!("wal/receipt-pages/{hash}"))?),
         )?;
         assert_eq!(
             cold.commit(),

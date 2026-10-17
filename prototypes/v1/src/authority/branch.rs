@@ -322,6 +322,18 @@ impl BranchStore {
             }
             self.authority.read_metadata_blob(&entry)
         };
+        let load_page = |hash: &str| {
+            let key = format!("wal/receipt-pages/{hash}");
+            let entry = root
+                .objects
+                .get(&key)?
+                .context("receipt archive page missing from candidate catalog")?;
+            semantic::registered(root, &entry)?;
+            if let Some(bytes) = super::staged_body(bodies, &entry) {
+                return Ok(bytes.to_vec());
+            }
+            self.authority.read_metadata_blob(&entry)
+        };
         let validated = match previous {
             Some(previous) => validate_index_append(
                 previous,
@@ -329,29 +341,15 @@ impl BranchStore {
                 self.authority.namespace(),
                 load_segment,
                 load_chunk,
+                load_page,
             )?,
-            None => {
-                let validated = validate_index_state(
-                    bytes,
-                    self.authority.namespace(),
-                    load_segment,
-                    load_chunk,
-                )?;
-                let load_page = |hash: &str| {
-                    let key = format!("wal/receipt-pages/{hash}");
-                    let entry = root
-                        .objects
-                        .get(&key)?
-                        .context("receipt archive page missing from candidate catalog")?;
-                    semantic::registered(root, &entry)?;
-                    if let Some(bytes) = super::staged_body(bodies, &entry) {
-                        return Ok(bytes.to_vec());
-                    }
-                    self.authority.read_metadata_blob(&entry)
-                };
-                crate::recovery::validate_receipt_index(bytes, load_page)?;
-                validated
-            }
+            None => validate_index_state(
+                bytes,
+                self.authority.namespace(),
+                load_segment,
+                load_chunk,
+                load_page,
+            )?,
         };
         let commit = validated.commit();
         let previous = root.branches[&self.branch]

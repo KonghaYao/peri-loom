@@ -37,7 +37,11 @@ fn index(store: &dyn ObjectStore) -> Result<Vec<u8>> {
 
 fn validate(store: &dyn ObjectStore, bytes: &[u8]) -> Result<Option<WalCommit>> {
     validate_index_commit(bytes, &namespace(), |key| {
-        assert!(key.starts_with(&namespace().key("wal/chunks")?));
+        assert!(
+            key.starts_with(&namespace().key("wal/chunks")?)
+                || key.starts_with(&namespace().key("wal/index-segments")?)
+                || key.starts_with(&namespace().key("wal/receipt-pages")?)
+        );
         Ok(store.get(key)?.context("missing committed chunk")?.bytes)
     })
 }
@@ -346,6 +350,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             &namespace(),
             |_| anyhow::bail!("unexpected segment in inline fixture"),
             |key| Ok(store.get(key)?.context("missing WAL chunk")?.bytes),
+            |_| anyhow::bail!("unexpected receipt page in inline fixture"),
         )
     };
     let validated = cold()?;
@@ -361,6 +366,7 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             loaded.push(key.to_owned());
             Ok(store.get(key)?.context("missing WAL chunk")?.bytes)
         },
+        |_| anyhow::bail!("unexpected receipt page in inline fixture"),
     )?;
     assert_eq!(loaded.len(), 1);
     assert_eq!(incremented.commit(), validate(store.as_ref(), &next)?);
@@ -377,7 +383,8 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             &serde_json::to_vec(&forged)?,
             &namespace(),
             |_| anyhow::bail!("unexpected segment in inline fixture"),
-            |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+            |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) },
+            |_| anyhow::bail!("unexpected receipt page in inline fixture"),
         )
         .is_err());
     }
@@ -396,7 +403,8 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             &serde_json::to_vec(&forged)?,
             &namespace(),
             |_| anyhow::bail!("unexpected segment in inline fixture"),
-            |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+            |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) },
+            |_| anyhow::bail!("unexpected receipt page in inline fixture"),
         )
         .is_err());
     }
@@ -408,7 +416,8 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
         &serde_json::to_vec(&forged)?,
         &namespace(),
         |_| anyhow::bail!("unexpected segment in inline fixture"),
-        |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+        |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) },
+        |_| anyhow::bail!("unexpected receipt page in inline fixture"),
     )
     .is_err());
     let mut forged: serde_json::Value = serde_json::from_slice(&next)?;
@@ -419,7 +428,8 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
         &serde_json::to_vec(&forged)?,
         &namespace(),
         |_| anyhow::bail!("unexpected segment in inline fixture"),
-        |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) }
+        |key| { Ok(store.get(key)?.context("missing WAL chunk")?.bytes) },
+        |_| anyhow::bail!("unexpected receipt page in inline fixture"),
     )
     .is_err());
 
@@ -433,7 +443,8 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
                 bytes[0] ^= 1;
             }
             Ok(bytes)
-        }
+        },
+        |_| anyhow::bail!("unexpected receipt page in inline fixture"),
     )
     .is_err());
     assert!(validate_index_append(
@@ -445,7 +456,8 @@ fn incremental_validation_reads_only_new_chunk_and_rejects_forged_history() -> R
             let mut bytes = store.get(key)?.context("missing WAL chunk")?.bytes;
             bytes[0] ^= 1;
             Ok(bytes)
-        }
+        },
+        |_| anyhow::bail!("unexpected receipt page in inline fixture"),
     )
     .is_err());
     Ok(())
