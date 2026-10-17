@@ -1,0 +1,9 @@
+
+running 4 tests
+test authority::semantic::wal_chunk_tests::a_new_root_rechecks_missing_unregistered_tombstoned_and_wrong_hash_chunks ... ok
+test authority::semantic::wal_chunk_tests::different_history_indexes_share_chunk_validation_and_keep_complete_gc_reachability ... ok
+test authority::semantic::wal_chunk_tests::shallow_index_validation_does_not_skip_the_later_chunk_sweep ... ok
+test authority::semantic::wal_chunk_tests::the_chunk_fifo_evicts_and_revalidates_older_entries ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 301 filtered out; finished in 0.23s
+

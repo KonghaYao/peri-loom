@@ -1,0 +1,19 @@
+
+running 14 tests
+test append_none_clears_index_marker_and_legacy_json_defaults_to_none ... ok
+test authority_append_replays_on_cas_conflict_and_cold_session ... ok
+test commit_requires_frame_write_proof_and_accepts_split_frame_writes ... ok
+test externally_discovered_manifest_and_listing_pin_dependencies_before_gc ... ok
+test incremental_validation_reads_only_new_chunk_and_rejects_forged_history ... ok
+test lost_commit_ack_returns_one_marker_and_one_lsn ... ok
+test native_65536_page_wal_header_uses_full_size_not_sqlite_db_header_encoding ... ok
+test native_checkpoint_reset_and_compaction_preserve_old_index_cold_replay ... ok
+test native_checksum_both_orders_and_last_frame_commit_boundary_are_required ... ok
+test native_commit_marker_is_atomic_with_index_and_failed_commit_is_not_recoverable ... ok
+test native_sql_multiple_commits_and_rollback_mark_actual_durable_frames ... ok
+test pinned_recovery_dependencies_survive_gc_without_pinning_unrelated_objects ... ok
+test uncommitted_and_partial_frames_cannot_be_promoted_to_index_commits ... ok
+test validator_rejects_forged_lsn_namespace_hash_and_replay_position ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+

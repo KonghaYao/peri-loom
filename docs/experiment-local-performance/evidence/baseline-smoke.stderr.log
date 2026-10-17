@@ -1,0 +1,3 @@
+level=info event=namespace_init namespace=Namespace { tenant: "localperf", database: "sql" } phase=PreflightFencing disposition=None state=Initializing
+level=info event=namespace_init namespace=Namespace { tenant: "localperf", database: "sql" } phase=ServiceBuild disposition=Committed state=Ready
+Error: Fenced unknown namespace

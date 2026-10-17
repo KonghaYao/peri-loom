@@ -1,0 +1,9 @@
+
+running 4 tests
+test authority::migration::tests::a_rejected_boot_candidate_is_not_admitted_before_its_successful_retry ... ok
+test authority::migration::tests::an_external_root_is_deep_verified_and_invalid_history_still_fails_closed ... ok
+test authority::migration::tests::an_unknown_boot_never_admits_its_candidate_even_when_the_bytes_landed ... ok
+test authority::migration::tests::first_state_after_boot_reuses_verified_references_and_retains_the_epoch_floor ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 295 filtered out; finished in 0.00s
+

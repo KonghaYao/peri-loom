@@ -1,0 +1,113 @@
+
+round=1 order=forward
+goos: darwin
+goarch: arm64
+pkg: peri-loom/platform
+cpu: Apple M5 Pro
+BenchmarkAdversarial/actual_sync/batch32/frozen-2         	      63	   4330165 ns/op	 242.01 MB/s	 1049871 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/frozen-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/actual_sync/batch32/exact-2          	      60	   4327011 ns/op	 242.19 MB/s	 1049900 B/op	      13 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/exact-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/buffer_model/batch32/frozen-2        	    4608	     73119 ns/op	14332.32 MB/s	 1048576 B/op	       1 allocs/op
+BenchmarkAdversarial/buffer_model/batch32/exact-2         	    4420	     60816 ns/op	17231.66 MB/s	 1048576 B/op	       1 allocs/op
+PASS
+ok  	peri-loom/platform	2.177s
+
+round=2 order=reverse
+goos: darwin
+goarch: arm64
+pkg: peri-loom/platform
+cpu: Apple M5 Pro
+BenchmarkAdversarial/actual_sync/batch32/exact-2         	      61	   4347546 ns/op	 241.05 MB/s	 1049963 B/op	      13 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/exact-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/actual_sync/batch32/frozen-2        	      76	   4575337 ns/op	 229.05 MB/s	 1049857 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/frozen-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/buffer_model/batch32/exact-2        	    6483	     47564 ns/op	22032.49 MB/s	 1048576 B/op	       1 allocs/op
+BenchmarkAdversarial/buffer_model/batch32/frozen-2       	    6994	     47197 ns/op	22203.73 MB/s	 1048576 B/op	       1 allocs/op
+PASS
+ok  	peri-loom/platform	3.347s
+
+round=3 order=forward
+goos: darwin
+goarch: arm64
+pkg: peri-loom/platform
+cpu: Apple M5 Pro
+BenchmarkAdversarial/actual_sync/batch32/frozen-2         	      64	   5803613 ns/op	 180.57 MB/s	 1049899 B/op	      13 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/frozen-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/actual_sync/batch32/exact-2          	      45	   5817418 ns/op	 180.14 MB/s	 1049925 B/op	      13 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/exact-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/buffer_model/batch32/frozen-2        	    2996	     85221 ns/op	12296.89 MB/s	 1048576 B/op	       1 allocs/op
+BenchmarkAdversarial/buffer_model/batch32/exact-2         	    3693	     86354 ns/op	12135.64 MB/s	 1048576 B/op	       1 allocs/op
+PASS
+ok  	peri-loom/platform	2.002s
+
+round=4 order=reverse
+goos: darwin
+goarch: arm64
+pkg: peri-loom/platform
+cpu: Apple M5 Pro
+BenchmarkAdversarial/actual_sync/batch32/exact-2         	      68	   4069696 ns/op	 257.50 MB/s	 1049876 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/exact-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/actual_sync/batch32/frozen-2        	      70	   4496013 ns/op	 233.09 MB/s	 1049894 B/op	      13 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/frozen-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/buffer_model/batch32/exact-2        	    5725	     70887 ns/op	14783.57 MB/s	 1048576 B/op	       1 allocs/op
+BenchmarkAdversarial/buffer_model/batch32/frozen-2       	    4801	     70532 ns/op	14857.89 MB/s	 1048576 B/op	       1 allocs/op
+PASS
+ok  	peri-loom/platform	2.019s
+
+round=5 order=forward
+goos: darwin
+goarch: arm64
+pkg: peri-loom/platform
+cpu: Apple M5 Pro
+BenchmarkAdversarial/actual_sync/batch32/frozen-2         	      80	   3921584 ns/op	 267.23 MB/s	 1049928 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/frozen-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/actual_sync/batch32/exact-2          	      79	   5355087 ns/op	 195.69 MB/s	 1049867 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/exact-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/buffer_model/batch32/frozen-2        	    5815	     44196 ns/op	23711.58 MB/s	 1048576 B/op	       1 allocs/op
+BenchmarkAdversarial/buffer_model/batch32/exact-2         	    6688	     55046 ns/op	19037.87 MB/s	 1048576 B/op	       1 allocs/op
+PASS
+ok  	peri-loom/platform	1.825s
+
+round=6 order=reverse
+goos: darwin
+goarch: arm64
+pkg: peri-loom/platform
+cpu: Apple M5 Pro
+BenchmarkAdversarial/actual_sync/batch32/exact-2         	      80	   4636072 ns/op	 226.04 MB/s	 1049872 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/exact-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/actual_sync/batch32/frozen-2        	      56	   4678406 ns/op	 224.00 MB/s	 1049876 B/op	      12 allocs/op
+--- BENCH: BenchmarkAdversarial/actual_sync/batch32/frozen-2
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+    adversarial_rw01_test.go:82: verified: 32 records, 1047959 payload bytes + 202 witness bytes
+BenchmarkAdversarial/buffer_model/batch32/exact-2        	    5914	     45041 ns/op	23266.61 MB/s	 1048576 B/op	       1 allocs/op
+BenchmarkAdversarial/buffer_model/batch32/frozen-2       	    7624	     49043 ns/op	21368.32 MB/s	 1048576 B/op	       1 allocs/op
+PASS
+ok  	peri-loom/platform	1.989s

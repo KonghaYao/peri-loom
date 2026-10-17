@@ -1,0 +1,76 @@
+     Locking 11 packages to latest compatible versions
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling syn v3.0.9
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling serde_derive v1.0.229
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling rw01-parser v0.0.0 (/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/rw01-rust)
+    Finished `release` profile [optimized] target(s) in 7.18s
+contract,success_null,success,equal
+contract,success_value,success,equal
+contract,missing_result,invalid,equal
+contract,missing_error_success,success,equal
+contract,missing_precondition,invalid,equal
+contract,missing_version,invalid,equal
+contract,missing_ok,invalid,equal
+contract,version_mismatch,invalid,equal
+contract,identity_mismatch,invalid,equal
+contract,null_identity,invalid,equal
+contract,unknown_field,invalid,equal
+contract,duplicate_result,invalid,equal
+contract,duplicate_result_null_first,invalid,equal
+contract,duplicate_version,invalid,equal
+contract,duplicate_error,invalid,equal
+contract,nested_duplicate_result,success,equal
+contract,error_success,invalid,equal
+contract,precondition_success,invalid,equal
+contract,error_null,invalid,equal
+contract,known_error,known,equal
+contract,precondition_error,precondition,equal
+contract,nonnull_error_result,invalid,equal
+contract,malformed,invalid,equal
+contract,trailing_json,invalid,equal
+contract,array,invalid,equal
+round,arm,response_bytes,iterations,ns_per_op,allocated_bytes_per_op,allocations_per_op
+1,dual,112,50000,623.688,1975.000,15.000
+1,single,112,50000,192.809,647.000,4.000
+2,single,112,50000,194.727,647.000,4.000
+2,dual,112,50000,595.891,1975.000,15.000
+3,dual,112,50000,677.112,1975.000,15.000
+3,single,112,50000,201.711,647.000,4.000
+4,single,112,50000,188.088,647.000,4.000
+4,dual,112,50000,574.453,1975.000,15.000
+5,dual,112,50000,615.447,1975.000,15.000
+5,single,112,50000,200.082,647.000,4.000
+6,single,112,50000,200.549,647.000,4.000
+6,dual,112,50000,591.609,1975.000,15.000
+1,dual,1024,50000,809.379,3799.000,15.000
+1,single,1024,50000,290.004,1559.000,4.000
+2,single,1024,50000,286.262,1559.000,4.000
+2,dual,1024,50000,798.745,3799.000,15.000
+3,dual,1024,50000,799.567,3799.000,15.000
+3,single,1024,50000,292.686,1559.000,4.000
+4,single,1024,50000,304.881,1559.000,4.000
+4,dual,1024,50000,802.238,3799.000,15.000
+5,dual,1024,50000,806.406,3799.000,15.000
+5,single,1024,50000,276.723,1559.000,4.000
+6,single,1024,50000,271.385,1559.000,4.000
+6,dual,1024,50000,749.508,3799.000,15.000
+1,dual,1048576,100,202290.000,2098903.000,15.000
+1,single,1048576,100,109558.750,1049111.000,4.000
+2,single,1048576,100,93880.000,1049111.000,4.000
+2,dual,1048576,100,197821.670,2098903.000,15.000
+3,dual,1048576,100,189152.090,2098903.000,15.000
+3,single,1048576,100,94745.830,1049111.000,4.000
+4,single,1048576,100,93629.590,1049111.000,4.000
+4,dual,1048576,100,201287.500,2098903.000,15.000
+5,dual,1048576,100,192083.330,2098903.000,15.000
+5,single,1048576,100,92624.170,1049111.000,4.000
+6,single,1048576,100,93865.000,1049111.000,4.000
+6,dual,1048576,100,188698.750,2098903.000,15.000

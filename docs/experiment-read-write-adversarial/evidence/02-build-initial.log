@@ -1,0 +1,329 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+   Compiling syn v3.0.6
+   Compiling cfg-if v1.0.5
+   Compiling synstructure v0.14.0
+   Compiling version_check v0.9.5
+   Compiling zerofrom-derive v0.1.8
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling getrandom v0.2.17
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.3
+   Compiling generic-array v0.14.7
+   Compiling zerovec-derive v0.11.6
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling zerovec v0.11.8
+   Compiling cc v1.6.0
+   Compiling displaydoc v0.2.7
+   Compiling typenum v1.20.1
+   Compiling syn v2.0.119
+   Compiling writeable v0.6.4
+   Compiling autocfg v1.5.1
+   Compiling smallvec v1.16.2
+   Compiling tinystr v0.8.4
+   Compiling rand_core v0.6.4
+   Compiling litemap v0.8.3
+   Compiling serde_core v1.0.229
+   Compiling icu_locale_core v2.3.0
+   Compiling crypto-common v0.1.7
+   Compiling potential_utf v0.1.6
+   Compiling zerotrie v0.2.5
+   Compiling pin-project-lite v0.2.17
+   Compiling memchr v2.8.3
+   Compiling subtle v2.6.1
+   Compiling icu_provider v2.3.1
+   Compiling utf8_iter v1.0.4
+   Compiling once_cell v1.21.4
+   Compiling bytes v1.12.1
+   Compiling serde v1.0.229
+   Compiling icu_collections v2.3.0
+   Compiling serde_derive v1.0.229
+   Compiling icu_properties_data v2.3.0
+   Compiling itoa v1.0.18
+   Compiling futures-core v0.3.34
+   Compiling icu_normalizer_data v2.3.0
+   Compiling num-traits v0.2.19
+   Compiling ring v0.17.14
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling rustversion v1.0.23
+   Compiling write16 v1.0.0
+   Compiling rand_core v0.10.1
+   Compiling semver v1.0.28
+   Compiling utf16_iter v1.0.5
+   Compiling getrandom v0.4.3
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling rustc_version v0.4.1
+   Compiling tokio v1.53.2
+   Compiling zeroize v1.9.0
+   Compiling http v1.5.0
+   Compiling tracing-core v0.1.36
+   Compiling percent-encoding v2.3.2
+   Compiling bitflags v2.13.2
+   Compiling futures-sink v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling http-body v1.1.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling cpufeatures v0.2.17
+   Compiling futures-task v0.3.34
+   Compiling zerocopy v0.8.60
+   Compiling icu_locale_fallback_data v2.3.0
+   Compiling httparse v1.10.1
+   Compiling futures-io v0.3.34
+   Compiling untrusted v0.9.0
+   Compiling slab v0.4.12
+   Compiling futures-util v0.3.34
+   Compiling tracing-attributes v0.1.31
+   Compiling inout v0.1.4
+   Compiling tower-service v0.3.3
+   Compiling rustls v0.23.45
+   Compiling try-lock v0.2.5
+   Compiling libm v0.2.16
+   Compiling rustix v1.1.5
+   Compiling want v0.3.2
+   Compiling tracing v0.1.44
+   Compiling cipher v0.4.4
+   Compiling rustls-webpki v0.103.15
+   Compiling form_urlencoded v1.2.2
+   Compiling idna_adapter v1.2.2
+   Compiling universal-hash v0.5.1
+   Compiling memoffset v0.9.1
+   Compiling errno v0.3.14
+   Compiling bytemuck_derive v1.12.1
+   Compiling zmij v1.0.23
+   Compiling heck v0.5.0
+   Compiling log v0.4.34
+   Compiling opaque-debug v0.3.1
+   Compiling icu_collator_data v2.3.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling parking_lot_core v0.9.12
+   Compiling thiserror v2.0.21
+   Compiling icu_locale_data v2.3.0
+   Compiling atomic-waker v1.1.2
+   Compiling core-foundation-sys v0.8.7
+   Compiling iana-time-zone v0.1.65
+   Compiling hyper v1.12.0
+   Compiling polyval v0.6.2
+   Compiling strum_macros v0.26.4
+   Compiling bytemuck v1.25.2
+   Compiling ppv-lite86 v0.2.21
+   Compiling idna v1.1.0
+   Compiling icu_locale_fallback v2.3.0
+   Compiling rand_core v0.9.5
+   Compiling num-integer v0.1.47
+   Compiling futures-channel v0.3.34
+   Compiling branches v0.4.6
+   Compiling crc32c v0.6.8
+   Compiling chacha20 v0.10.2
+   Compiling sync_wrapper v1.0.2
+   Compiling aho-corasick v1.1.5
+   Compiling bigdecimal v0.4.11
+   Compiling turso_macros v0.8.1 (/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/macros)
+   Compiling miette-derive v7.6.0
+   Compiling block-buffer v0.10.4
+   Compiling aegis v0.9.20
+   Compiling uncased v0.9.10
+   Compiling thiserror-impl v2.0.21
+   Compiling turso_ext v0.8.1 (/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/extensions/core)
+   Compiling unicode-width v0.1.14
+   Compiling lazy_static v1.5.1
+   Compiling ryu v1.0.23
+   Compiling ipnet v2.12.2
+   Compiling scopeguard v1.2.0
+   Compiling serde_json v1.0.151
+   Compiling tower-layer v0.3.3
+   Compiling base64 v0.23.1
+   Compiling regex-syntax v0.8.11
+   Compiling cfg_aliases v0.2.2
+   Compiling crossbeam-epoch v0.9.21
+   Compiling regex-automata v0.4.18
+   Compiling turso_core v0.8.1 (/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core)
+   Compiling hyper-util v0.1.21
+   Compiling tower v0.5.3
+   Compiling lock_api v0.4.14
+   Compiling sharded-slab v0.1.7
+   Compiling miette v7.6.0
+   Compiling digest v0.10.7
+   Compiling rand v0.10.3
+   Compiling tokio-rustls v0.26.6
+   Compiling num-bigint v0.4.8
+   Compiling rand_chacha v0.9.0
+   Compiling url v2.5.8
+   Compiling strum v0.26.3
+   Compiling ghash v0.5.1
+   Compiling chrono v0.4.45
+   Compiling tracing-log v0.2.0
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling webpki-roots v1.0.9
+   Compiling aead v0.5.2
+   Compiling aristo-macros v0.4.1
+   Compiling blake3 v1.8.7
+   Compiling thread_local v1.1.10
+   Compiling siphasher v1.0.4
+   Compiling byteorder v1.5.0
+   Compiling softaes v0.1.7
+   Compiling fastrand v2.5.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling anyhow v1.0.104
+   Compiling sha1_smol v1.0.1
+   Compiling uuid v1.27.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling tempfile v3.27.0
+   Compiling roaring v0.11.5
+   Compiling fastbloom v0.14.1
+   Compiling turso_parser v0.8.1 (/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/sqlite/parser)
+   Compiling aristo v0.4.1
+   Compiling aes-gcm v0.10.3
+   Compiling hyper-rustls v0.27.10
+   Compiling icu_locale v2.3.1
+   Compiling parking_lot v0.12.5
+   Compiling icu_collator v2.3.1
+   Compiling tower-http v0.6.11
+   Compiling intrusive-collections v0.9.7
+   Compiling rand v0.9.5
+   Compiling twox-hash v2.1.5
+   Compiling regex v1.13.1
+   Compiling serde_urlencoded v0.7.1
+   Compiling polling v3.11.0
+   Compiling pack1 v1.1.0
+   Compiling arc-swap v1.9.2
+   Compiling rapidhash v4.5.1
+   Compiling http-body-util v0.1.5
+   Compiling libloading v0.8.9
+   Compiling cfg_block v0.1.1
+   Compiling base64 v0.22.1
+   Compiling rustc-hash v2.1.3
+   Compiling simdutf8 v0.1.5
+   Compiling hex v0.4.3
+   Compiling either v1.18.0
+   Compiling allocator-api2 v0.4.0
+   Compiling bumpalo v3.20.3
+   Compiling pastey v0.2.3
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling fallible-iterator v0.3.0
+   Compiling reqwest v0.12.28
+warning: unused import: `log_write`
+   --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/mvcc/persistent_storage/logical_log.rs:262:29
+    |
+262 | pub(crate) use serializer::{log_write, LogBufferWrite, LogChunkStream, LogSerializer};
+    |                             ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `translate_expr`
+  --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/translate/emitter/mod.rs:11:51
+   |
+11 |         bind_and_rewrite_expr, emit_table_column, translate_expr, translate_expr_no_constant_opt,
+   |                                                   ^^^^^^^^^^^^^^
+
+   Compiling sha2 v0.10.9
+   Compiling hmac v0.12.1
+warning: methods `move_to_root` and `indexbtree_move_to_unpacked` are never used
+    --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/storage/btree.rs:1861:8
+     |
+1201 | impl BTreeCursor {
+     | ---------------- methods in this implementation
+...
+1861 |     fn move_to_root(&mut self) -> Result<Option<Completion>> {
+     |        ^^^^^^^^^^^^
+...
+2151 |     fn indexbtree_move_to_unpacked(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/types.rs:830:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+830 |     pub step_fn: StepFunction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+    = note: `#[warn(unpredictable_function_pointer_comparisons)]` on by default
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/types.rs:831:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+831 |     pub finalize_fn: FinalizeFunction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/types.rs:832:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+832 |     pub aggregate_destructor: Option<ContextDestructor>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/types.rs:833:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+833 |     pub value_destructor: Option<ValueDestructor>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/vector/operations/text.rs:69:56
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector> {
+   |                                                        ^^^^            ^^^^^^ the same lifetime is hidden here
+   |                                                        |
+   |                                                        the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector<'_>> {
+   |                                                                              ++++
+
+warning: specialization is experimental
+  --> /private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/p0/turso/core/alloc/collections/iterator.rs:43:5
+   |
+43 |     default fn try_from_result_iter(iter: I) -> Result<Self, TryReserveError> {
+   |     ^^^^^^^
+   |
+   = note: see issue #31844 <https://github.com/rust-lang/rust/issues/31844> for more information
+   = warning: unstable syntax can change at any point in the future, causing a hard error!
+   = note: for more information, see issue #154045 <https://github.com/rust-lang/rust/issues/154045>
+
+warning: `turso_core` (lib) generated 9 warnings (run `cargo fix --lib -p turso_core` to apply 3 suggestions)
+   Compiling peri-loom-v1 v1.1.5 (/private/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-rw-adversarial-qpdmzpzy/prototypes/v1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 33s
+     Running unittests src/lib.rs (../../target-02/debug/deps/peri_loom_v1-b3b44a8121fa0d77)
+
+running 1 test
+test authority::store_scaling_tests::a_head_is_decoded_once_per_document ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 278 filtered out; finished in 0.05s
+

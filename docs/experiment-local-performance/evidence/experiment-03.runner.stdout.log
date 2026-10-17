@@ -1,0 +1,56 @@
+round-01-baseline: start
+round-01-baseline: 23.962s
+round-01-candidate: start
+round-01-candidate: 10.107s
+round-02-candidate: start
+round-02-candidate: 10.058s
+round-02-baseline: start
+round-02-baseline: 24.354s
+{
+  "status": "PASS",
+  "paired_rounds": [
+    {
+      "round": 1,
+      "total_speedup": 2.3708384061473575,
+      "phases": {
+        "hot_reads": 0.9765850564021078,
+        "small_commits": 1.5086148728505795,
+        "history_commits": 1.0378809691382627,
+        "long_history_commits": 1.0812968980348328,
+        "cold_wal_reopen": 16.346199101472564,
+        "writer_reopen": 17.126323063899417,
+        "checkpoint_updates": 1.004131247897333,
+        "checkpoints": 1.0055474219772673,
+        "cold_checkpoint_reopen": 16.009161016190074
+      }
+    },
+    {
+      "round": 2,
+      "total_speedup": 2.4212944774346568,
+      "phases": {
+        "hot_reads": 0.9843486150208527,
+        "small_commits": 1.0118424639565362,
+        "history_commits": 0.9999894326146599,
+        "long_history_commits": 1.0454536342934724,
+        "cold_wal_reopen": 17.030454849980686,
+        "writer_reopen": 18.611055067512446,
+        "checkpoint_updates": 1.0099000781724752,
+        "checkpoints": 0.9718712256156741,
+        "cold_checkpoint_reopen": 15.843841928529065
+      }
+    }
+  ],
+  "median_total_speedup": 2.396066441791007,
+  "median_phase_speedup": {
+    "hot_reads": 0.9804668357114803,
+    "small_commits": 1.260228668403558,
+    "history_commits": 1.0189352008764612,
+    "long_history_commits": 1.0633752661641527,
+    "cold_wal_reopen": 16.688326975726625,
+    "writer_reopen": 17.86868906570593,
+    "checkpoint_updates": 1.007015663034904,
+    "checkpoints": 0.9887093237964707,
+    "cold_checkpoint_reopen": 15.926501472359568
+  },
+  "phase_regressions_over_10_percent": {}
+}

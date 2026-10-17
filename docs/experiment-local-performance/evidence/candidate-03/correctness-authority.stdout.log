@@ -1,0 +1,40 @@
+
+running 35 tests
+test leases::backend_without_explicit_terminal_contract_refuses_without_dispatch_and_stays_quiescent ... ok
+test leases::clock_regression_or_unavailability_closes_namespace ... ok
+test leases::concurrent_namespace_load_boots_once ... ok
+test leases::delayed_grant_nonce_cannot_cross_restore_at_same_epoch ... ok
+test leases::epoch_exhaustion_and_clock_overflow_fail_closed ... ok
+test leases::grant_receipt_is_idempotent_and_reuse_with_other_payload_fails ... ok
+test leases::initial_root_and_boot_lost_ack_both_keep_startup_closed ... ok
+test leases::late_renew_cannot_resurrect_expired_writer ... ok
+test leases::nonce_is_single_use_bounded_and_intent_bound ... ok
+test leases::renew_requires_current_sequence_and_keeps_existing_session_valid ... ok
+test leases::restart_term_revokes_old_binding_but_keeps_epoch_floor ... ok
+test local::known_takeover_and_uncertainty_reject_local_cache_without_root_io ... ok
+test local::local_cache_fence_never_reads_root_but_ingress_and_durable_io_do ... ok
+test local::restore_and_drop_remove_known_live_memory_binding_before_reopening_admission ... ok
+test local::trusted_compat_branch_local_cache_validation_has_no_root_io ... ok
+test maintenance::branches_have_independent_leases_and_clones_do_not_copy_grants ... ok
+test maintenance::gc_safety_window_starts_at_each_tombstone_not_namespace_boot ... ok
+test maintenance::gc_starts_durable_ledger_before_physical_delete_and_replay_is_side_effect_free ... ok
+test maintenance::ownership_tombstones_and_request_digest_cannot_be_forged ... ok
+test maintenance::physical_gc_delete_holds_transition_barrier_until_root_ack ... ok
+test maintenance::restore_revoke_and_receipt_are_atomic_and_epoch_tombstone_survives_recreate ... ok
+test maintenance::unknown_delete_keeps_namespace_blocked_and_command_pending ... ok
+test renewal::concurrent_same_lease_renewals_wait_without_poisoning_native_commits ... ok
+test renewal::service_pin_cleanup_and_snapshot_do_not_poison_active_native_io ... ok
+test stages::already_dispatched_put_may_finish_after_deadline_but_cannot_publish ... ok
+test stages::ambiguous_grant_ack_never_reports_new_live_lease ... ok
+test stages::cas_retry_cannot_publish_after_ownership_changed ... ok
+test stages::final_root_guard_rechecks_expiry_after_uncached_candidate_read ... ok
+test stages::forged_worker_namespace_never_initializes_a_catalog ... ok
+test stages::physical_put_ticket_blocks_takeover_until_terminal_response ... ok
+test stages::readonly_grant_cannot_escalate_or_forge_bound_role ... ok
+test stages::readonly_session_has_native_role_and_only_authority_pin_cleanup ... ok
+test stages::takeover_fences_old_wal_head_upload_and_delete_before_raw_dispatch ... ok
+test stages::uncertain_physical_put_blocks_takeover_even_after_one_absence_readback ... ok
+test stages::wal_epoch_and_head_generation_checked_before_upload ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+

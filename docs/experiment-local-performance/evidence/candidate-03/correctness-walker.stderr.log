@@ -1,0 +1,110 @@
+warning: unused import: `log_write`
+   --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/mvcc/persistent_storage/logical_log.rs:262:29
+    |
+262 | pub(crate) use serializer::{log_write, LogBufferWrite, LogChunkStream, LogSerializer};
+    |                             ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `translate_expr`
+  --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/translate/emitter/mod.rs:11:51
+   |
+11 |         bind_and_rewrite_expr, emit_table_column, translate_expr, translate_expr_no_constant_opt,
+   |                                                   ^^^^^^^^^^^^^^
+
+warning: methods `move_to_root` and `indexbtree_move_to_unpacked` are never used
+    --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/storage/btree.rs:1861:8
+     |
+1201 | impl BTreeCursor {
+     | ---------------- methods in this implementation
+...
+1861 |     fn move_to_root(&mut self) -> Result<Option<Completion>> {
+     |        ^^^^^^^^^^^^
+...
+2151 |     fn indexbtree_move_to_unpacked(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/types.rs:830:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+830 |     pub step_fn: StepFunction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+    = note: `#[warn(unpredictable_function_pointer_comparisons)]` on by default
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/types.rs:831:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+831 |     pub finalize_fn: FinalizeFunction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/types.rs:832:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+832 |     pub aggregate_destructor: Option<ContextDestructor>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique
+   --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/types.rs:833:5
+    |
+825 | #[derive(Debug, Clone, PartialEq)]
+    |                        --------- in this derive macro expansion
+...
+833 |     pub value_destructor: Option<ValueDestructor>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the address of the same function can vary between different codegen units
+    = note: furthermore, different functions could have the same address after being merged together
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/vector/operations/text.rs:69:56
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector> {
+   |                                                        ^^^^            ^^^^^^ the same lifetime is hidden here
+   |                                                        |
+   |                                                        the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector<'_>> {
+   |                                                                              ++++
+
+warning: specialization is experimental
+  --> /var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/p0/turso/core/alloc/collections/iterator.rs:43:5
+   |
+43 |     default fn try_from_result_iter(iter: I) -> Result<Self, TryReserveError> {
+   |     ^^^^^^^
+   |
+   = note: see issue #31844 <https://github.com/rust-lang/rust/issues/31844> for more information
+   = warning: unstable syntax can change at any point in the future, causing a hard error!
+   = note: for more information, see issue #154045 <https://github.com/rust-lang/rust/issues/154045>
+
+warning: `turso_core` (lib) generated 9 warnings (run `cargo fix --lib -p turso_core` to apply 3 suggestions)
+   Compiling peri-loom-v1 v1.1.5 (/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/prototypes/v1)
+    Finished `release` profile [optimized] target(s) in 28.68s
+     Running unittests src/lib.rs (/var/folders/d5/gpfmkm2s4sqgwz5wwnj44p500000gn/T/peri-local-15x-9emiiwwk/target/release/deps/peri_loom_v1-03f5d602fed2d911)
