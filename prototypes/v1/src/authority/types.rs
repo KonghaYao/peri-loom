@@ -113,11 +113,20 @@ pub(super) struct CatalogDocument {
     pub(super) pin_entries: BTreeMap<String, ObjectEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) pin_index: Option<String>,
-    /// One-way wire boundary for the split pin representation. Absent means the pre-split
-    /// document shape and is migrated on load; `1` is the split shape. A binary predating
-    /// this field rejects the document as an unknown field because the document denies
-    /// unknown fields, so a rollback cannot silently read the new shape. `version` remains
-    /// the ownership/paging schema and is deliberately not overloaded here.
+    /// Wire schema for the reader-pin representation:
+    ///
+    /// * absent, non-empty legacy `pins` vectors, empty `pin_entries`: original pre-split
+    ///   shape; migrated on load.
+    /// * absent, empty legacy vectors, any `pin_entries` state: the split-transitional
+    ///   shape written before this marker existed; accepted and upgraded to `1` on the next
+    ///   publication.
+    /// * `1`, empty legacy vectors: current split shape.
+    ///
+    /// A document mixing non-empty legacy vectors and a non-empty split registry is
+    /// rejected, as is an unknown schema value. A binary predating this field rejects the
+    /// document as an unknown field because the document denies unknown fields, so a
+    /// rollback cannot silently read the new shape. `version` remains the ownership/paging
+    /// schema and is deliberately not overloaded here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) pin_schema: Option<u8>,
     pub(super) uploads: BTreeMap<String, ObjectEntry>,
@@ -140,9 +149,10 @@ pub(super) fn pin_entry_parts(key: &str) -> Option<(&str, &str)> {
     (!pin.is_empty() && !blob.is_empty() && !blob.contains('/')).then_some((pin, blob))
 }
 
-/// Wire schema for the split reader-pin representation. A document without this marker is
-/// the pre-split shape and is migrated on load; a document carrying an unknown value is
-/// rejected instead of being decoded under the wrong assumptions.
+/// Wire schema for the split reader-pin representation. Absent is accepted for both the
+/// original pre-split shape and the split-transitional shape written before the marker;
+/// `codec::parse` distinguishes them by whether legacy vectors or the split registry holds
+/// entries, and the next publication writes `1`. Unknown values are rejected.
 pub(super) const PIN_SCHEMA_VERSION: u8 = 1;
 
 /// In-memory authority head. Identity state (branches, snapshots, reader pin identities,
@@ -165,8 +175,10 @@ pub struct CatalogRoot {
     pub branches: BTreeMap<String, BranchRef>,
     pub snapshots: BTreeMap<String, RecoveryPoint>,
     /// The map values are empty in the split representation; reader entries live in
-    /// `pin_entries`. A pre-split document may still carry inline entries, and
-    /// `semantic::migrate_legacy_pins` moves them on load before validation.
+    /// `pin_entries`. Pre-split documents carry entries here with no split registry;
+    /// split-transitional documents carry an empty vector side and entries only in the
+    /// split registry. `semantic::migrate_legacy_pins` moves the pre-split vectors on load;
+    /// a document with both sides populated is rejected by `codec::parse`.
     pub pins: BTreeMap<String, Vec<ObjectEntry>>,
     pub(crate) pin_entries: Registry<ObjectEntry>,
     pub(super) pin_schema: Option<u8>,

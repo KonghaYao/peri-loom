@@ -68,10 +68,20 @@ fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
     );
     let root: CatalogRoot = serde_json::from_str(envelope.root.get())?;
     match root.pin_schema {
-        None => ensure!(
-            root.pin_entries.is_empty(),
-            "legacy reader pin root carries a split pin registry"
-        ),
+        None => {
+            // No schema means either the original pre-split shape (non-empty legacy
+            // vectors) or the short-lived split-transitional shape written before the
+            // marker existed (empty legacy vectors, entries already split out). The two
+            // representations may not coexist; an empty legacy vector side is accepted
+            // and upgraded to the current schema on the next publication.
+            let legacy_vectors = root.pins.values().any(|entries| !entries.is_empty());
+            if legacy_vectors {
+                ensure!(
+                    root.pin_entries.is_empty(),
+                    "legacy reader pin root mixes pin representations"
+                );
+            }
+        }
         Some(schema) => {
             ensure!(
                 schema == super::types::PIN_SCHEMA_VERSION,

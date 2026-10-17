@@ -1082,6 +1082,88 @@ fn whole_pin_registry_replacements_are_rejected_and_reader_protection_survives()
         .values()
         .any(|entry| entry.blob == segment_blob));
     assert!(authority.reachable(&root)?.contains(&segment_blob));
+    let collector = crate::gc::GarbageCollector::new(authority.clone(), std::time::Duration::ZERO);
+    collector.collect()?;
+    let root = authority.snapshot()?.root;
+    assert!(root.blobs.get(&segment_blob)?.is_some());
+    assert!(authority.reachable(&root)?.contains(&segment_blob));
+    Ok(())
+}
+
+#[test]
+fn split_transitional_inline_root_loads_and_is_upgraded() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=4 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-transition-inline-{ordinal}"),
+        )?;
+    }
+    let pin = branch.pin.clone();
+    let root = authority.snapshot()?.root;
+    let entries = pin_entries(&root, &pin)?;
+    assert!(!entries.is_empty());
+    assert!(root.pin_entries.pointer().is_none());
+    let mut transitional = root;
+    transitional.pin_schema = None;
+    assert!(transitional.pins.values().all(Vec::is_empty));
+    drop(branch);
+
+    let root_key = namespace.key("authority/root")?;
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&transitional)?,
+        PutCondition::Any,
+    )?;
+    let reopened = Authority::open(store.clone(), namespace.clone())?;
+    let loaded = reopened.snapshot()?.root;
+    assert_eq!(pin_entries(&loaded, &pin)?, entries);
+
+    reopened.transact(None, |_| Ok(()))?;
+    let stored = store.inner.get(&root_key)?.context("root missing")?;
+    let envelope: serde_json::Value = serde_json::from_slice(&stored.bytes)?;
+    assert_eq!(envelope["root"]["pin_schema"], 1);
+    Ok(())
+}
+
+#[test]
+fn split_transitional_paged_root_loads_and_is_upgraded() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    for ordinal in 1..=48 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("pin-transition-paged-{ordinal}"),
+        )?;
+    }
+    let pin = branch.pin.clone();
+    let root = authority.snapshot()?.root;
+    let entries = pin_entries(&root, &pin)?;
+    assert!(root.pin_entries.pointer().is_some());
+    let mut transitional = root;
+    transitional.pin_schema = None;
+    assert!(transitional.pins.values().all(Vec::is_empty));
+    drop(branch);
+
+    let root_key = namespace.key("authority/root")?;
+    store.inner.put(
+        &root_key,
+        &crate::authority::codec::encode(&transitional)?,
+        PutCondition::Any,
+    )?;
+    let reopened = Authority::open(store.clone(), namespace.clone())?;
+    let loaded = reopened.snapshot()?.root;
+    assert_eq!(pin_entries(&loaded, &pin)?, entries);
+
+    reopened.transact(None, |_| Ok(()))?;
+    let stored = store.inner.get(&root_key)?.context("root missing")?;
+    let envelope: serde_json::Value = serde_json::from_slice(&stored.bytes)?;
+    assert_eq!(envelope["root"]["pin_schema"], 1);
     Ok(())
 }
 

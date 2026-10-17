@@ -108,6 +108,12 @@ impl<V> Registry<V> {
     /// Compare the durable base a transaction started from. A mutation may add
     /// `changes`, but replacing the base would hide removals from change-scoped
     /// validation, so the publish path requires this identity to be unchanged.
+    ///
+    /// Boundary: this compares only pointer and inline content, under the assumption that
+    /// both registries are attached to the same authority store and namespace. `attach` is
+    /// internal, so a malicious in-process path could build the same base over another
+    /// store; new publication entry points must therefore go through `catalog::prepare`
+    /// rather than relying on this comparison alone.
     pub(crate) fn same_base(&self, other: &Self) -> bool
     where
         V: PartialEq,
