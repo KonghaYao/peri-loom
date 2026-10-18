@@ -34,6 +34,16 @@ type serviceRequestPhaseRecord struct {
 	Complete bool `json:"complete"`
 }
 
+// serviceRequestPhaseClose is the closing line. Filtered is always present so a complete
+// stream cannot be mistaken for a capture of every request.
+type serviceRequestPhaseClose struct {
+	Stream   string `json:"stream"`
+	Action   string `json:"action"`
+	Outcome  string `json:"outcome"`
+	Complete bool   `json:"complete"`
+	Filtered uint64 `json:"filtered"`
+}
+
 type serviceRequestPhaseSink struct {
 	observer *requestPhaseObserver
 	stream   string
@@ -138,9 +148,10 @@ func (sink *serviceRequestPhaseSink) finish(drain func(), encoder *json.Encoder,
 	if failure != nil {
 		return
 	}
+	filtered := sink.observer.filtered.Load()
 	if count < requestPhaseLimit {
-		_ = encoder.Encode(serviceRequestPhaseRecord{Stream: sink.stream, Action: "observer", Outcome: "stopped", Complete: true})
+		_ = encoder.Encode(serviceRequestPhaseClose{Stream: sink.stream, Action: "observer", Outcome: "stopped", Complete: true, Filtered: filtered})
 		return
 	}
-	_ = encoder.Encode(serviceRequestPhaseRecord{Stream: sink.stream, Action: "observer", Outcome: "bounded", Complete: false})
+	_ = encoder.Encode(serviceRequestPhaseClose{Stream: sink.stream, Action: "observer", Outcome: "bounded", Complete: false, Filtered: filtered})
 }

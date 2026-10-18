@@ -44,6 +44,13 @@ covered is reported as `unaccounted_ns` instead of being folded into a neighbour
 carries request id, action, outcome, status and durations only - never a credential, SQL text,
 tenant, database or session id.
 
+**Slow-path sampling.** A request is written only when its `total_ns` is at least 100 ms or
+when it failed (an outcome other than `ok`, or a status outside 2xx). The bound is global and
+was previously exhausted by warmup and fast measurement traffic before the 1-2 s stalls
+appeared; 100 ms keeps an order of magnitude of headroom. Fast successes are counted in the
+closing record's `filtered` field instead of occupying a record. The threshold is a diagnostic
+constant, deliberately not an environment setting.
+
 **Switch.** The private diagnostic profile that already exists: `PERI_SQL_OPEN_OBSERVER=1`,
 which the launcher already forwards (`dev.py --sql-open-observer`). The phase stream is a
 second sink of that profile, in its own file, so the open observer's artifact keeps exactly the
@@ -90,10 +97,12 @@ Disabled-path micro-measurement (benchmark, not a system measurement):
 
    `--sql-open-observer` is the existing flag that forwards `PERI_SQL_OPEN_OBSERVER=1`; the
    phase stream lands in `<run-dir>/platform/request-phase-observation.jsonl` (0600).
-2. Run the C1 query set unchanged. Each line is one request:
+2. Run the C1 query set unchanged. Only slow requests (`total_ns >= 100 ms`) and failures are
+   written; a written line is one request:
    `{"stream","request_id","action","outcome","status","total_ns","accounted_ns","unaccounted_ns","truncated","spans":[{"phase","ns"}]}`.
    The last line is the observer's own closing record (`action":"observer"`,
-   `complete:true|false`) - `false` means the bounded stream stopped early.
+   `complete:true|false`, `filtered:<count>`) - `false` means the bounded stream stopped early,
+   and `filtered` counts the fast successes the slow filter removed.
 3. Attribute: compare per-action `total_ns` against the client's own p50; read the `intent`,
    `worker`, `terminal`, `audit` and `respond` segments per family. `unaccounted_ns` is the part
    no segment covered (TLS handling, correlation parsing, route selection, quota bookkeeping,

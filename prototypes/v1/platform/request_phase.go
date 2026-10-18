@@ -23,6 +23,11 @@ const (
 	// phases of the reads against that data come from the same process. It stays a
 	// bound: past it the stream drops records and says so instead of growing.
 	requestPhaseLimit = 8192
+	// Only slow requests and failures are recorded. The S1-S4 stalls this profile exists to
+	// explain are 1-2 s, so 100 ms keeps an order of magnitude of headroom while warmup and
+	// the fast bulk of a measurement no longer consume the bound before the stalls do. Errors
+	// bypass the threshold: an Unknown is evidence even when it returns quickly.
+	requestPhaseSlowThreshold = 100 * time.Millisecond
 )
 
 type requestPhase string
@@ -64,7 +69,12 @@ type requestPhaseSegment struct {
 
 type requestPhaseObserver struct {
 	sequence atomic.Uint64
+	filtered atomic.Uint64
 	queue    chan requestPhaseRecord
+	// slowThreshold is requestPhaseSlowThreshold in production. Directed tests that assert
+	// the span vocabulary set it to zero because a fixture answer is usually faster than the
+	// production threshold and those tests are about the segments, not the filter.
+	slowThreshold time.Duration
 }
 
 type requestPhaseFrame struct {
@@ -93,7 +103,7 @@ type requestPhaseKey struct{}
 var noRequestPhaseSpan = func() {}
 
 func newRequestPhaseObserver() *requestPhaseObserver {
-	return &requestPhaseObserver{queue: make(chan requestPhaseRecord, requestPhaseLimit)}
+	return &requestPhaseObserver{queue: make(chan requestPhaseRecord, requestPhaseLimit), slowThreshold: requestPhaseSlowThreshold}
 }
 
 func (observer *requestPhaseObserver) TryReceive() (requestPhaseRecord, bool) {
@@ -105,6 +115,17 @@ func (observer *requestPhaseObserver) TryReceive() (requestPhaseRecord, bool) {
 		}
 	}
 	return requestPhaseRecord{}, false
+}
+
+// keep decides whether a finished request belongs in the bounded stream. Normal successful
+// traffic is sampled out before it reaches the queue; a failure is always kept so a fast
+// Unknown cannot disappear from the evidence. A threshold of zero keeps every request.
+func (observer *requestPhaseObserver) keep(total uint64, outcome string, status int) bool {
+	if total >= uint64(observer.slowThreshold) || outcome != "ok" || status < 200 || status >= 300 {
+		return true
+	}
+	observer.filtered.Add(1)
+	return false
 }
 
 func (observer *requestPhaseObserver) record(record requestPhaseRecord) {
@@ -188,6 +209,11 @@ func (trace *requestPhaseTrace) leaveLocked() {
 // time no span covered is reported separately instead of being attributed to a phase.
 func (trace *requestPhaseTrace) finish(requestID, outcome string, status int) {
 	if trace == nil {
+		return
+	}
+	// Sample before the record is built: a fast success costs one clock read and never
+	// takes a slot in the global bound. Failures and slow requests keep their evidence.
+	if !trace.observer.keep(uint64(time.Since(trace.started)), outcome, status) {
 		return
 	}
 	trace.mutex.Lock()
