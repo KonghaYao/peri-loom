@@ -14,6 +14,15 @@ pub struct LocalObjectStore {
     root: PathBuf,
 }
 
+/// One body staged for a group publication. `file` is `None` when an earlier attempt
+/// already landed identical bytes: nothing to flush, and the stored etag is kept.
+struct StagedBody {
+    temporary: Option<PathBuf>,
+    target: PathBuf,
+    file: Option<File>,
+    etag: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Envelope {
     key: String,
@@ -45,6 +54,80 @@ impl LocalObjectStore {
 
     fn temporary_path(&self, etag: &str) -> PathBuf {
         self.root.join(format!(".{etag}.tmp"))
+    }
+
+    /// Encode and flush one group body. Called from one staging thread at a time, so it
+    /// only touches the file and the immutable `write` it was handed.
+    fn stage_body(&self, write: &super::GroupWrite, etag: String) -> Result<StagedBody> {
+        let envelope = Envelope {
+            key: write.key.clone(),
+            bytes: write.bytes.clone(),
+            etag: etag.clone(),
+            checksum: blake3::hash(&write.bytes).to_hex().to_string(),
+        };
+        let target = self.path(&write.key);
+        let bytes = serde_json::to_vec(&envelope)?;
+        // Content-addressed bodies with `Any` cannot collide with a live key, so they
+        // are written straight to their final name: the rename and the pre-group read
+        // bought no condition and the body bytes never change under an identical key.
+        // Anything else keeps the temp+rename path, because `Match` *is* the head CAS
+        // and must stay atomic.
+        if matches!(write.condition, PutCondition::Any) {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(mut file) => {
+                    file.write_all(&bytes)?;
+                    flush_file(&file)?;
+                    return Ok(StagedBody {
+                        temporary: None,
+                        target,
+                        file: Some(file),
+                        etag,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    match self.read(&write.key) {
+                        Ok(Some(existing)) if existing.bytes == write.bytes => {
+                            // A body an earlier attempt already landed: keep its etag so
+                            // a caller that later fences on this key uses the value the
+                            // store actually holds.
+                            return Ok(StagedBody {
+                                temporary: None,
+                                target,
+                                file: None,
+                                etag: existing.etag,
+                            });
+                        }
+                        Ok(Some(_)) => {
+                            anyhow::bail!("immutable object conflict: {}", write.key)
+                        }
+                        Ok(None) => {}
+                        // A partial body from a crashed attempt fails its envelope, so
+                        // no durable head can reference it.
+                        Err(_) => {
+                            fs::remove_file(&target)?;
+                        }
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let temporary = self.temporary_path(&etag);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&bytes)?;
+        flush_file(&file)?;
+        Ok(StagedBody {
+            temporary: Some(temporary),
+            target,
+            file: Some(file),
+            etag,
+        })
     }
 
     fn lock(&self) -> Result<File> {
@@ -312,88 +395,84 @@ impl ObjectStore for LocalObjectStore {
             }
             etags.push(fresh_etag(&write.bytes));
         }
-        let mut staged: Vec<(Option<PathBuf>, PathBuf, File)> = Vec::with_capacity(writes.len());
+        // A publication is 25-30 bodies on the steady path and several hundred when a
+        // receipt roll lands. The per-body cost is mostly encoding: serde, base64 and
+        // blake3 run on one core while the drive sits idle. The bodies are independent
+        // and content addressed, so they are staged on a bounded set of threads; the
+        // renames, the one directory flush and the one media barrier still happen in
+        // publication order on this thread, after every body is durable.
+        let workers = if writes.len() < 8 {
+            1
+        } else {
+            std::thread::available_parallelism()
+                .map(|parallel| parallel.get())
+                .unwrap_or(4)
+                .clamp(2, 8)
+        };
+        let staged: Vec<Result<StagedBody>> = if workers == 1 {
+            (0..writes.len())
+                .map(|index| self.stage_body(&writes[index], etags[index].clone()))
+                .collect()
+        } else {
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers);
+                for offset in 0..workers {
+                    let etags = &etags;
+                    let writes = writes;
+                    handles.push(scope.spawn(move || {
+                        (offset..writes.len())
+                            .step_by(workers)
+                            .map(|index| {
+                                (index, self.stage_body(&writes[index], etags[index].clone()))
+                            })
+                            .collect::<Vec<_>>()
+                    }));
+                }
+                let mut staged: Vec<(usize, Result<StagedBody>)> = handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().unwrap())
+                    .collect();
+                staged.sort_by_key(|(index, _)| *index);
+                staged.into_iter().map(|(_, result)| result).collect()
+            })
+        };
+        let mut bodies = Vec::with_capacity(staged.len());
+        let mut failure = None;
+        for result in staged {
+            match result {
+                Ok(body) => bodies.push(body),
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        if let Some(error) = failure {
+            for body in &bodies {
+                if let Some(temporary) = &body.temporary {
+                    let _ = fs::remove_file(temporary);
+                }
+            }
+            return Err(error);
+        }
         let result = (|| -> Result<()> {
-            for (index, write) in writes.iter().enumerate() {
-                let envelope = Envelope {
-                    key: write.key.clone(),
-                    bytes: write.bytes.clone(),
-                    etag: etags[index].clone(),
-                    checksum: blake3::hash(&write.bytes).to_hex().to_string(),
-                };
-                let target = self.path(&write.key);
-                let bytes = serde_json::to_vec(&envelope)?;
-                // Content-addressed bodies with `Any` cannot collide with a live key, so
-                // they are written straight to their final name: the rename and the
-                // pre-group read bought no condition and the body bytes never change
-                // under an identical key. Anything else keeps the temp+rename path,
-                // because `Match` *is* the head CAS and must stay atomic.
-                if matches!(write.condition, PutCondition::Any) {
-                    match OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&target)
-                    {
-                        Ok(mut file) => {
-                            file.write_all(&bytes)?;
-                            flush_file(&file)?;
-                            staged.push((None, target, file));
-                            continue;
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                            match self.read(&write.key) {
-                                Ok(Some(existing)) if existing.bytes == write.bytes => {
-                                    // A body an earlier attempt already landed: keep its
-                                    // etag so a caller that later fences on this key uses
-                                    // the value the store actually holds.
-                                    etags[index] = existing.etag;
-                                    continue;
-                                }
-                                Ok(Some(_)) => {
-                                    anyhow::bail!("immutable object conflict: {}", write.key)
-                                }
-                                Ok(None) => {}
-                                // A partial body from a crashed attempt fails its
-                                // envelope, so no durable head can reference it.
-                                Err(_) => {
-                                    fs::remove_file(&target)?;
-                                }
-                            }
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                let temporary = self.temporary_path(&etags[index]);
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&temporary)?;
-                file.write_all(&bytes)?;
-                flush_file(&file)?;
-                staged.push((Some(temporary), target, file));
-            }
-            for (temporary, target, _file) in &staged {
-                if let Some(temporary) = temporary {
-                    fs::rename(temporary, target)?;
+            for body in &bodies {
+                if let Some(temporary) = &body.temporary {
+                    fs::rename(temporary, &body.target)?;
                 }
             }
-            if !staged.is_empty() {
+            if let Some(file) = bodies.iter().find_map(|body| body.file.as_ref()) {
                 flush_directory(&self.root)?;
-                if let Some((_temporary, _target, file)) = staged.first() {
-                    publish_barrier(file)?;
-                }
+                publish_barrier(file)?;
             }
             Ok(())
         })();
         if result.is_err() {
-            for (temporary, _, _file) in &staged {
-                if let Some(temporary) = temporary {
+            for body in &bodies {
+                if let Some(temporary) = &body.temporary {
                     let _ = fs::remove_file(temporary);
                 }
             }
         }
         result?;
-        Ok(etags)
+        Ok(bodies.into_iter().map(|body| body.etag).collect())
     }
 
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
