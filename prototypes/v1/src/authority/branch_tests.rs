@@ -1284,3 +1284,48 @@ fn a_failed_drop_release_is_counted_and_leaves_the_pin_visible() -> Result<()> {
     assert!(authority.snapshot()?.root.pins.contains_key(&pin));
     Ok(())
 }
+
+#[test]
+fn a_segment_group_publishes_and_pins_every_body_in_one_publication() -> Result<()> {
+    let (_store, authority, branch, namespace) = fixture()?;
+    let bodies = [
+        vec![0x11u8; crate::manifest::SEGMENT_SIZE],
+        vec![0x22u8; crate::manifest::SEGMENT_SIZE],
+    ];
+    let writes = bodies
+        .iter()
+        .map(|bytes| {
+            Ok(crate::object_store::GroupWrite::absent(
+                namespace.key(&format!("segments/{}", crate::manifest::digest(bytes)))?,
+                bytes.clone(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let before = authority.snapshot()?.root.revision;
+    let etags = branch.put_group(&writes)?;
+    assert_eq!(etags.len(), bodies.len());
+    let root = authority.snapshot()?.root;
+    // One publication: the retry, the reservation and the registration share it.
+    assert_eq!(root.revision, before + 1);
+    for bytes in &bodies {
+        let key = format!("segments/{}", crate::manifest::digest(bytes));
+        let entry = root
+            .objects
+            .get(&key)?
+            .with_context(|| format!("segment {key} not registered"))?;
+        assert_eq!(authority.read_blob(&entry)?, *bytes);
+        assert!(!root.uploads.contains(&entry.blob)?);
+        assert!(root
+            .pin_entries
+            .get(&format!("{}/{}", branch.pin_identity(), entry.blob))?
+            .is_some());
+    }
+    // A group is all-or-nothing: retrying landed bodies leaves the catalog unchanged and
+    // fails the pre-group condition, which is what sends the caller to its identity check.
+    let rejected = branch
+        .put_group(&writes)
+        .expect_err("an existing segment must reject the group");
+    assert!(rejected.is::<crate::object_store::PreconditionFailed>());
+    assert_eq!(authority.snapshot()?.root.revision, root.revision);
+    Ok(())
+}

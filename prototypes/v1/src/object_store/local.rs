@@ -418,7 +418,6 @@ impl ObjectStore for LocalObjectStore {
                 let mut handles = Vec::with_capacity(workers);
                 for offset in 0..workers {
                     let etags = &etags;
-                    let writes = writes;
                     handles.push(scope.spawn(move || {
                         (offset..writes.len())
                             .step_by(workers)

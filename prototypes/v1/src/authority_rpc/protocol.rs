@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use anyhow::Context;
+
 use crate::object_store::PutCondition;
 use crate::ownership::types::{
     AccessRole, GrantRequest, LeaseBinding, LeaseIntent, RenewRequest, RevokeRequest,
@@ -14,6 +16,48 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_RPC_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_SEGMENT_BATCH: usize = 16;
 pub const MAX_IMPORT_SEGMENT_BATCH: usize = 64;
+/// A checkpoint backfill publishes hundreds of dirty segments. Each body used to cost a
+/// conditional put and a media barrier on its own, which made one backfill tens of seconds
+/// and blocked foreground SQL for the whole truncate checkpoint. One group carries the
+/// same bodies with one authority publication and one barrier per batch; the bound keeps a
+/// single RPC far below `MAX_RPC_BYTES` after base64 expansion.
+pub const MAX_GROUP_WRITES: usize = 32;
+pub const MAX_GROUP_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SegmentGroupWrite {
+    pub key: String,
+    #[serde(with = "crate::object_store::payload")]
+    pub bytes: Vec<u8>,
+}
+
+pub fn validate_segment_group(writes: &[SegmentGroupWrite]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !writes.is_empty() && writes.len() <= MAX_GROUP_WRITES,
+        "invalid segment group batch"
+    );
+    let mut total = 0usize;
+    for write in writes {
+        // The fenced store proves the key belongs to this namespace; here the last path
+        // component must be the content digest, which is what makes retries idempotent.
+        let hash = write.key.rsplit('/').next().unwrap_or_default();
+        anyhow::ensure!(
+            crate::manifest::valid_hash(hash)
+                && write.bytes.len() == crate::manifest::SEGMENT_SIZE
+                && crate::manifest::digest(&write.bytes) == hash,
+            "invalid segment group body"
+        );
+        total = total
+            .checked_add(write.bytes.len())
+            .context("segment group size overflow")?;
+    }
+    anyhow::ensure!(
+        total <= MAX_GROUP_BYTES,
+        "segment group exceeds byte budget"
+    );
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +191,12 @@ pub enum SessionOperation {
         #[serde(with = "crate::object_store::payload")]
         bytes: Vec<u8>,
         condition: PutCondition,
+    },
+    /// Durability group for immutable content-addressed segment bodies. It never carries a
+    /// mutable key or a conditional head: the caller still publishes the manifest and the
+    /// HEAD CAS as separate writes after this group is durable.
+    PutGroup {
+        writes: Vec<SegmentGroupWrite>,
     },
     Delete {
         key: String,

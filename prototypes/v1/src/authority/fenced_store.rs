@@ -159,6 +159,36 @@ impl ObjectStore for FencedStore {
         self.inner.as_ref().unwrap().put(key, bytes, condition)
     }
 
+    /// Immutable segment bodies only. A group is a durability batch, not a second path for
+    /// mutable publications: the HEAD CAS and `wal/index` keep their single-key fences, and
+    /// every body here must already carry its content digest in the key and checksum.
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        ensure!(self.role == AccessRole::Writer, "ReadOnly");
+        ensure!(!writes.is_empty(), "empty segment group");
+        for write in writes {
+            let relative = self.key(&write.key)?;
+            ensure!(
+                relative
+                    .strip_prefix("segments/")
+                    .is_some_and(crate::manifest::valid_hash),
+                "Unauthorized group key"
+            );
+            ensure!(
+                matches!(write.condition, PutCondition::Absent),
+                "Unauthorized immutable condition"
+            );
+            let hash = relative.rsplit('/').next().unwrap_or_default();
+            ensure!(
+                write.bytes.len() == crate::manifest::SEGMENT_SIZE
+                    && blake3::hash(&write.bytes).to_hex().as_str() == hash,
+                "immutable checksum mismatch"
+            );
+        }
+        let _ticket = self.service.gate.read()?;
+        self.service.live(&self.binding)?;
+        self.inner.as_ref().unwrap().put_group(writes)
+    }
+
     fn delete(&self, _: &str, _: Option<&str>) -> Result<()> {
         anyhow::bail!("Unauthorized worker delete")
     }

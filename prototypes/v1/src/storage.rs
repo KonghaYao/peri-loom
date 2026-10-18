@@ -390,7 +390,11 @@ impl RemoteStorage {
         // An immutable body only needs one successful existence/integrity check in this
         // publication. Keep the bytes too: sharing a hash must never hide a collision. This
         // table is discarded on error or return; a later publication must check again.
+        // The bodies are collected and published as bounded groups: a checkpoint backfill
+        // dirties hundreds of segments, and one conditional put plus one media barrier per
+        // segment held the truncate checkpoint (and foreground SQL) for tens of seconds.
         let mut checked = BTreeMap::<String, &[u8]>::new();
+        let mut pending = Vec::<(String, &[u8])>::new();
         for (index, bytes) in &dirty {
             let hash = digest(bytes);
             let key = self.namespace.key(&format!("segments/{hash}"))?;
@@ -400,11 +404,12 @@ impl RemoteStorage {
                     "immutable object integrity failure: {key}"
                 );
             } else {
-                put_immutable(self.store.as_ref(), &key, bytes)?;
                 checked.insert(hash.clone(), bytes.as_slice());
+                pending.push((key, bytes.as_slice()));
             }
             next.segments.insert(*index, hash);
         }
+        publish_segments(self.store.as_ref(), &pending)?;
         next.validate()?;
         let bytes = serde_json::to_vec(&next)?;
         let identifier = digest(&bytes);
@@ -571,6 +576,33 @@ fn resolve_segment(state: &State, index: u64) -> SegmentSource {
     }
 }
 
+/// Publish immutable segment bodies in bounded groups. A backend with a real durability
+/// group pays one media barrier per batch instead of one per 128 KiB body; the portable
+/// fallback keeps the per-write behaviour through the trait's default. A rejected group
+/// either published nothing or left unreferenced content-addressed bodies behind, and the
+/// fallback re-checks every body with `put_immutable`, which is idempotent for a body that
+/// already landed.
+fn publish_segments(store: &dyn ObjectStore, bodies: &[(String, &[u8])]) -> Result<()> {
+    for batch in bodies.chunks(crate::authority_rpc::protocol::MAX_GROUP_WRITES) {
+        let writes = batch
+            .iter()
+            .map(|(key, bytes)| {
+                crate::object_store::GroupWrite::absent(key.clone(), bytes.to_vec())
+            })
+            .collect::<Vec<_>>();
+        match store.put_group(&writes) {
+            Ok(_) => {}
+            Err(error) if error.is::<crate::object_store::PreconditionFailed>() => {
+                for (key, bytes) in batch {
+                    put_immutable(store, key, bytes)?;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn put_immutable(store: &dyn ObjectStore, key: &str, bytes: &[u8]) -> Result<()> {
     if let Some(existing) = store.get(key)? {
         ensure!(
@@ -593,6 +625,66 @@ fn put_immutable(store: &dyn ObjectStore, key: &str, bytes: &[u8]) -> Result<()>
 mod image_tests {
     use super::*;
     use crate::object_store::MemoryObjectStore;
+
+    #[derive(Default)]
+    struct GroupCountingStore {
+        inner: MemoryObjectStore,
+        groups: std::sync::atomic::AtomicUsize,
+        puts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ObjectStore for GroupCountingStore {
+        fn get(&self, key: &str) -> Result<Option<crate::object_store::StoredObject>> {
+            self.inner.get(key)
+        }
+
+        fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+            self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put(key, bytes, condition)
+        }
+
+        fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+            self.groups
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_group(writes)
+        }
+
+        fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+            self.inner.delete(key, expected)
+        }
+
+        fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            self.inner.list(prefix)
+        }
+    }
+
+    #[test]
+    fn dirty_segments_reach_the_store_as_one_durability_group() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(GroupCountingStore::default());
+        let namespace = Namespace::new("tenant", "database")?;
+        let cache = Arc::new(SegmentCache::new(directory.path(), 0, 0)?);
+        let storage = RemoteStorage::open(store.clone(), namespace, cache)?;
+        let groups_before = store.groups.load(std::sync::atomic::Ordering::SeqCst);
+        let puts_before = store.puts.load(std::sync::atomic::Ordering::SeqCst);
+        let data = vec![0x5a; SEGMENT_SIZE * 2];
+        storage.write_at(0, &data)?;
+        storage.publish(WalPosition::default(), 1)?;
+        // The two dirty segments share one group; only the manifest body and the HEAD CAS
+        // stay on the single-write path.
+        assert_eq!(
+            store.groups.load(std::sync::atomic::Ordering::SeqCst),
+            groups_before + 1
+        );
+        assert_eq!(
+            store.puts.load(std::sync::atomic::Ordering::SeqCst),
+            puts_before + 2
+        );
+        let mut out = vec![0u8; data.len()];
+        storage.read_at(0, &mut out)?;
+        assert_eq!(out, data);
+        Ok(())
+    }
 
     #[test]
     fn detects_external_initial_image_publication() -> Result<()> {

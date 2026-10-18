@@ -608,6 +608,24 @@ impl State {
                         bytes,
                         condition,
                     } => Ok(json!(selected.store.put(&key, &bytes, condition)?)),
+                    SessionOperation::PutGroup { writes } => {
+                        super::protocol::validate_segment_group(&writes)?;
+                        ensure!(
+                            selected.store.access_role() == AccessRole::Writer,
+                            "ReadOnly"
+                        );
+                        let writes = writes
+                            .into_iter()
+                            .map(|write| {
+                                crate::object_store::GroupWrite::new(
+                                    write.key,
+                                    write.bytes,
+                                    crate::object_store::PutCondition::Absent,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        Ok(serde_json::to_value(selected.store.put_group(&writes)?)?)
+                    }
                     SessionOperation::Delete { key, expected } => {
                         selected.store.delete(&key, expected.as_deref())?;
                         Ok(Value::Null)

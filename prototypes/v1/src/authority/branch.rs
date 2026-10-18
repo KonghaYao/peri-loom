@@ -758,6 +758,73 @@ impl ObjectStore for BranchStore {
         Ok(entry.etag)
     }
 
+    /// Publish a batch of immutable segment bodies as one authority publication. The
+    /// per-body path reserves an upload intent in one revision and registers the object in
+    /// the next; a checkpoint backfill would pay that twice per 128 KiB segment. Here the
+    /// bodies ride in the group, every registration is discharged in the transaction that
+    /// makes it reachable, and one pin extension covers the batch.
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        ensure!(!writes.is_empty(), "empty segment group");
+        let mut view = self
+            .view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
+        let snapshot = self.authority.snapshot()?;
+        if let Some(guard) = &self.authority.guard {
+            guard.validate_root(&snapshot.root, &snapshot.root)?;
+        }
+        self.bound(&snapshot.root)?;
+        let mut staged = Vec::with_capacity(writes.len());
+        for write in writes {
+            let relative = self.relative(&write.key)?.to_owned();
+            ensure!(
+                relative
+                    .strip_prefix("segments/")
+                    .is_some_and(crate::manifest::valid_hash),
+                "group publication outside the segment namespace"
+            );
+            let current = snapshot.root.objects.get(&relative)?;
+            Self::condition(current.as_ref(), &write.condition)?;
+            self.validate_publication(&snapshot.root, &relative, &write.bytes)?;
+            staged.push((relative, Authority::upload_entry(&write.bytes)?, write));
+        }
+        let bodies = staged
+            .iter()
+            .map(|(_, entry, write)| PublicationBody {
+                entry,
+                bytes: &write.bytes,
+            })
+            .collect::<Vec<_>>();
+        let mut added = BTreeMap::new();
+        let mut selected = None;
+        self.authority.transact_with_bodies(&bodies, |root| {
+            self.bound(root)?;
+            let mut entries = BTreeMap::new();
+            for (relative, entry, write) in &staged {
+                let current = root.objects.get(relative)?;
+                Self::condition(current.as_ref(), &write.condition)?;
+                self.validate_publication(root, relative, &write.bytes)?;
+                ensure!(
+                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
+                    "physical instance collision"
+                );
+                root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                root.uploads.insert(entry.blob.clone(), entry.clone())?;
+                root.objects.insert(relative.clone(), entry.clone())?;
+                entries.insert(relative.clone(), entry.clone());
+            }
+            added = self.extend_pin(root, &view, entries)?;
+            selected = Some(Self::selected(root, &self.branch)?);
+            Ok(())
+        })?;
+        Self::refresh(
+            &mut view,
+            selected.context("branch group publication view missing")?,
+            added,
+        );
+        Ok(staged.into_iter().map(|(_, entry, _)| entry.etag).collect())
+    }
+
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
         let relative = self.relative(key)?;
         let mut view = self

@@ -2,7 +2,8 @@ use super::*;
 use crate::authority::Authority;
 use crate::authority_rpc::client::AuthorityClient;
 use crate::authority_rpc::protocol::{
-    AuthorityCommand, SessionOperation, MAX_RPC_BYTES, MAX_SEGMENT_BATCH,
+    validate_segment_group, AuthorityCommand, SegmentGroupWrite, SessionOperation,
+    MAX_GROUP_WRITES, MAX_RPC_BYTES, MAX_SEGMENT_BATCH,
 };
 use crate::authority_rpc::provider::RemoteAuthorityProvider;
 use crate::manifest::{digest, SEGMENT_SIZE};
@@ -195,6 +196,45 @@ fn authenticated_batches_are_registered_only_by_live_writers() -> Result<()> {
             created_ms: 1,
         }])
         .is_err());
+    // One durability group carries the segment body, its registration and the pin; the
+    // caller's conditional manifest/HEAD writes stay outside it.
+    let grouped = vec![0x5au8; SEGMENT_SIZE];
+    let grouped_key = database
+        .namespace
+        .key(&format!("segments/{}", digest(&grouped)))?;
+    let grouped_entry = scoped.put_group(&[crate::object_store::GroupWrite::absent(
+        grouped_key.clone(),
+        grouped.clone(),
+    )])?;
+    assert_eq!(grouped_entry.len(), 1);
+    assert_eq!(
+        scoped
+            .get(&grouped_key)?
+            .expect("grouped segment body missing")
+            .bytes,
+        grouped
+    );
+    assert!(readonly_store
+        .put_group(&[crate::object_store::GroupWrite::absent(
+            grouped_key,
+            grouped.clone()
+        )])
+        .is_err());
+    let grouped_root = authority.snapshot()?.root;
+    assert!(grouped_root
+        .objects
+        .get(&format!("segments/{}", digest(&grouped)))?
+        .is_some());
+    assert!(grouped_root
+        .uploads
+        .get(
+            &grouped_root
+                .objects
+                .get(&format!("segments/{}", digest(&grouped)))?
+                .unwrap()
+                .blob
+        )?
+        .is_none());
     control.call(AuthorityCommand::Revoke {
         request: RevokeRequest {
             request_id: "batch-revoke".to_owned(),
@@ -325,5 +365,27 @@ fn wal_receipt_archive_round_trips_through_the_session_rpc() -> Result<()> {
     drop(wal);
     control.call(AuthorityCommand::Shutdown)?;
     handle.join().expect("authority server panicked")?;
+    Ok(())
+}
+
+#[test]
+fn segment_groups_require_full_content_addressed_bodies() -> Result<()> {
+    let bytes = vec![0x77u8; SEGMENT_SIZE];
+    let good = SegmentGroupWrite {
+        key: format!("tenant/database/segments/{}", digest(&bytes)),
+        bytes: bytes.clone(),
+    };
+    validate_segment_group(std::slice::from_ref(&good))?;
+    let mut corrupt = good.clone();
+    corrupt.bytes[0] ^= 1;
+    assert!(validate_segment_group(&[corrupt]).is_err());
+    let mut short = good.clone();
+    short.bytes.pop();
+    assert!(validate_segment_group(&[short]).is_err());
+    let mut wrong_prefix = good.clone();
+    wrong_prefix.key = "tenant/database/manifests/not-a-hash".to_owned();
+    assert!(validate_segment_group(&[wrong_prefix]).is_err());
+    let many = vec![good; MAX_GROUP_WRITES + 1];
+    assert!(validate_segment_group(&many).is_err());
     Ok(())
 }

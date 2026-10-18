@@ -380,6 +380,74 @@ impl ObjectStore for RemoteStore {
         }
     }
 
+    /// Batched immutable segment publication. One call carries up to `MAX_GROUP_WRITES`
+    /// bodies and becomes one authority publication and one media barrier; the fallback
+    /// keeps every other key or condition on the single-write path. The bodies are content
+    /// addressed, so the caller's conditional check stays at the manifest/HEAD fence.
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        if writes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let prefix = self.binding.database.namespace.prefix();
+        let segments = writes.iter().all(|write| {
+            matches!(write.condition, PutCondition::Absent)
+                && write.bytes.len() == crate::manifest::SEGMENT_SIZE
+                && write
+                    .key
+                    .strip_prefix(&prefix)
+                    .and_then(|relative| relative.strip_prefix("segments/"))
+                    .is_some_and(crate::manifest::valid_hash)
+        });
+        if !segments {
+            return writes
+                .iter()
+                .map(|write| self.put(&write.key, &write.bytes, write.condition.clone()))
+                .collect();
+        }
+        ensure!(self.role == AccessRole::Writer, "ReadOnly");
+        let mut etags = Vec::with_capacity(writes.len());
+        let mut start = 0;
+        while start < writes.len() {
+            let mut end = start;
+            let mut bytes = 0usize;
+            while end < writes.len()
+                && end - start < super::protocol::MAX_GROUP_WRITES
+                && (end == start
+                    || bytes + writes[end].bytes.len() <= super::protocol::MAX_GROUP_BYTES)
+            {
+                bytes += writes[end].bytes.len();
+                end += 1;
+            }
+            let batch = &writes[start..end];
+            for write in batch {
+                self.key(&write.key)?;
+            }
+            let payload = batch
+                .iter()
+                .map(|write| super::protocol::SegmentGroupWrite {
+                    key: write.key.clone(),
+                    bytes: write.bytes.clone(),
+                })
+                .collect::<Vec<_>>();
+            let started = std::time::Instant::now();
+            let result = self.call(SessionOperation::PutGroup { writes: payload });
+            let share = started.elapsed() / batch.len().max(1) as u32;
+            for write in batch {
+                crate::metrics::Metrics::global().record(
+                    crate::metrics::Operation::SegmentPut,
+                    share,
+                    result.is_ok(),
+                    write.bytes.len() as u64,
+                );
+            }
+            let reply: Vec<String> = serde_json::from_value(result?)?;
+            ensure!(reply.len() == batch.len(), "invalid segment group response");
+            etags.extend(reply);
+            start = end;
+        }
+        Ok(etags)
+    }
+
     fn delete(&self, _: &str, _: Option<&str>) -> Result<()> {
         anyhow::bail!("unauthorized worker delete")
     }

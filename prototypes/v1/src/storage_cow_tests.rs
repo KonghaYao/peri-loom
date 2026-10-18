@@ -74,7 +74,7 @@ struct CountedStore {
     inner: MemoryObjectStore,
     segment_gets: AtomicUsize,
     segment_puts: AtomicUsize,
-    reject_segment_get: AtomicBool,
+    reject_group: AtomicBool,
     reject_head_put: AtomicBool,
 }
 
@@ -82,23 +82,31 @@ impl ObjectStore for CountedStore {
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         if key.contains("/segments/") {
             self.segment_gets.fetch_add(1, Ordering::SeqCst);
-            ensure!(
-                !self.reject_segment_get.load(Ordering::SeqCst),
-                "injected segment GET failure"
-            );
         }
         self.inner.get(key)
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
-        if key.contains("/segments/") {
-            self.segment_puts.fetch_add(1, Ordering::SeqCst);
-        }
         ensure!(
             !key.ends_with("/HEAD") || !self.reject_head_put.load(Ordering::SeqCst),
             "injected HEAD failure"
         );
-        self.inner.put(key, bytes, condition)
+        let etag = self.inner.put(key, bytes, condition)?;
+        if key.contains("/segments/") {
+            self.segment_puts.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(etag)
+    }
+
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        ensure!(
+            !self.reject_group.load(Ordering::SeqCst),
+            "injected segment group failure"
+        );
+        writes
+            .iter()
+            .map(|write| self.put(&write.key, &write.bytes, write.condition.clone()))
+            .collect()
     }
 
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
@@ -121,19 +129,23 @@ fn counted_storage(directory: &std::path::Path) -> Result<(Arc<RemoteStorage>, A
 }
 
 #[test]
-fn repeated_segment_bodies_are_checked_once_per_publish_and_rechecked_next_time() -> Result<()> {
+fn repeated_segment_bodies_are_grouped_once_per_publish_and_rechecked_next_time() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let (storage, store) = counted_storage(directory.path())?;
     let bytes = vec![7; SEGMENT_SIZE * 8];
     storage.write_at(0, &bytes)?;
     storage.publish(WalPosition::default(), 1)?;
-    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 1);
+    // Eight dirty segments share one body, and a fresh body is published as one
+    // conditional group write: the store's `Absent` precondition replaces the read probe.
+    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 0);
     assert_eq!(store.segment_puts.load(Ordering::SeqCst), 1);
     assert_eq!(storage.manifest().segments.len(), 8);
 
+    // The second publication targets an existing key. The group is rejected before it
+    // writes, and the body is then rechecked byte for byte instead of being rewritten.
     storage.write_at(0, &bytes)?;
     storage.publish(WalPosition::default(), 2)?;
-    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 2);
+    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 1);
     assert_eq!(store.segment_puts.load(Ordering::SeqCst), 1);
 
     // The first body must still be checked against storage on every publication.
@@ -154,27 +166,30 @@ fn repeated_segment_bodies_are_checked_once_per_publish_and_rechecked_next_time(
 }
 
 #[test]
-fn failed_publish_discards_duplicate_checks_and_preserves_dirty_image() -> Result<()> {
+fn failed_publish_preserves_the_dirty_image_and_rechecks_published_bodies() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let (storage, store) = counted_storage(directory.path())?;
     storage.write_at(0, &vec![6; SEGMENT_SIZE * 3])?;
 
-    store.reject_segment_get.store(true, Ordering::SeqCst);
+    // A body group that fails before publishing must leave the image untouched.
+    store.reject_group.store(true, Ordering::SeqCst);
     assert!(storage.publish(WalPosition::default(), 1).is_err());
     assert_eq!(store.segment_puts.load(Ordering::SeqCst), 0);
     assert_eq!(storage.stats().dirty_segments, 3);
 
-    store.reject_segment_get.store(false, Ordering::SeqCst);
+    store.reject_group.store(false, Ordering::SeqCst);
     store.reject_head_put.store(true, Ordering::SeqCst);
     assert!(storage.publish(WalPosition::default(), 1).is_err());
-    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 2);
+    // The body landed, but the HEAD fence did not move: the image stays dirty and the
+    // next publication rechecks the published body instead of uploading it again.
+    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 0);
     assert_eq!(store.segment_puts.load(Ordering::SeqCst), 1);
     assert_eq!(storage.applied_lsn(), 0);
     assert_eq!(storage.stats().dirty_segments, 3);
 
     store.reject_head_put.store(false, Ordering::SeqCst);
     storage.publish(WalPosition::default(), 1)?;
-    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 3);
+    assert_eq!(store.segment_gets.load(Ordering::SeqCst), 1);
     assert_eq!(store.segment_puts.load(Ordering::SeqCst), 1);
     assert_eq!(storage.applied_lsn(), 1);
     assert_eq!(storage.stats().dirty_segments, 0);
