@@ -130,10 +130,17 @@ func pendingDispatchOperation(session *gatewaySession, action, stage, requestID 
 	return &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: command.digest()}
 }
 
-// settlePendingOperation writes the single terminal record of a dispatched
-// operation that was never registered. The record is the acknowledgement: when
-// it cannot be written the reply degrades to an unknown outcome.
+// settlePendingOperation settles a dispatched operation that was never registered.
+// A pending operation is one the platform proved cannot commit: its action is in
+// nonCommittingOperation, or the worker classified its statement read-only. Its
+// audit row is already the durable completion barrier, so a known outcome writes no
+// second record; the sidecar would only put another forced commit between a read and
+// its reply. An uncertain outcome is the exception: the record is what lets recovery
+// and admission isolate the namespace, so it is still written and quarantined.
 func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit) {
+	if result.code != "outcome_unknown" {
+		return
+	}
 	operationID, err := settleNonCommittingOperation(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(record *OperationRecord) {
 		applyOperationOutcome(record, *result, pending.stage)
 	})
@@ -143,9 +150,7 @@ func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result
 		*result = gateway.unknown(result.session, permit)
 		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, pending.stage, pending.database
 	}
-	if result.code == "outcome_unknown" {
-		gateway.holdOperation(pending.database, operationID, permit)
-	}
+	gateway.holdOperation(pending.database, operationID, permit)
 }
 
 // applyOperationOutcome derives the durable record of a dispatched operation

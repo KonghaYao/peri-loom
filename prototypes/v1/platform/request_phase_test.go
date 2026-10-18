@@ -70,8 +70,9 @@ func TestRequestPhaseDefaultOff(test *testing.T) {
 	}
 }
 
-// One read request reports its own segments: durable intent and terminal writes are separated
-// from the worker call, and the reported parts never exceed the request.
+// One read request reports its own segments: the admission check, the worker call and
+// the durable audit barrier are separated, and no sidecar terminal write is charged to
+// the request.
 func TestRequestPhaseRecordsReadSegments(test *testing.T) {
 	fixture, observer := requestPhaseObserverFixture(test)
 	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
@@ -98,10 +99,17 @@ func TestRequestPhaseRecordsReadSegments(test *testing.T) {
 			test.Fatalf("the read path did not report its %s segment: %+v", phase, record.Spans)
 		}
 	}
-	// A read query registers a durable intent and then its terminal record, so both segments
-	// must be present and neither may be folded into the other.
-	if seen[requestPhaseIntent] == 0 || seen[requestPhaseTerminal] == 0 {
-		test.Fatalf("a durable write was reported with no time: intent=%d terminal=%d", seen[requestPhaseIntent], seen[requestPhaseTerminal])
+	// A read query pays no sidecar terminal write: its audit row is the durable
+	// completion barrier. The admission check still reports an intent segment, and the
+	// terminal segment may only carry the call that skipped the record.
+	if seen[requestPhaseIntent] == 0 {
+		test.Fatal("the read admission check was not reported")
+	}
+	if seen[requestPhaseTerminal] > 1_000_000 {
+		test.Fatalf("a read still paid a sidecar terminal write: %d ns", seen[requestPhaseTerminal])
+	}
+	if seen[requestPhaseAudit] == 0 {
+		test.Fatal("the read durable audit barrier was not reported")
 	}
 	if seen[requestPhaseWorker] == 0 {
 		test.Fatal("the worker call was reported with no time")

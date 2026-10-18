@@ -74,10 +74,11 @@ func sidecarRevision(store StateStore) uint64 {
 	return store.(*stateStore).operations.revision
 }
 
-// A read cursor and a describe cannot commit, so each keeps one durable record
-// instead of a registration plus a settlement.
-func TestNonCommittingOperationKeepsOneDurableRecord(test *testing.T) {
-	store, gateway, upstream, _, credential := securityGatewayFixture(test)
+// A read cursor, a describe and a statement the worker proved read-only cannot
+// commit, so their audit row is the only durable record and the operation sidecar
+// stays untouched. A writable statement still pays registration plus settlement.
+func TestNonCommittingOperationKeepsNoSidecarRecord(test *testing.T) {
+	store, gateway, upstream, audit, credential := securityGatewayFixture(test)
 	database := securityDatabase()
 	var opened struct {
 		Result struct {
@@ -109,25 +110,20 @@ func TestNonCommittingOperationKeepsOneDurableRecord(test *testing.T) {
 		if response.Code != 200 {
 			test.Fatalf("%s failed: %d %s", request.name, response.Code, response.Body.String())
 		}
-		if grew := sidecarRevision(store) - before; grew != 1 {
-			test.Fatalf("%s cost %d operation sidecar revisions, want 1", request.name, grew)
+		if grew := sidecarRevision(store) - before; grew != 0 {
+			test.Fatalf("%s cost %d operation sidecar revisions, want 0", request.name, grew)
 		}
 		state, err := store.Snapshot()
 		if err != nil {
 			test.Fatal(err)
 		}
-		found := false
 		for _, record := range state.Operations {
-			if record.Action != request.action {
-				continue
-			}
-			found = true
-			if record.State != "terminal" || record.BusinessOutcome != "completed" || !record.ExecutionProven || record.Stage != "tool_rpc" || record.Session == "" {
-				test.Fatalf("%s recorded %+v", request.name, record.OperationStatus)
+			if record.Action == request.action {
+				test.Fatalf("%s kept a sidecar record: %+v", request.name, record.OperationStatus)
 			}
 		}
-		if !found {
-			test.Fatalf("%s left no record", request.name)
+		if outcomes := audit.outcomesOf(request.action); len(outcomes) != 1 || outcomes[0] != "ok" {
+			test.Fatalf("%s lost its durable audit row: %v", request.name, outcomes)
 		}
 	}
 	before := sidecarRevision(store)

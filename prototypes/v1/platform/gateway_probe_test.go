@@ -44,10 +44,11 @@ func TestHranaReadonlyProbeLeavesNoRecordOrAuditRow(test *testing.T) {
 			test.Fatal("readonly probe wrote an audit row")
 		}
 	}
-	// The client action still pays for its session open, cursor open and fetch:
-	// the session open is a committing operation, the cursor steps are not.
-	if grew := sidecarRevision(store) - before; grew != 4 {
-		test.Fatalf("client cursor request cost %d operation sidecar revisions, want 4", grew)
+	// The client action pays only for its session open: that open is a committing
+	// operation with an intent and a settlement. The cursor open and fetch are
+	// proven non-committing, so on a known outcome they write no sidecar record.
+	if grew := sidecarRevision(store) - before; grew != 2 {
+		test.Fatalf("client cursor request cost %d operation sidecar revisions, want 2", grew)
 	}
 	var opened struct {
 		Result struct {
@@ -63,8 +64,8 @@ func TestHranaReadonlyProbeLeavesNoRecordOrAuditRow(test *testing.T) {
 	if response.Code != 200 {
 		test.Fatalf("direct describe failed: %d %s", response.Code, response.Body.String())
 	}
-	if grew := sidecarRevision(store) - describeBefore; grew != 1 {
-		test.Fatalf("direct describe cost %d operation sidecar revisions, want 1", grew)
+	if grew := sidecarRevision(store) - describeBefore; grew != 0 {
+		test.Fatalf("direct describe cost %d operation sidecar revisions, want 0", grew)
 	}
 	if actions := audit.actions(); len(actions) != auditBefore+1 || actions[len(actions)-1] != "describe" {
 		test.Fatalf("direct describe audited %v", actions[auditBefore:])

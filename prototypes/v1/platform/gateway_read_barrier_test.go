@@ -267,8 +267,8 @@ func readonlyVerdict(readonly bool) func(string) (any, error) {
 	}
 }
 
-// A statement the worker prepared as read-only keeps no durable intent: the
-// request pays one operation commit, and the statement still reaches the worker.
+// A statement the worker prepared as read-only writes no sidecar record: its audit
+// row is the durable completion barrier, and the statement still reaches the worker.
 func TestReadOnlyStatementKeepsNoIntent(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	hook := (&readonlyDescribeHook{verdict: readonlyVerdict(true)}).install(fixture)
@@ -287,15 +287,20 @@ func TestReadOnlyStatementKeepsNoIntent(test *testing.T) {
 	if hook.count() != 1 {
 		test.Fatalf("the classification did not use exactly one worker describe: %d", hook.count())
 	}
-	if commits := operationCommits(test, store) - opened; commits != 1 {
-		test.Fatalf("a proven read-only statement still wrote an intent: %d commits", commits)
+	if commits := operationCommits(test, store) - opened; commits != 0 {
+		test.Fatalf("a proven read-only statement still wrote a sidecar record: %d commits", commits)
 	}
-	record := operationByRequestID(test, fixture.state, "readonly_query")
-	if record.State != "terminal" || record.BusinessOutcome != "completed" || !record.ExecutionProven {
-		test.Fatalf("the proven read-only statement kept no settled terminal record: %+v", record.OperationStatus)
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		test.Fatal(err)
 	}
-	if record.Digest != commandDigest(transmittedCommand(test, fixture.upstream, "query")) {
-		test.Fatal("the terminal record does not cover the transmitted statement")
+	for _, record := range state.Operations {
+		if record.RequestID == "readonly_query" {
+			test.Fatalf("a proven read-only statement kept an operation record: %+v", record.OperationStatus)
+		}
+	}
+	if outcomes := fixture.audit.outcomesOf("query"); len(outcomes) != 1 || outcomes[0] != "ok" {
+		test.Fatalf("the durable audit row of the read-only statement changed: %v", outcomes)
 	}
 }
 
@@ -400,16 +405,13 @@ func TestReadOnlyVerdictIsNotRemembered(test *testing.T) {
 	if hook.count() != 2 {
 		test.Fatalf("the read-only verdict was remembered instead of re-proven: %d describes", hook.count())
 	}
-	if commits := operationCommits(test, store) - opened; commits != 2 {
-		test.Fatalf("a re-proven read-only statement wrote an intent: %d commits for two reads", commits)
+	if commits := operationCommits(test, store) - opened; commits != 0 {
+		test.Fatalf("a re-proven read-only statement wrote a sidecar record: %d commits for two reads", commits)
 	}
-	firstRecord, secondRecord := operationByRequestID(test, fixture.state, "cached_first"), operationByRequestID(test, fixture.state, "cached_second")
-	firstRecord.OperationID, firstRecord.RequestID = "", ""
-	secondRecord.OperationID, secondRecord.RequestID = "", ""
-	// RegistrationSequence is the order of the append, not the record's content.
-	firstRecord.RegistrationSequence, secondRecord.RegistrationSequence = 0, 0
-	if firstRecord != secondRecord {
-		test.Fatalf("the re-proven verdict wrote a different record: %+v vs %+v", firstRecord, secondRecord)
+	for _, requestID := range []string{"cached_first", "cached_second"} {
+		if records := operationRecordsOf(test, fixture.state, requestID); len(records) != 0 {
+			test.Fatalf("a re-proven read-only statement left %d records for %s", len(records), requestID)
+		}
 	}
 }
 
@@ -434,8 +436,8 @@ func TestReadOnlyVerdictFlipsToCommittingKeepsItsIntent(test *testing.T) {
 	if proven.Code != 200 {
 		test.Fatalf("the proven read-only query failed: %d %s", proven.Code, proven.Body.String())
 	}
-	if commits := operationCommits(test, store) - opened; commits != 1 {
-		test.Fatalf("the proven read-only query did not take the intent-free path: %d commits", commits)
+	if commits := operationCommits(test, store) - opened; commits != 0 {
+		test.Fatalf("the proven read-only query did not take the record-free path: %d commits", commits)
 	}
 	flipped := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT id FROM records", "request_id": "flip_committing"})
 	if flipped.Code != 200 {
@@ -447,7 +449,7 @@ func TestReadOnlyVerdictFlipsToCommittingKeepsItsIntent(test *testing.T) {
 	if fixture.upstream.count("query") != 2 {
 		test.Fatal("the flipped statement did not reach the worker")
 	}
-	if commits := operationCommits(test, store) - opened; commits != 3 {
+	if commits := operationCommits(test, store) - opened; commits != 2 {
 		test.Fatalf("the flipped statement did not register an intent and settle a terminal record: %d commits", commits)
 	}
 	record := operationByRequestID(test, fixture.state, "flip_committing")

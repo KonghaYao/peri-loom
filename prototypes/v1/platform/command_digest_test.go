@@ -27,7 +27,9 @@ func frozenTestCommand(test *testing.T, command any) frozenCommand {
 }
 
 // digestCommandHook answers every worker command the digest vectors send, so one
-// table can cover the whole client surface.
+// table can cover the whole client surface. Its describe verdict is committing:
+// the table checks the digest of durable records, and a proven read-only verdict
+// removes the record instead of writing one.
 func digestCommandHook() func(context.Context, controller.Worker, map[string]any) (any, error) {
 	return func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		switch command["command"] {
@@ -40,7 +42,7 @@ func digestCommandHook() func(context.Context, controller.Worker, map[string]any
 		case "statement":
 			return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": 1, "last_insert_rowid": nil, "autocommit": true}, nil
 		case "describe":
-			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": true}, nil
+			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": false}, nil
 		case "session_autocommit":
 			return map[string]bool{"autocommit": true}, nil
 		case "open_read_cursor", "open_write_cursor":
@@ -83,16 +85,7 @@ func transmittedCommand(test *testing.T, upstream *gatewayTestUpstream, operatio
 
 func operationByRequestID(test *testing.T, store StateStore, requestID string) OperationRecord {
 	test.Helper()
-	state, err := store.Snapshot()
-	if err != nil {
-		test.Fatal(err)
-	}
-	var found []OperationRecord
-	for _, record := range state.Operations {
-		if record.RequestID == requestID {
-			found = append(found, record)
-		}
-	}
+	found := operationRecordsOf(test, store, requestID)
 	if len(found) != 1 {
 		test.Fatalf("expected one durable record for %s, found %d", requestID, len(found))
 	}
@@ -109,8 +102,11 @@ func gatewayRawHTTP(test *testing.T, gateway *Gateway, token, path, body string)
 }
 
 // The durable digest is the identity of the command a worker actually received.
-// Every client entry point is checked the same way: recompute the digest from the
-// captured command bytes and require the record to carry exactly that value.
+// A committing entry point is checked the same way: recompute the digest from the
+// captured command bytes and require the record to carry exactly that value. An
+// entry point the platform proved non-committing leaves no record on a known
+// outcome, so the table requires none; the uncertain path that still writes one
+// is checked by TestPendingOperationDigestBindsTransmittedCommand.
 func TestOperationDigestBindsTransmittedCommand(test *testing.T) {
 	vectors := []struct {
 		name      string
@@ -120,54 +116,55 @@ func TestOperationDigestBindsTransmittedCommand(test *testing.T) {
 		// The open vector is the one entry that must not open a session first:
 		// it is the request that opens it.
 		noSession bool
+		durable   bool
 		body      func(*gatewayFixture, string) map[string]any
 	}{
-		{"open", "/v1/sql/open", "digest_open", "open_session", true, func(fixture *gatewayFixture, _ string) map[string]any {
+		{"open", "/v1/sql/open", "digest_open", "open_session", true, true, func(fixture *gatewayFixture, _ string) map[string]any {
 			return map[string]any{"database": fixture.first}
 		}},
-		{"execute", "/v1/sql/execute", "digest_execute", "execute", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"execute", "/v1/sql/execute", "digest_execute", "execute", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "INSERT INTO records(id) VALUES(1)"}
 		}},
-		{"query", "/v1/sql/query", "digest_query", "query", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"query", "/v1/sql/query", "digest_query", "query", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "SELECT id FROM records"}
 		}},
-		{"statement", "/v1/sql/statement", "digest_statement", "statement", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"statement", "/v1/sql/statement", "digest_statement", "statement", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "INSERT INTO records(id) VALUES(?)", "args": []any{map[string]any{"type": "integer", "value": "1"}}, "named_args": []any{}}
 		}},
-		{"statement_named_arguments", "/v1/sql/statement", "digest_statement_named", "statement", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"statement_named_arguments", "/v1/sql/statement", "digest_statement_named", "statement", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "INSERT INTO records(id) VALUES(:id)", "named_args": []any{map[string]any{"name": "id", "value": map[string]any{"type": "integer", "value": "007"}}}}
 		}},
-		{"statement_absent_want_rows", "/v1/sql/statement", "digest_statement_default_rows", "statement", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"statement_absent_want_rows", "/v1/sql/statement", "digest_statement_default_rows", "statement", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "SELECT ?", "args": []any{map[string]any{"type": "text", "value": "hello"}}}
 		}},
-		{"statement_discarded_rows", "/v1/sql/statement", "digest_statement_no_rows", "statement", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"statement_discarded_rows", "/v1/sql/statement", "digest_statement_no_rows", "statement", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "SELECT ?", "args": []any{map[string]any{"type": "text", "value": "hello"}}, "want_rows": false}
 		}},
-		{"describe", "/v1/sql/describe", "digest_describe", "describe", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"describe", "/v1/sql/describe", "digest_describe", "describe", false, false, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "SELECT ? FROM records"}
 		}},
-		{"session_state", "/v1/sql/session_state", "digest_session_state", "session_autocommit", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"session_state", "/v1/sql/session_state", "digest_session_state", "session_autocommit", false, false, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session}
 		}},
-		{"close", "/v1/sql/close", "digest_close", "close_session", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"close", "/v1/sql/close", "digest_close", "close_session", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session}
 		}},
-		{"cursor_open_read", "/v1/sql/cursor/open", "digest_cursor_open_read", "open_read_cursor", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"cursor_open_read", "/v1/sql/cursor/open", "digest_cursor_open_read", "open_read_cursor", false, false, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "SELECT ? FROM records", "args": []any{map[string]any{"type": "integer", "value": "1"}}, "named_args": []any{}}
 		}},
-		{"cursor_open_write", "/v1/sql/cursor/open", "digest_cursor_open_write", "open_write_cursor", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"cursor_open_write", "/v1/sql/cursor/open", "digest_cursor_open_write", "open_write_cursor", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "sql": "INSERT INTO records(id) VALUES(?) RETURNING id", "args": []any{map[string]any{"type": "integer", "value": "1"}}, "named_args": []any{}, "write_cursor": true}
 		}},
-		{"cursor_fetch_read", "/v1/sql/cursor/fetch", "digest_cursor_fetch_read", "fetch_read_cursor", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"cursor_fetch_read", "/v1/sql/cursor/fetch", "digest_cursor_fetch_read", "fetch_read_cursor", false, false, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "max_rows": 2}
 		}},
-		{"cursor_fetch_write", "/v1/sql/cursor/fetch", "digest_cursor_fetch_write", "fetch_write_cursor", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"cursor_fetch_write", "/v1/sql/cursor/fetch", "digest_cursor_fetch_write", "fetch_write_cursor", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "max_rows": 2, "write_cursor": true}
 		}},
-		{"cursor_close_read", "/v1/sql/cursor/close", "digest_cursor_close_read", "close_read_cursor", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"cursor_close_read", "/v1/sql/cursor/close", "digest_cursor_close_read", "close_read_cursor", false, false, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session}
 		}},
-		{"cursor_close_write", "/v1/sql/cursor/close", "digest_cursor_close_write", "close_write_cursor", false, func(_ *gatewayFixture, session string) map[string]any {
+		{"cursor_close_write", "/v1/sql/cursor/close", "digest_cursor_close_write", "close_write_cursor", false, true, func(_ *gatewayFixture, session string) map[string]any {
 			return map[string]any{"session": session, "write_cursor": true}
 		}},
 	}
@@ -185,6 +182,12 @@ func TestOperationDigestBindsTransmittedCommand(test *testing.T) {
 			if response.Code != 200 {
 				test.Fatalf("%s rejected: %d %s", vector.name, response.Code, response.Body.String())
 			}
+			if !vector.durable {
+				if records := operationRecordsOf(test, fixture.state, vector.requestID); len(records) != 0 {
+					test.Fatalf("%s left %d durable records on a known outcome", vector.name, len(records))
+				}
+				return
+			}
 			record := operationByRequestID(test, fixture.state, vector.requestID)
 			sent := transmittedCommand(test, fixture.upstream, vector.operation)
 			if record.Digest != commandDigest(sent) {
@@ -194,6 +197,36 @@ func TestOperationDigestBindsTransmittedCommand(test *testing.T) {
 				test.Fatalf("%s record carries no current-scheme digest: %s", vector.name, record.Digest)
 			}
 		})
+	}
+}
+
+// A non-committing command writes its record only when the outcome is
+// uncertain, and that record still binds the bytes the worker received: it is
+// the evidence recovery uses to isolate the namespace.
+func TestPendingOperationDigestBindsTransmittedCommand(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "open_session":
+			return map[string]any{"session": strings.Repeat("a", 64), "readonly": false}, nil
+		case "describe":
+			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": true}, nil
+		case "query":
+			return nil, &SQLRPCError{Ambiguous: true}
+		}
+		return nil, nil
+	})
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT id FROM records", "request_id": "pending_digest"})
+	if response.Code != 502 {
+		test.Fatalf("uncertain read answered %d: %s", response.Code, response.Body.String())
+	}
+	record := operationByRequestID(test, fixture.state, "pending_digest")
+	if record.State != "quarantined" || record.BusinessOutcome != "unknown" || !record.MayHaveCommitted {
+		test.Fatalf("pending record lost its uncertainty: %+v", record.OperationStatus)
+	}
+	if record.Digest != commandDigest(transmittedCommand(test, fixture.upstream, "query")) {
+		test.Fatal("the pending record does not cover the command the worker received")
 	}
 }
 
@@ -233,20 +266,24 @@ func TestOperationDigestDistinguishesSemanticFields(test *testing.T) {
 	if first.Digest == commandDigest(registrationTime) || second.Digest == commandDigest(registrationTime) {
 		test.Fatal("the durable digest is still the digest of the registration-time command")
 	}
-	// Close and session_state are two different worker commands, and each record
-	// must name the one it sends.
+	// session_state is a proven non-committing command: on a known outcome it
+	// leaves no record at all, so it cannot share a digest with anything.
 	if response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/session_state", map[string]any{"session": session, "request_id": "digest_state"}); response.Code != 200 {
 		test.Fatalf("session_state rejected: %d %s", response.Code, response.Body.String())
 	}
-	state := operationByRequestID(test, fixture.state, "digest_state")
+	if records := operationRecordsOf(test, fixture.state, "digest_state"); len(records) != 0 {
+		test.Fatalf("session_state left %d durable records", len(records))
+	}
+	// Close is an in-flight operation with its own durable intent; the record
+	// must name the close command it sent, not the statement above.
 	if response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/close", map[string]any{"session": session, "request_id": "digest_closed"}); response.Code != 200 {
 		test.Fatalf("close rejected: %d %s", response.Code, response.Body.String())
 	}
 	closed := operationByRequestID(test, fixture.state, "digest_closed")
-	if state.Digest == closed.Digest {
-		test.Fatal("close and session_state share one durable digest")
+	if first.Digest == closed.Digest {
+		test.Fatal("close and a statement share one durable digest")
 	}
-	if state.Digest != commandDigest(transmittedCommand(test, fixture.upstream, "session_autocommit")) || closed.Digest != commandDigest(transmittedCommand(test, fixture.upstream, "close_session")) {
+	if closed.Digest != commandDigest(transmittedCommand(test, fixture.upstream, "close_session")) {
 		test.Fatal("renamed command not covered by its own digest")
 	}
 }

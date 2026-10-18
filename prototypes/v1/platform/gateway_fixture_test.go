@@ -90,6 +90,36 @@ func (audit *gatewayTestAudit) Record(event AuditEvent) error {
 }
 func (*gatewayTestAudit) Close() error { return nil }
 
+// outcomesOf returns the outcome of every row recorded for one action.
+func (audit *gatewayTestAudit) outcomesOf(action string) []string {
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	var outcomes []string
+	for _, event := range audit.events {
+		if event.Action == action {
+			outcomes = append(outcomes, event.Outcome)
+		}
+	}
+	return outcomes
+}
+
+// operationRecordsOf returns every durable record left by one request. A proven
+// non-committing operation leaves none, so the absence itself is the assertion.
+func operationRecordsOf(test *testing.T, store StateStore, requestID string) []OperationRecord {
+	test.Helper()
+	state, err := store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	var found []OperationRecord
+	for _, record := range state.Operations {
+		if record.RequestID == requestID {
+			found = append(found, record)
+		}
+	}
+	return found
+}
+
 type gatewayCall struct {
 	worker    controller.Worker
 	command   map[string]any
