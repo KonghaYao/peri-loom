@@ -64,8 +64,12 @@ func (controller *Controller) Reconcile(ctx context.Context) (result error) {
 	for _, key := range keys {
 		placement := metadata.Placements[key]
 		err = nil
-		if err := ctx.Err(); err != nil {
-			return err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Keep the placement failures observed before cancellation; the
+			// management log and the caller need both the deadline and the
+			// underlying RPC/placement errors.
+			failures = append(failures, ctxErr)
+			return errors.Join(failures...)
 		}
 		if placement.Phase != "active" && placement.Phase != "suspended" {
 			if placement.Phase == "acquire_pending" || placement.Phase == "renew_worker_pending" {
