@@ -462,6 +462,10 @@ class Project:
         # until readiness makes later writes possible.
         self.phase = "startup"
         self.restart_attempt = False
+        # Set when prepare() refused because the existing failure record failed
+        # the operator gate. The record is authoritative even when it is legacy,
+        # unsigned or asks for reuse: it must not be replaced by this attempt.
+        self.restart_failure_gate_rejected = False
         self.ready_services = set()
         self.clean_evidence = None
         self.restart_failure = None
@@ -583,9 +587,13 @@ class Project:
         if not self.processes and self.clean_evidence is None and existing.exists():
             # prepare() refused before staging anything. Keep an existing
             # operator-required record: it is the only account of the original
-            # failure, and a repeated refusal must not overwrite it. A record
-            # that still allows reuse does not describe this refusal, so the
-            # new failure is written below.
+            # failure, and a repeated refusal must not overwrite it. The gate
+            # rejection flag covers legacy/unsigned records and violations that
+            # are not expressed by requires_operator alone. A record that still
+            # passes the gate does not describe this refusal, so the new failure
+            # is written below.
+            if self.restart_failure_gate_rejected:
+                return
             configuration = getattr(self, "config", {}).get("owned_stop_proof")
             if configuration:
                 try:
@@ -1190,7 +1198,11 @@ class Project:
             configuration = self.config.get("owned_stop_proof")
             if not configuration:
                 raise RuntimeError("owned stop proof configuration missing")
-            self.verify_restart_failure_gate(configuration)
+            try:
+                self.verify_restart_failure_gate(configuration)
+            except Exception:
+                self.restart_failure_gate_rejected = True
+                raise
             verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
             verify_clean_terminal(self.directory, configuration)
             # 复用的 clean 语义必须与停机时一致：历史 terminal proof 也是在一个可能滞后于侧车的 payload 上做出的判定。

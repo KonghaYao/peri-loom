@@ -647,6 +647,61 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertTrue(record["requires_operator"])
             self.assertIn("legacy clean proof", record["error"])
 
+    def test_failure_gate_rejection_is_never_replaced_by_reuse(self):
+        cases = {
+            "teardown incomplete": {"version": 1, "kind": "launcher_restart_failure",
+                                    "requires_operator": False, "teardown_completed": False},
+            "processes not stopped": {"version": 1, "kind": "launcher_restart_failure",
+                                      "requires_operator": False, "teardown_completed": True,
+                                      "all_processes_stopped": False},
+            "legacy missing teardown": {"version": 1, "kind": "launcher_restart_failure",
+                                        "requires_operator": False},
+            "missing requires_operator": {"version": 1, "kind": "launcher_restart_failure",
+                                          "teardown_completed": True},
+            "unknown kind": {"version": 1, "kind": "other",
+                             "requires_operator": False, "teardown_completed": True},
+        }
+        for label, record in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix="restart-gate-", dir="/tmp") as directory:
+                fixture = self.clean_run_directory(directory)
+                root = pathlib.Path(directory).resolve()
+                failure_path = root / "launcher-restart-failure.json"
+                dev.atomic_private_json(failure_path, dev.signed_owned_identity(
+                    fixture.config["owned_stop_proof"], record))
+                previous = failure_path.read_bytes()
+
+                def refusing_run(project):
+                    project.acquire_run_lock()
+                    project.prepare()
+
+                with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                    self.assertEqual(dev.main(), 1)
+                self.assertEqual(failure_path.read_bytes(), previous)
+                with self.assertRaisesRegex(RuntimeError, "operator recovery"):
+                    dev.Project(fixture.arguments).prepare()
+        with tempfile.TemporaryDirectory(prefix="restart-gate-mac-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            failure_path = root / "launcher-restart-failure.json"
+            dev.atomic_private_json(failure_path, dev.signed_owned_identity(
+                fixture.config["owned_stop_proof"], {
+                    "version": 1, "kind": "launcher_restart_failure",
+                    "requires_operator": True, "teardown_completed": True}))
+            tampered = json.loads(failure_path.read_text())
+            tampered["mac"] = "0" * 64
+            failure_path.write_text(json.dumps(tampered))
+            previous = failure_path.read_bytes()
+
+            def refusing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+
+            with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertEqual(failure_path.read_bytes(), previous)
+            with self.assertRaisesRegex(RuntimeError, "operator recovery"):
+                dev.Project(fixture.arguments).prepare()
+
     def live_port(self):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
