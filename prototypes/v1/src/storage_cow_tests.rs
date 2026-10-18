@@ -180,3 +180,158 @@ fn failed_publish_discards_duplicate_checks_and_preserves_dirty_image() -> Resul
     assert_eq!(storage.stats().dirty_segments, 0);
     Ok(())
 }
+
+#[derive(Default)]
+struct UploadGate {
+    armed: bool,
+    blocked: bool,
+    released: bool,
+}
+
+/// Blocks the first immutable segment PUT until the test releases it, so a publication can
+/// be observed while it is inside the remote write.
+#[derive(Default)]
+struct GatedStore {
+    inner: MemoryObjectStore,
+    gate: std::sync::Mutex<UploadGate>,
+    changed: std::sync::Condvar,
+}
+
+impl GatedStore {
+    fn arm(&self) {
+        self.gate.lock().expect("upload gate").armed = true;
+    }
+
+    fn wait_until_blocked(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut gate = self.gate.lock().expect("upload gate");
+        while !gate.blocked {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
+            gate = self
+                .changed
+                .wait_timeout(gate, remaining)
+                .expect("upload gate")
+                .0;
+        }
+        true
+    }
+
+    fn release(&self) {
+        self.gate.lock().expect("upload gate").released = true;
+        self.changed.notify_all();
+    }
+}
+
+impl ObjectStore for GatedStore {
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if key.contains("/segments/") {
+            let mut gate = self.gate.lock().expect("upload gate");
+            if gate.armed {
+                gate.armed = false;
+                gate.blocked = true;
+                self.changed.notify_all();
+                while !gate.released {
+                    gate = self.changed.wait(gate).expect("upload gate");
+                }
+            }
+        }
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+fn gated_storage(
+    directory: &std::path::Path,
+    store: Arc<GatedStore>,
+) -> Result<Arc<RemoteStorage>> {
+    RemoteStorage::open(
+        store,
+        Namespace::new("tenant", "database")?,
+        Arc::new(SegmentCache::new(directory, 0, 0)?),
+    )
+}
+
+#[test]
+fn publication_uploads_do_not_hold_the_storage_lock() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(GatedStore::default());
+    let storage = gated_storage(directory.path(), store.clone())?;
+    storage.write_at(0, &vec![5; SEGMENT_SIZE])?;
+    store.arm();
+    let publisher = {
+        let storage = storage.clone();
+        std::thread::spawn(move || storage.publish(WalPosition::default(), 1))
+    };
+    assert!(
+        store.wait_until_blocked(std::time::Duration::from_secs(5)),
+        "publication never reached the segment upload"
+    );
+
+    // The publisher is inside its first segment PUT. A reader takes the storage lock only
+    // for the identity of the image, so it must not wait for the upload to finish.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = {
+        let storage = storage.clone();
+        std::thread::spawn(move || {
+            let mut out = [0u8; 8];
+            let result = storage.read_at(0, &mut out);
+            let _ = sender.send((result.is_ok(), out));
+        })
+    };
+    let observed = receiver.recv_timeout(std::time::Duration::from_secs(2));
+    store.release();
+    publisher.join().expect("publisher")?;
+    reader.join().expect("reader");
+    let (read_ok, out) = observed.expect("a reader must not wait for a publication upload");
+    assert!(read_ok);
+    assert_eq!(&out, &[5u8; 8]);
+    assert_eq!(storage.stats().dirty_segments, 0);
+    Ok(())
+}
+
+#[test]
+fn publish_keeps_a_segment_rewritten_during_the_upload_dirty() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(GatedStore::default());
+    let storage = gated_storage(directory.path(), store.clone())?;
+    storage.write_at(0, &vec![7; SEGMENT_SIZE])?;
+    store.arm();
+    let publisher = {
+        let storage = storage.clone();
+        std::thread::spawn(move || storage.publish(WalPosition::default(), 1))
+    };
+    assert!(
+        store.wait_until_blocked(std::time::Duration::from_secs(5)),
+        "publication never reached the segment upload"
+    );
+    storage.write_at(0, &vec![8; SEGMENT_SIZE])?;
+    store.release();
+    publisher.join().expect("publisher")?;
+
+    // The publication settled the bytes it uploaded; the rewrite arrived afterwards and
+    // must stay staged instead of being cleared with the snapshot.
+    assert_eq!(storage.applied_lsn(), 1);
+    assert_eq!(storage.stats().dirty_segments, 1);
+    let mut actual = vec![0u8; SEGMENT_SIZE];
+    assert_eq!(storage.read_at(0, &mut actual)?, SEGMENT_SIZE);
+    assert!(actual.iter().all(|byte| *byte == 8));
+
+    storage.publish(WalPosition::default(), 2)?;
+    assert_eq!(storage.stats().dirty_segments, 0);
+    storage.read_at(0, &mut actual)?;
+    assert!(actual.iter().all(|byte| *byte == 8));
+    Ok(())
+}

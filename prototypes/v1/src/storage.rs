@@ -342,39 +342,56 @@ impl RemoteStorage {
         Ok(())
     }
 
+    /// Publishes the current dirty image and advances HEAD.
+    ///
+    /// The remote writes run without the storage lock: a checkpoint backfill can upload
+    /// hundreds of megabytes, and holding the lock across those writes stalls every reader
+    /// on work it never touches. The caller serializes mutations against this method (the
+    /// IO layer's append gate), so the dirty snapshot and the HEAD etag cannot move while
+    /// the upload is in flight; the conditional HEAD put remains the cross-process fence.
+    /// A segment rewritten during the upload keeps its newer bytes for the next publication
+    /// instead of being cleared together with the snapshot.
     pub fn publish(&self, position: WalPosition, applied_lsn: u64) -> Result<()> {
         self.check_writer()?;
-        let mut state = self.state();
-        ensure!(
-            applied_lsn >= state.manifest.applied_lsn,
-            "applied LSN cannot regress"
-        );
-        let mut next = state.manifest.clone();
-        next.generation = next
-            .generation
-            .checked_add(1)
-            .context("generation overflow")?;
-        next.logical_db_size = state.size;
-        next.segments.clone_from(&state.segments);
-        next.applied_wal_position = position;
-        next.applied_lsn = applied_lsn;
-        next.parent = Some(state.manifest_id.clone());
-        if let Some(header) = state.dirty.get(&0) {
-            if state.size >= 18 && header.starts_with(b"SQLite format 3\0") {
-                let encoded = u16::from_be_bytes([header[16], header[17]]);
-                next.page_size = if encoded == 1 {
-                    65536
-                } else {
-                    u32::from(encoded)
-                };
+        let (mut next, head_etag, dirty) = {
+            let state = self.state();
+            ensure!(
+                applied_lsn >= state.manifest.applied_lsn,
+                "applied LSN cannot regress"
+            );
+            let mut next = state.manifest.clone();
+            next.generation = next
+                .generation
+                .checked_add(1)
+                .context("generation overflow")?;
+            next.logical_db_size = state.size;
+            next.segments.clone_from(&state.segments);
+            next.applied_wal_position = position;
+            next.applied_lsn = applied_lsn;
+            next.parent = Some(state.manifest_id.clone());
+            if let Some(header) = state.dirty.get(&0) {
+                if state.size >= 18 && header.starts_with(b"SQLite format 3\0") {
+                    let encoded = u16::from_be_bytes([header[16], header[17]]);
+                    next.page_size = if encoded == 1 {
+                        65536
+                    } else {
+                        u32::from(encoded)
+                    };
+                }
             }
-        }
-        next.validate()?;
+            next.validate()?;
+            let dirty: Vec<(u64, Arc<Vec<u8>>)> = state
+                .dirty
+                .iter()
+                .map(|(index, bytes)| (*index, bytes.clone()))
+                .collect();
+            (next, state.head_etag.clone(), dirty)
+        };
         // An immutable body only needs one successful existence/integrity check in this
         // publication. Keep the bytes too: sharing a hash must never hide a collision. This
         // table is discarded on error or return; a later publication must check again.
         let mut checked = BTreeMap::<String, &[u8]>::new();
-        for (index, bytes) in &state.dirty {
+        for (index, bytes) in &dirty {
             let hash = digest(bytes);
             let key = self.namespace.key(&format!("segments/{hash}"))?;
             if let Some(previous) = checked.get(&hash) {
@@ -402,13 +419,24 @@ impl RemoteStorage {
         let etag = self.store.put(
             &self.namespace.key("HEAD")?,
             &head,
-            PutCondition::Match(state.head_etag.clone()),
+            PutCondition::Match(head_etag.clone()),
         )?;
+        // No fallible step after the HEAD comparison: the durable image has advanced, so
+        // the in-memory settlement must not be able to report failure afterwards.
+        let mut state = self.state();
+        for (index, bytes) in &dirty {
+            if state
+                .dirty
+                .get(index)
+                .is_some_and(|current| Arc::ptr_eq(current, bytes))
+            {
+                state.dirty.remove(index);
+            }
+        }
         state.segments = next.segments.clone();
         state.manifest = next;
         state.manifest_id = identifier;
         state.head_etag = etag;
-        state.dirty.clear();
         state.revision += 1;
         Ok(())
     }
