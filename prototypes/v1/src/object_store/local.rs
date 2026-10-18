@@ -9,7 +9,11 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
+    time::Instant,
 };
 
 pub struct LocalObjectStore {
@@ -24,6 +28,8 @@ struct StagedBody {
     target: PathBuf,
     file: Option<File>,
     etag: String,
+    write_ns: u64,
+    fsync_ns: u64,
 }
 
 /// What publishing a staged body must do once every condition has been rechecked.
@@ -31,6 +37,109 @@ enum StagedPlan {
     Rename,
     Replace,
     Adopt(String),
+}
+
+const GROUP_PHASE_ENV: &str = "PERI_DIAG_GROUP_PHASE";
+
+fn group_phase_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var(GROUP_PHASE_ENV).as_deref() == Ok("1"))
+}
+
+/// Only the first relative component is inspected; the key itself is never emitted.
+fn group_class(writes: &[super::GroupWrite]) -> &'static str {
+    let key = writes.first().map_or("", |write| write.key.as_str());
+    let relative = key.splitn(3, '/').nth(2).unwrap_or(key);
+    if relative.starts_with("wal/receipt") || relative.starts_with("receipt") {
+        "receipt"
+    } else if relative == "wal" || relative.starts_with("wal/") {
+        "wal"
+    } else if relative == "authority" || relative.starts_with("authority/") {
+        "authority"
+    } else {
+        "other"
+    }
+}
+
+fn elapsed_ns(started: Option<Instant>) -> u64 {
+    started.map_or(0, |started| started.elapsed().as_nanos() as u64)
+}
+
+#[derive(Default)]
+struct GroupPhase {
+    enabled: bool,
+    writes: usize,
+    bytes: usize,
+    class: &'static str,
+    unique: u64,
+    reused: u64,
+    stage_ns: u64,
+    stage_max_ns: u64,
+    body_write_ns: u64,
+    body_fsync_ns: u64,
+    body_fsync_max_ns: u64,
+    lock_wait_ns: u64,
+    recheck_ns: u64,
+    rename_ns: u64,
+    dir_flush_ns: u64,
+    barrier_ns: u64,
+    total_started: Option<Instant>,
+}
+
+impl GroupPhase {
+    fn start(writes: &[super::GroupWrite]) -> Self {
+        let enabled = group_phase_enabled();
+        let mut phase = Self {
+            enabled,
+            total_started: enabled.then(Instant::now),
+            ..Self::default()
+        };
+        if enabled {
+            phase.writes = writes.len();
+            phase.bytes = writes.iter().map(|write| write.bytes.len()).sum();
+            phase.class = group_class(writes);
+        }
+        phase
+    }
+
+    fn record_staged_body(&mut self, write_ns: u64, fsync_ns: u64) {
+        self.body_write_ns += write_ns;
+        self.body_fsync_ns += fsync_ns;
+        self.body_fsync_max_ns = self.body_fsync_max_ns.max(fsync_ns);
+        self.stage_max_ns = self.stage_max_ns.max(write_ns + fsync_ns);
+    }
+
+    fn emit(&self) {
+        if !self.enabled {
+            return;
+        }
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            concat!(
+                "GROUP_PHASE pid={} writes={} bytes={} unique={} reused={} class={} ",
+                "stage_ns={} stage_max_ns={} body_write_ns={} body_fsync_ns={} ",
+                "body_fsync_max_ns={} lock_wait_ns={} recheck_ns={} rename_ns={} ",
+                "dir_flush_ns={} barrier_ns={} total_ns={}"
+            ),
+            std::process::id(),
+            self.writes,
+            self.bytes,
+            self.unique,
+            self.reused,
+            self.class,
+            self.stage_ns,
+            self.stage_max_ns,
+            self.body_write_ns,
+            self.body_fsync_ns,
+            self.body_fsync_max_ns,
+            self.lock_wait_ns,
+            self.recheck_ns,
+            self.rename_ns,
+            self.dir_flush_ns,
+            self.barrier_ns,
+            elapsed_ns(self.total_started),
+        );
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,7 +186,12 @@ impl LocalObjectStore {
     /// Encode and flush one group body to a temporary file. Runs outside the group
     /// lock; the final key is only touched by `publish_staged` after every condition
     /// has been rechecked under that lock.
-    fn stage_body(&self, write: &super::GroupWrite, etag: String) -> Result<StagedBody> {
+    fn stage_body_timed(
+        &self,
+        write: &super::GroupWrite,
+        etag: String,
+        diagnostics: bool,
+    ) -> Result<StagedBody> {
         let target = self.path(&write.key);
         if matches!(write.condition, PutCondition::Any) {
             match self.read(&write.key) {
@@ -90,6 +204,8 @@ impl LocalObjectStore {
                         target,
                         file: None,
                         etag: existing.etag,
+                        write_ns: 0,
+                        fsync_ns: 0,
                     });
                 }
                 Ok(Some(_)) => {
@@ -113,11 +229,18 @@ impl LocalObjectStore {
             .write(true)
             .create_new(true)
             .open(&temporary)?;
-        let written = (|| -> std::io::Result<()> {
-            file.write_all(&bytes)?;
-            flush_file(&file)
-        })();
-        if let Err(error) = written {
+        let write_started = diagnostics.then(Instant::now);
+        let write_result = file.write_all(&bytes);
+        let write_ns = elapsed_ns(write_started);
+        if let Err(error) = write_result {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        let fsync_started = diagnostics.then(Instant::now);
+        let fsync_result = flush_file(&file);
+        let fsync_ns = elapsed_ns(fsync_started);
+        if let Err(error) = fsync_result {
             drop(file);
             let _ = fs::remove_file(&temporary);
             return Err(error.into());
@@ -127,13 +250,25 @@ impl LocalObjectStore {
             target,
             file: Some(file),
             etag,
+            write_ns,
+            fsync_ns,
         })
+    }
+
+    #[cfg(test)]
+    fn stage_body(&self, write: &super::GroupWrite, etag: String) -> Result<StagedBody> {
+        self.stage_body_timed(write, etag, false)
     }
 
     /// Stage every body outside the group lock. Non-`Any` conditions are checked once
     /// here so an already-stale group is rejected before the work; the authoritative
-    /// check runs again in `publish_staged` under the lock.
-    fn stage_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<StagedBody>> {
+    /// check runs again in `publish_staged_with_phase` under the lock.
+    fn stage_group_with_phase(
+        &self,
+        writes: &[super::GroupWrite],
+        phase: &mut GroupPhase,
+    ) -> Result<Vec<StagedBody>> {
+        let stage_started = phase.enabled.then(Instant::now);
         for write in writes {
             if !matches!(write.condition, PutCondition::Any) {
                 check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
@@ -157,11 +292,14 @@ impl LocalObjectStore {
                 .unwrap_or(4)
                 .clamp(2, 8)
         };
+        let diagnostics = phase.enabled;
         let staged: Vec<Result<StagedBody>> = if workers == 1 {
             writes
                 .iter()
                 .enumerate()
-                .map(|(index, write)| self.stage_body(write, etags[index].clone()))
+                .map(|(index, write)| {
+                    self.stage_body_timed(write, etags[index].clone(), diagnostics)
+                })
                 .collect()
         } else {
             std::thread::scope(|scope| {
@@ -172,7 +310,14 @@ impl LocalObjectStore {
                         (offset..writes.len())
                             .step_by(workers)
                             .map(|index| {
-                                (index, self.stage_body(&writes[index], etags[index].clone()))
+                                (
+                                    index,
+                                    self.stage_body_timed(
+                                        &writes[index],
+                                        etags[index].clone(),
+                                        diagnostics,
+                                    ),
+                                )
                             })
                             .collect::<Vec<_>>()
                     }));
@@ -189,7 +334,12 @@ impl LocalObjectStore {
         let mut failure = None;
         for result in staged {
             match result {
-                Ok(body) => bodies.push(body),
+                Ok(body) => {
+                    if phase.enabled {
+                        phase.record_staged_body(body.write_ns, body.fsync_ns);
+                    }
+                    bodies.push(body);
+                }
                 Err(error) => failure = failure.or(Some(error)),
             }
         }
@@ -197,32 +347,58 @@ impl LocalObjectStore {
             remove_temporaries(&bodies);
             return Err(error);
         }
+        if phase.enabled {
+            phase.stage_ns = elapsed_ns(stage_started);
+        }
         Ok(bodies)
+    }
+
+    #[cfg(test)]
+    fn stage_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<StagedBody>> {
+        let mut phase = GroupPhase::default();
+        self.stage_group_with_phase(writes, &mut phase)
     }
 
     /// Publish bodies staged outside the lock. Every condition is re-evaluated while
     /// holding the lock before the first rename, so a rejection has no final object
     /// to undo. Any other error may leave already-renamed content-addressed bodies;
     /// the group contract allows that for non-`PreconditionFailed` failures.
-    fn publish_staged(
+    fn publish_staged_with_phase(
         &self,
         writes: &[super::GroupWrite],
         bodies: Vec<StagedBody>,
+        phase: &mut GroupPhase,
     ) -> Result<Vec<String>> {
-        let result = self.publish_staged_locked(writes, &bodies);
+        let result = self.publish_staged_locked(writes, &bodies, phase);
         if result.is_err() {
             remove_temporaries(&bodies);
         }
         result
     }
 
+    #[cfg(test)]
+    fn publish_staged(
+        &self,
+        writes: &[super::GroupWrite],
+        bodies: Vec<StagedBody>,
+    ) -> Result<Vec<String>> {
+        let mut phase = GroupPhase::default();
+        self.publish_staged_with_phase(writes, bodies, &mut phase)
+    }
+
     fn publish_staged_locked(
         &self,
         writes: &[super::GroupWrite],
         bodies: &[StagedBody],
+        phase: &mut GroupPhase,
     ) -> Result<Vec<String>> {
+        let lock_started = phase.enabled.then(Instant::now);
         let _guard = self.lock()?;
+        if phase.enabled {
+            phase.lock_wait_ns = elapsed_ns(lock_started);
+        }
         ensure!(writes.len() == bodies.len(), "staged group length mismatch");
+        let recheck_started = phase.enabled.then(Instant::now);
         let mut plans = Vec::with_capacity(bodies.len());
         let mut resolved_any: HashMap<&str, (usize, String)> = HashMap::new();
         for (index, (write, body)) in writes.iter().zip(bodies).enumerate() {
@@ -249,6 +425,10 @@ impl LocalObjectStore {
                 plans.push(StagedPlan::Rename);
             }
         }
+        if phase.enabled {
+            phase.recheck_ns = elapsed_ns(recheck_started);
+        }
+        let rename_started = phase.enabled.then(Instant::now);
         let mut etags = Vec::with_capacity(bodies.len());
         let mut renamed = false;
         for (body, plan) in bodies.iter().zip(plans) {
@@ -257,12 +437,18 @@ impl LocalObjectStore {
                     if let Some(temporary) = &body.temporary {
                         let _ = fs::remove_file(temporary);
                     }
+                    if phase.enabled {
+                        phase.reused += 1;
+                    }
                     etags.push(etag);
                 }
                 StagedPlan::Rename => {
                     let temporary = body.temporary.as_ref().context("staged body missing")?;
                     fs::rename(temporary, &body.target)?;
                     renamed = true;
+                    if phase.enabled {
+                        phase.unique += 1;
+                    }
                     etags.push(body.etag.clone());
                 }
                 StagedPlan::Replace => {
@@ -270,17 +456,31 @@ impl LocalObjectStore {
                     fs::remove_file(&body.target)?;
                     fs::rename(temporary, &body.target)?;
                     renamed = true;
+                    if phase.enabled {
+                        phase.unique += 1;
+                    }
                     etags.push(body.etag.clone());
                 }
             }
+        }
+        if phase.enabled {
+            phase.rename_ns = elapsed_ns(rename_started);
         }
         if renamed {
             let file = bodies
                 .iter()
                 .find_map(|body| body.file.as_ref())
                 .context("staged publication file missing")?;
+            let dir_started = phase.enabled.then(Instant::now);
             flush_directory(&self.root)?;
+            if phase.enabled {
+                phase.dir_flush_ns = elapsed_ns(dir_started);
+            }
+            let barrier_started = phase.enabled.then(Instant::now);
             publish_barrier(file)?;
+            if phase.enabled {
+                phase.barrier_ns = elapsed_ns(barrier_started);
+            }
         }
         Ok(etags)
     }
@@ -585,11 +785,18 @@ impl ObjectStore for LocalObjectStore {
         if writes.is_empty() {
             return Ok(Vec::new());
         }
-        for write in writes {
-            validate_key(&write.key)?;
+        let mut phase = GroupPhase::start(writes);
+        let result = (|| -> Result<Vec<String>> {
+            for write in writes {
+                validate_key(&write.key)?;
+            }
+            let staged = self.stage_group_with_phase(writes, &mut phase)?;
+            self.publish_staged_with_phase(writes, staged, &mut phase)
+        })();
+        if result.is_ok() {
+            phase.emit();
         }
-        let staged = self.stage_group(writes)?;
-        self.publish_staged(writes, staged)
+        result
     }
 
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
@@ -656,6 +863,24 @@ mod group_tests {
             .map(|entry| entry.unwrap().path())
             .filter(|path| path.extension().is_some_and(|extension| extension == "obj"))
             .collect()
+    }
+
+    #[test]
+    fn group_phase_helpers_aggregate_without_environment() {
+        let mut phase = GroupPhase::default();
+        phase.record_staged_body(10, 20);
+        phase.record_staged_body(5, 50);
+        assert_eq!(phase.body_write_ns, 15);
+        assert_eq!(phase.body_fsync_ns, 70);
+        assert_eq!(phase.body_fsync_max_ns, 50);
+        assert_eq!(phase.stage_max_ns, 55);
+
+        let class = |key: &str| group_class(&[GroupWrite::absent(key, Vec::new())]);
+        assert_eq!(class("tenant/db/wal/index"), "wal");
+        assert_eq!(class("tenant/db/wal/receipt-pages/x"), "receipt");
+        assert_eq!(class("tenant/db/authority/root"), "authority");
+        assert_eq!(class("tenant/db/receipt/pages/x"), "receipt");
+        assert_eq!(class("tenant/db/segments/x"), "other");
     }
 
     #[test]
