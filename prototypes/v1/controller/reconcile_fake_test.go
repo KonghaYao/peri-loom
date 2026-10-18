@@ -12,17 +12,18 @@ import (
 )
 
 type reconcileFake struct {
-	mutex     sync.Mutex
-	store     MetadataStore
-	authority map[string]Actual
-	workers   map[string]map[string]Actual
-	offline   map[string]bool
-	busy      map[string]bool
-	receipts  map[string]Grant
-	payloads  map[string]string
-	lost      map[string]int
-	calls     map[string]int
-	delay     map[string]time.Duration
+	mutex           sync.Mutex
+	store           MetadataStore
+	authority       map[string]Actual
+	workers         map[string]map[string]Actual
+	offline         map[string]bool
+	busy            map[string]bool
+	receipts        map[string]Grant
+	payloads        map[string]string
+	lost            map[string]int
+	calls           map[string]int
+	delay           map[string]time.Duration
+	heartbeatProbes map[string]int
 	// authorityReject fails that many authority state reads, so a test can hold
 	// one reconcile pass transiently incomplete.
 	authorityReject int
@@ -31,7 +32,7 @@ type reconcileFake struct {
 }
 
 func newReconcileFake(store MetadataStore) *reconcileFake {
-	return &reconcileFake{store: store, authority: make(map[string]Actual), workers: make(map[string]map[string]Actual), offline: make(map[string]bool), busy: make(map[string]bool), receipts: make(map[string]Grant), payloads: make(map[string]string), lost: make(map[string]int), calls: make(map[string]int), delay: make(map[string]time.Duration)}
+	return &reconcileFake{store: store, authority: make(map[string]Actual), workers: make(map[string]map[string]Actual), offline: make(map[string]bool), busy: make(map[string]bool), receipts: make(map[string]Grant), payloads: make(map[string]string), lost: make(map[string]int), calls: make(map[string]int), delay: make(map[string]time.Duration), heartbeatProbes: make(map[string]int)}
 }
 
 func reconcileDecode(input, output any) error {
@@ -62,7 +63,13 @@ func (fake *reconcileFake) Authority(ctx context.Context, identifier string, inp
 			return &RPCError{Rejected: true, Message: "transient authority rejection"}
 		}
 		if delay > 0 {
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	metadata, err := fake.store.Snapshot()
@@ -195,6 +202,9 @@ func (fake *reconcileFake) Worker(ctx context.Context, worker Worker, identifier
 	defer fake.mutex.Unlock()
 	fake.calls[action.Command]++
 	fake.trace = append(fake.trace, worker.ID+":"+action.Command)
+	if action.Command == "get_worker_heartbeat" {
+		fake.heartbeatProbes[worker.ID]++
+	}
 	if fake.offline[worker.ID] {
 		return &RPCError{Ambiguous: true, Message: "worker unavailable"}
 	}

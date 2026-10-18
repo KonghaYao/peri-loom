@@ -639,3 +639,72 @@ func TestReconcileWithinStopsAtDeadline(test *testing.T) {
 		test.Fatalf("retry attempts were not bounded by the deadline: %d", attempts)
 	}
 }
+
+func TestReconcileWithinCancelsSlowPassAtDeadline(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	database := reconcileDatabase("slow-pass")
+	if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	fixture.fake.delay[database.Key()] = 2 * time.Second
+	started := time.Now()
+	err := fixture.controller.ReconcileWithin(context.Background(), started.Add(50*time.Millisecond))
+	elapsed := time.Since(started)
+	if err == nil {
+		test.Fatal("deadline canceled slow pass returned success")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		test.Fatalf("deadline was not visible to the pass: %v", err)
+	}
+	if elapsed >= time.Second {
+		test.Fatalf("pass outlived its deadline: %s", elapsed)
+	}
+}
+
+func TestReconcileWithinDoesNotStartPassAfterDeadline(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	database := reconcileDatabase("expired-budget")
+	if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	probes := fixture.fake.heartbeatProbes["worker-a"] + fixture.fake.heartbeatProbes["worker-b"]
+	err := fixture.controller.ReconcileWithin(context.Background(), time.Now().Add(-time.Second))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		test.Fatalf("expired budget did not report its deadline: %v", err)
+	}
+	if after := fixture.fake.heartbeatProbes["worker-a"] + fixture.fake.heartbeatProbes["worker-b"]; after != probes {
+		test.Fatalf("expired budget dispatched a pass: probes %d -> %d", probes, after)
+	}
+}
+
+func TestReconcileReprobesDeadDesiredWorkerOncePerPass(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	first, second := reconcileDatabase("dead-first"), reconcileDatabase("dead-second")
+	fixture.fake.offline["worker-b"] = true
+	for _, database := range []DatabaseID{first, second} {
+		if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+			test.Fatal(err)
+		}
+	}
+	fixture.fake.offline["worker-b"] = false
+	fixture.fake.offline["worker-a"] = true
+	fixture.fake.heartbeatProbes = make(map[string]int)
+	if err := fixture.controller.Reconcile(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	for _, database := range []DatabaseID{first, second} {
+		status, err := fixture.controller.Status(database)
+		if err != nil {
+			test.Fatal(err)
+		}
+		if status.Phase != "active" || status.DesiredWorker != "worker-b" {
+			test.Fatalf("dead desired worker was not replaced: %+v", status)
+		}
+	}
+	if fixture.fake.heartbeatProbes["worker-a"] != 2 {
+		test.Fatalf("dead worker was re-probed more than once per pass: %+v", fixture.fake.heartbeatProbes)
+	}
+	if fixture.fake.heartbeatProbes["worker-b"] != 1 {
+		test.Fatalf("healthy worker was re-probed unnecessarily: %+v", fixture.fake.heartbeatProbes)
+	}
+}

@@ -61,6 +61,8 @@ type managementRequest struct {
 
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// managementReconcileBudget bounds every reconcile pass, not just the retry
+// interval, and stays well below the launcher's 30s request timeout.
 const managementReconcileBudget = 10 * time.Second
 
 var errManagementForbidden = errors.New("forbidden")
@@ -230,8 +232,8 @@ func (management *Management) dispatch(request *http.Request, principal Principa
 		if principal.Role != "admin" || principal.Project != "*" {
 			return nil, errManagementForbidden
 		}
-		// 启动收敛是期望状态操作，不是 SQL；重启后 worker 心跳与本地实例可能仍在建立，
-		// 因此在明确预算内重试，预算耗尽仍返回最后一次底层错误。
+		// 启动收敛是期望状态操作，不是 SQL；同一预算传入每轮 pass 的 RPC 上下文，
+		// deadline 会取消进行中的 transport 调用，预算耗尽返回最后一次底层错误。
 		return map[string]bool{"ok": true}, management.config.Controller.ReconcileWithin(request.Context(), time.Now().Add(managementReconcileBudget))
 	case "/v1/organizations/create":
 		return management.createOrganization(principal, input)

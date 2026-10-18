@@ -75,32 +75,53 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-// ReconcileWithin retries a desired-state pass until the deadline. Reconcile
-// never dispatches SQL, so a retry cannot duplicate an admitted mutation; the
-// durable placement and grant records make every pass idempotent.
+// ReconcileWithin retries a desired-state pass until the deadline. Every pass
+// carries that deadline into its context, so an authority or worker RPC cannot
+// outlive the budget. Reconcile never dispatches SQL, so a retry cannot
+// duplicate an admitted mutation; the durable placement and grant records make
+// every pass idempotent.
 func (controller *Controller) ReconcileWithin(ctx context.Context, until time.Time) error {
+	var last error
 	for attempt := 1; ; attempt++ {
-		err := controller.Reconcile(ctx)
+		if err := ctx.Err(); err != nil {
+			if last != nil {
+				return last
+			}
+			return err
+		}
+		if !time.Now().Before(until) {
+			// The budget was consumed before this pass started; do not dispatch
+			// another one just to observe its canceled context.
+			if last != nil {
+				log.Printf("控制面 reconcile 重试预算耗尽：attempts=%d 底层错误=%v", attempt-1, last)
+				return last
+			}
+			return context.DeadlineExceeded
+		}
+		passCtx, cancel := context.WithDeadline(ctx, until)
+		err := controller.Reconcile(passCtx)
+		cancel()
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("控制面 reconcile 重试后完成：attempts=%d", attempt)
 			}
 			return nil
 		}
+		last = err
 		if ctx.Err() != nil {
-			return err
+			return last
 		}
 		remaining := time.Until(until)
 		if remaining <= 0 {
-			log.Printf("控制面 reconcile 重试预算耗尽：attempts=%d 底层错误=%v", attempt, err)
-			return err
+			log.Printf("控制面 reconcile 重试预算耗尽：attempts=%d 底层错误=%v", attempt, last)
+			return last
 		}
-		log.Printf("控制面 reconcile 未完成，准备重试：attempt=%d 剩余预算=%dms 底层错误=%v", attempt, remaining.Milliseconds(), err)
+		log.Printf("控制面 reconcile 未完成，准备重试：attempt=%d 剩余预算=%dms 底层错误=%v", attempt, remaining.Milliseconds(), last)
 		timer := time.NewTimer(min(reconcileRetryDelay, remaining))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return err
+			return last
 		case <-timer.C:
 		}
 	}
