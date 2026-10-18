@@ -71,9 +71,10 @@ pub(crate) enum MaintenanceSkip {
     /// itself applies the WAL tail, so this lane waits for append quiescence, not for the
     /// image to catch up with every append.
     UnconfirmedWal,
-    /// A foreground statement ran inside the compaction lane's quiet window. The unit takes
-    /// the writer admission for its whole duration, so starting it under load would hold
-    /// every writer behind a multi-second backfill and baseline rewrite.
+    /// A foreground statement ran inside the quiet window. Both units write the main
+    /// database while they run, and that write's file sync sits on the same media as the
+    /// commit barrier: a checkpoint measured at 0.5–0.8 s of SQL tail every 60 s, and a
+    /// compaction rewrites the whole WAL baseline.
     Busy,
     /// Past the low mark without ever crossing the high mark, or back below the low mark.
     BelowLow,
@@ -103,12 +104,11 @@ pub(crate) struct MaintenancePolicy {
     index_compact: Watermark,
     cooldown: Duration,
     blocked_backoff: Duration,
-    /// How long the database must be without a foreground statement before the compaction
-    /// lane may take its exclusive admission. Zero means "no quiet requirement", which is
-    /// what the unit tests use.
+    /// How long the database must be without a foreground statement before either lane may
+    /// run. Zero means "no quiet requirement", which is what the unit tests use.
     compact_quiet: Duration,
-    /// The WAL size above which the quiet requirement is dropped. A compaction is the only
-    /// unit that rewrites the WAL baseline, so a database under constant load would otherwise
+    /// The WAL size above which the quiet requirement is dropped for both lanes. A unit is
+    /// the only way to bound the log, so a database under constant load would otherwise
     /// never run one; this is the safety valve that bounds the log, at the cost of one
     /// blocking window. It sits at the contract's WAL hard budget so the valve cannot fire
     /// inside a mixed workload whose WAL still fits.
@@ -211,8 +211,9 @@ impl MaintenancePolicy {
             "maintenance cooldown and blocked backoff must be positive"
         );
         ensure!(
-            policy.compact_quiet < policy.index_compact.period,
-            "maintenance compact quiet window must be shorter than its period"
+            policy.compact_quiet < policy.checkpoint.period
+                && policy.compact_quiet < policy.index_compact.period,
+            "maintenance quiet window must be shorter than each lane's period"
         );
         ensure!(
             policy.compact_hard_bytes > 0,
@@ -245,10 +246,10 @@ impl MaintenancePolicy {
         }
     }
 
-    /// Overrides the compaction gate for a test. The default `for_tests` policy has no quiet
+    /// Overrides the quiet gate for a test. The default `for_tests` policy has no quiet
     /// requirement, so a test that does not call this keeps the pre-gate behaviour.
     #[cfg(test)]
-    pub(crate) fn with_compact_gate(mut self, quiet: Duration, hard_bytes: u64) -> Self {
+    pub(crate) fn with_quiet_gate(mut self, quiet: Duration, hard_bytes: u64) -> Self {
         self.compact_quiet = quiet;
         self.compact_hard_bytes = hard_bytes;
         self
@@ -314,13 +315,14 @@ impl MaintenancePolicy {
         if lane == MaintenanceLane::IndexCompact && signals.unconfirmed_wal {
             return MaintenanceDecision::Skip(MaintenanceSkip::UnconfirmedWal);
         }
-        // A compaction holds the writer admission and the operations gate for the whole
-        // unit, and its duration is the WAL baseline rewrite, not a bound the request
-        // deadline can wait out. Run it only when no foreground statement has started for
-        // the quiet window, unless the WAL reached the hard bound: then the recovery cost
-        // of leaving it wins over one blocking window.
-        if lane == MaintenanceLane::IndexCompact
-            && signals.quiet_for_ms < millis(self.compact_quiet)
+        // Both units write the main database and sync it to media. That sync shares the
+        // device with the commit barrier, so a unit started under load surfaces as SQL
+        // latency even when it never takes the writer admission: the 60 s checkpoint
+        // measured 0.5–0.8 s tails, and the first backfill after a bulk import stalls for
+        // tens of seconds. Run either lane only when no foreground statement has started
+        // for the quiet window, unless the WAL reached the hard bound: then the recovery
+        // cost of leaving it wins over one blocking window.
+        if signals.quiet_for_ms < millis(self.compact_quiet)
             && signals.wal_bytes < self.compact_hard_bytes
         {
             return MaintenanceDecision::Skip(MaintenanceSkip::Busy);

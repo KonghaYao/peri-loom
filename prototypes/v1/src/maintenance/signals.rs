@@ -34,10 +34,10 @@ pub(crate) struct MaintenanceSignals {
     /// holds one. This is the reader a truncate checkpoint cannot backfill past.
     pub oldest_reader_ms: u64,
     /// Milliseconds since the last foreground statement started on this database, measured
-    /// from the database's open instant. The compaction lane takes the writer admission and
-    /// the operations gate for its whole unit, so a unit started under load would hold every
-    /// writer for its multi-second duration; the lane waits for this to pass its quiet
-    /// threshold. A passive checkpoint does not use the figure: it never excludes writers.
+    /// from the database's open instant. Both lanes sync the main database to media, and that
+    /// sync shares the device with the commit barrier, so a unit started under load surfaces
+    /// as SQL latency even when it does not exclude writers; each lane waits for this to pass
+    /// its quiet threshold.
     pub quiet_for_ms: u64,
     /// True while an append or a database publication is unsettled: an append in flight, a
     /// pending batch, a dirty image or a failed publication. The image's applied LSN is not
