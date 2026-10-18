@@ -209,6 +209,137 @@ class OwnedStopProofTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
                     dev.Project(project.arguments).prepare()
 
+    def clean_run_directory(self, directory):
+        project = self.project(directory)
+        configuration = project.config["owned_stop_proof"]
+        for worker in project.launch["workers"]:
+            identity = {"version": 1, "generation": configuration["generation"], "worker_id": worker,
+                        "nonce": configuration["workers"][worker], "pid": 10001, "started": "incarnation",
+                        "waited": False, "exit_code": 0}
+            for kind, record in (("identity", identity), ("stop", {**identity, "waited": True})):
+                dev.atomic_private_json(project.directory / "owned-proof" / f"{worker}.{kind}.json", dev.signed_owned_identity(configuration, record))
+        dev.private_json(project.directory / "platform/state.json", {"payload": {"owned_run_generation": configuration["generation"], "operations": {}}})
+        dev.private_json(project.directory / "platform/state.json.floor", {"version": 1})
+        (project.directory / "authority/authority.lock").write_bytes(b"clean\n")
+        project.stop_record = {"version": 1, "generation": configuration["generation"], "outcome": "clean",
+                               "reason": "terminal_proof_written", "deadline_ms": 1, "stages": [],
+                               "unresolved_operations": False}
+        project.write_stop_record()
+        dev.atomic_private_json(project.directory / "launcher-terminal.json", dev.signed_owned_identity(configuration, dev.terminal_record(project.directory, configuration)))
+        return project
+
+    def launcher_arguments(self, directory):
+        return ["dev.py", "--run-dir", str(directory), "--no-build", "--listen", "127.0.0.1:19443"]
+
+    def test_startup_failure_restores_clean_stop_and_terminal(self):
+        with tempfile.TemporaryDirectory(prefix="restart-failure-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                # The platform commits by rename; simulate a startup write without
+                # touching the snapshot inode.
+                replacement = project.directory / "platform/state.json.attempt"
+                replacement.write_bytes(b'{"payload":{"owned_run_generation":"attempt","operations":{}}}')
+                os.replace(replacement, project.directory / "platform/state.json")
+                worker = next(iter(project.launch["workers"]))
+                (project.directory / "owned-proof" / (worker + ".identity.json")).write_bytes(b"attempt incarnation")
+                raise RuntimeError("request rejected: operation_incomplete")
+
+            with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertEqual(stop_path.read_bytes(), stop_bytes)
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
+            configuration = fixture.config["owned_stop_proof"]
+            dev.verify_owned_stop_proofs(root, configuration, fixture.launch["workers"])
+            dev.verify_clean_terminal(root, configuration)
+            self.assertFalse((root / "launcher-restart-staging").exists())
+            envelope = json.loads((root / "launcher-restart-failure.json").read_text())
+            key = pathlib.Path(configuration["key_file"]).read_bytes()
+            self.assertEqual(envelope["mac"], hmac.new(key, envelope["payload"].encode(), hashlib.sha256).hexdigest())
+            record = json.loads(envelope["payload"])
+            self.assertEqual(record["kind"], "launcher_restart_failure")
+            self.assertEqual(record["phase"], "startup")
+            self.assertEqual(record["run_dir"], str(root))
+            self.assertIn("operation_incomplete", record["error"])
+            self.assertTrue(record["teardown_completed"])
+            self.assertTrue(record["clean_evidence"]["restored"])
+            self.assertEqual(record["clean_evidence"]["terminal_sha256"], hashlib.sha256(terminal_bytes).hexdigest())
+            self.assertEqual(record["clean_evidence"]["stop_sha256"], hashlib.sha256(stop_bytes).hexdigest())
+            self.assertEqual(json.loads(json.loads(stop_bytes)["payload"])["outcome"], "clean")
+            self.assertEqual(len(list((root / "owned-proof").iterdir())), 4)
+            failed = list((root / "owned-proof-history").glob(configuration["generation"] + "-failed-*"))
+            self.assertEqual(len(failed), 1)
+            self.assertEqual([entry.name for entry in failed[0].iterdir()], ["worker-a.identity.json"])
+
+    def test_prepare_refusal_does_not_rewrite_previous_clean_evidence(self):
+        with tempfile.TemporaryDirectory(prefix="restart-refusal-", dir="/tmp") as directory:
+            self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
+            with (root / "platform.json").open("a") as output:
+                output.write(" ")
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+
+            with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertEqual(stop_path.read_bytes(), stop_bytes)
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
+            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+            self.assertFalse(record["clean_evidence"]["consumed"])
+            self.assertTrue(record["clean_evidence"]["preserved"])
+            self.assertFalse(record["clean_evidence"]["existing_clean_evidence_verified"])
+
+    def test_failure_after_readiness_keeps_unclean_semantics(self):
+        with tempfile.TemporaryDirectory(prefix="restart-running-", dir="/tmp") as directory:
+            self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                project.phase = "running"
+                project.discard_clean_evidence()
+                raise RuntimeError("a control-plane service stopped; inspect private logs")
+
+            with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            record = json.loads(json.loads((root / "launcher-stop.json").read_text())["payload"])
+            self.assertEqual(record["outcome"], "unclean")
+            self.assertEqual(record["reason"], "launcher_failed_before_cleanup")
+            self.assertFalse((root / "launcher-terminal.json").exists())
+            self.assertFalse((root / "launcher-restart-failure.json").exists())
+
+    def test_startup_failure_with_unclean_teardown_never_claims_clean(self):
+        with tempfile.TemporaryDirectory(prefix="restart-teardown-", dir="/tmp") as directory:
+            self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                process = Mock(stdout=None)
+                process.poll.return_value = None
+                process.wait.return_value = 1
+                project.processes["platform"] = process
+                raise RuntimeError("request rejected: operation_incomplete")
+
+            with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertEqual(json.loads(json.loads((root / "launcher-stop.json").read_text())["payload"])["outcome"], "unclean")
+            self.assertFalse((root / "launcher-terminal.json").exists())
+            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+            self.assertFalse(record["teardown_completed"])
+            self.assertFalse(record["recovery"]["restored"])
+
     def test_clean_terminal_rejects_dirty_authority_and_modified_configuration(self):
         with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
             project = self.project(directory)

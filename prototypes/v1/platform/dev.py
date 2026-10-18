@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import errno
 import fcntl
 import hashlib
@@ -8,6 +9,7 @@ import os
 import pathlib
 import queue
 import secrets
+import shutil
 import signal
 import stat
 import socket
@@ -75,6 +77,30 @@ def atomic_private_json(destination, value):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def private_copy(source, destination):
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with source.open("rb") as input_file, os.fdopen(descriptor, "wb") as output:
+        shutil.copyfileobj(input_file, output)
+        output.flush()
+        os.fsync(output.fileno())
 
 
 def signed_owned_identity(configuration, identity):
@@ -318,6 +344,14 @@ class Project:
         self.cleanup_complete = False
         self.shutdown_failure = None
         self.stop_record_lock = threading.Lock()
+        # Startup failures never announce readiness, so no workload was admitted. The
+        # previous clean proof has already been consumed by prepare() by then, and it
+        # is the only evidence that the last shutdown was clean; keep it restorable
+        # until readiness makes later writes possible.
+        self.phase = "startup"
+        self.restart_attempt = False
+        self.clean_evidence = None
+        self.restart_failure = None
 
     def begin_shutdown(self):
         if self.shutdown_deadline is None:
@@ -346,7 +380,183 @@ class Project:
                 self.stop_record["outcome"] = outcome
             if reason is not None:
                 self.stop_record["reason"] = reason
+            if self.restart_failure is not None:
+                # The stop diagnostics of a failed startup attempt belong to that
+                # attempt, not to launcher-stop.json, which still records the last
+                # clean shutdown until this attempt can prove its own terminal.
+                self.restart_failure["teardown"] = self.stop_record
+                self.persist_restart_failure()
+                return
             atomic_private_json(self.directory / "launcher-stop.json", signed_owned_identity(configuration, self.stop_record))
+
+    def persist_restart_failure(self):
+        configuration = getattr(self, "config", {}).get("owned_stop_proof")
+        value = self.restart_failure
+        if configuration:
+            value = signed_owned_identity(configuration, value)
+        atomic_private_json(self.directory / "launcher-restart-failure.json", value)
+
+    def begin_restart_failure(self, error):
+        configuration = getattr(self, "config", {}).get("owned_stop_proof")
+        self.restart_failure = {
+            "version": 1,
+            "kind": "launcher_restart_failure",
+            "run_dir": str(self.directory),
+            "generation": configuration["generation"] if configuration else None,
+            "phase": self.phase,
+            "readiness": "announced" if self.phase == "running" else "not_announced",
+            "error_type": type(error).__name__,
+            "error": str(error)[:4096],
+            "failed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "services_started": sorted(self.processes),
+            "clean_evidence": self.clean_evidence_summary(),
+            "teardown": None,
+            "teardown_completed": False,
+        }
+        self.persist_restart_failure()
+
+    def clean_evidence_summary(self):
+        evidence = self.clean_evidence
+        if evidence is None:
+            return None
+        return {name: evidence[name] for name in
+                ("generation", "staging", "archive", "stop_sha256", "terminal_sha256",
+                 "state_sha256", "state_floor_sha256")}
+
+    def stage_clean_evidence(self, configuration):
+        """Keep the verified clean chain restorable until readiness is announced."""
+        terminal = self.directory / "launcher-terminal.json"
+        stop = self.directory / "launcher-stop.json"
+        state = self.directory / "platform/state.json"
+        floor = self.directory / "platform/state.json.floor"
+        staging_root = self.directory / "launcher-restart-staging"
+        private_directory(staging_root)
+        staging = staging_root / (configuration["generation"] + "-" + secrets.token_hex(8))
+        private_directory(staging)
+        private_directory(staging / "platform")
+        for source, name in ((state, "platform/state.json"), (floor, "platform/state.json.floor")):
+            try:
+                # The platform commits by rename, so a hard link is a zero-copy
+                # snapshot. Filesystems without links still get an exact private copy.
+                os.link(source, staging / name)
+            except OSError:
+                private_copy(source, staging / name)
+        evidence = {
+            "generation": configuration["generation"],
+            "staging": str(staging),
+            "archive": None,
+            "stop_sha256": file_sha256(stop) if stop.is_file() else None,
+            "terminal_sha256": file_sha256(terminal),
+            "state_sha256": file_sha256(state),
+            "state_floor_sha256": file_sha256(floor),
+        }
+        self.clean_evidence = evidence
+        os.replace(terminal, staging / "launcher-terminal.json")
+        fsync_directory(staging)
+        fsync_directory(self.directory)
+        history = self.directory / "owned-proof-history"
+        private_directory(history)
+        archive = history / (configuration["generation"] + "-" + secrets.token_hex(8))
+        if archive.exists():
+            raise RuntimeError("owned stop proof generation already archived")
+        (self.directory / "owned-proof").rename(archive)
+        private_directory(self.directory / "owned-proof")
+        evidence["archive"] = str(archive)
+        fsync_directory(history)
+        fsync_directory(self.directory)
+
+    def discard_clean_evidence(self):
+        evidence = self.clean_evidence
+        if evidence is None:
+            return
+        # Readiness makes the snapshot unusable: later writes are allowed, so a
+        # leftover directory is harmless and must not fail a running launcher.
+        try:
+            shutil.rmtree(evidence["staging"])
+            pathlib.Path(evidence["staging"]).parent.rmdir()
+        except OSError:
+            pass
+        self.clean_evidence = None
+
+    def verify_clean_evidence(self):
+        configuration = self.config["owned_stop_proof"]
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+        verify_clean_terminal(self.directory, configuration)
+        verify_no_unresolved_operations(self.directory, configuration)
+
+    def restore_clean_evidence(self):
+        evidence = self.clean_evidence
+        if evidence is None:
+            # prepare() refused before it staged anything, so no service ran. The
+            # previous stop/terminal are untouched; verify them for the record but
+            # never rewrite that history with a teardown that never happened.
+            verified, verification_error = True, None
+            if getattr(self, "config", {}).get("owned_stop_proof"):
+                try:
+                    self.verify_clean_evidence()
+                except Exception as error:
+                    verified, verification_error = False, str(error)[:2048]
+            return {"consumed": False, "preserved": True, "restored": False,
+                    "existing_clean_evidence_verified": verified,
+                    "verification_error": verification_error}
+        staging = pathlib.Path(evidence["staging"])
+        stop = self.directory / "launcher-stop.json"
+        if evidence["stop_sha256"] is not None and (not stop.is_file() or file_sha256(stop) != evidence["stop_sha256"]):
+            raise RuntimeError("previous clean stop record changed during failed restart")
+        attempt_archive = None
+        if evidence["archive"] is not None:
+            current = self.directory / "owned-proof"
+            history = self.directory / "owned-proof-history"
+            private_directory(history)
+            attempt_archive = history / (evidence["generation"] + "-failed-" + secrets.token_hex(8))
+            if current.exists():
+                current.rename(attempt_archive)
+            pathlib.Path(evidence["archive"]).rename(current)
+        staged_terminal = staging / "launcher-terminal.json"
+        if staged_terminal.exists():
+            os.replace(staged_terminal, self.directory / "launcher-terminal.json")
+        for name, digest in (("platform/state.json", evidence["state_sha256"]),
+                             ("platform/state.json.floor", evidence["state_floor_sha256"])):
+            current = self.directory / name
+            if current.is_file() and file_sha256(current) == digest:
+                continue
+            staged = staging / name
+            if not staged.is_file():
+                raise RuntimeError("clean evidence snapshot incomplete")
+            os.replace(staged, current)
+        fsync_directory(self.directory / "platform")
+        fsync_directory(self.directory)
+        if file_sha256(self.directory / "launcher-terminal.json") != evidence["terminal_sha256"]:
+            raise RuntimeError("clean terminal proof changed during restore")
+        self.verify_clean_evidence()
+        summary = self.clean_evidence_summary()
+        summary["restored"] = True
+        summary["failed_attempt_proof_archive"] = str(attempt_archive) if attempt_archive else None
+        try:
+            shutil.rmtree(staging)
+            staging.parent.rmdir()
+            summary["staging_removed"] = True
+        except OSError:
+            # A leftover copy is not authoritative; verification already passed.
+            summary["staging_removed"] = False
+        self.clean_evidence = None
+        return summary
+
+    def complete_restart_failure(self, evidence):
+        self.restart_failure["clean_evidence"] = evidence
+        self.restart_failure["teardown"] = self.stop_record
+        self.restart_failure["teardown_completed"] = True
+        self.persist_restart_failure()
+        self.restart_failure = None
+
+    def abandon_restart_recovery(self, error):
+        if self.restart_failure is not None:
+            self.restart_failure["recovery"] = {"restored": False, "error": str(error)[:2048]}
+            self.restart_failure["teardown"] = self.stop_record
+            self.restart_failure["teardown_completed"] = self.cleanup_complete
+            self.persist_restart_failure()
+            self.restart_failure = None
+        self.write_stop_record("unclean", ("launcher_failed_before_cleanup; clean evidence not restorable: " + str(error))[:512])
 
     def authority_lock_status(self):
         path = self.directory / "authority/authority.lock"
@@ -416,6 +626,7 @@ class Project:
             subprocess.run(["go", "build", "-o", str(self.go), "./cmd/peri-platform"], cwd=self.root / "prototypes/v1/platform", check=True, env=safe_environment())
         launch_path = self.directory / "launch.json"
         if launch_path.exists():
+            self.restart_attempt = True
             self.launch = json.loads(launch_path.read_text())
             if self.launch.get("sql_open_observer", False) != observer:
                 raise RuntimeError("SQL open observer profile cannot be silently rebound")
@@ -443,20 +654,7 @@ class Project:
             verify_clean_terminal(self.directory, configuration)
             # 复用的 clean 语义必须与停机时一致：历史 terminal proof 也是在一个可能滞后于侧车的 payload 上做出的判定。
             verify_no_unresolved_operations(self.directory, configuration)
-            marker = self.directory / "launcher-terminal.json"
-            marker.unlink()
-            descriptor = os.open(self.directory, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            history = self.directory / "owned-proof-history"
-            private_directory(history)
-            archive = history / (configuration["generation"] + "-" + secrets.token_hex(8))
-            if archive.exists():
-                raise RuntimeError("owned stop proof generation already archived")
-            (self.directory / "owned-proof").rename(archive)
-            private_directory(self.directory / "owned-proof")
+            self.stage_clean_evidence(configuration)
             return
         if (self.directory / "launcher-terminal.json").exists():
             raise RuntimeError("unexpected clean launcher terminal proof")
@@ -693,6 +891,11 @@ class Project:
         if topology_path.exists():
             topology_path.unlink()
         private_json(topology_path, topology)
+        # Readiness is the point where client work can begin. Until it is announced a
+        # failure is a startup failure and the last clean proof stays restorable; after
+        # it, any failure must keep ordinary unclean-stop semantics.
+        self.phase = "running"
+        self.discard_clean_evidence()
         print(json.dumps({"ready": True, "service": "local-project", "address": endpoint, "connection_file": str(connection_path), "topology_file": str(topology_path)}), flush=True)
         reported = set()
         while not self.stop.wait(0.2):
@@ -901,9 +1104,27 @@ def main():
         failure = error
     finally:
         try:
-            project.cleanup()
+            # A failed restart during startup has not announced readiness, so no new
+            # workload was admitted. Its teardown diagnostics go to the restart-failure
+            # record and the last clean stop/terminal stay untouched once restored.
+            startup_failure = failure is not None and project.phase == "startup" and project.restart_attempt
+            if startup_failure:
+                project.begin_restart_failure(failure)
+            try:
+                project.cleanup()
+            except Exception as error:
+                if startup_failure:
+                    project.abandon_restart_recovery(error)
+                raise
             if failure is None:
                 project.mark_clean_terminal()
+            elif startup_failure:
+                try:
+                    preserved = project.restore_clean_evidence()
+                except Exception as error:
+                    project.abandon_restart_recovery(error)
+                    raise
+                project.complete_restart_failure(preserved)
             else:
                 project.write_stop_record("unclean", "launcher_failed_before_cleanup")
         except Exception as error:
