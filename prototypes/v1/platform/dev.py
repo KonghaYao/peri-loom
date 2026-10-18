@@ -579,6 +579,12 @@ class Project:
             raise RuntimeError("launcher stop outcome is not clean; operator recovery required")
 
     def begin_restart_failure(self, error):
+        if not self.processes and self.clean_evidence is None and \
+                (self.directory / "launcher-restart-failure.json").exists():
+            # prepare() refused before staging anything. The existing signed
+            # failure record is the operator's only account of the original
+            # failure; a repeated refusal must not overwrite it.
+            return
         configuration = getattr(self, "config", {}).get("owned_stop_proof")
         reconciling = self.phase != "startup"
         self.restart_failure = {

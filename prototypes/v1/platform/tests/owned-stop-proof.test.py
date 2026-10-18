@@ -355,6 +355,25 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertTrue(record["clean_evidence"]["preserved"])
             self.assertFalse(record["clean_evidence"]["existing_clean_evidence_verified"])
 
+    def test_operator_recovery_refusal_keeps_existing_failure_record(self):
+        with tempfile.TemporaryDirectory(prefix="restart-refusal-record-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            failure_path = root / "launcher-restart-failure.json"
+            dev.atomic_private_json(failure_path, dev.signed_owned_identity(fixture.config["owned_stop_proof"], {
+                "version": 1, "kind": "launcher_restart_failure", "phase": "startup",
+                "requires_operator": True, "teardown_completed": True, "all_processes_stopped": True,
+            }))
+            previous = failure_path.read_bytes()
+
+            def refusing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+
+            with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertEqual(failure_path.read_bytes(), previous)
+
     def test_failure_after_readiness_keeps_unclean_semantics(self):
         with tempfile.TemporaryDirectory(prefix="restart-running-", dir="/tmp") as directory:
             self.clean_run_directory(directory)
