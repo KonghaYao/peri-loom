@@ -749,6 +749,112 @@ func TestOperationCommitQueueKeepsBatchBounded(test *testing.T) {
 	}
 }
 
+// A popped batch is still the chain tail until its barrier returns. A submit that arrives
+// while that batch is being written must link behind it instead of behind the older durable
+// head the batch has not replaced yet. The write gate makes the window exact: the committer
+// has popped the first append and is stopped before it touches the file, so the second append
+// is ordered entirely inside the window and the test never races a sleep.
+func TestOperationCommitQueueLinksBehindInFlightBatch(test *testing.T) {
+	store, directory := commitQueueStore(test)
+	journal := store.operations
+	database := securityDatabase()
+
+	journal.mutex.Lock()
+	headRevision, headDigest := journal.revision, journal.digest
+	journal.mutex.Unlock()
+
+	entered := make(chan struct{}, 1)
+	releaseWrite := make(chan struct{})
+	var gateOnce, releaseOnce sync.Once
+	journal.testWriteGate = func() {
+		gateOnce.Do(func() { entered <- struct{}{} })
+		<-releaseWrite
+	}
+	test.Cleanup(func() { journal.testWriteGate = nil })
+	release := func() { releaseOnce.Do(func() { close(releaseWrite) }) }
+	defer release()
+
+	first := make(chan error, 1)
+	go func() { first <- operationSettled(store, database, "inflight_first") }()
+	waitOrdered(test, store, 1)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		test.Fatal("the committer never started the first batch's durable write")
+	}
+
+	// The first batch has been popped, so the queue is empty although its bytes are not yet
+	// durable. Order the second append inside exactly that window.
+	second := make(chan error, 1)
+	go func() { second <- operationSettled(store, database, "inflight_second") }()
+	waitOrdered(test, store, 2)
+
+	journal.mutex.Lock()
+	if queued := len(journal.commits); queued != 1 {
+		journal.mutex.Unlock()
+		test.Fatalf("queue holds %d appends while the first batch is in flight, want 1", queued)
+	}
+	ordered := journal.commits[0]
+	revision, previous := ordered.revision, ordered.payload.Previous
+	journal.mutex.Unlock()
+
+	if revision != headRevision+2 {
+		test.Fatalf("append ordered during the in-flight batch got revision %d, want %d: it is reusing the in-flight revision %d", revision, headRevision+2, revision)
+	}
+	if previous == headDigest {
+		test.Fatalf("append ordered during the in-flight batch links to the pre-batch head %q instead of the in-flight commit", previous)
+	}
+
+	release()
+	if err := <-first; err != nil {
+		test.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		test.Fatal(err)
+	}
+
+	// The live chain records both appends in submit order, each behind the previous one.
+	journal.mutex.Lock()
+	entries := append([]journalEntry(nil), journal.records...)
+	head, digest := journal.revision, journal.digest
+	journal.mutex.Unlock()
+	if head != headRevision+2 {
+		test.Fatalf("chain head = %d, want %d", head, headRevision+2)
+	}
+	if len(entries) != 2 {
+		test.Fatalf("live chain holds %d entries, want 2", len(entries))
+	}
+	for index := 1; index < len(entries); index++ {
+		if entries[index].Payload.Revision != entries[index-1].Payload.Revision+1 || entries[index].Payload.Previous != entries[index-1].Hash {
+			test.Fatalf("entry %d does not continue entry %d: revision %d previous %q, want revision %d hash %q", index, index-1, entries[index].Payload.Revision, entries[index].Payload.Previous, entries[index-1].Payload.Revision+1, entries[index-1].Hash)
+		}
+	}
+	if len(entries) == 2 && (entries[1].Payload.Revision != headRevision+2 || entries[1].Hash != digest) {
+		test.Fatalf("chain head %d/%q is not the last recorded append", headRevision+2, digest)
+	}
+
+	// A restart must recover the same chain. A submit that reused the in-flight revision
+	// writes a fork the witness then names, so recovery refuses the whole store.
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := journalReopen(test, directory)
+	if err != nil {
+		test.Fatalf("restart after an in-flight append failed: %v", err)
+	}
+	defer reopened.Close()
+	state, err := reopened.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, identifier := range []string{"inflight_first", "inflight_second"} {
+		record, found := state.Operations[operationKey(database, identifier)]
+		if !found || record.State != "terminal" {
+			test.Fatalf("recovery lost settled append %s: %+v", identifier, record.OperationStatus)
+		}
+	}
+}
+
 // The namespace fence is not relaxed: two commits for one namespace cannot even be ordered
 // while the first is waiting, so they never share a barrier.
 func TestOperationNamespaceFenceStillSerializesCommits(test *testing.T) {

@@ -223,6 +223,7 @@ type operationJournal struct {
 	// never queues behind a barrier; write serializes the file itself and is held by the
 	// committer (and by a compaction) alone.
 	commits        []*operationCommit
+	orderedTail    *operationCommit
 	committer      bool
 	writing        bool
 	write          sync.Mutex

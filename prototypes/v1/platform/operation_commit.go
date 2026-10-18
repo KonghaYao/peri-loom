@@ -59,10 +59,13 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 	if len(journal.commits) >= operationJournalQueueMaximum {
 		return nil, ErrOperationQueueFull
 	}
+	// The chain position is the last append admitted, which stays fixed even after its
+	// batch was popped: until that batch's barrier returns, journal.revision/digest still
+	// name the older durable head it replaces. Falling back to them here would let a new
+	// append reuse the in-flight revision and fork the chain.
 	previous, revision := journal.digest, journal.revision
-	if count := len(journal.commits); count > 0 {
-		last := journal.commits[count-1]
-		previous, revision = last.hash, last.revision
+	if journal.orderedTail != nil {
+		previous, revision = journal.orderedTail.hash, journal.orderedTail.revision
 	}
 	if revision == ^uint64(0) {
 		return nil, ErrOperationCapacity
@@ -81,6 +84,7 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 	journal.encodeNS += uint64(time.Since(encodeStarted))
 	commit := &operationCommit{revision: mutation.Revision, payload: mutation, line: append(line, '\n'), hash: hash, settled: make(chan struct{})}
 	journal.commits = append(journal.commits, commit)
+	journal.orderedTail = commit
 	journal.ordered++
 	if len(journal.commits) > journal.queueMaximum {
 		journal.queueMaximum = len(journal.commits)
