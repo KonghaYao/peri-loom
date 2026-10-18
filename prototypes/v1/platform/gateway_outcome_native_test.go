@@ -48,7 +48,10 @@ func TestGatewayOutcomeEvidenceNative(test *testing.T) {
 // it must stay distinguishable from a statement the client wrote wrong.
 func TestGatewayDurationBudgetEvidenceNative(test *testing.T) {
 	// 预算在进程启动时读取，必须在 fixture 拉起 worker 之前生效；1s 足以稳定击穿。
-	test.Setenv("PERI_RUST_BINARY", durationBudgetWrapper(test, "PERI_SQL_MAX_DURATION_MS=1000"))
+	// VM step 预算必须同时抬高：0 会被 worker 拒绝，默认 10M 又会在 1s 内先耗尽，
+	// 只有 duration 成为唯一绑定约束，本用例才真正覆盖 duration 证据。
+	test.Setenv("PERI_RUST_BINARY", durationBudgetWrapper(test,
+		"PERI_SQL_MAX_DURATION_MS=1000 PERI_SQL_MAX_VM_STEPS=18446744073709551615"))
 	fixture := p6VerifyNewWithQuotas(test, Quotas{MaxDatabases: 8, MaxSessions: 8, MaxConcurrent: 4, RequestsPerSecond: 1000, MaxSQLBytes: 4096, MaxResultBytes: 4096})
 	session := fixture.open(fixture.credential, fixture.database)
 	fixture.sql(session, "execute", "CREATE TABLE budget_items(value INTEGER)")
