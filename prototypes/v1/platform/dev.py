@@ -388,7 +388,8 @@ def experimental_environment(environment, maintenance=False):
     the data plane, so its switches are forwarded to workers only.
     """
     for name, value in os.environ.items():
-        if name == "PERI_WORK_METRICS" or (maintenance and name.startswith("PERI_MAINTENANCE_")):
+        if (name in ("PERI_WORK_METRICS", "PERI_WORKER_DB_IDLE_UNLOAD_MS")
+                or (maintenance and name.startswith("PERI_MAINTENANCE_"))):
             environment[name] = value
     return environment
 
