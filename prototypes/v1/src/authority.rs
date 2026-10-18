@@ -51,18 +51,43 @@ pub struct Authority {
 /// fixtures that open the same store twice) and a head one of them verified is exactly as
 /// sound for the other. Refusing to record a head only makes the next load verify again,
 /// so a full table can never weaken the check it gates.
+///
+/// Each lineage keeps the last few verified digests, not one. A read can observe the
+/// document that was current before a concurrent publication landed and hand it to the
+/// decoder after the publisher recorded the new digest. With a single slot that stale read
+/// misses, pays a full registry walk, and re-records the older digest, so the next read of
+/// the *new* head misses as well: one race costs two deep walks (measured 1.1 s each at
+/// this run's registry size). Keeping a short history means a document this process
+/// verified is still recognized after the head moves, which is exactly the fact the record
+/// exists to preserve.
 mod admitted {
     use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
 
     const MAX_DATABASES: usize = 1024;
     const MAX_LINEAGES: usize = 64;
+    /// Verified heads remembered per lineage, newest first. Four covers the concurrent
+    /// publications the authority serves in one round trip; a read that lags further
+    /// behind verifies again, which is sound and rare.
+    const RECENT_DIGESTS: usize = 4;
+    /// Digests held across every database. The per-lineage ring already bounds the steady
+    /// state; this only stops a pathological namespace churn from growing the process.
+    const MAX_DIGESTS: usize = 4096;
 
-    type Table = BTreeMap<String, BTreeMap<String, String>>;
+    type Lineage = Vec<String>;
+    type Table = BTreeMap<String, BTreeMap<String, Lineage>>;
 
     fn table() -> &'static Mutex<Table> {
         static ADMITTED: OnceLock<Mutex<Table>> = OnceLock::new();
         ADMITTED.get_or_init(|| Mutex::new(Table::new()))
+    }
+
+    fn total(table: &Table) -> usize {
+        table
+            .values()
+            .flat_map(|lineages| lineages.values())
+            .map(Vec::len)
+            .sum()
     }
 
     /// A lock that cannot be taken is not a reason to trust a head, so it reports the head
@@ -72,7 +97,7 @@ mod admitted {
             table
                 .get(database)
                 .and_then(|lineages| lineages.get(lineage))
-                .is_some_and(|held| held.as_str() == digest)
+                .is_some_and(|held| held.iter().any(|recent| recent == digest))
         })
     }
 
@@ -80,6 +105,16 @@ mod admitted {
         let Ok(mut table) = table().lock() else {
             return;
         };
+        if table
+            .get(database)
+            .and_then(|lineages| lineages.get(lineage))
+            .is_some_and(|held| held.iter().any(|recent| recent == digest))
+        {
+            return;
+        }
+        if total(&table) >= MAX_DIGESTS {
+            return;
+        }
         if !table.contains_key(database) && table.len() >= MAX_DATABASES {
             return;
         }
@@ -87,7 +122,9 @@ mod admitted {
         if !lineages.contains_key(lineage) && lineages.len() >= MAX_LINEAGES {
             return;
         }
-        lineages.insert(lineage.to_owned(), digest.to_owned());
+        let held = lineages.entry(lineage.to_owned()).or_default();
+        held.insert(0, digest.to_owned());
+        held.truncate(RECENT_DIGESTS);
     }
 }
 

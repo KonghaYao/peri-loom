@@ -19,6 +19,9 @@ struct Probe {
     history_key: Mutex<Option<String>>,
     history_reads: AtomicUsize,
     armed: AtomicBool,
+    /// One root read to answer with an older document, so a test can reproduce a read that
+    /// began before a publication landed and decoded after it.
+    stale: Mutex<Option<(String, StoredObject)>>,
     // 1 = reject one CAS, 2 = unknown before persistence, 3 = unknown after it.
     fault: AtomicU8,
     attempts: Mutex<Vec<(String, String)>>,
@@ -32,6 +35,15 @@ impl ObjectStore for Probe {
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
         if self.history_key.lock().unwrap().as_deref() == Some(key) {
             self.history_reads.fetch_add(1, Ordering::SeqCst);
+        }
+        {
+            let mut stale = self.stale.lock().unwrap();
+            if stale
+                .as_ref()
+                .is_some_and(|(stale_key, _)| stale_key == key)
+            {
+                return Ok(stale.take().map(|(_, object)| object));
+            }
         }
         self.inner.get(key)
     }
@@ -159,6 +171,69 @@ fn an_external_root_is_deep_verified_and_invalid_history_still_fails_closed() ->
     assert!(owner.state(&database).is_err());
     assert!(!admitted::holds(&key, &external.incarnation, &digest));
     assert!(Authority::open(store, database.namespace).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_stale_head_read_does_not_evict_the_newer_admission() -> Result<()> {
+    let (store, authority, _database) = fixture()?;
+    let key = authority.namespace().key("authority/root")?;
+    let before = store.history_reads.load(Ordering::SeqCst);
+    let previous = store.get(&key)?.unwrap();
+    let (old_root, old_digest) = codec::decode_with_digest(&previous.bytes)?;
+    assert!(admitted::holds(&key, &old_root.incarnation, &old_digest));
+
+    authority.transact(None, |root| {
+        root.branches.get_mut("main").unwrap().last_commit_ms = 2;
+        Ok(())
+    })?;
+    let current = store.get(&key)?.unwrap();
+    let (new_root, new_digest) = codec::decode_with_digest(&current.bytes)?;
+    assert!(admitted::holds(&key, &new_root.incarnation, &new_digest));
+    assert!(
+        admitted::holds(&key, &old_root.incarnation, &old_digest),
+        "a publication must not erase the admission of the head it replaces"
+    );
+
+    // The read that raced the publication decodes the older document after the publisher
+    // recorded the newer one. It must stay on the cheap path, and the following read of
+    // the new head must not be forced to walk the registry either.
+    *store.stale.lock().unwrap() = Some((key.clone(), previous));
+    authority.snapshot()?;
+    authority.snapshot()?;
+    assert_eq!(
+        store.history_reads.load(Ordering::SeqCst),
+        before,
+        "a head this process verified must not trigger a registry walk after the head moves"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_head_this_process_never_verified_is_walked_once_and_then_admitted() -> Result<()> {
+    let (store, authority, _database) = fixture()?;
+    let key = authority.namespace().key("authority/root")?;
+    let stored = store.get(&key)?.unwrap();
+    let mut external = (*codec::decode(&stored.bytes)?).clone();
+    external.revision += 1;
+    store.put(
+        &key,
+        &codec::encode(&external)?,
+        PutCondition::Match(stored.etag),
+    )?;
+    let before = store.history_reads.load(Ordering::SeqCst);
+    authority.snapshot()?;
+    assert_eq!(
+        store.history_reads.load(Ordering::SeqCst),
+        before + 1,
+        "an unseen head must be resolved in full exactly once"
+    );
+    authority.snapshot()?;
+    assert_eq!(
+        store.history_reads.load(Ordering::SeqCst),
+        before + 1,
+        "the verified head must stay admitted"
+    );
     Ok(())
 }
 
