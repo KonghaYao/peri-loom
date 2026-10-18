@@ -85,6 +85,53 @@ fn armed_publish_timer_records_each_stage_and_the_attempt_total() {
         "the attempt total did not cover both stages"
     );
     assert!(after.metadata.publish_total_max_ns >= 3_000_000);
+    assert!(
+        after.metadata.publish_stage_ns["prepare"] - before.metadata.publish_stage_ns["prepare"]
+            >= 1_000_000,
+        "the per-stage duration was not reported"
+    );
+}
+
+#[test]
+fn armed_snapshot_timer_records_each_stage_and_the_read_total() {
+    set_enabled(true);
+    let before = snapshot().expect("enabled snapshot");
+    {
+        let mut timer = SnapshotTimer::begin();
+        timer.stage(SnapshotStage::Store);
+        std::thread::sleep(Duration::from_millis(2));
+        timer.root_bytes(4096);
+        timer.stage(SnapshotStage::Refs);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let after = snapshot().expect("enabled snapshot");
+    for stage in ["store", "refs"] {
+        assert!(
+            after.metadata.snapshot_stage_calls[stage]
+                - before.metadata.snapshot_stage_calls[stage]
+                >= 1,
+            "the timer did not charge {stage}"
+        );
+    }
+    assert!(
+        after.metadata.snapshot_stage_max_ns["store"] >= 1_000_000,
+        "a 2 ms stage was not reported"
+    );
+    assert!(
+        after.metadata.snapshot_total_ns - before.metadata.snapshot_total_ns >= 3_000_000,
+        "the read total did not cover both stages"
+    );
+    assert!(after.metadata.snapshot_total_max_ns >= 3_000_000);
+    assert!(
+        after.metadata.snapshot_stage_ns["store"] - before.metadata.snapshot_stage_ns["store"]
+            >= 1_000_000,
+        "the per-stage duration was not reported"
+    );
+    assert!(
+        after.metadata.snapshot_root_bytes - before.metadata.snapshot_root_bytes >= 4096,
+        "the root size was not reported"
+    );
+    assert!(after.metadata.snapshot_root_max_bytes >= 4096);
 }
 
 #[test]

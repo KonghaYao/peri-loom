@@ -19,7 +19,7 @@ pub use branch::BranchStore;
 pub use types::{BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint, RootSnapshot, Tombstone};
 
 use crate::ownership::types::{CommandReceipt, MutationGuard, MutationStage};
-use crate::work_metrics::{PublishStage, PublishTimer};
+use crate::work_metrics::{PublishStage, PublishTimer, SnapshotStage, SnapshotTimer};
 use crate::{
     namespace::Namespace,
     object_store::{ObjectStore, PreconditionFailed, PutCondition},
@@ -282,15 +282,23 @@ impl Authority {
     pub fn snapshot(&self) -> Result<RootSnapshot> {
         #[cfg(test)]
         let _probe = scaling_probe::stage("snapshot", 0);
+        let mut snapshot = SnapshotTimer::begin();
+        snapshot.stage(SnapshotStage::Guard);
         self.check(MutationStage::Read)?;
         let key = self.namespace.key("authority/root")?;
+        snapshot.stage(SnapshotStage::Store);
         let object = self
             .store
             .get(&key)?
             .context("authority root missing; refusing reset")?;
+        snapshot.root_bytes(object.bytes.len());
+        snapshot.stage(SnapshotStage::Decode);
         let (root, digest) = decode_head_with_digest(&self.store, &self.namespace, &object.bytes)?;
+        snapshot.stage(SnapshotStage::Admit);
         if admitted::holds(&key, &root.incarnation, &digest) {
+            snapshot.stage(SnapshotStage::Head);
             self.validate_head(&root)?;
+            snapshot.stage(SnapshotStage::Refs);
             self.validate_references(&root, &[])?;
         } else {
             // The head is not one this process verified, so the references it inherits may
@@ -298,6 +306,7 @@ impl Authority {
             // the document is self-consistent, not that this authority wrote it, and a
             // reference that was never registered can only be caught by resolving it.
             // Verify the way boot does before any statement trusts the head.
+            snapshot.stage(SnapshotStage::Deep);
             self.verify_deep(&root)?;
             self.remember(&key, &root, &digest);
         }

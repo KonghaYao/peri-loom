@@ -350,8 +350,10 @@ impl PublishTimer {
     }
 
     /// Close the stage that just ended and start the next one. A stage is charged the wall time
-    /// between its own start and the next transition, so the attempt total is their sum plus
-    /// the untracked fragments (write assembly, guard validation).
+    /// between its own start and the next transition. The last stage also carries whatever the
+    /// attempt does after its start — write assembly, guard validation and, for `Group`, the
+    /// post-commit bookkeeping — so the attempt total stays the wall time from begin to drop
+    /// and the stages never exceed it.
     pub(crate) fn stage(&mut self, stage: PublishStage) {
         if self.started.is_none() {
             return;
@@ -381,6 +383,113 @@ impl Drop for PublishTimer {
         let elapsed = nanos(started.elapsed());
         add(&PUBLISH_TOTAL_NANOS, elapsed);
         PUBLISH_TOTAL_MAX_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+    }
+}
+
+/// The steps inside one head read. `PublishStage::Snapshot` says how long a publication spent
+/// reading the head; this split says whether that was the store, the decode, the referenced
+/// metadata, or the full walk a head this process did not verify has to pay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SnapshotStage {
+    Guard,
+    Store,
+    Decode,
+    Admit,
+    Head,
+    Refs,
+    Deep,
+}
+
+impl SnapshotStage {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Guard,
+        Self::Store,
+        Self::Decode,
+        Self::Admit,
+        Self::Head,
+        Self::Refs,
+        Self::Deep,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Guard => "guard",
+            Self::Store => "store",
+            Self::Decode => "decode",
+            Self::Admit => "admit",
+            Self::Head => "head",
+            Self::Refs => "refs",
+            Self::Deep => "deep",
+        }
+    }
+}
+
+static SNAPSHOT_STAGE_CALLS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static SNAPSHOT_STAGE_NANOS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static SNAPSHOT_STAGE_MAX_NANOS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static SNAPSHOT_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_TOTAL_MAX_NANOS: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_ROOT_BYTES: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_ROOT_MAX_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Timer for one `Authority::snapshot` call. A `deep` stage is only charged when the head was
+/// not already verified by this process, so its count is the number of full walks.
+pub(crate) struct SnapshotTimer {
+    started: Option<Instant>,
+    stage: Option<(SnapshotStage, Instant)>,
+    root_bytes: usize,
+}
+
+impl SnapshotTimer {
+    pub(crate) fn begin() -> Self {
+        Self {
+            started: enabled().then(Instant::now),
+            stage: None,
+            root_bytes: 0,
+        }
+    }
+
+    pub(crate) fn stage(&mut self, stage: SnapshotStage) {
+        if self.started.is_none() {
+            return;
+        }
+        self.close_stage();
+        self.stage = Some((stage, Instant::now()));
+    }
+
+    pub(crate) fn root_bytes(&mut self, bytes: usize) {
+        if self.started.is_some() {
+            self.root_bytes = bytes;
+        }
+    }
+
+    fn close_stage(&mut self) {
+        let Some((stage, started)) = self.stage.take() else {
+            return;
+        };
+        let elapsed = nanos(started.elapsed());
+        let index = stage.index();
+        add(&SNAPSHOT_STAGE_CALLS[index], 1);
+        add(&SNAPSHOT_STAGE_NANOS[index], elapsed);
+        SNAPSHOT_STAGE_MAX_NANOS[index].fetch_max(elapsed, Ordering::Relaxed);
+    }
+}
+
+impl Drop for SnapshotTimer {
+    fn drop(&mut self) {
+        let Some(started) = self.started else {
+            return;
+        };
+        self.close_stage();
+        let elapsed = nanos(started.elapsed());
+        add(&SNAPSHOT_TOTAL_NANOS, elapsed);
+        SNAPSHOT_TOTAL_MAX_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+        add(&SNAPSHOT_ROOT_BYTES, self.root_bytes as u64);
+        SNAPSHOT_ROOT_MAX_BYTES.fetch_max(self.root_bytes as u64, Ordering::Relaxed);
     }
 }
 
@@ -826,6 +935,18 @@ pub(crate) struct MetadataWork {
     /// Wall time of every publication attempt, and the longest one.
     pub publish_total_ns: u64,
     pub publish_total_max_ns: u64,
+    /// Per stage, in `SnapshotStage::ALL` order: head reads that reached the stage, the time
+    /// they spent there, and the longest single stay. `deep` counts the full walks paid when
+    /// the head was not one this process had verified.
+    pub snapshot_stage_calls: BTreeMap<&'static str, u64>,
+    pub snapshot_stage_ns: BTreeMap<&'static str, u64>,
+    pub snapshot_stage_max_ns: BTreeMap<&'static str, u64>,
+    /// Wall time of every head read, and the longest one.
+    pub snapshot_total_ns: u64,
+    pub snapshot_total_max_ns: u64,
+    /// Encoded head bytes read, and the largest head read.
+    pub snapshot_root_bytes: u64,
+    pub snapshot_root_max_bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -980,6 +1101,25 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             ),
             publish_total_ns: load(&PUBLISH_TOTAL_NANOS),
             publish_total_max_ns: load(&PUBLISH_TOTAL_MAX_NANOS),
+            snapshot_stage_calls: report(
+                &SnapshotStage::ALL,
+                SnapshotStage::name,
+                &SNAPSHOT_STAGE_CALLS,
+            ),
+            snapshot_stage_ns: report(
+                &SnapshotStage::ALL,
+                SnapshotStage::name,
+                &SNAPSHOT_STAGE_NANOS,
+            ),
+            snapshot_stage_max_ns: report(
+                &SnapshotStage::ALL,
+                SnapshotStage::name,
+                &SNAPSHOT_STAGE_MAX_NANOS,
+            ),
+            snapshot_total_ns: load(&SNAPSHOT_TOTAL_NANOS),
+            snapshot_total_max_ns: load(&SNAPSHOT_TOTAL_MAX_NANOS),
+            snapshot_root_bytes: load(&SNAPSHOT_ROOT_BYTES),
+            snapshot_root_max_bytes: load(&SNAPSHOT_ROOT_MAX_BYTES),
         },
         locks: locks(),
         execution: ExecutionWork {
