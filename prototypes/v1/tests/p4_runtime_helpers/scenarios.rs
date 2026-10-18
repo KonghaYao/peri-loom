@@ -98,7 +98,8 @@ fn concurrent_watchdog_cannot_retire_a_newly_acquired_generation() -> Result<()>
                         match acquired {
                             Ok(_) => break,
                             Err(error) if Instant::now() >= timeout => {
-                                return Err(error).context("watchdog race: acquire retry exhausted")
+                                return Err(error)
+                                    .context("watchdog race: acquire retry exhausted");
                             }
                             Err(_) => std::thread::yield_now(),
                         }
