@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -603,6 +604,33 @@ func TestReconcileRefreshesHeartbeatThatAgesOutDuringThePass(test *testing.T) {
 	}
 	if fixture.fake.calls["acquire_database"]-acquired != 2 {
 		test.Fatalf("restart did not reacquire both placements: %+v", fixture.fake.calls)
+	}
+}
+
+func TestReconcileCancellationKeepsAccumulatedPlacementFailures(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	first, second := reconcileDatabase("a-cancel-error"), reconcileDatabase("b-cancel-error")
+	for _, database := range []DatabaseID{first, second} {
+		if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+			test.Fatal(err)
+		}
+	}
+	fixture.fake.delay[first.Key()] = 3 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fixture.controller.Reconcile(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			test.Fatalf("cancellation was not visible to the pass: %v", err)
+		}
+		if !strings.Contains(err.Error(), first.Key()) {
+			test.Fatalf("accumulated placement failure was dropped: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		test.Fatal("canceled reconcile pass did not return")
 	}
 }
 
