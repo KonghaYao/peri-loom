@@ -375,9 +375,11 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertFalse((root / "launcher-terminal.json").exists())
             self.assertFalse((root / "launcher-restart-failure.json").exists())
 
-    def test_cleanup_failure_still_restores_previous_clean_evidence(self):
-        # A platform that never became ready cannot write a clean stop proof; the
-        # teardown failure must not prevent restoring the last clean snapshot.
+    def test_cleanup_failure_preserves_clean_evidence_when_service_started(self):
+        # A started platform may already have run the controller, written the
+        # authority dirty marker or mutated the backend before readiness. Even
+        # when teardown fails but every process is confirmed stopped, the old
+        # clean evidence must be preserved for an operator instead of rolled back.
         with tempfile.TemporaryDirectory(prefix="restart-teardown-", dir="/tmp") as directory:
             fixture = self.clean_run_directory(directory)
             root = pathlib.Path(directory).resolve()
@@ -404,16 +406,21 @@ class OwnedStopProofTests(unittest.TestCase):
             observed["process"].terminate.assert_called_once()
             observed["process"].wait.assert_called()
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
-            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
+            self.assertFalse(terminal_path.exists())
+            preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
             record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
             self.assertTrue(record["teardown_completed"])
             self.assertTrue(record["all_processes_stopped"])
             self.assertFalse(record["teardown_clean"])
             self.assertIn("platform exited without a clean proof", record["teardown_error"])
-            self.assertTrue(record["clean_evidence"]["restored"])
-            self.assertFalse(record["requires_operator"])
-            dev.verify_clean_terminal(root, fixture.config["owned_stop_proof"])
-            dev.Project(fixture.arguments).prepare()
+            self.assertFalse(record["clean_evidence"]["restored"])
+            self.assertTrue(record["clean_evidence"]["preserved"])
+            self.assertTrue(record["requires_operator"])
+            self.assertIn("services were started", record["clean_evidence"]["preservation_reason"])
+            with self.assertRaisesRegex(RuntimeError, "requires operator recovery"):
+                dev.Project(fixture.arguments).prepare()
 
     def test_restore_verification_failure_quarantines_terminal_and_blocks_reuse(self):
         with tempfile.TemporaryDirectory(prefix="restart-quarantine-", dir="/tmp") as directory:
@@ -524,16 +531,22 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertEqual(dev.main(), 1)
             observed["process"].terminate.assert_called_once()
             observed["process"].wait.assert_called()
-            # Recovery still uses the in-memory evidence even though the audit
-            # record could not be written.
+            # Recovery uses the in-memory evidence even though the audit record
+            # could not be written. Because a service was started, the evidence is
+            # preserved for an operator instead of being rolled back.
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
-            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
+            self.assertFalse(terminal_path.exists())
+            preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
             self.assertFalse((root / "launcher-restart-failure.json").exists())
             unavailable = json.loads((root / "launcher-restart-failure-unavailable.json").read_text())
             self.assertEqual(unavailable["kind"], "launcher_restart_failure_unavailable")
             self.assertIn("operation_incomplete", unavailable["error"])
             self.assertIn("disk full", unavailable["record_error"])
-            self.assertTrue(unavailable["recovery"]["restored"])
+            self.assertFalse(unavailable["recovery"]["restored"])
+            self.assertTrue(unavailable["recovery"]["preserved"])
+            self.assertTrue(unavailable["recovery"]["requires_operator"])
             self.assertIn("request rejected: operation_incomplete", stderr.getvalue())
             self.assertIn("restart failure record unavailable", stderr.getvalue())
             self.assertIn("disk full", stderr.getvalue())
@@ -618,7 +631,7 @@ class OwnedStopProofTests(unittest.TestCase):
         and pathlib.Path(os.environ.get("PERI_RUST_BINARY", "")).is_file()
         and pathlib.Path(os.environ.get("PERI_PLATFORM_BINARY", "")).is_file(),
         "set PERI_RESTART_LIVE=1 and PERI_RUST_BINARY/PERI_PLATFORM_BINARY to run the live restart")
-    def test_live_port_conflict_restores_clean_evidence_and_data(self):
+    def test_live_port_conflict_preserves_clean_evidence_for_operator(self):
         with tempfile.TemporaryDirectory(prefix="restart-live-", dir="/tmp") as directory:
             root = pathlib.Path(directory).resolve()
             port = self.live_port()
@@ -644,23 +657,42 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertEqual(failed.wait(timeout=180), 1)
             finally:
                 holder.close()
+            # The failed attempt started the authority (which writes its dirty
+            # marker) and the platform process, so canonical evidence must stay
+            # preserved instead of being rolled back over the dirty marker.
             self.assertEqual((root / "launcher-stop.json").read_bytes(), stop_bytes)
-            self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
-            configuration = json.loads((root / "platform.json").read_text())["owned_stop_proof"]
+            self.assertFalse((root / "launcher-terminal.json").exists())
+            self.assertNotEqual((root / "authority/authority.lock").read_bytes(), b"clean\n")
+            preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
+            self.assertEqual((preserved[0] / "authority/authority.lock").read_bytes(), b"clean\n")
             launch = json.loads((root / "launch.json").read_text())
-            dev.verify_owned_stop_proofs(root, configuration, launch["workers"])
-            dev.verify_clean_terminal(root, configuration)
+            # prepare() archived the previous proof set for the failed attempt;
+            # preservation carries that archive, while the canonical directory
+            # stays empty until an operator performs a clean restart.
+            expected_proofs = {f"{worker}.{kind}.json"
+                               for worker in launch["workers"] for kind in ("identity", "stop")}
+            self.assertEqual({entry.name for entry in (preserved[0] / "owned-proof").iterdir()}, expected_proofs)
+            self.assertEqual(list((root / "owned-proof").iterdir()), [])
+            receipt = json.loads((preserved[0] / "preservation.json").read_text())
+            self.assertEqual(receipt["kind"], "launcher_clean_evidence_preserved")
+            self.assertTrue(receipt["owned_proof_preserved"])
             record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
             self.assertEqual(record["phase"], "startup")
-            self.assertFalse(record["requires_operator"])
-            self.assertTrue(record["clean_evidence"]["restored"])
-            second = self.launch_live(root, port)
-            try:
-                client = LiveSQLClient(root)
-                self.assertEqual(client.statement("SELECT id, note FROM restart_live ORDER BY id", "query"), [[1, "keep-me"]])
-            finally:
-                self.stop_live(second)
-            dev.verify_clean_terminal(root, configuration)
+            self.assertTrue(record["requires_operator"])
+            self.assertTrue(record["teardown_completed"])
+            self.assertTrue(record["all_processes_stopped"])
+            self.assertFalse(record["clean_evidence"]["restored"])
+            self.assertTrue(record["clean_evidence"]["preserved"])
+            self.assertIn("services were started", record["clean_evidence"]["preservation_reason"])
+            self.assertTrue((root / "launcher-clean-evidence-preserved").is_dir())
+            rejected = subprocess.run(
+                [sys.executable, str(source), "--run-dir", str(root),
+                 "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+                env=self.live_environment(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, timeout=180)
+            self.assertEqual(rejected.returncode, 1)
 
     def test_unconfirmed_process_stops_preserve_evidence_for_operator(self):
         with tempfile.TemporaryDirectory(prefix="restart-unconfirmed-", dir="/tmp") as directory:
@@ -802,7 +834,8 @@ class OwnedStopProofTests(unittest.TestCase):
         return blake3
 
     def seal_envelope(self, key, checksum=None, **changes):
-        envelope = {"key": key, "bytes": base64.b64encode(b"sealed").decode(),
+        payload = json.dumps({"version": 1, "owner": "test", "clean": True}).encode()
+        envelope = {"key": key, "bytes": base64.b64encode(payload).decode(),
                     "etag": "etag-1", "checksum": checksum or "0" * 64}
         envelope.update(changes)
         return envelope
@@ -813,7 +846,7 @@ class OwnedStopProofTests(unittest.TestCase):
             backend = pathlib.Path(directory) / "backend"
             backend.mkdir(mode=0o700)
             key = dev.LOCAL_SEAL_KEY
-            payload = b'{"clean":true}'
+            payload = json.dumps({"version": 1, "owner": "test", "clean": True}).encode()
             candidate = backend / (blake3.blake3(key.encode()).hexdigest() + ".obj")
             valid = {"key": key, "bytes": base64.b64encode(payload).decode(),
                      "etag": "etag-1", "checksum": blake3.blake3(payload).hexdigest()}
@@ -829,6 +862,20 @@ class OwnedStopProofTests(unittest.TestCase):
                 "non-string etag": {**valid, "etag": 1},
             }
             for label, envelope in malformed.items():
+                with self.subTest(label=label):
+                    candidate.write_text(json.dumps(envelope))
+                    self.assertEqual(dev.local_object_path(backend, key), (None, False))
+            semantic = {
+                "version 2": {"version": 2, "owner": "test", "clean": True},
+                "clean false": {"version": 1, "owner": "test", "clean": False},
+                "unknown field": {"version": 1, "owner": "test", "clean": True, "extra": 1},
+                "missing owner": {"version": 1, "clean": True},
+                "empty owner": {"version": 1, "owner": "", "clean": True},
+            }
+            for label, record in semantic.items():
+                payload = json.dumps(record).encode()
+                envelope = {"key": key, "bytes": base64.b64encode(payload).decode(),
+                            "etag": "etag-1", "checksum": blake3.blake3(payload).hexdigest()}
                 with self.subTest(label=label):
                     candidate.write_text(json.dumps(envelope))
                     self.assertEqual(dev.local_object_path(backend, key), (None, False))

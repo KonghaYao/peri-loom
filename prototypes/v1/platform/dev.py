@@ -41,8 +41,29 @@ SHUTDOWN_STAGE_CAPS = {"platform": 15, "workers": 13, "authority": 12}
 # conservative behavior change: even an immediate 409 or a refused connection can
 # hide a request that already mutated state before its reply was lost.
 LOCAL_SEAL_KEY = "authority-control/single-authority-seal"
+LOCAL_SEAL_FIELDS = {"version", "owner", "clean"}
 LOCAL_ENVELOPE_LIMIT_BYTES = 1024 * 1024
 LOCAL_CHECKSUM_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+def validate_local_seal_payload(payload):
+    """Return the decoded seal record when it is reusable, otherwise None.
+
+    The Rust authority denies unknown fields and requires version 1 with
+    clean=true before it will take over a backend. A checksum-valid envelope
+    around any other record must not be promoted to canonical clean evidence.
+    """
+    try:
+        record = json.loads(payload, object_pairs_hook=unique_object)
+    except (ValueError, TypeError, UnicodeError, RuntimeError):
+        return None
+    if not isinstance(record, dict) or set(record) != LOCAL_SEAL_FIELDS:
+        return None
+    if record.get("version") != 1 or record.get("clean") is not True:
+        return None
+    if not isinstance(record.get("owner"), str) or not record["owner"]:
+        return None
+    return record
 
 
 def decode_local_envelope(envelope, key):
@@ -95,6 +116,8 @@ def local_object_path(backend_directory, key):
         payload = decode_local_envelope(envelope, key)
         if payload is None or envelope["checksum"] != blake3.blake3(payload).hexdigest():
             return None, False
+        if validate_local_seal_payload(payload) is None:
+            return None, False
         return candidate, True
     reliable = True
     match = None
@@ -112,7 +135,8 @@ def local_object_path(backend_directory, key):
             continue
         if envelope.get("key") != key:
             continue
-        if decode_local_envelope(envelope, key) is None:
+        payload = decode_local_envelope(envelope, key)
+        if payload is None or validate_local_seal_payload(payload) is None:
             reliable = False
             continue
         if match is None:
@@ -438,6 +462,7 @@ class Project:
         # until readiness makes later writes possible.
         self.phase = "startup"
         self.restart_attempt = False
+        self.ready_services = set()
         self.clean_evidence = None
         self.restart_failure = None
         self.restart_failure_error = None
@@ -569,6 +594,7 @@ class Project:
             "error": str(error)[:4096],
             "failed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "services_started": sorted(self.processes),
+            "ready_services": sorted(self.ready_services),
             "clean_evidence": self.clean_evidence_summary(),
             "teardown": None,
             "teardown_completed": False,
@@ -782,10 +808,17 @@ class Project:
         seal_name = evidence.get("seal_name")
         if seal_name is not None:
             current = self.directory / "backend" / seal_name
-            if not current.is_file() or file_sha256(current) != evidence["seal_sha256"]:
-                staged = staging / "backend" / seal_name
+            staged = staging / "backend" / seal_name
+            if current.is_file() and file_sha256(current) != evidence["seal_sha256"]:
+                # The failed attempt rewrote the backend seal. Installing the old
+                # one would hide its dirty marker and bypass the Rust quiescence
+                # check, so leave the backend untouched and ask for an operator.
+                raise RuntimeError("authority backend seal changed during failed restart")
+            if not current.is_file():
                 if not staged.is_file():
                     raise RuntimeError("clean evidence snapshot incomplete")
+                if file_sha256(staged) != evidence["seal_sha256"]:
+                    raise RuntimeError("clean evidence snapshot seal changed")
                 os.replace(staged, current)
             fsync_directory(self.directory / "backend")
         else:
@@ -840,6 +873,7 @@ class Project:
             "run_dir": str(self.directory), "generation": evidence["generation"],
             "phase": self.phase, "created_at": created.isoformat(),
             "services_started": sorted(self.processes),
+            "ready_services": sorted(self.ready_services),
             "not_rolled_back": not_rolled_back,
             "terminal_sha256": evidence["terminal_sha256"], "stop_sha256": evidence["stop_sha256"],
             "state_sha256": evidence["state_sha256"], "state_floor_sha256": evidence["state_floor_sha256"],
@@ -916,12 +950,21 @@ class Project:
                 except Exception as error:
                     verified, verification_error = False, str(error)[:2048]
             return {"consumed": False, "preserved": True, "restored": False,
-                    "requires_operator": False,
+                    "requires_operator": not verified,
                     "existing_clean_evidence_verified": verified,
                     "verification_error": verification_error}
         if not processes_stopped:
             summary = self.preserve_clean_evidence_for_operator()
             summary["preservation_reason"] = "processes not confirmed stopped; authority marker/seal and canonical evidence are not restored"
+            return summary
+        if self.processes:
+            # A started process may have written the authority dirty marker, its
+            # backend seal, controller placement/grants or the operations sidecar
+            # before readiness. Rolling the old clean evidence back would bypass
+            # the authority's quiescence check, so preserve it for an operator
+            # instead. Popen failures that never started a process still recover.
+            summary = self.preserve_clean_evidence_for_operator()
+            summary["preservation_reason"] = "one or more services were started; canonical evidence is not restored"
             return summary
         if self.phase != "startup":
             # Conservative change: any failure from phase "reconciling" onward,
@@ -939,11 +982,20 @@ class Project:
             summary = self.preserve_clean_evidence_for_operator()
             summary["preservation_reason"] = "authority backend seal could not be confirmed during snapshot"
             return summary
+        if evidence.get("stop_sha256") is None:
+            summary = self.preserve_clean_evidence_for_operator()
+            summary["preservation_reason"] = "clean evidence snapshot has no stop record"
+            return summary
         staging = pathlib.Path(evidence["staging"])
         try:
             attempt_archive = self.restore_clean_files(evidence)
         except Exception as error:
-            self.quarantine_clean_terminal(error)
+            try:
+                self.quarantine_clean_terminal(error)
+            except Exception as quarantine_error:
+                raise RuntimeError(
+                    "clean evidence restore failed: " + str(error)
+                    + "; quarantine failed: " + str(quarantine_error)) from error
             raise
         summary = self.clean_evidence_summary()
         summary.update({"consumed": True, "restored": True, "requires_operator": False,
@@ -1210,6 +1262,7 @@ class Project:
             raise RuntimeError(name + " did not become ready; inspect private logs") from None
         if not event.get("ready"):
             raise RuntimeError(name + " readiness rejected")
+        self.ready_services.add(name)
         return event
 
     def stop_worker(self, worker):
