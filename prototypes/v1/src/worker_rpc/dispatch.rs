@@ -28,6 +28,7 @@ impl State {
         terminal: &mut Option<SessionState>,
         deadline: Instant,
     ) -> Result<Value> {
+        let _diagnostic_request = crate::slow_diagnostics::enter(request_id);
         match command {
             WorkerCommand::GetCapacityTrace {
                 stream_id,
@@ -155,7 +156,8 @@ impl State {
                     "SQL byte budget exceeded"
                 );
                 let call = call.context("worker session RPC guard absent")?;
-                let result = call.handle().execute(&sql);
+                let result =
+                    crate::slow_diagnostics::native("execute", || call.handle().execute(&sql));
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
                     *terminal = call.terminal_state().unwrap_or(None);
                 }
@@ -170,7 +172,8 @@ impl State {
                     "SQL byte budget exceeded"
                 );
                 let call = call.context("worker session RPC guard absent")?;
-                let result = call.handle().query(&sql).map(rows);
+                let result = crate::slow_diagnostics::native("query", || call.handle().query(&sql))
+                    .map(rows);
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
                     *terminal = call.terminal_state().unwrap_or(None);
                 }
@@ -233,7 +236,7 @@ impl State {
                     .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
                     .collect::<Result<Vec<_>>>()?;
                 let call = call.context("worker session RPC guard absent")?;
-                let result = call.handle().statement_with_named_args(&sql, &args, &named_args, want_rows).map(|result| {
+                let result = crate::slow_diagnostics::native("statement", || call.handle().statement_with_named_args(&sql, &args, &named_args, want_rows)).map(|result| {
                     json!({
                         "cols": result.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
                         "rows": result.rows.into_iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
@@ -275,7 +278,7 @@ impl State {
             }
             WorkerCommand::FetchReadCursor { max_rows, .. } => {
                 let call = call.context("worker session RPC guard absent")?;
-                let result = call.handle().fetch_read_cursor(max_rows).map(|(rows, done)| {
+                let result = crate::slow_diagnostics::native("cursor_fetch_read", || call.handle().fetch_read_cursor(max_rows)).map(|(rows, done)| {
                     json!({"rows": rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(), "done": done})
                 });
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
@@ -319,7 +322,10 @@ impl State {
             }
             WorkerCommand::FetchWriteCursor { max_rows, .. } => {
                 let call = call.context("worker session RPC guard absent")?;
-                let result = call.handle().fetch_write_cursor(max_rows).map(|page| {
+                let result = crate::slow_diagnostics::native("cursor_fetch_write", || {
+                    call.handle().fetch_write_cursor(max_rows)
+                })
+                .map(|page| {
                     let rows = page
                         .rows
                         .iter()

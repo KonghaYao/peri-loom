@@ -357,6 +357,7 @@ impl State {
         principal: &Principal,
         identifier: &str,
     ) -> Result<Value> {
+        let _diagnostic_request = crate::slow_diagnostics::enter(identifier);
         match command {
             AuthorityCommand::GetMetrics => {
                 Self::control(principal)?;
@@ -563,7 +564,9 @@ impl State {
                     .context("unknown authority session")?;
                 ensure!(&selected.worker_id == worker, "Unauthorized session");
                 let _dispatch = selected.scope.dispatch()?;
-                match operation {
+                let diagnostic = crate::slow_diagnostics::authority_operation(&operation);
+                let mut read_bytes = 0;
+                let result = (|| match operation {
                     SessionOperation::UploadSegments { segments } => {
                         super::protocol::validate_segment_batch(&segments)?;
                         ensure!(
@@ -601,7 +604,11 @@ impl State {
                             .validate_lease(&selected.binding, selected.store.access_role())?,
                     )?),
                     SessionOperation::Get { key } => {
-                        Ok(serde_json::to_value(selected.store.get(&key)?)?)
+                        let object = selected.store.get(&key)?;
+                        read_bytes = object
+                            .as_ref()
+                            .map_or(0, |object| object.bytes.len() as u64);
+                        Ok(serde_json::to_value(object)?)
                     }
                     SessionOperation::Put {
                         key,
@@ -631,7 +638,11 @@ impl State {
                         Ok(Value::Null)
                     }
                     SessionOperation::List { prefix } => Ok(json!(selected.store.list(&prefix)?)),
+                })();
+                if let Some(diagnostic) = diagnostic {
+                    diagnostic.finish(&result, read_bytes);
                 }
+                result
             }
             AuthorityCommand::ShutdownWithin { remaining_ms } => {
                 Self::control(principal)?;

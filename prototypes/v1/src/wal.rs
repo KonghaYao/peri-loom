@@ -911,7 +911,27 @@ impl RemoteWal {
                 append_id,
                 timestamp_millis,
             };
-            lsn = self.append_one(&request)?;
+            let timer = crate::slow_diagnostics::Timer::begin();
+            let appended = self.append_one(&request);
+            if let Some(timer) = timer {
+                timer.finish(
+                    crate::slow_diagnostics::outcome(&appended),
+                    None,
+                    |duration| crate::slow_diagnostics::Detail::WalDurability {
+                        append_id: crate::slow_diagnostics::append_id(&request.append_id),
+                        bytes: crate::slow_diagnostics::wal_bytes(&request.batch),
+                        bytes_scope: "wal_write_payload",
+                        record_index: index,
+                        record_count: records,
+                        append_duration_ns: duration,
+                        commit_duration_ns: None,
+                        commit_position_present: request.position.is_some(),
+                        attempts: None,
+                        unknown: appended.as_ref().ok().map(|_| false),
+                    },
+                );
+            }
+            lsn = appended?;
         }
         Ok(lsn)
     }
@@ -1000,6 +1020,7 @@ impl RemoteWal {
                     // The conditional write lost to another appender, so this attempt is
                     // rebuilt from the index that won.
                     crate::work_metrics::observe_wal_index_retry();
+                    crate::slow_diagnostics::retry();
                 }
             }
         }

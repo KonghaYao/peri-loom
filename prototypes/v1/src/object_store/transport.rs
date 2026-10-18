@@ -43,6 +43,9 @@ impl S3ObjectStore {
         let origin = url.origin().ascii_serialization();
         let host = origin.split_once("://").expect("validated HTTP origin").1;
         for attempt in 0..=self.config.retries {
+            if attempt > 0 {
+                crate::slow_diagnostics::retry();
+            }
             let mut headers = extra.clone();
             headers.insert("host".into(), host.into());
             headers.insert(

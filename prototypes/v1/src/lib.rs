@@ -28,6 +28,7 @@ pub mod sdk;
 pub mod service_cli;
 pub mod session;
 mod shutdown_budget;
+pub(crate) mod slow_diagnostics;
 pub mod storage;
 pub mod wal;
 pub(crate) mod work_metrics;

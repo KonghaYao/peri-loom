@@ -10,11 +10,21 @@ use super::{ObjectStore, PutCondition, StoredObject};
 pub struct MetricsObjectStore {
     inner: Arc<dyn ObjectStore>,
     metrics: Arc<Metrics>,
+    backend: &'static str,
 }
 
 impl MetricsObjectStore {
     pub fn new(inner: Arc<dyn ObjectStore>, metrics: Arc<Metrics>) -> Self {
-        Self { inner, metrics }
+        Self {
+            inner,
+            metrics,
+            backend: "wrapped",
+        }
+    }
+
+    pub(crate) fn with_backend(mut self, backend: &'static str) -> Self {
+        self.backend = backend;
+        self
     }
 
     pub fn metrics(&self) -> Arc<Metrics> {
@@ -61,8 +71,22 @@ impl ObjectStore for MetricsObjectStore {
     /// and `latency_total_ns` stay comparable with the unbatched path.
     fn put_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<String>> {
         let started = std::time::Instant::now();
+        let timer = crate::slow_diagnostics::Timer::begin();
         let result = self.inner.put_group(writes);
         let share = started.elapsed() / writes.len().max(1) as u32;
+        if let Some(timer) = timer {
+            timer.finish(crate::slow_diagnostics::outcome(&result), None, |_| {
+                crate::slow_diagnostics::object_io(
+                    "backend",
+                    "PUT_GROUP",
+                    "other",
+                    self.backend,
+                    writes.iter().map(|write| write.bytes.len() as u64).sum(),
+                    writes.len(),
+                    None,
+                )
+            });
+        }
         for write in writes {
             self.metrics.record(
                 Operation::Put,
@@ -75,7 +99,8 @@ impl ObjectStore for MetricsObjectStore {
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
-        self.metrics.observe(
+        let timer = crate::slow_diagnostics::Timer::begin();
+        let result = self.metrics.observe(
             Operation::Get,
             || self.inner.get(key),
             |object| {
@@ -83,15 +108,48 @@ impl ObjectStore for MetricsObjectStore {
                     .as_ref()
                     .map_or(0, |object| object.bytes.len() as u64)
             },
-        )
+        );
+        if let Some(timer) = timer {
+            timer.finish(crate::slow_diagnostics::outcome(&result), None, |_| {
+                crate::slow_diagnostics::object_io(
+                    "backend",
+                    "GET",
+                    crate::slow_diagnostics::object_class(key),
+                    self.backend,
+                    result
+                        .as_ref()
+                        .ok()
+                        .and_then(|object| object.as_ref())
+                        .map_or(0, |object| object.bytes.len() as u64),
+                    0,
+                    None,
+                )
+            });
+        }
+        result
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
-        self.metrics.observe(
+        let timer = crate::slow_diagnostics::Timer::begin();
+        let result = self.metrics.observe(
             Operation::Put,
             || self.inner.put(key, bytes, condition),
             |_| bytes.len() as u64,
-        )
+        );
+        if let Some(timer) = timer {
+            timer.finish(crate::slow_diagnostics::outcome(&result), None, |_| {
+                crate::slow_diagnostics::object_io(
+                    "backend",
+                    "PUT",
+                    crate::slow_diagnostics::object_class(key),
+                    self.backend,
+                    bytes.len() as u64,
+                    1,
+                    None,
+                )
+            });
+        }
+        result
     }
 
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {

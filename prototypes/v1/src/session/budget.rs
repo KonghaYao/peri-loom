@@ -193,6 +193,7 @@ pub(super) struct ExecutionBudget<'a> {
     bytes: usize,
     control: Arc<SessionControl>,
     previous_max_blob_bytes: usize,
+    diagnostic_steps: Option<std::cell::Cell<u64>>,
 }
 
 impl<'a> ExecutionBudget<'a> {
@@ -244,6 +245,7 @@ impl<'a> ExecutionBudget<'a> {
             bytes: 0,
             control,
             previous_max_blob_bytes,
+            diagnostic_steps: crate::slow_diagnostics::enabled().then(|| std::cell::Cell::new(0)),
         })
     }
 
@@ -270,6 +272,9 @@ impl<'a> ExecutionBudget<'a> {
     }
 
     pub fn account_steps(&self, steps: u64) -> Result<()> {
+        if let Some(diagnostic_steps) = &self.diagnostic_steps {
+            diagnostic_steps.set(steps);
+        }
         ensure!(steps <= self.budget.max_vm_steps, "VM step budget exceeded");
         self.check()
     }
@@ -318,6 +323,10 @@ impl<'a> ExecutionBudget<'a> {
 
 impl Drop for ExecutionBudget<'_> {
     fn drop(&mut self) {
+        if let Some(steps) = &self.diagnostic_steps {
+            crate::slow_diagnostics::native_steps(steps.get());
+            crate::slow_diagnostics::native_counts(self.rows, self.bytes);
+        }
         self.connection.set_progress_handler(0, None);
         self.connection
             .set_max_blob_bytes(self.previous_max_blob_bytes);

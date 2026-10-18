@@ -50,10 +50,13 @@ fn authority(arguments: &[String]) -> Result<()> {
     let auth = AuthConfig::new(control, workers)?;
     let startup = AuthorityStartup::acquire(Path::new(&arguments[3]), arguments.len() == 5)?;
     let store = crate::config::authority_backend(&arguments[1])?;
-    let store = Arc::new(crate::object_store::metrics::MetricsObjectStore::new(
-        store,
-        crate::metrics::Metrics::global(),
-    ));
+    let store = Arc::new(
+        crate::object_store::metrics::MetricsObjectStore::new(
+            store,
+            crate::metrics::Metrics::global(),
+        )
+        .with_backend(if arguments[1] == "s3" { "s3" } else { "local" }),
+    );
     let authority = OwnershipAuthority::new(store, Arc::new(SystemLeaseClock));
     let server = Server::bind(address, authority, auth, startup)?;
     ready("authority", server.local_addr())?;
