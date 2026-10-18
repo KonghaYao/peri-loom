@@ -316,7 +316,11 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertTrue(record["teardown_completed"])
             self.assertTrue(record["clean_evidence"]["restored"])
             self.assertFalse(record["requires_operator"])
-            self.assertEqual(record["not_rolled_back"], [])
+            self.assertTrue(record["teardown_completed"])
+            self.assertTrue(record["all_processes_stopped"])
+            self.assertEqual(record["not_rolled_back"]["canonical_clean_evidence"], "restored")
+            self.assertEqual(record["not_rolled_back"]["authority_lock"], "matches_snapshot")
+            self.assertIn(record["not_rolled_back"]["platform_state"], ("matches_snapshot", "absent_at_snapshot"))
             self.assertIsNotNone(record["clean_evidence"]["authority_lock_sha256"])
             self.assertEqual(record["clean_evidence"]["terminal_sha256"], hashlib.sha256(terminal_bytes).hexdigest())
             self.assertEqual(record["clean_evidence"]["stop_sha256"], hashlib.sha256(stop_bytes).hexdigest())
@@ -384,8 +388,12 @@ class OwnedStopProofTests(unittest.TestCase):
                 project.acquire_run_lock()
                 project.prepare()
                 process = Mock(stdout=None)
-                process.poll.return_value = None
-                process.wait.return_value = 1
+                exited = {"value": False}
+                process.poll.side_effect = lambda: 1 if exited["value"] else None
+                def wait(timeout=None):
+                    exited["value"] = True
+                    return 1
+                process.wait.side_effect = wait
                 project.processes["platform"] = process
                 observed["process"] = process
                 raise RuntimeError("platform did not become ready; inspect private logs")
@@ -397,7 +405,9 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
             self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
             record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
-            self.assertFalse(record["teardown_completed"])
+            self.assertTrue(record["teardown_completed"])
+            self.assertTrue(record["all_processes_stopped"])
+            self.assertFalse(record["teardown_clean"])
             self.assertIn("platform exited without a clean proof", record["teardown_error"])
             self.assertTrue(record["clean_evidence"]["restored"])
             self.assertFalse(record["requires_operator"])
@@ -431,6 +441,12 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertFalse(record["recovery"]["restored"])
             self.assertEqual(record["teardown"]["outcome"], "unclean")
             self.assertEqual(record["clean_evidence_quarantine"]["directory"], str(quarantined[0]))
+            self.assertEqual(record["not_rolled_back"]["canonical_clean_evidence"], "quarantined")
+            self.assertEqual(record["not_rolled_back"]["authority_lock"], "matches_snapshot")
+            self.assertEqual(record["not_rolled_back"]["authority_seal"], "absent_at_snapshot")
+            self.assertEqual(record["not_rolled_back"]["platform_state"], "matches_snapshot")
+            self.assertTrue(record["teardown_completed"])
+            self.assertTrue(record["requires_operator"])
             with self.assertRaisesRegex(RuntimeError, "operator"):
                 dev.Project(fixture.arguments).prepare()
 
@@ -467,25 +483,34 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertFalse(record["clean_evidence"]["restored"])
             self.assertTrue(record["clean_evidence"]["preserved"])
             self.assertEqual(record["clean_evidence"]["preserved_at"], str(preserved[0]))
-            self.assertIn("authority backend/leases", record["not_rolled_back"])
-            self.assertIn("platform operations sidecar", record["not_rolled_back"])
+            self.assertEqual(record["not_rolled_back"]["canonical_clean_evidence"], "preserved")
+            self.assertEqual(record["not_rolled_back"]["authority_backend_leases"], "not_rolled_back")
+            self.assertEqual(record["not_rolled_back"]["platform_operations_sidecar"], "not_rolled_back")
+            self.assertEqual(record["not_rolled_back"]["platform_state"], "changed")
+            self.assertEqual(record["not_rolled_back"]["authority_lock"], "matches_snapshot")
+            self.assertEqual(record["not_rolled_back"]["authority_seal"], "absent_at_snapshot")
+            self.assertIn("authority_lock", record["not_rolled_back"])
             with self.assertRaisesRegex(RuntimeError, "operator"):
                 dev.Project(fixture.arguments).prepare()
 
     def test_failure_record_write_error_does_not_block_cleanup(self):
         with tempfile.TemporaryDirectory(prefix="restart-record-error-", dir="/tmp") as directory:
-            self.clean_run_directory(directory)
+            fixture = self.clean_run_directory(directory)
             root = pathlib.Path(directory).resolve()
             stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
-            stop_bytes = stop_path.read_bytes()
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
             observed = {}
 
             def failing_run(project):
                 project.acquire_run_lock()
                 project.prepare()
                 process = Mock(stdout=None)
-                process.poll.return_value = None
-                process.wait.return_value = 0
+                exited = {"value": False}
+                process.poll.side_effect = lambda: 0 if exited["value"] else None
+                def wait(timeout=None):
+                    exited["value"] = True
+                    return 0
+                process.wait.side_effect = wait
                 project.processes["platform"] = process
                 observed["process"] = process
                 raise RuntimeError("request rejected: operation_incomplete")
@@ -498,11 +523,21 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertEqual(dev.main(), 1)
             observed["process"].terminate.assert_called_once()
             observed["process"].wait.assert_called()
+            # Recovery still uses the in-memory evidence even though the audit
+            # record could not be written.
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
-            self.assertFalse(terminal_path.exists())
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
+            self.assertFalse((root / "launcher-restart-failure.json").exists())
+            unavailable = json.loads((root / "launcher-restart-failure-unavailable.json").read_text())
+            self.assertEqual(unavailable["kind"], "launcher_restart_failure_unavailable")
+            self.assertIn("operation_incomplete", unavailable["error"])
+            self.assertIn("disk full", unavailable["record_error"])
+            self.assertTrue(unavailable["recovery"]["restored"])
             self.assertIn("request rejected: operation_incomplete", stderr.getvalue())
             self.assertIn("restart failure record unavailable", stderr.getvalue())
             self.assertIn("disk full", stderr.getvalue())
+            with self.assertRaisesRegex(RuntimeError, "record unavailable"):
+                dev.Project(fixture.arguments).prepare()
 
     def test_prepare_requires_clean_stop_outcome(self):
         for outcome in ("unclean", "missing"):
@@ -510,14 +545,16 @@ class OwnedStopProofTests(unittest.TestCase):
                 project = self.clean_run_directory(directory)
                 root = pathlib.Path(directory).resolve()
                 configuration = project.config["owned_stop_proof"]
+                expected = "operator"
                 if outcome == "missing":
                     (root / "launcher-stop.json").unlink()
+                    expected = "legacy clean proof without launcher-stop.json"
                 else:
                     dev.atomic_private_json(root / "launcher-stop.json", dev.signed_owned_identity(configuration, {
                         "version": 1, "generation": configuration["generation"], "outcome": "unclean",
                         "reason": "synthetic", "deadline_ms": 1, "stages": [],
                         "unresolved_operations": "not_verified"}))
-                with self.assertRaisesRegex(RuntimeError, "operator"):
+                with self.assertRaisesRegex(RuntimeError, expected):
                     dev.Project(project.arguments).prepare()
                 self.assertTrue((root / "launcher-terminal.json").is_file())
                 self.assertTrue((root / "owned-proof").is_dir())
@@ -623,6 +660,129 @@ class OwnedStopProofTests(unittest.TestCase):
             finally:
                 self.stop_live(second)
             dev.verify_clean_terminal(root, configuration)
+
+    def test_unconfirmed_process_stops_preserve_evidence_for_operator(self):
+        with tempfile.TemporaryDirectory(prefix="restart-unconfirmed-", dir="/tmp") as directory:
+            self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
+            observed = {}
+
+            class Unconfirmed:
+                stdout = None
+
+                def __init__(self, process):
+                    self.process = process
+
+                def poll(self):
+                    return None
+
+                def wait(self, timeout=None):
+                    raise subprocess.TimeoutExpired("platform", timeout)
+
+                def terminate(self):
+                    pass
+
+                def kill(self):
+                    pass
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                child = subprocess.Popen(
+                    [sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)"])
+                observed["child"] = child
+                project.processes["platform"] = Unconfirmed(child)
+                raise RuntimeError("platform did not become ready; inspect private logs")
+
+            try:
+                with patch.object(dev, "SHUTDOWN_STAGE_CAPS", {"platform": 1, "workers": 1, "authority": 1}), \
+                        patch.object(dev, "SHUTDOWN_FINALIZE_SECONDS", 0.2), \
+                        patch.object(dev.Project, "run", failing_run), \
+                        patch.object(sys, "argv", self.launcher_arguments(root)):
+                    self.assertEqual(dev.main(), 1)
+                self.assertEqual(stop_path.read_bytes(), stop_bytes)
+                self.assertFalse(terminal_path.exists())
+                preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
+                self.assertEqual(len(preserved), 1)
+                self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
+                record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+                self.assertTrue(record["requires_operator"])
+                self.assertFalse(record["teardown_completed"])
+                self.assertFalse(record["all_processes_stopped"])
+                self.assertEqual(record["clean_evidence"]["preserved_at"], str(preserved[0]))
+                self.assertIn("processes not confirmed stopped", record["clean_evidence"]["preservation_reason"])
+                self.assertEqual(record["not_rolled_back"]["canonical_clean_evidence"], "preserved")
+                self.assertEqual(record["not_rolled_back"]["authority_lock"], "matches_snapshot")
+                self.assertEqual(record["not_rolled_back"]["platform_state"], "matches_snapshot")
+                with self.assertRaisesRegex(RuntimeError, "operator"):
+                    dev.Project(argparse.Namespace(run_dir=str(root), backend="local", listen="127.0.0.1:19443",
+                                                   tls=False, no_build=True, writer_admission=False)).prepare()
+            finally:
+                child = observed.get("child")
+                if child is not None and child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=10)
+
+    def test_legacy_failure_records_require_explicit_operator_diagnosis(self):
+        cases = (
+            ("lacks requires_operator", {"teardown_completed": True}),
+            ("lacks teardown_completed", {"requires_operator": False}),
+            ("teardown not confirmed complete", {"requires_operator": False, "teardown_completed": False}),
+        )
+        for expected, extra in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory(prefix="restart-legacy-", dir="/tmp") as directory:
+                project = self.clean_run_directory(directory)
+                root = pathlib.Path(directory).resolve()
+                configuration = project.config["owned_stop_proof"]
+                record = {"version": 1, "kind": "launcher_restart_failure", "run_dir": str(root),
+                          "phase": "startup", "error": "legacy record", "failed_at": "2026-01-01T00:00:00+00:00"}
+                record.update(extra)
+                dev.atomic_private_json(root / "launcher-restart-failure.json",
+                                        dev.signed_owned_identity(configuration, record))
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    dev.Project(project.arguments).prepare()
+                self.assertTrue((root / "launcher-terminal.json").is_file())
+                self.assertTrue((root / "launcher-stop.json").is_file())
+
+    def test_crash_before_recovery_never_restores_staged_evidence(self):
+        with tempfile.TemporaryDirectory(prefix="restart-crash-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            terminal_bytes = (root / "launcher-terminal.json").read_bytes()
+            dev.Project(project.arguments).prepare()
+            self.assertFalse((root / "launcher-terminal.json").exists())
+            staging = list((root / "launcher-restart-staging").iterdir())
+            self.assertEqual(len(staging), 1)
+            self.assertEqual((staging[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
+            # No same-process recovery ran (hard kill/crash). The next launcher
+            # must refuse rather than promote the staging copy automatically.
+            with self.assertRaises(RuntimeError):
+                dev.Project(project.arguments).prepare()
+            self.assertFalse((root / "launcher-terminal.json").exists())
+
+    def test_local_object_lookup_validates_json_envelope(self):
+        with tempfile.TemporaryDirectory(prefix="seal-envelope-", dir="/tmp") as directory:
+            backend = pathlib.Path(directory) / "backend"
+            backend.mkdir(mode=0o700)
+            key = dev.LOCAL_SEAL_KEY
+            (backend / "malformed.obj").write_text("prefix " + key)
+            with patch.dict(sys.modules, {"blake3": None}):
+                path, reliable = dev.local_object_path(backend, key)
+            self.assertIsNone(path)
+            self.assertFalse(reliable)
+            (backend / "malformed.obj").unlink()
+            (backend / "other.obj").write_text(json.dumps({"key": "other", "bytes": "e30="}))
+            with patch.dict(sys.modules, {"blake3": None}):
+                path, reliable = dev.local_object_path(backend, key)
+            self.assertIsNone(path)
+            self.assertTrue(reliable)
+            (backend / "seal.obj").write_text(json.dumps({"key": key, "bytes": "e30="}))
+            with patch.dict(sys.modules, {"blake3": None}):
+                path, reliable = dev.local_object_path(backend, key)
+            self.assertEqual(path, backend / "seal.obj")
+            self.assertTrue(reliable)
 
     def test_clean_terminal_rejects_dirty_authority_and_modified_configuration(self):
         with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:

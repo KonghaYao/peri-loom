@@ -35,36 +35,48 @@ SHUTDOWN_STAGE_CAPS = {"platform": 15, "workers": 13, "authority": 12}
 # Once /v1/reconcile starts, the platform may have changed controller placement or
 # grants, authority leases/backend state, and its operations sidecar. None of those
 # are covered by the canonical terminal hashes, so a failure from here on must not
-# restore the old proof as if it still described the current run.
-RECONCILING_NOT_ROLLED_BACK = (
-    "controller placement/grants",
-    "authority backend/leases",
-    "platform operations sidecar",
-    "platform state/floor writes",
-)
+# restore the old proof as if it still described the current run. This is a
+# conservative behavior change: even an immediate 409 or a refused connection can
+# hide a request that already mutated state before its reply was lost.
 LOCAL_SEAL_KEY = "authority-control/single-authority-seal"
 
 
 def local_object_path(backend_directory, key):
-    """The local object store names objects by blake3(key); fall back to a short scan."""
+    """Return (path, reliable) for a local object envelope.
+
+    reliable is False when a candidate cannot be parsed or does not carry the
+    expected key, so the caller must not treat "not found" as "absent".
+    """
+    if not backend_directory.is_dir():
+        return None, True
     try:
         import blake3
     except ImportError:
         blake3 = None
     if blake3 is not None:
         candidate = backend_directory / (blake3.blake3(key.encode()).hexdigest() + ".obj")
-        if candidate.is_file():
-            return candidate
-    encoded = key.encode()
+        if not candidate.is_file():
+            return None, True
+        try:
+            envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
+        except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
+            return None, False
+        if not isinstance(envelope, dict) or envelope.get("key") != key or not isinstance(envelope.get("bytes"), str):
+            return None, False
+        return candidate, True
+    reliable = True
     for candidate in backend_directory.glob("*.obj"):
         try:
-            with candidate.open("rb") as source:
-                prefix = source.read(512)
-        except OSError:
+            if candidate.stat().st_size > 1024 * 1024:
+                reliable = False
+                continue
+            envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
+        except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
+            reliable = False
             continue
-        if encoded in prefix:
-            return candidate
-    return None
+        if isinstance(envelope, dict) and envelope.get("key") == key and isinstance(envelope.get("bytes"), str):
+            return candidate, True
+    return None, reliable
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -387,6 +399,7 @@ class Project:
         self.restart_failure = None
         self.restart_failure_error = None
         self.clean_evidence_quarantine = None
+        self.last_clean_evidence_outcome = None
         # Set before teardown of a failed restart so diagnostics never overwrite the
         # previous clean launcher-stop.json, even when the failure record is lost.
         self.preserve_clean_evidence = False
@@ -427,8 +440,10 @@ class Project:
                     try:
                         self.persist_restart_failure()
                     except Exception as error:
+                        # Keep the in-memory record: recovery still has a usable
+                        # clean-evidence snapshot, and the final error plus a
+                        # separate diagnostic must not silently lose it.
                         self.restart_failure_error = error
-                        self.restart_failure = None
                 return
             atomic_private_json(self.directory / "launcher-stop.json", signed_owned_identity(configuration, self.stop_record))
 
@@ -438,6 +453,8 @@ class Project:
         if configuration:
             value = signed_owned_identity(configuration, value)
         atomic_private_json(self.directory / "launcher-restart-failure.json", value)
+        # A later successful persist supersedes a transient earlier failure.
+        self.restart_failure_error = None
 
     def read_signed_private(self, path, configuration, label):
         if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 64 * 1024:
@@ -457,6 +474,9 @@ class Project:
         return record
 
     def verify_restart_failure_gate(self, configuration):
+        unavailable = self.directory / "launcher-restart-failure-unavailable.json"
+        if unavailable.exists():
+            raise RuntimeError("launcher restart requires operator recovery: restart failure record unavailable; inspect launcher-restart-failure-unavailable.json")
         path = self.directory / "launcher-restart-failure.json"
         if not path.exists():
             return
@@ -464,12 +484,23 @@ class Project:
             record = self.read_signed_private(path, configuration, "launcher restart failure record")
         except RuntimeError as error:
             raise RuntimeError("launcher restart requires operator recovery: restart failure record is not verifiable") from error
-        if record.get("kind") != "launcher_restart_failure" or record.get("requires_operator") is not False:
-            raise RuntimeError("launcher restart requires operator recovery")
+        if record.get("kind") != "launcher_restart_failure":
+            raise RuntimeError("launcher restart requires operator recovery: unrecognized restart failure record")
+        if "requires_operator" not in record:
+            raise RuntimeError("launcher restart requires operator recovery: legacy restart failure record lacks requires_operator; inspect launcher-restart-failure.json")
+        if "teardown_completed" not in record:
+            raise RuntimeError("launcher restart requires operator recovery: legacy restart failure record lacks teardown_completed")
+        if record.get("requires_operator") is not False:
+            raise RuntimeError("launcher restart requires operator recovery: " + str(record.get("recovery") or record.get("phase") or "unspecified"))
+        if record.get("teardown_completed") is not True:
+            raise RuntimeError("launcher restart requires operator recovery: launcher teardown not confirmed complete")
 
     def verify_clean_stop_record(self, configuration):
+        path = self.directory / "launcher-stop.json"
+        if not path.exists():
+            raise RuntimeError("legacy clean proof without launcher-stop.json; launcher stop outcome is not clean; operator recovery required")
         try:
-            record = self.read_signed_private(self.directory / "launcher-stop.json", configuration, "clean launcher stop record")
+            record = self.read_signed_private(path, configuration, "clean launcher stop record")
         except RuntimeError as error:
             raise RuntimeError("launcher stop outcome is not clean; operator recovery required") from error
         if (type(record.get("version")) is not int or record.get("version") != 1
@@ -488,7 +519,7 @@ class Project:
             "phase": self.phase,
             "readiness": "announced" if self.phase == "running" else "not_announced",
             "requires_operator": reconciling,
-            "not_rolled_back": list(RECONCILING_NOT_ROLLED_BACK) if reconciling else [],
+            "not_rolled_back": {},
             "error_type": type(error).__name__,
             "error": str(error)[:4096],
             "failed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -511,10 +542,17 @@ class Project:
         return {name: evidence[name] for name in
                 ("generation", "staging", "archive", "stop_sha256", "terminal_sha256",
                  "state_sha256", "state_floor_sha256", "authority_lock_sha256",
-                 "seal_name", "seal_sha256")}
+                 "seal_name", "seal_sha256", "seal_lookup_reliable")}
 
     def stage_clean_evidence(self, configuration):
-        """Keep the verified clean chain restorable until readiness is announced."""
+        """Keep the verified clean chain restorable until readiness is announced.
+
+        This is a same-process recovery boundary only. A hard kill or crash never
+        restores it automatically: the canonical terminal stays absent and the next
+        prepare refuses reuse. Recovery additionally requires every started process
+        to be confirmed exited; an unknown state preserves the evidence for an
+        operator instead.
+        """
         terminal = self.directory / "launcher-terminal.json"
         stop = self.directory / "launcher-stop.json"
         state = self.directory / "platform/state.json"
@@ -536,9 +574,9 @@ class Project:
         for source, name in ((stop, "launcher-stop.json"), (authority_lock, "authority/authority.lock")):
             if source.is_file():
                 private_copy(source, staging / name)
-        seal_path = None
+        seal_path, seal_reliable = None, True
         if self.launch["backend"] == "local":
-            seal_path = local_object_path(self.directory / "backend", LOCAL_SEAL_KEY)
+            seal_path, seal_reliable = local_object_path(self.directory / "backend", LOCAL_SEAL_KEY)
             if seal_path is not None:
                 private_directory(staging / "backend")
                 private_copy(seal_path, staging / "backend" / seal_path.name)
@@ -553,6 +591,7 @@ class Project:
             "authority_lock_sha256": file_sha256(authority_lock) if authority_lock.is_file() else None,
             "seal_name": seal_path.name if seal_path is not None else None,
             "seal_sha256": file_sha256(seal_path) if seal_path is not None else None,
+            "seal_lookup_reliable": seal_reliable,
         }
         self.clean_evidence = evidence
         os.replace(terminal, staging / "launcher-terminal.json")
@@ -561,6 +600,7 @@ class Project:
         if seal_path is not None:
             fsync_directory(staging / "backend")
         fsync_directory(staging)
+        fsync_directory(staging_root)
         fsync_directory(self.directory)
         history = self.directory / "owned-proof-history"
         private_directory(history)
@@ -591,6 +631,66 @@ class Project:
         verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
         verify_clean_terminal(self.directory, configuration)
         verify_no_unresolved_operations(self.directory, configuration)
+
+    def confirm_processes_stopped(self, timeout=None):
+        if timeout is None:
+            timeout = SHUTDOWN_FINALIZE_SECONDS
+        deadline = time.monotonic() + timeout
+        while True:
+            if all(process.poll() is not None for process in self.processes.values()):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    def evidence_file_status(self, relative, digest):
+        if digest is None:
+            return "absent_at_snapshot"
+        path = self.directory / relative
+        if not path.is_file():
+            return "missing"
+        return "matches_snapshot" if file_sha256(path) == digest else "changed"
+
+    def recovery_status(self, evidence, canonical_status):
+        status = {
+            "controller_placement_grants": "not_rolled_back",
+            "authority_backend_leases": "not_rolled_back",
+            "platform_operations_sidecar": "not_rolled_back",
+            "platform_state_floor_writes": "not_rolled_back",
+            "canonical_clean_evidence": canonical_status,
+        }
+        if evidence is None:
+            for name in ("authority_lock", "authority_seal", "platform_state", "platform_state_floor"):
+                status[name] = "no_clean_evidence"
+            return status
+        status["authority_lock"] = self.evidence_file_status("authority/authority.lock", evidence.get("authority_lock_sha256"))
+        seal_name = evidence.get("seal_name")
+        if not evidence.get("seal_lookup_reliable", True):
+            status["authority_seal"] = "unconfirmed"
+        elif seal_name is None:
+            status["authority_seal"] = "absent_at_snapshot"
+        else:
+            status["authority_seal"] = self.evidence_file_status("backend/" + seal_name, evidence.get("seal_sha256"))
+        status["platform_state"] = self.evidence_file_status("platform/state.json", evidence.get("state_sha256"))
+        status["platform_state_floor"] = self.evidence_file_status("platform/state.json.floor", evidence.get("state_floor_sha256"))
+        return status
+
+    def write_failure_record_unavailable(self, original_failure):
+        if self.restart_failure_error is None:
+            return
+        value = {
+            "version": 1, "kind": "launcher_restart_failure_unavailable",
+            "run_dir": str(self.directory),
+            "error": str(original_failure)[:4096],
+            "record_error": str(self.restart_failure_error)[:2048],
+            "recovery": self.last_clean_evidence_outcome,
+            "written_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        try:
+            atomic_private_json(self.directory / "launcher-restart-failure-unavailable.json", value)
+        except Exception as error:
+            self.restart_failure_error = RuntimeError(
+                str(self.restart_failure_error) + "; unavailable-record diagnostic write failed: " + str(error))
 
     def remove_staging(self, staging):
         try:
@@ -644,7 +744,9 @@ class Project:
                 os.replace(staged, current)
             fsync_directory(self.directory / "backend")
         else:
-            current = local_object_path(self.directory / "backend", LOCAL_SEAL_KEY)
+            current, reliable = local_object_path(self.directory / "backend", LOCAL_SEAL_KEY)
+            if not reliable:
+                raise RuntimeError("authority backend seal could not be confirmed")
             if current is not None:
                 # The failed attempt created a seal the previous clean run did not
                 # have; we cannot prove the old authority terminal any more.
@@ -687,12 +789,13 @@ class Project:
         owned_proof_preserved = evidence["archive"] is not None and pathlib.Path(evidence["archive"]).exists()
         if owned_proof_preserved:
             pathlib.Path(evidence["archive"]).rename(destination / "owned-proof")
+        not_rolled_back = self.recovery_status(evidence, "preserved")
         receipt = {
             "version": 1, "kind": "launcher_clean_evidence_preserved",
             "run_dir": str(self.directory), "generation": evidence["generation"],
             "phase": self.phase, "created_at": created.isoformat(),
             "services_started": sorted(self.processes),
-            "not_rolled_back": list(RECONCILING_NOT_ROLLED_BACK),
+            "not_rolled_back": not_rolled_back,
             "terminal_sha256": evidence["terminal_sha256"], "stop_sha256": evidence["stop_sha256"],
             "state_sha256": evidence["state_sha256"], "state_floor_sha256": evidence["state_floor_sha256"],
             "authority_lock_sha256": evidence["authority_lock_sha256"],
@@ -709,16 +812,18 @@ class Project:
         fsync_directory(self.directory)
         staging_removed = self.remove_staging(staging)
         self.clean_evidence = None
-        return {"consumed": True, "restored": False, "preserved": True,
-                "requires_operator": True, "preserved_at": str(destination),
-                "terminal_sha256": evidence["terminal_sha256"], "stop_sha256": evidence["stop_sha256"],
-                "state_sha256": evidence["state_sha256"], "state_floor_sha256": evidence["state_floor_sha256"],
-                "authority_lock_sha256": evidence["authority_lock_sha256"],
-                "seal_name": evidence.get("seal_name"), "seal_sha256": evidence.get("seal_sha256"),
-                "owned_proof_preserved": owned_proof_preserved,
-                "services_started": receipt["services_started"],
-                "not_rolled_back": receipt["not_rolled_back"],
-                "staging_removed": staging_removed}
+        outcome = {"consumed": True, "restored": False, "preserved": True,
+                   "requires_operator": True, "preserved_at": str(destination),
+                   "terminal_sha256": evidence["terminal_sha256"], "stop_sha256": evidence["stop_sha256"],
+                   "state_sha256": evidence["state_sha256"], "state_floor_sha256": evidence["state_floor_sha256"],
+                   "authority_lock_sha256": evidence["authority_lock_sha256"],
+                   "seal_name": evidence.get("seal_name"), "seal_sha256": evidence.get("seal_sha256"),
+                   "owned_proof_preserved": owned_proof_preserved,
+                   "services_started": receipt["services_started"],
+                   "not_rolled_back": not_rolled_back,
+                   "staging_removed": staging_removed}
+        self.last_clean_evidence_outcome = outcome
+        return outcome
 
     def quarantine_clean_terminal(self, error):
         terminal = self.directory / "launcher-terminal.json"
@@ -753,7 +858,7 @@ class Project:
             "removed": removed, "reason": str(error)[:2048],
         }
 
-    def restore_clean_evidence(self):
+    def restore_clean_evidence(self, processes_stopped):
         evidence = self.clean_evidence
         if evidence is None:
             # prepare() refused before it staged anything, so no service ran. The
@@ -769,11 +874,25 @@ class Project:
                     "requires_operator": False,
                     "existing_clean_evidence_verified": verified,
                     "verification_error": verification_error}
+        if not processes_stopped:
+            summary = self.preserve_clean_evidence_for_operator()
+            summary["preservation_reason"] = "processes not confirmed stopped; authority marker/seal and canonical evidence are not restored"
+            return summary
         if self.phase != "startup":
-            return self.preserve_clean_evidence_for_operator()
+            # Conservative change: any failure from phase "reconciling" onward,
+            # including an immediate 409 or a refused connection, may already have
+            # mutated controller placement/grants or the operations sidecar, so the
+            # old clean terminal is preserved for an operator instead of restored.
+            summary = self.preserve_clean_evidence_for_operator()
+            summary["preservation_reason"] = "failure after reconciling started; canonical evidence is not restored"
+            return summary
         if self.launch.get("backend") != "local":
             summary = self.preserve_clean_evidence_for_operator()
             summary["preservation_reason"] = "authority backend seal cannot be restored for this backend"
+            return summary
+        if not evidence.get("seal_lookup_reliable", True):
+            summary = self.preserve_clean_evidence_for_operator()
+            summary["preservation_reason"] = "authority backend seal could not be confirmed during snapshot"
             return summary
         staging = pathlib.Path(evidence["staging"])
         try:
@@ -783,34 +902,55 @@ class Project:
             raise
         summary = self.clean_evidence_summary()
         summary.update({"consumed": True, "restored": True, "requires_operator": False,
+                        "all_processes_stopped": True,
+                        "not_rolled_back": self.recovery_status(evidence, "restored"),
                         "failed_attempt_proof_archive": str(attempt_archive) if attempt_archive else None})
         summary["staging_removed"] = self.remove_staging(staging)
         self.clean_evidence = None
+        self.last_clean_evidence_outcome = summary
         return summary
 
-    def complete_restart_failure(self, evidence, teardown_error=None):
+    def complete_restart_failure(self, evidence, teardown_error=None, processes_stopped=True):
         self.restart_failure["clean_evidence"] = evidence
         self.restart_failure["teardown"] = self.stop_record
-        self.restart_failure["teardown_completed"] = teardown_error is None and self.cleanup_complete
+        # "completed" means every process this launcher started is confirmed gone,
+        # not that the stop proof was clean. A platform that never became ready can
+        # leave an unclean teardown while the previous clean evidence is still valid.
+        self.restart_failure["teardown_completed"] = processes_stopped
+        self.restart_failure["all_processes_stopped"] = processes_stopped
+        self.restart_failure["teardown_clean"] = teardown_error is None and self.cleanup_complete
         if teardown_error is not None:
             self.restart_failure["teardown_error"] = str(teardown_error)[:2048]
         if evidence.get("requires_operator") is not None:
             self.restart_failure["requires_operator"] = evidence["requires_operator"]
+        if evidence.get("not_rolled_back") is not None:
+            self.restart_failure["not_rolled_back"] = evidence["not_rolled_back"]
+        self.last_clean_evidence_outcome = evidence
         try:
             self.persist_restart_failure()
         except Exception as error:
             self.restart_failure_error = error
         self.restart_failure = None
 
-    def abandon_restart_recovery(self, error, teardown_error=None):
+    def abandon_restart_recovery(self, error, teardown_error=None, processes_stopped=False):
+        evidence = self.clean_evidence or (self.restart_failure or {}).get("clean_evidence")
         if self.stop_record is not None:
             self.stop_record["outcome"] = "unclean"
             self.stop_record["reason"] = ("clean evidence not restorable: " + str(error))[:512]
+        canonical_status = "quarantined" if self.clean_evidence_quarantine is not None else "not_restored"
+        status = self.recovery_status(evidence, canonical_status)
+        self.last_clean_evidence_outcome = {
+            "restored": False, "requires_operator": True, "not_rolled_back": status,
+            "clean_evidence_quarantine": self.clean_evidence_quarantine,
+        }
         if self.restart_failure is not None:
             self.restart_failure["requires_operator"] = True
             self.restart_failure["recovery"] = {"restored": False, "error": str(error)[:2048]}
             self.restart_failure["teardown"] = self.stop_record
-            self.restart_failure["teardown_completed"] = teardown_error is None and self.cleanup_complete
+            self.restart_failure["teardown_completed"] = processes_stopped
+            self.restart_failure["all_processes_stopped"] = processes_stopped
+            self.restart_failure["teardown_clean"] = False
+            self.restart_failure["not_rolled_back"] = status
             if teardown_error is not None:
                 self.restart_failure["teardown_error"] = str(teardown_error)[:2048]
             if self.clean_evidence_quarantine is not None:
@@ -1380,6 +1520,7 @@ def main():
             # clean stop/terminal stay untouched (restored or preserved for audit).
             startup_failure = failure is not None and project.phase != "running" and project.restart_attempt
             teardown_error = None
+            processes_stopped = True
             if startup_failure:
                 project.preserve_clean_evidence = True
                 project.begin_restart_failure(failure)
@@ -1388,22 +1529,28 @@ def main():
             except Exception as error:
                 if not startup_failure:
                     raise
-                # A teardown failure does not invalidate the snapshot: still try to
-                # restore the previous clean proof before declaring the attempt lost.
+                # A teardown failure does not invalidate the snapshot by itself:
+                # recovery still runs if every process is confirmed stopped.
                 teardown_error = error
+            processes_stopped = project.confirm_processes_stopped()
             if failure is None:
                 if teardown_error is not None:
                     raise teardown_error
+                if not processes_stopped:
+                    raise RuntimeError("launcher processes not confirmed stopped; no clean proof")
                 project.mark_clean_terminal()
             elif startup_failure:
-                if project.restart_failure is not None:
-                    try:
-                        preserved = project.restore_clean_evidence()
-                    except Exception as error:
-                        project.abandon_restart_recovery(error, teardown_error)
-                        failure = RuntimeError(f"{failure}; clean evidence recovery failed: {error}")
+                try:
+                    outcome = project.restore_clean_evidence(processes_stopped)
+                except Exception as error:
+                    project.abandon_restart_recovery(error, teardown_error, processes_stopped)
+                    failure = RuntimeError(f"{failure}; clean evidence recovery failed: {error}")
+                else:
+                    if project.restart_failure is not None:
+                        project.complete_restart_failure(outcome, teardown_error, processes_stopped)
                     else:
-                        project.complete_restart_failure(preserved, teardown_error)
+                        project.last_clean_evidence_outcome = outcome
+                project.write_failure_record_unavailable(original_failure)
             else:
                 project.write_stop_record("unclean", "launcher_failed_before_cleanup")
         except Exception as error:
