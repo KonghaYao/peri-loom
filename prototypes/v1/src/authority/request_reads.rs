@@ -5,8 +5,12 @@ use std::rc::Rc;
 
 use super::ObjectEntry;
 
-const MAX_BYTES: usize = 256 * 1024;
-const MAX_ENTRIES: usize = 128;
+// One publication re-reads the trie paths it is about to rewrite: at registry sizes the
+// contract exercises that is a few hundred page reads. A cap below that working set turned
+// every repeat into a store read (the request trace showed >1000 rejections per
+// publication), so keep enough room for the whole request while still bounding a lane.
+const MAX_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ENTRIES: usize = 1024;
 
 #[derive(Default)]
 struct Reads {
