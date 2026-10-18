@@ -592,6 +592,61 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertTrue((root / "launcher-terminal.json").is_file())
                 self.assertTrue((root / "owned-proof").is_dir())
 
+    def test_refused_prepare_records_operator_requirement_for_bad_stop(self):
+        for outcome in ("unclean", "missing"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory(prefix="restart-stop-record-", dir="/tmp") as directory:
+                fixture = self.clean_run_directory(directory)
+                root = pathlib.Path(directory).resolve()
+                configuration = fixture.config["owned_stop_proof"]
+                terminal_bytes = (root / "launcher-terminal.json").read_bytes()
+                if outcome == "missing":
+                    (root / "launcher-stop.json").unlink()
+                else:
+                    dev.atomic_private_json(root / "launcher-stop.json", dev.signed_owned_identity(configuration, {
+                        "version": 1, "generation": configuration["generation"], "outcome": "unclean",
+                        "reason": "synthetic", "deadline_ms": 1, "stages": [],
+                        "unresolved_operations": "not_verified"}))
+
+                def refusing_run(project):
+                    project.acquire_run_lock()
+                    project.prepare()
+
+                with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                    self.assertEqual(dev.main(), 1)
+                record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+                self.assertTrue(record["requires_operator"])
+                self.assertFalse(record["clean_evidence"]["restored"])
+                self.assertTrue(record["clean_evidence"]["preserved"])
+                self.assertFalse(record["clean_evidence"]["existing_clean_evidence_verified"])
+                self.assertTrue(record["clean_evidence"]["requires_operator"])
+                self.assertIn("stop", record["clean_evidence"]["verification_error"])
+                self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
+
+    def test_stale_recovered_failure_record_is_replaced_by_new_refusal(self):
+        with tempfile.TemporaryDirectory(prefix="restart-stale-record-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            configuration = fixture.config["owned_stop_proof"]
+            failure_path = root / "launcher-restart-failure.json"
+            dev.atomic_private_json(failure_path, dev.signed_owned_identity(configuration, {
+                "version": 1, "kind": "launcher_restart_failure", "phase": "startup",
+                "requires_operator": False, "teardown_completed": True, "all_processes_stopped": True,
+                "error": "previous recovered failure",
+            }))
+            previous = failure_path.read_bytes()
+            (root / "launcher-stop.json").unlink()
+
+            def refusing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+
+            with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertNotEqual(failure_path.read_bytes(), previous)
+            record = json.loads(json.loads(failure_path.read_text())["payload"])
+            self.assertTrue(record["requires_operator"])
+            self.assertIn("legacy clean proof", record["error"])
+
     def live_port(self):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -886,7 +941,10 @@ class OwnedStopProofTests(unittest.TestCase):
                     self.assertEqual(dev.local_object_path(backend, key), (None, False))
             semantic = {
                 "version 2": {"version": 2, "owner": "test", "clean": True},
+                "version true": {"version": True, "owner": "test", "clean": True},
+                "version float": {"version": 1.0, "owner": "test", "clean": True},
                 "clean false": {"version": 1, "owner": "test", "clean": False},
+                "clean integer": {"version": 1, "owner": "test", "clean": 1},
                 "unknown field": {"version": 1, "owner": "test", "clean": True, "extra": 1},
                 "missing owner": {"version": 1, "clean": True},
                 "empty owner": {"version": 1, "owner": "", "clean": True},

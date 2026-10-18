@@ -59,7 +59,7 @@ def validate_local_seal_payload(payload):
         return None
     if not isinstance(record, dict) or set(record) != LOCAL_SEAL_FIELDS:
         return None
-    if record.get("version") != 1 or record.get("clean") is not True:
+    if record.get("version") != 1 or type(record.get("version")) is not int or record.get("clean") is not True:
         return None
     if not isinstance(record.get("owner"), str) or not record["owner"]:
         return None
@@ -579,12 +579,22 @@ class Project:
             raise RuntimeError("launcher stop outcome is not clean; operator recovery required")
 
     def begin_restart_failure(self, error):
-        if not self.processes and self.clean_evidence is None and \
-                (self.directory / "launcher-restart-failure.json").exists():
-            # prepare() refused before staging anything. The existing signed
-            # failure record is the operator's only account of the original
-            # failure; a repeated refusal must not overwrite it.
-            return
+        existing = self.directory / "launcher-restart-failure.json"
+        if not self.processes and self.clean_evidence is None and existing.exists():
+            # prepare() refused before staging anything. Keep an existing
+            # operator-required record: it is the only account of the original
+            # failure, and a repeated refusal must not overwrite it. A record
+            # that still allows reuse does not describe this refusal, so the
+            # new failure is written below.
+            configuration = getattr(self, "config", {}).get("owned_stop_proof")
+            if configuration:
+                try:
+                    previous = self.read_signed_private(existing, configuration,
+                                                        "launcher restart failure record")
+                except RuntimeError:
+                    previous = None
+                if isinstance(previous, dict) and previous.get("requires_operator") is True:
+                    return
         configuration = getattr(self, "config", {}).get("owned_stop_proof")
         reconciling = self.phase != "startup"
         self.restart_failure = {
@@ -708,6 +718,22 @@ class Project:
         verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
         verify_clean_terminal(self.directory, configuration)
         verify_no_unresolved_operations(self.directory, configuration)
+
+    def verify_clean_reuse_gate(self):
+        """Reuse also requires the stop record and the failure-record gate.
+
+        verify_clean_evidence covers terminal/owned proofs/operations only. A
+        clean terminal whose signer still says the stop was unclean, or a run
+        with an unavailable failure record, must not be reported as reusable
+        without an operator.
+        """
+        configuration = self.config["owned_stop_proof"]
+        if self.restart_failure is None:
+            self.verify_restart_failure_gate(configuration)
+        elif (self.directory / "launcher-restart-failure-unavailable.json").exists():
+            raise RuntimeError("restart failure record unavailable; operator recovery required")
+        self.verify_clean_stop_record(configuration)
+        self.verify_clean_evidence()
 
     def confirm_processes_stopped(self, timeout=None):
         if timeout is None:
@@ -949,12 +975,19 @@ class Project:
             # prepare() refused before it staged anything, so no service ran. The
             # previous stop/terminal are untouched; verify them for the record but
             # never rewrite that history with a teardown that never happened.
-            verified, verification_error = True, None
-            if getattr(self, "config", {}).get("owned_stop_proof"):
+            # Reuse needs every canonical precondition, not just the terminal:
+            # a clean terminal next to an unclean/missing stop record or an
+            # unavailable failure record still requires an operator.
+            verified, verification_error = False, None
+            configuration = getattr(self, "config", {}).get("owned_stop_proof")
+            if configuration:
                 try:
-                    self.verify_clean_evidence()
+                    self.verify_clean_reuse_gate()
+                    verified = True
                 except Exception as error:
-                    verified, verification_error = False, str(error)[:2048]
+                    verification_error = str(error)[:2048]
+            else:
+                verification_error = "owned stop proof configuration unavailable"
             return {"consumed": False, "preserved": True, "restored": False,
                     "requires_operator": not verified,
                     "existing_clean_evidence_verified": verified,
