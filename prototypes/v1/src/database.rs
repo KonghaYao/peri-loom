@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, TryLockError, Weak};
 use std::thread;
 use std::time::Duration;
@@ -40,6 +40,10 @@ pub struct RemoteDatabase {
     cleanup: AtomicBool,
     engine: Mutex<Option<Arc<Database>>>,
     operations: RwLock<()>,
+    /// Milliseconds since the ledger's open instant at which the last foreground statement
+    /// took the operations gate. The compaction lane reads it through `signals`; nothing on
+    /// the request path reads it back, so it is a relaxed counter.
+    last_operation_ms: AtomicU64,
     /// Serializes maintenance units with each other, not with SQL. A checkpoint runs
     /// concurrently with foreground traffic, but it must not overlap a compaction that
     /// resets the same pager and WAL state.
@@ -149,6 +153,7 @@ impl RemoteDatabase {
             cleanup: AtomicBool::new(false),
             engine: Mutex::new(Some(database)),
             operations: RwLock::new(()),
+            last_operation_ms: AtomicU64::new(0),
             maintenance_unit: Mutex::new(()),
             io,
             admission,
@@ -399,6 +404,10 @@ impl RemoteDatabase {
                 Ok(operation) => {
                     if !cleanup {
                         self.admission.healthy()?;
+                        self.last_operation_ms.store(
+                            crate::maintenance::millis(self.maintenance.opened().elapsed()),
+                            Ordering::Relaxed,
+                        );
                     }
                     return Ok(operation);
                 }
@@ -476,6 +485,8 @@ impl MaintenanceTarget for RemoteDatabase {
         let mut signals = self.io.maintenance_signals()?;
         signals.oldest_reader_ms =
             crate::maintenance::millis(self.oldest_reader_age(std::time::Instant::now()));
+        let now = crate::maintenance::millis(self.maintenance.opened().elapsed());
+        signals.quiet_for_ms = now.saturating_sub(self.last_operation_ms.load(Ordering::Relaxed));
         Ok(signals)
     }
 

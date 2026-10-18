@@ -243,6 +243,9 @@ impl RemoteIO {
             replay_bytes: if state.lsn > applied { wal_bytes } else { 0 },
             dirty_segment_bytes: usage.dirty_segment_bytes,
             oldest_reader_ms: 0,
+            // Foreground activity is tracked by the database handle, which owns the
+            // operations gate; the IO layer never sees a request begin.
+            quiet_for_ms: 0,
             unconfirmed_wal: state.dirty
                 || state.wal_failed
                 || state.publication_failed

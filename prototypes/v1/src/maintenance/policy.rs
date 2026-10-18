@@ -19,6 +19,7 @@
 use std::time::{Duration, Instant};
 
 use super::ledger::MaintenanceLedger;
+use super::signals::millis;
 use super::signals::MaintenanceSignals;
 
 /// The maintenance units W4 keeps apart.
@@ -70,6 +71,10 @@ pub(crate) enum MaintenanceSkip {
     /// itself applies the WAL tail, so this lane waits for append quiescence, not for the
     /// image to catch up with every append.
     UnconfirmedWal,
+    /// A foreground statement ran inside the compaction lane's quiet window. The unit takes
+    /// the writer admission for its whole duration, so starting it under load would hold
+    /// every writer behind a multi-second backfill and baseline rewrite.
+    Busy,
     /// Past the low mark without ever crossing the high mark, or back below the low mark.
     BelowLow,
     /// This lane's slot in its own period has not come round yet.
@@ -98,6 +103,16 @@ pub(crate) struct MaintenancePolicy {
     index_compact: Watermark,
     cooldown: Duration,
     blocked_backoff: Duration,
+    /// How long the database must be without a foreground statement before the compaction
+    /// lane may take its exclusive admission. Zero means "no quiet requirement", which is
+    /// what the unit tests use.
+    compact_quiet: Duration,
+    /// The WAL size above which the quiet requirement is dropped. A compaction is the only
+    /// unit that rewrites the WAL baseline, so a database under constant load would otherwise
+    /// never run one; this is the safety valve that bounds the log, at the cost of one
+    /// blocking window. It sits at the contract's WAL hard budget so the valve cannot fire
+    /// inside a mixed workload whose WAL still fits.
+    compact_hard_bytes: u64,
 }
 
 impl MaintenancePolicy {
@@ -126,6 +141,8 @@ impl MaintenancePolicy {
             },
             cooldown: Duration::from_secs(30),
             blocked_backoff: Duration::from_secs(120),
+            compact_quiet: Duration::from_secs(2),
+            compact_hard_bytes: 256 * mib,
         };
         let overrides = [
             (
@@ -166,6 +183,18 @@ impl MaintenancePolicy {
                     .context("invalid maintenance blocked backoff")?,
             );
         }
+        if let Ok(value) = std::env::var("PERI_MAINTENANCE_COMPACT_QUIET_MS") {
+            policy.compact_quiet = Duration::from_millis(
+                value
+                    .parse::<u64>()
+                    .context("invalid maintenance compact quiet window")?,
+            );
+        }
+        if let Ok(value) = std::env::var("PERI_MAINTENANCE_COMPACT_HARD_BYTES") {
+            policy.compact_hard_bytes = value
+                .parse::<u64>()
+                .context("invalid maintenance compact hard bound")?;
+        }
         for lane in MaintenanceLane::ALL {
             let watermark = policy.watermark(lane);
             ensure!(
@@ -180,6 +209,14 @@ impl MaintenancePolicy {
         ensure!(
             !policy.cooldown.is_zero() && !policy.blocked_backoff.is_zero(),
             "maintenance cooldown and blocked backoff must be positive"
+        );
+        ensure!(
+            policy.compact_quiet < policy.index_compact.period,
+            "maintenance compact quiet window must be shorter than its period"
+        );
+        ensure!(
+            policy.compact_hard_bytes > 0,
+            "maintenance compact hard bound must be positive"
         );
         ensure!(
             policy.checkpoint.period != policy.index_compact.period
@@ -203,7 +240,18 @@ impl MaintenancePolicy {
             index_compact,
             cooldown,
             blocked_backoff,
+            compact_quiet: Duration::ZERO,
+            compact_hard_bytes: u64::MAX,
         }
+    }
+
+    /// Overrides the compaction gate for a test. The default `for_tests` policy has no quiet
+    /// requirement, so a test that does not call this keeps the pre-gate behaviour.
+    #[cfg(test)]
+    pub(crate) fn with_compact_gate(mut self, quiet: Duration, hard_bytes: u64) -> Self {
+        self.compact_quiet = quiet;
+        self.compact_hard_bytes = hard_bytes;
+        self
     }
 
     pub(crate) fn enabled(&self) -> bool {
@@ -265,6 +313,17 @@ impl MaintenancePolicy {
         }
         if lane == MaintenanceLane::IndexCompact && signals.unconfirmed_wal {
             return MaintenanceDecision::Skip(MaintenanceSkip::UnconfirmedWal);
+        }
+        // A compaction holds the writer admission and the operations gate for the whole
+        // unit, and its duration is the WAL baseline rewrite, not a bound the request
+        // deadline can wait out. Run it only when no foreground statement has started for
+        // the quiet window, unless the WAL reached the hard bound: then the recovery cost
+        // of leaving it wins over one blocking window.
+        if lane == MaintenanceLane::IndexCompact
+            && signals.quiet_for_ms < millis(self.compact_quiet)
+            && signals.wal_bytes < self.compact_hard_bytes
+        {
+            return MaintenanceDecision::Skip(MaintenanceSkip::Busy);
         }
         let watermark = self.watermark(lane);
         if signals.wal_bytes < watermark.low_bytes || !ledger.armed(lane) {

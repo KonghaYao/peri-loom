@@ -33,6 +33,12 @@ pub(crate) struct MaintenanceSignals {
     /// Age of the oldest lane that currently holds a native read lock. Zero when no reader
     /// holds one. This is the reader a truncate checkpoint cannot backfill past.
     pub oldest_reader_ms: u64,
+    /// Milliseconds since the last foreground statement started on this database, measured
+    /// from the database's open instant. The compaction lane takes the writer admission and
+    /// the operations gate for its whole unit, so a unit started under load would hold every
+    /// writer for its multi-second duration; the lane waits for this to pass its quiet
+    /// threshold. A passive checkpoint does not use the figure: it never excludes writers.
+    pub quiet_for_ms: u64,
     /// True while an append or a database publication is unsettled: an append in flight, a
     /// pending batch, a dirty image or a failed publication. The image's applied LSN is not
     /// part of this flag because the truncate checkpoint itself applies the WAL tail and

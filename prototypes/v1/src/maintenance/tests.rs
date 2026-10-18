@@ -426,6 +426,61 @@ fn an_unconfirmed_wal_skips_the_compaction_lane_before_any_watermark() {
 }
 
 #[test]
+fn a_compaction_does_not_start_inside_the_quiet_window() {
+    let gate = policy(true).with_compact_gate(Duration::from_secs(2), 1 << 30);
+    let ledger = MaintenanceLedger::default();
+    ledger.set_armed(MaintenanceLane::IndexCompact, true);
+    ledger.set_armed(MaintenanceLane::Checkpoint, true);
+    let busy = MaintenanceSignals {
+        wal_bytes: 4096,
+        quiet_for_ms: 500,
+        ..MaintenanceSignals::default()
+    };
+    assert_eq!(
+        gate.decide(
+            MaintenanceLane::IndexCompact,
+            &busy,
+            &ledger,
+            armed_now(&ledger)
+        ),
+        MaintenanceDecision::Skip(MaintenanceSkip::Busy),
+        "a unit that holds the writer admission must wait for foreground silence"
+    );
+    // The checkpoint lane never takes that admission, so it runs beside traffic.
+    assert!(gate
+        .decide(
+            MaintenanceLane::Checkpoint,
+            &busy,
+            &ledger,
+            armed_now(&ledger)
+        )
+        .is_due());
+    let quiet = MaintenanceSignals {
+        quiet_for_ms: 2_500,
+        ..busy
+    };
+    assert!(gate
+        .decide(
+            MaintenanceLane::IndexCompact,
+            &quiet,
+            &ledger,
+            armed_now(&ledger)
+        )
+        .is_due());
+    // The hard bound drops the quiet requirement: leaving the WAL to grow is worse than one
+    // blocking window.
+    let bounded = policy(true).with_compact_gate(Duration::from_secs(2), 4096);
+    assert!(bounded
+        .decide(
+            MaintenanceLane::IndexCompact,
+            &busy,
+            &ledger,
+            armed_now(&ledger)
+        )
+        .is_due());
+}
+
+#[test]
 fn a_spent_budget_skips_the_unit_instead_of_running_it() {
     // One request per window admits the first lane and refuses the second.
     let scheduler = scheduler(policy(true), budget(2, 2, 1, u64::MAX));
