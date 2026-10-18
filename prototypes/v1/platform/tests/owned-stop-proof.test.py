@@ -1,4 +1,5 @@
 import argparse
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -746,6 +747,37 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertTrue((root / "launcher-terminal.json").is_file())
                 self.assertTrue((root / "launcher-stop.json").is_file())
 
+    def test_restart_failure_gate_requires_confirmed_process_exit(self):
+        cases = (
+            ("all_processes_stopped false",
+             {"requires_operator": False, "teardown_completed": True, "all_processes_stopped": False},
+             "all processes stopped"),
+            ("all_processes_stopped true",
+             {"requires_operator": False, "teardown_completed": True, "all_processes_stopped": True},
+             None),
+            ("legacy record with completed teardown",
+             {"requires_operator": False, "teardown_completed": True},
+             None),
+            ("legacy record with incomplete teardown",
+             {"requires_operator": False, "teardown_completed": False},
+             "teardown not confirmed complete"),
+        )
+        for label, extra, expected in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix="restart-gate-", dir="/tmp") as directory:
+                project = self.clean_run_directory(directory)
+                root = pathlib.Path(directory).resolve()
+                configuration = project.config["owned_stop_proof"]
+                record = {"version": 1, "kind": "launcher_restart_failure", "run_dir": str(root),
+                          "phase": "startup", "error": "synthetic", "failed_at": "2026-01-01T00:00:00+00:00"}
+                record.update(extra)
+                dev.atomic_private_json(root / "launcher-restart-failure.json",
+                                        dev.signed_owned_identity(configuration, record))
+                if expected is None:
+                    dev.Project(project.arguments).prepare()
+                else:
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        dev.Project(project.arguments).prepare()
+
     def test_crash_before_recovery_never_restores_staged_evidence(self):
         with tempfile.TemporaryDirectory(prefix="restart-crash-", dir="/tmp") as directory:
             project = self.clean_run_directory(directory)
@@ -762,27 +794,126 @@ class OwnedStopProofTests(unittest.TestCase):
                 dev.Project(project.arguments).prepare()
             self.assertFalse((root / "launcher-terminal.json").exists())
 
-    def test_local_object_lookup_validates_json_envelope(self):
+    def blake3_module(self):
+        try:
+            import blake3
+        except ImportError:
+            self.skipTest("blake3 is required for hash-addressed seal lookup")
+        return blake3
+
+    def seal_envelope(self, key, checksum=None, **changes):
+        envelope = {"key": key, "bytes": base64.b64encode(b"sealed").decode(),
+                    "etag": "etag-1", "checksum": checksum or "0" * 64}
+        envelope.update(changes)
+        return envelope
+
+    def test_local_object_lookup_validates_hash_addressed_envelope(self):
+        blake3 = self.blake3_module()
         with tempfile.TemporaryDirectory(prefix="seal-envelope-", dir="/tmp") as directory:
             backend = pathlib.Path(directory) / "backend"
             backend.mkdir(mode=0o700)
             key = dev.LOCAL_SEAL_KEY
-            (backend / "malformed.obj").write_text("prefix " + key)
+            payload = b'{"clean":true}'
+            candidate = backend / (blake3.blake3(key.encode()).hexdigest() + ".obj")
+            valid = {"key": key, "bytes": base64.b64encode(payload).decode(),
+                     "etag": "etag-1", "checksum": blake3.blake3(payload).hexdigest()}
+            candidate.write_text(json.dumps(valid))
+            self.assertEqual(dev.local_object_path(backend, key), (candidate, True))
+            malformed = {
+                "wrong key": {**valid, "key": "other"},
+                "bytes not a string": {**valid, "bytes": [123]},
+                "bytes not base64": {**valid, "bytes": "e30"},
+                "checksum not 64 hex": {**valid, "checksum": "0" * 63},
+                "checksum mismatch": {**valid, "checksum": "0" * 64},
+                "empty etag": {**valid, "etag": ""},
+                "non-string etag": {**valid, "etag": 1},
+            }
+            for label, envelope in malformed.items():
+                with self.subTest(label=label):
+                    candidate.write_text(json.dumps(envelope))
+                    self.assertEqual(dev.local_object_path(backend, key), (None, False))
+            candidate.write_text("not json")
+            self.assertEqual(dev.local_object_path(backend, key), (None, False))
+            candidate.unlink()
+            self.assertEqual(dev.local_object_path(backend, key), (None, True))
+
+    def test_local_object_lookup_without_blake3_never_confirms_absence(self):
+        with tempfile.TemporaryDirectory(prefix="seal-envelope-", dir="/tmp") as directory:
+            backend = pathlib.Path(directory) / "backend"
+            backend.mkdir(mode=0o700)
+            key = dev.LOCAL_SEAL_KEY
+            candidate = backend / "seal.obj"
+            valid = self.seal_envelope(key)
             with patch.dict(sys.modules, {"blake3": None}):
-                path, reliable = dev.local_object_path(backend, key)
-            self.assertIsNone(path)
-            self.assertFalse(reliable)
-            (backend / "malformed.obj").unlink()
-            (backend / "other.obj").write_text(json.dumps({"key": "other", "bytes": "e30="}))
-            with patch.dict(sys.modules, {"blake3": None}):
-                path, reliable = dev.local_object_path(backend, key)
-            self.assertIsNone(path)
-            self.assertTrue(reliable)
-            (backend / "seal.obj").write_text(json.dumps({"key": key, "bytes": "e30="}))
-            with patch.dict(sys.modules, {"blake3": None}):
-                path, reliable = dev.local_object_path(backend, key)
-            self.assertEqual(path, backend / "seal.obj")
-            self.assertTrue(reliable)
+                candidate.write_text(json.dumps(valid))
+                self.assertEqual(dev.local_object_path(backend, key), (candidate, False))
+                candidate.write_text(json.dumps({**valid, "key": "other"}))
+                self.assertEqual(dev.local_object_path(backend, key), (None, True))
+                malformed = {
+                    "bytes not a string": {**valid, "bytes": [123]},
+                    "bytes not base64": {**valid, "bytes": "e30"},
+                    "checksum not 64 hex": {**valid, "checksum": "0" * 63},
+                    "empty etag": {**valid, "etag": ""},
+                    "non-string etag": {**valid, "etag": 1},
+                }
+                for label, envelope in malformed.items():
+                    with self.subTest(label=label):
+                        candidate.write_text(json.dumps(envelope))
+                        self.assertEqual(dev.local_object_path(backend, key), (None, False))
+                candidate.write_text("not json")
+                self.assertEqual(dev.local_object_path(backend, key), (None, False))
+                candidate.write_text('["not", "an", "envelope"]')
+                self.assertEqual(dev.local_object_path(backend, key), (None, False))
+                candidate.write_text(json.dumps(valid))
+                with patch.object(dev, "LOCAL_ENVELOPE_LIMIT_BYTES", 16):
+                    self.assertEqual(dev.local_object_path(backend, key), (None, False))
+                candidate.unlink()
+                self.assertEqual(dev.local_object_path(backend, key), (None, True))
+
+    def test_unconfirmed_local_seal_preserves_clean_evidence_for_operator(self):
+        blake3 = self.blake3_module()
+        key = dev.LOCAL_SEAL_KEY
+        seal_name = blake3.blake3(key.encode()).hexdigest() + ".obj"
+        scenarios = (
+            ("checksum mismatch", self.seal_envelope(key), False, False),
+            ("structurally valid without blake3", self.seal_envelope(key), True, True),
+        )
+        for label, envelope, without_blake3, seal_staged in scenarios:
+            with self.subTest(label=label), tempfile.TemporaryDirectory(prefix="restart-seal-", dir="/tmp") as directory:
+                fixture = self.clean_run_directory(directory)
+                root = pathlib.Path(directory).resolve()
+
+                def failing_run(project):
+                    project.acquire_run_lock()
+                    backend = project.directory / "backend"
+                    backend.mkdir(mode=0o700, exist_ok=True)
+                    (backend / seal_name).write_text(json.dumps(envelope))
+                    project.prepare()
+                    raise RuntimeError("authority did not become ready")
+
+                with contextlib.ExitStack() as stack:
+                    if without_blake3:
+                        stack.enter_context(patch.dict(sys.modules, {"blake3": None}))
+                    stack.enter_context(patch.object(dev.Project, "run", failing_run))
+                    stack.enter_context(patch.object(sys, "argv", self.launcher_arguments(root)))
+                    self.assertEqual(dev.main(), 1)
+                self.assertFalse((root / "launcher-terminal.json").exists())
+                preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
+                self.assertEqual(len(preserved), 1)
+                self.assertEqual((preserved[0] / "launcher-terminal.json").exists(), True)
+                if seal_staged:
+                    self.assertTrue((preserved[0] / "backend" / seal_name).is_file())
+                else:
+                    self.assertFalse((preserved[0] / "backend").exists())
+                record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+                self.assertTrue(record["requires_operator"])
+                self.assertFalse(record["clean_evidence"]["restored"])
+                self.assertTrue(record["clean_evidence"]["preserved"])
+                self.assertIn("could not be confirmed during snapshot", record["clean_evidence"]["preservation_reason"])
+                self.assertEqual(record["not_rolled_back"]["canonical_clean_evidence"], "preserved")
+                self.assertEqual(record["not_rolled_back"]["authority_seal"], "unconfirmed")
+                with self.assertRaisesRegex(RuntimeError, "operator"):
+                    dev.Project(fixture.arguments).prepare()
 
     def test_clean_terminal_rejects_dirty_authority_and_modified_configuration(self):
         with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:

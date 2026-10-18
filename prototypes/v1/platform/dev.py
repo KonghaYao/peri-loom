@@ -1,4 +1,5 @@
 import argparse
+import base64
 import datetime
 import errno
 import fcntl
@@ -8,6 +9,7 @@ import json
 import os
 import pathlib
 import queue
+import re
 import secrets
 import shutil
 import signal
@@ -39,13 +41,40 @@ SHUTDOWN_STAGE_CAPS = {"platform": 15, "workers": 13, "authority": 12}
 # conservative behavior change: even an immediate 409 or a refused connection can
 # hide a request that already mutated state before its reply was lost.
 LOCAL_SEAL_KEY = "authority-control/single-authority-seal"
+LOCAL_ENVELOPE_LIMIT_BYTES = 1024 * 1024
+LOCAL_CHECKSUM_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+def decode_local_envelope(envelope, key):
+    """Return the decoded payload when a local object envelope is well formed.
+
+    This validates structure only. The checksum is also a 64-hex digest here;
+    callers that can recompute it must still compare it with the payload.
+    """
+    if not isinstance(envelope, dict) or envelope.get("key") != key:
+        return None
+    encoded = envelope.get("bytes")
+    etag = envelope.get("etag")
+    checksum = envelope.get("checksum")
+    if not isinstance(encoded, str) or not isinstance(etag, str) or not etag:
+        return None
+    if not isinstance(checksum, str) or LOCAL_CHECKSUM_PATTERN.fullmatch(checksum) is None:
+        return None
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return None
 
 
 def local_object_path(backend_directory, key):
     """Return (path, reliable) for a local object envelope.
 
-    reliable is False when a candidate cannot be parsed or does not carry the
-    expected key, so the caller must not treat "not found" as "absent".
+    reliable is False when a candidate cannot be parsed, does not carry the
+    expected key, or does not match the LocalObjectStore envelope schema, so the
+    caller must not treat "not found" as "absent". Without blake3 the checksum
+    cannot be recomputed: a structurally valid match is returned with
+    reliable=False so staging still preserves it, but restore must not promote
+    it to canonical evidence.
     """
     if not backend_directory.is_dir():
         return None, True
@@ -58,24 +87,38 @@ def local_object_path(backend_directory, key):
         if not candidate.is_file():
             return None, True
         try:
+            if candidate.stat().st_size > LOCAL_ENVELOPE_LIMIT_BYTES:
+                return None, False
             envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
         except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
             return None, False
-        if not isinstance(envelope, dict) or envelope.get("key") != key or not isinstance(envelope.get("bytes"), str):
+        payload = decode_local_envelope(envelope, key)
+        if payload is None or envelope["checksum"] != blake3.blake3(payload).hexdigest():
             return None, False
         return candidate, True
     reliable = True
-    for candidate in backend_directory.glob("*.obj"):
+    match = None
+    for candidate in sorted(backend_directory.glob("*.obj")):
         try:
-            if candidate.stat().st_size > 1024 * 1024:
+            if candidate.stat().st_size > LOCAL_ENVELOPE_LIMIT_BYTES:
                 reliable = False
                 continue
             envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
         except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
             reliable = False
             continue
-        if isinstance(envelope, dict) and envelope.get("key") == key and isinstance(envelope.get("bytes"), str):
-            return candidate, True
+        if not isinstance(envelope, dict):
+            reliable = False
+            continue
+        if envelope.get("key") != key:
+            continue
+        if decode_local_envelope(envelope, key) is None:
+            reliable = False
+            continue
+        if match is None:
+            match = candidate
+    if match is not None:
+        return match, False
     return None, reliable
 
 
@@ -494,6 +537,8 @@ class Project:
             raise RuntimeError("launcher restart requires operator recovery: " + str(record.get("recovery") or record.get("phase") or "unspecified"))
         if record.get("teardown_completed") is not True:
             raise RuntimeError("launcher restart requires operator recovery: launcher teardown not confirmed complete")
+        if "all_processes_stopped" in record and record.get("all_processes_stopped") is not True:
+            raise RuntimeError("launcher restart requires operator recovery: launcher teardown did not confirm all processes stopped")
 
     def verify_clean_stop_record(self, configuration):
         path = self.directory / "launcher-stop.json"
