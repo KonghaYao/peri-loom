@@ -65,9 +65,10 @@ var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // managementReconcileBudget bounds the RPCs of every reconcile pass and stops
 // new passes once it expires. It is not a strict wall-clock bound: a pass that
 // already converged may return success just after the boundary, and
-// context-free local metadata reads are not interruptible. It stays well below
-// the launcher's 30s request timeout.
-const managementReconcileBudget = 10 * time.Second
+// context-free local metadata reads are not interruptible. A cold restart of a
+// large placement set can exceed the old 10s window while still converging, so
+// the budget leaves headroom but stays below the launcher's 30s request timeout.
+const managementReconcileBudget = 20 * time.Second
 
 const managementLogDetailLimit = 512
 

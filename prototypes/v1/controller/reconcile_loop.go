@@ -11,18 +11,36 @@ import (
 
 const reconcileRetryDelay = 100 * time.Millisecond
 
+// maxWorkerReprobesPerPass bounds how often one pass may re-observe a worker.
+// A 10s management pass at the default 5s heartbeat needs at most two refreshes;
+// four leaves headroom for shorter configured windows while staying a small
+// constant, so a slow pass cannot turn into O(placements) RPCs per worker.
+const maxWorkerReprobesPerPass = 4
+
 // reconcilePass carries observations that are only valid for one pass. A pass
 // can outlive the heartbeat window while it reacquires many databases, so it
-// remembers which workers it already re-probed instead of probing one twice.
+// re-probes a worker when the refreshed observation expires again, and stops
+// after a failed probe or the per-worker bound.
 type reconcilePass struct {
-	probed map[string]bool
+	workers map[string]*workerObservation
+}
+
+type workerObservation struct {
+	reprobes int
+	failed   bool
 }
 
 func newReconcilePass() *reconcilePass {
-	return &reconcilePass{probed: make(map[string]bool)}
+	return &reconcilePass{workers: make(map[string]*workerObservation)}
 }
 
-func (controller *Controller) Reconcile(ctx context.Context) error {
+func (controller *Controller) Reconcile(ctx context.Context) (result error) {
+	passStarted := time.Now()
+	defer func() {
+		if elapsed := time.Since(passStarted); elapsed >= controller.cfg.HeartbeatTimeout {
+			log.Printf("控制面 reconcile pass 结束：elapsed=%dms err=%v", elapsed.Milliseconds(), result)
+		}
+	}()
 	release, err := controller.enter(ctx)
 	if err != nil {
 		return err

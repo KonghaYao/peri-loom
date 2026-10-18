@@ -120,14 +120,38 @@ func (controller *Controller) heartbeatProbeLimit() time.Duration {
 // reconcile pass. A pass probes each worker at most once, so a genuinely dead
 // worker costs one bounded probe instead of one per placement.
 func (controller *Controller) refreshStaleWorker(ctx context.Context, pass *reconcilePass, identifier string) error {
+	reprobes := 1
+	var observation *workerObservation
 	if pass != nil {
-		if pass.probed[identifier] {
+		observation = pass.workers[identifier]
+		if observation == nil {
+			observation = &workerObservation{}
+			pass.workers[identifier] = observation
+		}
+		if observation.failed || observation.reprobes >= maxWorkerReprobesPerPass {
 			return nil
 		}
-		pass.probed[identifier] = true
+		observation.reprobes++
+		reprobes = observation.reprobes
 	}
-	log.Printf("控制面心跳观测过期：worker=%s，单次重探上限=%dms", identifier, controller.heartbeatProbeLimit().Milliseconds())
-	return controller.pollWorkersSelected(ctx, []string{identifier})
+	log.Printf("控制面心跳观测过期：worker=%s，本 pass 第%d次重探（上限%d次），探测上限=%dms", identifier, reprobes, maxWorkerReprobesPerPass, controller.heartbeatProbeLimit().Milliseconds())
+	if err := controller.pollWorkersSelected(ctx, []string{identifier}); err != nil {
+		return err
+	}
+	if pass == nil {
+		return nil
+	}
+	worker, exists, err := readWorker(controller.store, identifier)
+	if err != nil {
+		return err
+	}
+	if !exists || !controller.workerFresh(worker, time.Now().UnixMilli()) {
+		// The probe did not restore a fresh observation. Repeating it in this
+		// pass would spend the remaining budget on a worker that cannot serve,
+		// so the pass records the failure and selection may migrate instead.
+		observation.failed = true
+	}
+	return nil
 }
 
 func (controller *Controller) pollWorker(ctx context.Context, identifier string, worker Worker) error {

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -677,7 +678,7 @@ func TestReconcileWithinDoesNotStartPassAfterDeadline(test *testing.T) {
 	}
 }
 
-func TestReconcileReprobesDeadDesiredWorkerOncePerPass(test *testing.T) {
+func TestReconcileDoesNotReprobeDeadDesiredWorker(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	first, second := reconcileDatabase("dead-first"), reconcileDatabase("dead-second")
 	fixture.fake.offline["worker-b"] = true
@@ -702,9 +703,109 @@ func TestReconcileReprobesDeadDesiredWorkerOncePerPass(test *testing.T) {
 		}
 	}
 	if fixture.fake.heartbeatProbes["worker-a"] != 2 {
-		test.Fatalf("dead worker was re-probed more than once per pass: %+v", fixture.fake.heartbeatProbes)
+		test.Fatalf("failed worker was re-probed in the same pass: %+v", fixture.fake.heartbeatProbes)
 	}
 	if fixture.fake.heartbeatProbes["worker-b"] != 1 {
 		test.Fatalf("healthy worker was re-probed unnecessarily: %+v", fixture.fake.heartbeatProbes)
+	}
+}
+
+func TestReconcileReprobesWhenObservationExpiresAgain(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	fixture.config.HeartbeatTimeout = 100 * time.Millisecond
+	controller, err := NewController(fixture.store, fixture.fake, fixture.config)
+	if err != nil {
+		test.Fatal(err)
+	}
+	first, second := reconcileDatabase("expire-first"), reconcileDatabase("expire-second")
+	fixture.fake.offline["worker-b"] = true
+	for _, database := range []DatabaseID{first, second} {
+		if _, err := controller.Place(context.Background(), database, "local", "writer"); err != nil {
+			test.Fatal(err)
+		}
+	}
+	// Both placements live on worker-a; the pass takes longer than one
+	// heartbeat window, so the observation refreshes twice.
+	fixture.fake.workers = make(map[string]map[string]Actual)
+	fixture.fake.delay[first.Key()] = 150 * time.Millisecond
+	fixture.fake.delay[second.Key()] = 150 * time.Millisecond
+	fixture.fake.heartbeatProbes = make(map[string]int)
+	if err := controller.Reconcile(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	for _, database := range []DatabaseID{first, second} {
+		status, err := controller.Status(database)
+		if err != nil {
+			test.Fatal(err)
+		}
+		if status.Phase != "active" || status.DesiredWorker != "worker-a" {
+			test.Fatalf("expired observation lost the placement: %+v", status)
+		}
+	}
+	if fixture.fake.heartbeatProbes["worker-a"] != 3 {
+		test.Fatalf("expired observation was not re-probed: %+v", fixture.fake.heartbeatProbes)
+	}
+	if fixture.fake.heartbeatProbes["worker-a"] > 1+maxWorkerReprobesPerPass {
+		test.Fatalf("re-probes exceeded their bound: %+v", fixture.fake.heartbeatProbes)
+	}
+	if fixture.fake.heartbeatProbes["worker-b"] != 1 {
+		test.Fatalf("healthy worker was re-probed unnecessarily: %+v", fixture.fake.heartbeatProbes)
+	}
+}
+
+func TestReconcileReprobeIsBoundedPerPass(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	fixture.config.HeartbeatTimeout = 100 * time.Millisecond
+	controller, err := NewController(fixture.store, fixture.fake, fixture.config)
+	if err != nil {
+		test.Fatal(err)
+	}
+	fixture.fake.offline["worker-b"] = true
+	databases := make([]DatabaseID, 0, maxWorkerReprobesPerPass+2)
+	for index := 0; index < maxWorkerReprobesPerPass+2; index++ {
+		database := reconcileDatabase(fmt.Sprintf("bounded-%d", index))
+		databases = append(databases, database)
+		if _, err := controller.Place(context.Background(), database, "local", "writer"); err != nil {
+			test.Fatal(err)
+		}
+	}
+	fixture.fake.workers = make(map[string]map[string]Actual)
+	for _, database := range databases {
+		fixture.fake.delay[database.Key()] = 150 * time.Millisecond
+	}
+	fixture.fake.heartbeatProbes = make(map[string]int)
+	err = controller.Reconcile(context.Background())
+	if err == nil {
+		test.Fatal("reprobe bound did not stop a worker that stayed stale")
+	}
+	if !errors.Is(err, ErrNoEligibleWorker) {
+		test.Fatalf("bounded pass failed for the wrong reason: %v", err)
+	}
+	if fixture.fake.heartbeatProbes["worker-a"] != 1+maxWorkerReprobesPerPass {
+		test.Fatalf("re-probes were not bounded per pass: %+v", fixture.fake.heartbeatProbes)
+	}
+	if fixture.fake.heartbeatProbes["worker-b"] != 1 {
+		test.Fatalf("pending worker was probed after it failed: %+v", fixture.fake.heartbeatProbes)
+	}
+}
+
+func TestReconcileRejectsDeadWorkerWithoutReplacement(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	database := reconcileDatabase("dead-only")
+	fixture.fake.offline["worker-b"] = true
+	if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	fixture.fake.offline["worker-a"] = true
+	fixture.fake.heartbeatProbes = make(map[string]int)
+	err := fixture.controller.Reconcile(context.Background())
+	if !errors.Is(err, ErrNoEligibleWorker) {
+		test.Fatalf("dead worker without replacement was not rejected: %v", err)
+	}
+	if fixture.fake.heartbeatProbes["worker-a"] != 2 {
+		test.Fatalf("dead worker was re-probed more than once: %+v", fixture.fake.heartbeatProbes)
+	}
+	if fixture.fake.heartbeatProbes["worker-b"] != 1 {
+		test.Fatalf("dead peer was re-probed: %+v", fixture.fake.heartbeatProbes)
 	}
 }
