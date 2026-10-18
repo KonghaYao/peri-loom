@@ -5,22 +5,32 @@ use super::{
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub struct LocalObjectStore {
     root: PathBuf,
 }
 
-/// One body staged for a group publication. `file` is `None` when an earlier attempt
-/// already landed identical bytes: nothing to flush, and the stored etag is kept.
+/// One body staged for a group publication. `file` is `None` when staging found an
+/// existing object with identical bytes: nothing to flush, and the stored etag is
+/// kept. The final state is rechecked under the group lock before publication.
 struct StagedBody {
     temporary: Option<PathBuf>,
     target: PathBuf,
     file: Option<File>,
     etag: String,
+}
+
+/// What publishing a staged body must do once every condition has been rechecked.
+enum StagedPlan {
+    Rename,
+    Replace,
+    Adopt(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,82 +62,274 @@ impl LocalObjectStore {
         Ok(store)
     }
 
+    /// A per-attempt staging name. `etag` alone is not enough now that staging runs
+    /// outside the lock: two groups can stage identical bytes at the same time, and a
+    /// crashed attempt can leave the same name behind. The process id and the counter
+    /// keep every live attempt distinct; the final key and envelope never carry this
+    /// name.
     fn temporary_path(&self, etag: &str) -> PathBuf {
-        self.root.join(format!(".{etag}.tmp"))
+        static ATTEMPT: AtomicU64 = AtomicU64::new(0);
+        let attempt = ATTEMPT.fetch_add(1, Ordering::Relaxed);
+        self.root
+            .join(format!(".{etag}.{}.{attempt}.tmp", std::process::id()))
     }
 
-    /// Encode and flush one group body. Called from one staging thread at a time, so it
-    /// only touches the file and the immutable `write` it was handed.
+    /// Encode and flush one group body to a temporary file. Runs outside the group
+    /// lock; the final key is only touched by `publish_staged` after every condition
+    /// has been rechecked under that lock.
     fn stage_body(&self, write: &super::GroupWrite, etag: String) -> Result<StagedBody> {
+        let target = self.path(&write.key);
+        if matches!(write.condition, PutCondition::Any) {
+            match self.read(&write.key) {
+                Ok(Some(existing)) if existing.bytes == write.bytes => {
+                    // An earlier attempt already landed identical bytes. The etag is
+                    // provisional until the lock recheck; staging nothing keeps the
+                    // per-body flush count unchanged for retries.
+                    return Ok(StagedBody {
+                        temporary: None,
+                        target,
+                        file: None,
+                        etag: existing.etag,
+                    });
+                }
+                Ok(Some(_)) => {
+                    anyhow::bail!("immutable object conflict: {}", write.key)
+                }
+                Ok(None) => {}
+                // A partial body from a crashed attempt fails its envelope. It is
+                // replaced under the lock; here only the replacement is staged.
+                Err(_) => {}
+            }
+        }
         let envelope = Envelope {
             key: write.key.clone(),
             bytes: write.bytes.clone(),
             etag: etag.clone(),
             checksum: blake3::hash(&write.bytes).to_hex().to_string(),
         };
-        let target = self.path(&write.key);
         let bytes = serde_json::to_vec(&envelope)?;
-        // Content-addressed bodies with `Any` cannot collide with a live key, so they
-        // are written straight to their final name: the rename and the pre-group read
-        // bought no condition and the body bytes never change under an identical key.
-        // Anything else keeps the temp+rename path, because `Match` *is* the head CAS
-        // and must stay atomic.
-        if matches!(write.condition, PutCondition::Any) {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&target)
-            {
-                Ok(mut file) => {
-                    file.write_all(&bytes)?;
-                    flush_file(&file)?;
-                    return Ok(StagedBody {
-                        temporary: None,
-                        target,
-                        file: Some(file),
-                        etag,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    match self.read(&write.key) {
-                        Ok(Some(existing)) if existing.bytes == write.bytes => {
-                            // A body an earlier attempt already landed: keep its etag so
-                            // a caller that later fences on this key uses the value the
-                            // store actually holds.
-                            return Ok(StagedBody {
-                                temporary: None,
-                                target,
-                                file: None,
-                                etag: existing.etag,
-                            });
-                        }
-                        Ok(Some(_)) => {
-                            anyhow::bail!("immutable object conflict: {}", write.key)
-                        }
-                        Ok(None) => {}
-                        // A partial body from a crashed attempt fails its envelope, so
-                        // no durable head can reference it.
-                        Err(_) => {
-                            fs::remove_file(&target)?;
-                        }
-                    }
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
         let temporary = self.temporary_path(&etag);
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)?;
-        file.write_all(&bytes)?;
-        flush_file(&file)?;
+        let written = (|| -> std::io::Result<()> {
+            file.write_all(&bytes)?;
+            flush_file(&file)
+        })();
+        if let Err(error) = written {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
+        }
         Ok(StagedBody {
             temporary: Some(temporary),
             target,
             file: Some(file),
             etag,
         })
+    }
+
+    /// Stage every body outside the group lock. Non-`Any` conditions are checked once
+    /// here so an already-stale group is rejected before the work; the authoritative
+    /// check runs again in `publish_staged` under the lock.
+    fn stage_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<StagedBody>> {
+        for write in writes {
+            if !matches!(write.condition, PutCondition::Any) {
+                check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
+            }
+        }
+        let etags: Vec<String> = writes
+            .iter()
+            .map(|write| fresh_etag(&write.bytes))
+            .collect();
+        // A publication is 25-30 bodies on the steady path and several hundred when a
+        // receipt roll lands. The per-body cost is mostly encoding: serde, base64 and
+        // blake3 run on one core while the drive sits idle. The bodies are independent
+        // and content addressed, so they are staged on a bounded set of threads; the
+        // renames, the one directory flush and the one media barrier still happen in
+        // publication order on this thread, after every body is durable.
+        let workers = if writes.len() < 8 {
+            1
+        } else {
+            std::thread::available_parallelism()
+                .map(|parallel| parallel.get())
+                .unwrap_or(4)
+                .clamp(2, 8)
+        };
+        let staged: Vec<Result<StagedBody>> = if workers == 1 {
+            writes
+                .iter()
+                .enumerate()
+                .map(|(index, write)| self.stage_body(write, etags[index].clone()))
+                .collect()
+        } else {
+            std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(workers);
+                for offset in 0..workers {
+                    let etags = &etags;
+                    handles.push(scope.spawn(move || {
+                        (offset..writes.len())
+                            .step_by(workers)
+                            .map(|index| {
+                                (index, self.stage_body(&writes[index], etags[index].clone()))
+                            })
+                            .collect::<Vec<_>>()
+                    }));
+                }
+                let mut staged: Vec<(usize, Result<StagedBody>)> = handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().unwrap())
+                    .collect();
+                staged.sort_by_key(|(index, _)| *index);
+                staged.into_iter().map(|(_, result)| result).collect()
+            })
+        };
+        let mut bodies = Vec::with_capacity(staged.len());
+        let mut failure = None;
+        for result in staged {
+            match result {
+                Ok(body) => bodies.push(body),
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        if let Some(error) = failure {
+            remove_temporaries(&bodies);
+            return Err(error);
+        }
+        Ok(bodies)
+    }
+
+    /// Publish bodies staged outside the lock. Every condition is re-evaluated while
+    /// holding the lock before the first rename, so a rejection has no final object
+    /// to undo. Any other error may leave already-renamed content-addressed bodies;
+    /// the group contract allows that for non-`PreconditionFailed` failures.
+    fn publish_staged(
+        &self,
+        writes: &[super::GroupWrite],
+        bodies: Vec<StagedBody>,
+    ) -> Result<Vec<String>> {
+        let result = self.publish_staged_locked(writes, &bodies);
+        if result.is_err() {
+            remove_temporaries(&bodies);
+        }
+        result
+    }
+
+    fn publish_staged_locked(
+        &self,
+        writes: &[super::GroupWrite],
+        bodies: &[StagedBody],
+    ) -> Result<Vec<String>> {
+        let _guard = self.lock()?;
+        ensure!(writes.len() == bodies.len(), "staged group length mismatch");
+        let mut plans = Vec::with_capacity(bodies.len());
+        let mut resolved_any: HashMap<&str, (usize, String)> = HashMap::new();
+        for (index, (write, body)) in writes.iter().zip(bodies).enumerate() {
+            if matches!(write.condition, PutCondition::Any) {
+                if let Some((prior, etag)) = resolved_any.get(write.key.as_str()) {
+                    ensure!(
+                        writes[*prior].bytes == write.bytes,
+                        "immutable object conflict: {}",
+                        write.key
+                    );
+                    plans.push(StagedPlan::Adopt(etag.clone()));
+                    continue;
+                }
+                let (plan, etag) = self.plan_any(write, body)?;
+                resolved_any.insert(write.key.as_str(), (index, etag));
+                plans.push(plan);
+            } else {
+                check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
+                ensure!(
+                    body.temporary.is_some(),
+                    "staged body missing: {}",
+                    write.key
+                );
+                plans.push(StagedPlan::Rename);
+            }
+        }
+        let mut etags = Vec::with_capacity(bodies.len());
+        let mut renamed = false;
+        for (body, plan) in bodies.iter().zip(plans) {
+            match plan {
+                StagedPlan::Adopt(etag) => {
+                    if let Some(temporary) = &body.temporary {
+                        let _ = fs::remove_file(temporary);
+                    }
+                    etags.push(etag);
+                }
+                StagedPlan::Rename => {
+                    let temporary = body.temporary.as_ref().context("staged body missing")?;
+                    fs::rename(temporary, &body.target)?;
+                    renamed = true;
+                    etags.push(body.etag.clone());
+                }
+                StagedPlan::Replace => {
+                    let temporary = body.temporary.as_ref().context("staged body missing")?;
+                    fs::remove_file(&body.target)?;
+                    fs::rename(temporary, &body.target)?;
+                    renamed = true;
+                    etags.push(body.etag.clone());
+                }
+            }
+        }
+        if renamed {
+            let file = bodies
+                .iter()
+                .find_map(|body| body.file.as_ref())
+                .context("staged publication file missing")?;
+            flush_directory(&self.root)?;
+            publish_barrier(file)?;
+        }
+        Ok(etags)
+    }
+
+    /// Decide what to do with one `Any` body whose final key may already exist. Called
+    /// with the group lock held; the returned etag is the one the store holds after
+    /// publication.
+    fn plan_any(
+        &self,
+        write: &super::GroupWrite,
+        body: &StagedBody,
+    ) -> Result<(StagedPlan, String)> {
+        let exists = match fs::symlink_metadata(&body.target) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if !exists {
+            ensure!(
+                body.temporary.is_some(),
+                "staged body missing: {}",
+                write.key
+            );
+            return Ok((StagedPlan::Rename, body.etag.clone()));
+        }
+        match self.read(&write.key) {
+            Ok(Some(existing)) if existing.bytes == write.bytes => {
+                Ok((StagedPlan::Adopt(existing.etag.clone()), existing.etag))
+            }
+            Ok(Some(_)) => anyhow::bail!("immutable object conflict: {}", write.key),
+            Ok(None) => {
+                ensure!(
+                    body.temporary.is_some(),
+                    "staged body missing: {}",
+                    write.key
+                );
+                Ok((StagedPlan::Rename, body.etag.clone()))
+            }
+            // A partial body from a crashed attempt fails its envelope, so no durable
+            // head can reference it; replace it under the lock.
+            Err(_) => {
+                ensure!(
+                    body.temporary.is_some(),
+                    "staged body missing: {}",
+                    write.key
+                );
+                Ok((StagedPlan::Replace, body.etag.clone()))
+            }
+        }
     }
 
     fn lock(&self) -> Result<File> {
@@ -178,6 +380,14 @@ impl LocalObjectStore {
             bytes: envelope.bytes,
             etag: envelope.etag,
         }))
+    }
+}
+
+fn remove_temporaries(bodies: &[StagedBody]) {
+    for body in bodies {
+        if let Some(temporary) = &body.temporary {
+            let _ = fs::remove_file(temporary);
+        }
     }
 }
 
@@ -287,8 +497,9 @@ impl ObjectStore for LocalObjectStore {
     }
 
     fn group_rejection_publishes_nothing(&self) -> bool {
-        // `put_group` checks every condition before it stages the first body, so a
-        // rejected group leaves nothing behind on this backend.
+        // `put_group` rechecks every condition under the lock before the first rename
+        // and stages bodies only in temporary files, so a rejected group leaves no
+        // final object behind on this backend.
         true
     }
 
@@ -364,114 +575,21 @@ impl ObjectStore for LocalObjectStore {
 
     /// Group publish that reaches media with one barrier.
     ///
-    /// Each body flushes its own data (the group must be durable, not just visible) and
-    /// the rename step costs a single directory flush, but the media barrier is paid
-    /// once for the whole group: `F_FULLFSYNC` is device-wide, so it covers every body
-    /// and rename the group already flushed. Barrier count: 1, whatever the group size.
+    /// Bodies and the root are encoded and flushed to temporary files outside the
+    /// group lock. Under the lock every condition is rechecked, the temporary files
+    /// are renamed in publication order, and one directory flush plus one media
+    /// barrier cover the group: `F_FULLFSYNC` is device-wide, so it covers every body
+    /// and rename the group already flushed. Barrier count: at most 1, whatever the
+    /// group size; a group that only adopts existing bodies publishes nothing.
     fn put_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<String>> {
         if writes.is_empty() {
             return Ok(Vec::new());
         }
-        if writes.len() == 1 {
-            let write = &writes[0];
-            return Ok(vec![self.put(
-                &write.key,
-                &write.bytes,
-                write.condition.clone(),
-            )?]);
-        }
         for write in writes {
             validate_key(&write.key)?;
         }
-        let _guard = self.lock()?;
-        // Evaluate every condition against the pre-group state first, so a
-        // rejected group leaves no partially visible write behind.
-        let mut etags = Vec::with_capacity(writes.len());
-        for write in writes {
-            // A group is mostly content-addressed bodies with `Any`, and for those the
-            // pre-group check is vacuous: skipping it avoids one open/decode per body.
-            if !matches!(write.condition, PutCondition::Any) {
-                check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
-            }
-            etags.push(fresh_etag(&write.bytes));
-        }
-        // A publication is 25-30 bodies on the steady path and several hundred when a
-        // receipt roll lands. The per-body cost is mostly encoding: serde, base64 and
-        // blake3 run on one core while the drive sits idle. The bodies are independent
-        // and content addressed, so they are staged on a bounded set of threads; the
-        // renames, the one directory flush and the one media barrier still happen in
-        // publication order on this thread, after every body is durable.
-        let workers = if writes.len() < 8 {
-            1
-        } else {
-            std::thread::available_parallelism()
-                .map(|parallel| parallel.get())
-                .unwrap_or(4)
-                .clamp(2, 8)
-        };
-        let staged: Vec<Result<StagedBody>> = if workers == 1 {
-            (0..writes.len())
-                .map(|index| self.stage_body(&writes[index], etags[index].clone()))
-                .collect()
-        } else {
-            std::thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(workers);
-                for offset in 0..workers {
-                    let etags = &etags;
-                    handles.push(scope.spawn(move || {
-                        (offset..writes.len())
-                            .step_by(workers)
-                            .map(|index| {
-                                (index, self.stage_body(&writes[index], etags[index].clone()))
-                            })
-                            .collect::<Vec<_>>()
-                    }));
-                }
-                let mut staged: Vec<(usize, Result<StagedBody>)> = handles
-                    .into_iter()
-                    .flat_map(|handle| handle.join().unwrap())
-                    .collect();
-                staged.sort_by_key(|(index, _)| *index);
-                staged.into_iter().map(|(_, result)| result).collect()
-            })
-        };
-        let mut bodies = Vec::with_capacity(staged.len());
-        let mut failure = None;
-        for result in staged {
-            match result {
-                Ok(body) => bodies.push(body),
-                Err(error) => failure = failure.or(Some(error)),
-            }
-        }
-        if let Some(error) = failure {
-            for body in &bodies {
-                if let Some(temporary) = &body.temporary {
-                    let _ = fs::remove_file(temporary);
-                }
-            }
-            return Err(error);
-        }
-        let result = (|| -> Result<()> {
-            for body in &bodies {
-                if let Some(temporary) = &body.temporary {
-                    fs::rename(temporary, &body.target)?;
-                }
-            }
-            if let Some(file) = bodies.iter().find_map(|body| body.file.as_ref()) {
-                flush_directory(&self.root)?;
-                publish_barrier(file)?;
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            for body in &bodies {
-                if let Some(temporary) = &body.temporary {
-                    let _ = fs::remove_file(temporary);
-                }
-            }
-        }
-        result?;
-        Ok(bodies.into_iter().map(|body| body.etag).collect())
+        let staged = self.stage_group(writes)?;
+        self.publish_staged(writes, staged)
     }
 
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
@@ -522,6 +640,23 @@ impl ObjectStore for LocalObjectStore {
 mod group_tests {
     use super::*;
     use crate::object_store::GroupWrite;
+    use std::sync::{Arc, Barrier};
+
+    fn temporary_files(store: &LocalObjectStore) -> Vec<std::path::PathBuf> {
+        fs::read_dir(&store.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "tmp"))
+            .collect()
+    }
+
+    fn final_objects(store: &LocalObjectStore) -> Vec<std::path::PathBuf> {
+        fs::read_dir(&store.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "obj"))
+            .collect()
+    }
 
     #[test]
     fn group_publish_pays_one_media_barrier_for_the_whole_group() {
@@ -610,6 +745,276 @@ mod group_tests {
             b"another body"
         );
     }
+
+    #[test]
+    fn condition_recheck_after_staging_publishes_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        store.put("root", b"current", PutCondition::Any).unwrap();
+        let current = store.get("root").unwrap().unwrap().etag;
+        let writes = vec![
+            GroupWrite::absent("pages/00", vec![7; 64]),
+            GroupWrite::new("root", b"next".to_vec(), PutCondition::Match(current)),
+        ];
+        let staged = store.stage_group(&writes).unwrap();
+        assert_eq!(temporary_files(&store).len(), 2);
+
+        // Another writer wins the root CAS after staging but before the lock.
+        store.put("root", b"newer", PutCondition::Any).unwrap();
+        let error = store.publish_staged(&writes, staged).unwrap_err();
+        assert!(error.downcast_ref::<PreconditionFailed>().is_some());
+        assert!(store.get("pages/00").unwrap().is_none());
+        assert_eq!(store.get("root").unwrap().unwrap().bytes, b"newer");
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn object_created_after_staging_is_reused_when_bytes_match() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let writes = vec![
+            GroupWrite::new("pages/a", b"body".to_vec(), PutCondition::Any),
+            GroupWrite::new("pages/b", b"other".to_vec(), PutCondition::Any),
+        ];
+        let staged = store.stage_group(&writes).unwrap();
+        assert_eq!(temporary_files(&store).len(), 2);
+
+        let stored = store.put("pages/a", b"body", PutCondition::Any).unwrap();
+        let etags = store.publish_staged(&writes, staged).unwrap();
+        assert_eq!(etags[0], stored);
+        assert_eq!(store.get("pages/a").unwrap().unwrap().etag, stored);
+        assert_eq!(store.get("pages/b").unwrap().unwrap().bytes, b"other");
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn object_created_after_staging_with_different_bytes_is_not_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let writes = vec![
+            GroupWrite::new("pages/a", b"new".to_vec(), PutCondition::Any),
+            GroupWrite::new("pages/b", b"other".to_vec(), PutCondition::Any),
+        ];
+        let staged = store.stage_group(&writes).unwrap();
+        store.put("pages/a", b"old", PutCondition::Any).unwrap();
+
+        let error = store.publish_staged(&writes, staged).unwrap_err();
+        assert!(error.to_string().contains("immutable object conflict"));
+        assert_eq!(store.get("pages/a").unwrap().unwrap().bytes, b"old");
+        assert!(store.get("pages/b").unwrap().is_none());
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn concurrent_same_key_groups_publish_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalObjectStore::open(directory.path().join("objects")).unwrap());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let writes = vec![
+                    GroupWrite::absent("pages/race", vec![9; 64]),
+                    GroupWrite::absent("pages/filler", vec![3; 64]),
+                ];
+                let staged = store.stage_group(&writes).unwrap();
+                barrier.wait();
+                store.publish_staged(&writes, staged)
+            }));
+        }
+        let results: Vec<Result<Vec<String>>> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "one group wins the Absent condition"
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| {
+                    result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|error| error.downcast_ref::<PreconditionFailed>().is_some())
+                })
+                .count(),
+            1,
+            "the loser is a precondition failure, not partial publication"
+        );
+        assert_eq!(store.get("pages/race").unwrap().unwrap().bytes, vec![9; 64]);
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn concurrent_identical_any_groups_share_the_stored_etag() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalObjectStore::open(directory.path().join("objects")).unwrap());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let writes = vec![
+                    GroupWrite::new("pages/a", b"same".to_vec(), PutCondition::Any),
+                    GroupWrite::new("pages/b", b"filler".to_vec(), PutCondition::Any),
+                ];
+                let staged = store.stage_group(&writes).unwrap();
+                barrier.wait();
+                store.publish_staged(&writes, staged)
+            }));
+        }
+        let results: Vec<Vec<String>> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect();
+        assert_eq!(results[0][0], results[1][0]);
+        assert_eq!(store.get("pages/a").unwrap().unwrap().etag, results[0][0]);
+        assert_eq!(store.get("pages/a").unwrap().unwrap().bytes, b"same");
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn concurrent_identical_any_put_groups_share_one_object() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalObjectStore::open(directory.path().join("objects")).unwrap());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let writes = vec![GroupWrite::new(
+                    "pages/a",
+                    b"same".to_vec(),
+                    PutCondition::Any,
+                )];
+                barrier.wait();
+                store.put_group(&writes)
+            }));
+        }
+        let results: Vec<Vec<String>> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect();
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[0].len(), 1);
+        assert_eq!(store.get("pages/a").unwrap().unwrap().etag, results[0][0]);
+        assert_eq!(store.get("pages/a").unwrap().unwrap().bytes, b"same");
+        assert_eq!(final_objects(&store).len(), 1);
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn concurrent_staging_with_the_same_etag_uses_distinct_temporaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalObjectStore::open(directory.path().join("objects")).unwrap());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                // A fixed etag reproduces the collision the old `.{etag}.tmp` name
+                // would have when two attempts stage the same bytes.
+                let write = GroupWrite::new("pages/a", b"same".to_vec(), PutCondition::Any);
+                barrier.wait();
+                store
+                    .stage_body(&write, "same-etag".to_owned())
+                    .unwrap()
+                    .temporary
+                    .expect("staged temporary")
+            }));
+        }
+        let paths: Vec<std::path::PathBuf> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_ne!(paths[0], paths[1]);
+        for path in &paths {
+            fs::remove_file(path).unwrap();
+        }
+        assert!(temporary_files(&store).is_empty());
+        assert!(store.get("pages/a").unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_crash_leftover_temporary_does_not_block_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let legacy = store.root.join(".legacy-etag.tmp");
+        fs::write(&legacy, b"crashed attempt").unwrap();
+
+        // `put_group` generates a fresh etag; pin it here to exercise the worst-case
+        // retry where a crashed attempt left the legacy name.
+        let writes = vec![GroupWrite::new(
+            "pages/a",
+            b"body".to_vec(),
+            PutCondition::Any,
+        )];
+        let staged = store
+            .stage_body(&writes[0], "legacy-etag".to_owned())
+            .unwrap();
+        let temporary = staged.temporary.clone().expect("staged temporary");
+        assert_ne!(temporary, legacy);
+        assert_eq!(fs::read(&legacy).unwrap(), b"crashed attempt");
+
+        store.publish_staged(&writes, vec![staged]).unwrap();
+        assert_eq!(store.get("pages/a").unwrap().unwrap().bytes, b"body");
+        assert!(!temporary.exists());
+
+        fs::remove_file(&legacy).unwrap();
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn duplicate_any_writes_with_same_bytes_share_the_etag() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let writes = vec![
+            GroupWrite::new("pages/a", b"same".to_vec(), PutCondition::Any),
+            GroupWrite::new("pages/a", b"same".to_vec(), PutCondition::Any),
+        ];
+        let etags = store.put_group(&writes).unwrap();
+        assert_eq!(etags[0], etags[1]);
+        assert_eq!(store.get("pages/a").unwrap().unwrap().bytes, b"same");
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn duplicate_any_writes_with_different_bytes_fail() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let writes = vec![
+            GroupWrite::new("pages/a", b"first".to_vec(), PutCondition::Any),
+            GroupWrite::new("pages/a", b"second".to_vec(), PutCondition::Any),
+        ];
+        let error = store.put_group(&writes).unwrap_err();
+        assert!(error.to_string().contains("immutable object conflict"));
+        assert!(store.get("pages/a").unwrap().is_none());
+        assert!(temporary_files(&store).is_empty());
+    }
+
+    #[test]
+    fn single_any_group_does_not_overwrite_different_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        store.put("pages/a", b"old", PutCondition::Any).unwrap();
+        let writes = vec![GroupWrite::new(
+            "pages/a",
+            b"new".to_vec(),
+            PutCondition::Any,
+        )];
+        let error = store.put_group(&writes).unwrap_err();
+        assert!(error.to_string().contains("immutable object conflict"));
+        assert_eq!(store.get("pages/a").unwrap().unwrap().bytes, b"old");
+        assert!(temporary_files(&store).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -663,14 +1068,14 @@ mod group_latency_tests {
             grouped[0],
             median(&sequential),
             sequential[0],
-            median(&sequential) - median(&grouped),
-            (median(&sequential) - median(&grouped)) / 5,
+            median(&sequential) as i128 - median(&grouped) as i128,
+            (median(&sequential) as i128 - median(&grouped) as i128) / 5,
         );
     }
 
     /// Samples the shape a publication actually writes: 25 immutable bodies per group.
-    /// `Any` takes the direct-write path; `Absent` keeps the temp+rename path, so the
-    /// difference is the rename the direct path removes for content-addressed bodies.
+    /// Both `Any` and `Absent` now stage through temp+rename; the two samples differ
+    /// only in the condition each write carries.
     #[test]
     fn content_addressed_group_latency_sample() {
         let directory = tempfile::tempdir().unwrap();
@@ -712,7 +1117,7 @@ mod group_latency_tests {
             direct[0],
             median(&renamed),
             renamed[0],
-            median(&renamed) - median(&direct),
+            median(&renamed) as i128 - median(&direct) as i128,
         );
     }
 }
