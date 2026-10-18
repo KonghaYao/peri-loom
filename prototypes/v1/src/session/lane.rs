@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use turso_core::{Connection, Value};
@@ -13,6 +13,7 @@ use super::budget::{Budget, RequestDeadline};
 use super::execution::{self, ReadCursor, WriteCursor};
 use super::{DescribeResult, StatementResult, WriteCursorPage};
 use crate::database::RemoteDatabase;
+use crate::work_metrics::LaneWait;
 
 pub(crate) struct SessionLane {
     pub control: Arc<SessionControl>,
@@ -24,6 +25,12 @@ pub(crate) struct SessionLane {
     retired_unsettled: AtomicBool,
     /// When this session opened. Used as an upper bound for the maintenance reader age.
     opened: std::time::Instant,
+}
+
+/// How long this lane waited for the connection before its deadline expired. Recorded beside
+/// the error, not in its chain: the client-visible message stays identical with observation on.
+fn waited_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
 
 impl SessionLane {
@@ -93,8 +100,16 @@ impl SessionLane {
         deadline: &RequestDeadline,
         cleanup: bool,
     ) -> Result<MutexGuard<'lane, Option<Arc<Connection>>>> {
+        let mut blocked_at = None;
         loop {
-            deadline.check()?;
+            if let Err(error) = deadline.check() {
+                if let Some(started) = blocked_at {
+                    crate::work_metrics::note_lane_wait(LaneWait {
+                        waited_ns: waited_ns(started),
+                    });
+                }
+                return Err(error);
+            }
             if !cleanup {
                 self.check(database)?;
                 database.storage().store().validate_local()?;
@@ -124,7 +139,12 @@ impl SessionLane {
                     }
                     return Ok(connection);
                 }
-                Err(TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(10)),
+                Err(TryLockError::WouldBlock) => {
+                    if blocked_at.is_none() && crate::work_metrics::enabled() {
+                        blocked_at = Some(Instant::now());
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
                 Err(TryLockError::Poisoned(_)) => {
                     database.admission().quarantine();
                     return Err(AdmissionError::Quarantine.into());

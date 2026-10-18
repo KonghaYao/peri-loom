@@ -2,9 +2,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+
+use crate::work_metrics::AdmissionWait;
 
 const MAX_WAITERS: usize = 8;
 
@@ -30,6 +32,10 @@ impl fmt::Display for AdmissionError {
 }
 
 impl std::error::Error for AdmissionError {}
+
+fn queued_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UnsettledSqlOutcome;
@@ -230,6 +236,7 @@ impl WriterAdmission {
             return Err(AdmissionError::QueueFull.into());
         }
         state.queue.push_back(control.id);
+        let queued_at = crate::work_metrics::enabled().then(Instant::now);
         self.observe("enqueue", control.id, state.owner);
         drop(state);
         let mut ticket = Ticket {
@@ -239,7 +246,21 @@ impl WriterAdmission {
         };
         loop {
             if let Err(error) = check() {
+                let Some(started) = queued_at else {
+                    self.cancel(control.id);
+                    return Err(error);
+                };
+                let blocked = self
+                    .state
+                    .lock()
+                    .map(|state| (state.maintenance, state.queue.len()))
+                    .unwrap_or((false, 0));
                 self.cancel(control.id);
+                crate::work_metrics::note_admission_wait(AdmissionWait {
+                    waited_ns: queued_ns(started),
+                    maintenance_blocked: blocked.0,
+                    queue_depth: blocked.1,
+                });
                 return Err(error);
             }
             let mut state = self.lock()?;

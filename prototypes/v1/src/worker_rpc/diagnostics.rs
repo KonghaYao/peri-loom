@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Error;
 use serde::Serialize;
@@ -33,6 +34,27 @@ struct Record<'request> {
     execution_completed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_cause_class: Option<&'static str>,
+    /// Wall-clock milliseconds, so a worker line can be aligned with a maintenance line
+    /// without establishing a cross-process monotonic clock.
+    unix_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lane_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    writer_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maintenance_blocked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_depth: Option<usize>,
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 fn policy(message: &str) -> Option<&'static str> {
@@ -131,6 +153,10 @@ impl Diagnostics {
         {
             return None;
         }
+        // Wait context is recorded beside the error by the worker thread, not inside the
+        // error chain, so observation cannot change the client-visible message.
+        let lane_wait = crate::work_metrics::lane_wait();
+        let writer_wait = crate::work_metrics::admission_wait();
         let mut bytes = serde_json::to_vec(&Record {
             event: if super::outcome::execution_completed(error) {
                 "native_sql_terminal_error"
@@ -143,6 +169,15 @@ impl Diagnostics {
             request_id,
             cause_class: classify(error),
             execution_completed: super::outcome::execution_completed(error),
+            unix_ms: unix_ms(),
+            lane_wait_ms: lane_wait.map(|wait| wait.waited_ns / 1_000_000),
+            writer_wait_ms: writer_wait.map(|wait| wait.waited_ns / 1_000_000),
+            storage_wait_ms: crate::work_metrics::request_lock_wait_ns(
+                crate::work_metrics::LockDomain::Storage,
+            )
+            .map(|ns| ns / 1_000_000),
+            maintenance_blocked: writer_wait.map(|wait| wait.maintenance_blocked),
+            queue_depth: writer_wait.map(|wait| wait.queue_depth),
             native_cause_class: match action {
                 Action::Execute | Action::Query if !super::outcome::execution_completed(error) => {
                     Some(classify_source(error))
@@ -184,6 +219,7 @@ mod tests {
     use std::thread;
 
     use crate::session::AdmissionError;
+    use crate::work_metrics::{AdmissionWait, LaneWait, LockDomain};
     use anyhow::{anyhow, Context, Result};
     use serde_json::Value;
     use turso_core::{CompletionError, LimboError};
@@ -241,7 +277,7 @@ mod tests {
                     .record(action, "safe-request", &error)
                     .unwrap();
                 let value: Value = serde_json::from_slice(&bytes)?;
-                assert_eq!(value.as_object().unwrap().len(), 6);
+                assert_eq!(value.as_object().unwrap().len(), 7);
                 assert_eq!(value["action"], expected_action);
                 assert_eq!(value["event"], "native_sql_unsettled_outcome");
                 assert_eq!(value["cause_class"], "outcome_unsettled");
@@ -312,7 +348,7 @@ mod tests {
             .record(Action::Execute, "same-request", &error)
             .unwrap();
         let value: Value = serde_json::from_slice(&record)?;
-        assert_eq!(value.as_object().unwrap().len(), 6);
+        assert_eq!(value.as_object().unwrap().len(), 7);
         assert_eq!(value["event"], "native_sql_unsettled_outcome");
         assert_eq!(value["cause_class"], "outcome_unsettled");
         assert_eq!(value["native_cause_class"], "busy");
@@ -433,7 +469,8 @@ mod tests {
                 assert!(!text.contains(forbidden));
             }
             let record: Value = serde_json::from_slice(&bytes)?;
-            assert_eq!(record.as_object().unwrap().len(), 5);
+            assert_eq!(record.as_object().unwrap().len(), 6);
+            assert!(record["unix_ms"].as_u64().is_some());
             assert_eq!(record["event"], "native_sql_terminal_error");
             assert_eq!(record["action"], expected);
             assert_eq!(record["request_id"], "safe_request-1");
@@ -447,6 +484,81 @@ mod tests {
         assert_eq!(unknown["cause_class"], "not_determined");
         assert!(!unknown.to_string().contains("trueSecret"));
         Ok(())
+    }
+
+    #[test]
+    fn deadline_wait_context_names_the_blocked_stage() -> Result<()> {
+        crate::work_metrics::set_enabled(true);
+        crate::work_metrics::begin_request_observation();
+        crate::work_metrics::note_admission_wait(AdmissionWait {
+            waited_ns: 4_900_000_000,
+            maintenance_blocked: true,
+            queue_depth: 1,
+        });
+        // The error chain stays exactly what the client would see without observation. The
+        // deadline is a typed root error, matching `RequestDeadline::check`.
+        let writer = anyhow::Error::from(AdmissionError::Deadline).context("query failed");
+        let record: Value = serde_json::from_slice(
+            &Diagnostics::default()
+                .record(Action::Query, "writer_wait", &writer)
+                .unwrap(),
+        )?;
+        assert_eq!(record["writer_wait_ms"], 4_900);
+        assert_eq!(record["maintenance_blocked"], true);
+        assert_eq!(record["queue_depth"], 1);
+        assert_eq!(record["cause_class"], "admission_deadline");
+        assert_eq!(
+            format!("{writer:#}"),
+            "query failed: writer admission deadline"
+        );
+
+        crate::work_metrics::begin_request_observation();
+        crate::work_metrics::note_lane_wait(LaneWait {
+            waited_ns: 4_950_000_000,
+        });
+        let lane = anyhow::Error::from(AdmissionError::Deadline).context("query failed");
+        let record: Value = serde_json::from_slice(
+            &Diagnostics::default()
+                .record(Action::Query, "lane_wait", &lane)
+                .unwrap(),
+        )?;
+        assert_eq!(record["lane_wait_ms"], 4_950);
+        assert!(record.get("writer_wait_ms").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn request_boundary_drops_the_previous_requests_wait() {
+        crate::work_metrics::set_enabled(true);
+        crate::work_metrics::begin_request_observation();
+        crate::work_metrics::note_admission_wait(AdmissionWait {
+            waited_ns: 1,
+            maintenance_blocked: true,
+            queue_depth: 1,
+        });
+        crate::work_metrics::note_lane_wait(LaneWait { waited_ns: 2 });
+        assert!(crate::work_metrics::admission_wait().is_some());
+        assert!(crate::work_metrics::lane_wait().is_some());
+        crate::work_metrics::begin_request_observation();
+        assert!(crate::work_metrics::admission_wait().is_none());
+        assert!(crate::work_metrics::lane_wait().is_none());
+        assert_eq!(
+            crate::work_metrics::request_lock_wait_ns(LockDomain::Storage),
+            Some(0)
+        );
+        // A thread that never served a request cannot populate the slots either.
+        std::thread::spawn(|| {
+            crate::work_metrics::note_admission_wait(AdmissionWait {
+                waited_ns: 3,
+                maintenance_blocked: false,
+                queue_depth: 0,
+            });
+            crate::work_metrics::note_lane_wait(LaneWait { waited_ns: 4 });
+            assert!(crate::work_metrics::admission_wait().is_none());
+            assert!(crate::work_metrics::lane_wait().is_none());
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

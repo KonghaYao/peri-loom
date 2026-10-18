@@ -378,6 +378,9 @@ impl State {
             let _ = transport::reply(stream, 403, b"{\"error\":\"unauthorized\"}", false);
             return Ok(false);
         }
+        // Attribution is per request; a failed request must not inherit the previous
+        // request's lock wait on a reused connection.
+        crate::work_metrics::begin_request_observation();
         let parsed = match serde_json::from_slice::<WorkerRequest>(&request.body) {
             Ok(parsed) => parsed,
             Err(_) => {

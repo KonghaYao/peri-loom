@@ -18,11 +18,13 @@
 //! publication or recovery behaviour: recording happens after the decision the work point
 //! already made.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::MutexGuard;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -327,6 +329,84 @@ static LOCK_WAITS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static LOCK_WAIT_NANOS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static LOCK_HOLDS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static LOCK_HOLD_NANOS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+// A cumulative sum cannot distinguish thousands of short holds from one long hold. Keeping
+// the single longest hold lets a maintenance report test that premise directly instead of
+// dividing the sum by the count.
+static LOCK_MAX_HOLD_NANOS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+thread_local! {
+    /// Per-request storage wait, reset at the worker request boundary. It is `None` when the
+    /// switch is off or when the thread is not serving a worker request, so a maintenance
+    /// diagnostic cannot inherit a previous request's wait.
+    static REQUEST_LOCK_WAITS: Cell<Option<[u64; 3]>> = const { Cell::new(None) };
+    static REQUEST_ADMISSION_WAIT: Cell<Option<AdmissionWait>> = const { Cell::new(None) };
+    static REQUEST_LANE_WAIT: Cell<Option<LaneWait>> = const { Cell::new(None) };
+    /// Set at the worker request boundary. `note_*` refuses to store on threads that are not
+    /// serving a request, so maintenance or close paths on other threads cannot populate a
+    /// slot that no request will read.
+    static REQUEST_OBSERVING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Recorded when a queued writer hits its deadline. Kept beside the error instead of inside
+/// its chain so the client-visible message is byte-identical whether observation is on or off.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AdmissionWait {
+    pub(crate) waited_ns: u64,
+    pub(crate) maintenance_blocked: bool,
+    pub(crate) queue_depth: usize,
+}
+
+/// Recorded when a lane polling for its connection hits its deadline.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LaneWait {
+    pub(crate) waited_ns: u64,
+}
+
+pub(crate) fn begin_request_observation() {
+    if enabled() {
+        REQUEST_OBSERVING.with(|slot| slot.set(true));
+        REQUEST_LOCK_WAITS.with(|waits| waits.set(Some([0; 3])));
+        REQUEST_ADMISSION_WAIT.with(|wait| wait.set(None));
+        REQUEST_LANE_WAIT.with(|wait| wait.set(None));
+    }
+}
+
+fn observing() -> bool {
+    enabled() && REQUEST_OBSERVING.with(Cell::get)
+}
+
+pub(crate) fn note_admission_wait(wait: AdmissionWait) {
+    if observing() {
+        REQUEST_ADMISSION_WAIT.with(|slot| slot.set(Some(wait)));
+    }
+}
+
+pub(crate) fn admission_wait() -> Option<AdmissionWait> {
+    if !enabled() {
+        return None;
+    }
+    REQUEST_ADMISSION_WAIT.with(Cell::get)
+}
+
+pub(crate) fn note_lane_wait(wait: LaneWait) {
+    if observing() {
+        REQUEST_LANE_WAIT.with(|slot| slot.set(Some(wait)));
+    }
+}
+
+pub(crate) fn lane_wait() -> Option<LaneWait> {
+    if !enabled() {
+        return None;
+    }
+    REQUEST_LANE_WAIT.with(Cell::get)
+}
+
+pub(crate) fn request_lock_wait_ns(domain: LockDomain) -> Option<u64> {
+    if !enabled() {
+        return None;
+    }
+    REQUEST_LOCK_WAITS.with(|waits| waits.get().map(|totals| totals[domain as usize]))
+}
 
 /// Timer started before a lock is taken. Disabled, it holds no clock and the acquisition
 /// below hands back a guard that never reads one either.
@@ -350,11 +430,16 @@ impl LockWait {
         ObservedLock {
             guard,
             hold: self.started.map(|started| {
-                add(&LOCK_WAITS[self.domain as usize], 1);
-                add(
-                    &LOCK_WAIT_NANOS[self.domain as usize],
-                    nanos(started.elapsed()),
-                );
+                let waited = nanos(started.elapsed());
+                let index = self.domain as usize;
+                add(&LOCK_WAITS[index], 1);
+                add(&LOCK_WAIT_NANOS[index], waited);
+                REQUEST_LOCK_WAITS.with(|waits| {
+                    if let Some(mut totals) = waits.get() {
+                        totals[index] = totals[index].saturating_add(waited);
+                        waits.set(Some(totals));
+                    }
+                });
                 (self.domain, Instant::now())
             }),
         }
@@ -385,8 +470,10 @@ impl<T> DerefMut for ObservedLock<'_, T> {
 impl<T> Drop for ObservedLock<'_, T> {
     fn drop(&mut self) {
         if let Some((domain, started)) = self.hold {
+            let held = nanos(started.elapsed());
             add(&LOCK_HOLDS[domain as usize], 1);
-            add(&LOCK_HOLD_NANOS[domain as usize], nanos(started.elapsed()));
+            add(&LOCK_HOLD_NANOS[domain as usize], held);
+            LOCK_MAX_HOLD_NANOS[domain as usize].fetch_max(held, Ordering::Relaxed);
         }
     }
 }
@@ -449,13 +536,18 @@ static WAL_INDEX_READ_ENTRIES: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct MaintenanceTimer {
     lane: crate::maintenance::MaintenanceLane,
     started: Option<Instant>,
+    started_wall_ms: Option<u64>,
+    started_storage: Option<LockTotals>,
 }
 
 impl MaintenanceTimer {
     pub(crate) fn begin(lane: crate::maintenance::MaintenanceLane) -> Self {
+        let started = enabled().then(Instant::now);
         Self {
             lane,
-            started: enabled().then(Instant::now),
+            started,
+            started_wall_ms: started.map(|_| unix_ms()),
+            started_storage: started.map(|_| lock_totals(LockDomain::Storage)),
         }
     }
 
@@ -466,14 +558,55 @@ impl MaintenanceTimer {
         let Some(started) = self.started else {
             return;
         };
+        let elapsed_ns = nanos(started.elapsed());
         let index = self.lane.index();
         add(&UNIT_CALLS[index], 1);
         add(&UNIT_BACKFILL_BYTES[index], backfill_bytes);
-        add(&UNIT_NANOS[index], nanos(started.elapsed()));
+        add(&UNIT_NANOS[index], elapsed_ns);
         if !completed {
             add(&UNIT_FAILURES[index], 1);
         }
+        // One line per unit, only while the work-metrics switch is on. This is what lets a
+        // diagnostic run correlate a maintenance window with a request outcome without
+        // turning the process-level counters into per-unit evidence.
+        if let (Some(started_wall_ms), Some(started_storage)) =
+            (self.started_wall_ms, self.started_storage)
+        {
+            let ended_storage = lock_totals(LockDomain::Storage);
+            let record = serde_json::json!({
+                "event": "maintenance_unit",
+                "lane": self.lane.name(),
+                "start_unix_ms": started_wall_ms,
+                "end_unix_ms": unix_ms(),
+                "duration_ns": elapsed_ns,
+                "backfill_bytes": backfill_bytes,
+                "completed": completed,
+                "storage_holds_delta": ended_storage.holds.saturating_sub(started_storage.holds),
+                "storage_hold_ns_delta": ended_storage
+                    .hold_ns
+                    .saturating_sub(started_storage.hold_ns),
+                "storage_waits_delta": ended_storage.waits.saturating_sub(started_storage.waits),
+                "storage_wait_ns_delta": ended_storage
+                    .wait_ns
+                    .saturating_sub(started_storage.wait_ns),
+                // Process lifetime, not this unit: the name keeps it from being read as a
+                // per-window maximum next to the deltas.
+                "process_storage_max_hold_ns": ended_storage.max_hold_ns,            });
+            if let Ok(line) = serde_json::to_string(&record) {
+                // Observation must not become a new failure mode; diagnostics.rs ignores a
+                // failing writer for the same reason.
+                let _ = writeln!(std::io::stderr().lock(), "{line}");
+            }
+        }
     }
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 pub(crate) fn observe_maintenance_blocked(reason: crate::maintenance::BlockReason) {
@@ -579,6 +712,8 @@ pub(crate) struct LockTotals {
     pub wait_ns: u64,
     pub holds: u64,
     pub hold_ns: u64,
+    /// Longest single hold observed in this process for the domain.
+    pub max_hold_ns: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -653,21 +788,22 @@ fn units() -> BTreeMap<&'static str, UnitTotals> {
         .collect()
 }
 
+fn lock_totals(domain: LockDomain) -> LockTotals {
+    let index = domain as usize;
+    LockTotals {
+        waits: load(&LOCK_WAITS[index]),
+        wait_ns: load(&LOCK_WAIT_NANOS[index]),
+        holds: load(&LOCK_HOLDS[index]),
+        hold_ns: load(&LOCK_HOLD_NANOS[index]),
+        max_hold_ns: load(&LOCK_MAX_HOLD_NANOS[index]),
+    }
+}
+
 fn locks() -> BTreeMap<&'static str, LockTotals> {
-    LOCK_NAMES
-        .iter()
-        .enumerate()
-        .map(|(index, name)| {
-            (
-                *name,
-                LockTotals {
-                    waits: load(&LOCK_WAITS[index]),
-                    wait_ns: load(&LOCK_WAIT_NANOS[index]),
-                    holds: load(&LOCK_HOLDS[index]),
-                    hold_ns: load(&LOCK_HOLD_NANOS[index]),
-                },
-            )
-        })
+    [LockDomain::State, LockDomain::Cache, LockDomain::Storage]
+        .into_iter()
+        .zip(LOCK_NAMES)
+        .map(|(domain, name)| (name, lock_totals(domain)))
         .collect()
 }
 
