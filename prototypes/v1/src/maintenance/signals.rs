@@ -33,9 +33,10 @@ pub(crate) struct MaintenanceSignals {
     /// Age of the oldest lane that currently holds a native read lock. Zero when no reader
     /// holds one. This is the reader a truncate checkpoint cannot backfill past.
     pub oldest_reader_ms: u64,
-    /// True while a durable or pending WAL tail is not covered by a publication. The WAL
-    /// reset precondition requires this to be false, so the compaction lane is ineligible
-    /// while it is set rather than discovering the failure at dispatch.
+    /// True while an append or a database publication is unsettled: an append in flight, a
+    /// pending batch, a dirty image or a failed publication. The image's applied LSN is not
+    /// part of this flag because the truncate checkpoint itself applies the WAL tail and
+    /// `allow_reset` re-checks coverage after that backfill.
     pub unconfirmed_wal: bool,
 }
 

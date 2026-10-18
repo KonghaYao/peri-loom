@@ -451,10 +451,10 @@ impl MaintenanceScheduler {
                 };
             }
         };
-        // A confirmed WAL is compacted; an unconfirmed one still allows a Full checkpoint,
-        // which is the unit that makes the publication current. The compaction precondition is
-        // left to the unit itself as well, so a race between the probe and dispatch is still
-        // refused before the WAL index is touched.
+        // A settled WAL is compacted; an unsettled one still allows a Full checkpoint,
+        // which is the unit that makes the append and its publication current. The
+        // compaction precondition is left to the unit itself as well, so a race between the
+        // probe and dispatch is still refused before the WAL index is touched.
         let lane = if signals.unconfirmed_wal {
             MaintenanceLane::Checkpoint
         } else {

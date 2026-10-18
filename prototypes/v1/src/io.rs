@@ -207,14 +207,16 @@ impl RemoteIO {
     /// let an upload stall WAL readers for its whole duration.
     ///
     /// The storage figures are read first, so `applied` may lag a publication that finished
-    /// in between. That direction is safe: an older applied LSN can only keep `replay_bytes`
-    /// or `unconfirmed_wal` set, which makes compaction more conservative, never less.
+    /// in between. That direction is safe: an older applied LSN can only raise
+    /// `replay_bytes`, which makes cold-start replay more conservative, never less.
     ///
-    /// `unconfirmed_wal` is a conservative reading of the WAL reset precondition: it is set
-    /// whenever the durable LSN and the published baseline disagree, or the state is dirty or
-    /// failed. A false reading here only means the compaction lane stays ineligible; a true
-    /// reading can never make a compaction pass a precondition it would otherwise fail,
-    /// because `compact_wal_once` still applies them itself.
+    /// `unconfirmed_wal` is the append state, not the image state: an append still in
+    /// flight, a pending batch, a dirty image or a failed publication. The image's applied
+    /// LSN is deliberately absent. A truncate checkpoint applies the WAL tail itself, and
+    /// `allow_reset` re-checks coverage against `state.lsn` after that backfill; using the
+    /// image LSN here would keep the compaction lane closed for as long as writes continue,
+    /// because every checkpoint freezes its applied LSN before a multi-second upload and
+    /// the writes that land during it always leave the image behind.
     pub(crate) fn maintenance_signals(&self) -> Result<crate::maintenance::MaintenanceSignals> {
         let usage = self.shared.storage.resource_usage()?;
         let applied = self.shared.storage.applied_lsn();
@@ -241,8 +243,7 @@ impl RemoteIO {
             replay_bytes: if state.lsn > applied { wal_bytes } else { 0 },
             dirty_segment_bytes: usage.dirty_segment_bytes,
             oldest_reader_ms: 0,
-            unconfirmed_wal: state.lsn != applied
-                || state.dirty
+            unconfirmed_wal: state.dirty
                 || state.wal_failed
                 || state.publication_failed
                 || state.append_in_flight

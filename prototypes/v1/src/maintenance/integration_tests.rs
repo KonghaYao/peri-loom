@@ -157,9 +157,9 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
     assert_eq!(queued.attempts, 1);
     assert_eq!(
         queued.blocks.get("unconfirmed_wal"),
-        Some(&1),
-        "the compaction lane is refused by its precondition before its slot, and the refusal \
-         is recorded"
+        None,
+        "a settled append whose image is behind is not an unsettled WAL; the compaction lane \
+         is simply not due before its own slot"
     );
     assert_eq!(
         queued.executions, 0,
@@ -333,9 +333,11 @@ fn a_backfill_charge_over_the_byte_budget_skips_the_unit() -> Result<()> {
 fn the_admin_entry_point_compacts_an_unpublished_tail_without_losing_it() -> Result<()> {
     let fixture = Fixture::open("admin_tail")?;
     fixture.database.execute("INSERT INTO entries VALUES(4)")?;
+    let applied = fixture.database.storage().applied_lsn();
+    let published = fixture.wal.metadata(&fixture.namespace)?.last_lsn;
     assert!(
-        fixture.target().signals()?.unconfirmed_wal,
-        "the fixture must carry an unpublished tail for this test to mean anything"
+        applied < published,
+        "the fixture must carry a tail the image has not applied for this test to mean anything"
     );
     let before = fixture.wal.metadata(&fixture.namespace)?;
 
@@ -363,6 +365,42 @@ fn the_admin_entry_point_compacts_an_unpublished_tail_without_losing_it() -> Res
         "5",
         "a cold start replays the baseline that absorbed the unpublished tail"
     );
+    Ok(())
+}
+
+/// A settled append that the image has not applied yet must not close the compaction lane.
+/// The truncate checkpoint is the unit that applies the tail, and a long write stream always
+/// leaves the image behind its own appends, so treating that gap as an unsettled WAL makes
+/// the lane permanently ineligible.
+#[test]
+fn a_settled_append_does_not_close_the_compaction_lane() -> Result<()> {
+    let fixture = Fixture::open("settled_tail")?;
+    fixture.database.execute("INSERT INTO entries VALUES(4)")?;
+    let applied = fixture.database.storage().applied_lsn();
+    let published = fixture.wal.metadata(&fixture.namespace)?.last_lsn;
+    assert!(applied < published, "the image must lag the WAL tail");
+    assert!(
+        !fixture.target().signals()?.unconfirmed_wal,
+        "an append that settled is confirmed even while the image lags"
+    );
+    let scheduler = MaintenanceScheduler::new(
+        policy_with(
+            armed_lane(Duration::from_secs(60), Duration::ZERO),
+            armed_lane(Duration::from_secs(2), Duration::ZERO),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        ),
+        MaintenanceBudget::new(1, 1, 4, 64 * MIB, Duration::from_secs(60)),
+    );
+    let slot = fixture.opened() + Duration::from_secs(3);
+    scheduler.observe(&fixture.target(), slot)?;
+    assert_eq!(fixture.counters().attempts, 1);
+    let summary = scheduler.drain(1, slot);
+    assert_eq!(summary.completed, 1);
+    assert_eq!(fixture.counters().failed, 0);
+    let compacted = fixture.wal.metadata(&fixture.namespace)?;
+    assert_eq!(compacted.replay_baseline_lsn, compacted.last_lsn);
+    assert_eq!(fixture.values()?, "5");
     Ok(())
 }
 
@@ -403,10 +441,10 @@ fn a_long_reader_blocks_the_scheduled_compaction_and_the_wal_survives() -> Resul
     Ok(())
 }
 
-/// The suspend-time unit takes the same precondition path as the scheduled one: a Full
-/// checkpoint first makes the publication current, then a reader blocks the compaction, which
-/// is reported as a failed unit with the long-reader block already recorded by the real
-/// preflight. Nothing is truncated and the rows stay readable.
+/// The suspend-time unit takes the same precondition path as the scheduled one: with a settled
+/// WAL the pre-tidy picks compaction, and a reader holding the WAL back makes the real
+/// preflight refuse it, which is reported as a failed unit with the long-reader block already
+/// recorded. Nothing is truncated and the rows stay readable.
 #[test]
 fn a_suspend_pre_tidy_blocked_by_a_reader_records_the_long_reader() -> Result<()> {
     let fixture = Fixture::open("suspend_reader")?;
@@ -419,14 +457,6 @@ fn a_suspend_pre_tidy_blocked_by_a_reader_records_the_long_reader() -> Result<()
         ),
         MaintenanceBudget::new(1, 1, 16, 64 * MIB, Duration::from_secs(60)),
     );
-
-    let checkpoint = scheduler.pre_suspend(&fixture.target());
-    assert_eq!(
-        checkpoint.reason,
-        PreSuspendReason::Completed,
-        "{checkpoint:?}"
-    );
-    assert_eq!(checkpoint.lane, Some(MaintenanceLane::Checkpoint));
     let settled = fixture.wal.metadata(&fixture.namespace)?;
 
     let reader = fixture.database.session()?;
@@ -439,7 +469,7 @@ fn a_suspend_pre_tidy_blocked_by_a_reader_records_the_long_reader() -> Result<()
     assert!(compact.started);
     let counters = fixture.counters();
     assert_eq!(counters.failed, 1);
-    assert_eq!(counters.completed, 1);
+    assert_eq!(counters.completed, 0);
     assert_eq!(counters.blocks.get("long_reader"), Some(&1));
 
     let after = fixture.wal.metadata(&fixture.namespace)?;

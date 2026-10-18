@@ -66,9 +66,9 @@ pub(crate) struct Watermark {
 pub(crate) enum MaintenanceSkip {
     /// The scheduler is off. This is the default.
     Disabled,
-    /// The WAL still carries a tail the publication does not cover. Skipping here is what
-    /// keeps the compaction precondition ("no unconfirmed WAL") a precondition instead of a
-    /// failure discovered mid-dispatch.
+    /// An append or a database publication is still unsettled. The truncate checkpoint
+    /// itself applies the WAL tail, so this lane waits for append quiescence, not for the
+    /// image to catch up with every append.
     UnconfirmedWal,
     /// Past the low mark without ever crossing the high mark, or back below the low mark.
     BelowLow,
