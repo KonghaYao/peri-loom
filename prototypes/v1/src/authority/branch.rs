@@ -421,6 +421,96 @@ impl BranchStore {
         Ok(validated)
     }
 
+    /// Publish the immutable pages produced by one receipt roll as a single durability
+    /// group.
+    ///
+    /// The WAL head that references them is published afterwards, so a failure here leaves
+    /// only unreferenced content-addressed bodies. Batching is the point: one page per
+    /// `put` pays a catalogue publication and a body barrier for every archived receipt,
+    /// which is exactly the tail this path must not have.
+    pub(in crate::authority) fn publish_wal_pages(
+        &self,
+        writes: &[crate::object_store::GroupWrite],
+    ) -> Result<()> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let mut view = self
+            .view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
+        let snapshot = self.authority.snapshot()?;
+        self.bound(&snapshot.root)?;
+        self.authority.check(MutationStage::Upload)?;
+        let mut pages = Vec::with_capacity(writes.len());
+        for write in writes {
+            let relative = self.relative(&write.key)?;
+            ensure!(
+                relative.starts_with(crate::wal::WAL_RECEIPT_PAGE_PREFIX),
+                "batched page outside the receipt archive"
+            );
+            let hash = relative.rsplit('/').next().unwrap_or_default();
+            ensure!(
+                blake3::hash(&write.bytes).to_hex().as_str() == hash,
+                "immutable receipt page checksum mismatch"
+            );
+            if let Some(existing) = snapshot.root.objects.get(relative)? {
+                ensure!(existing.hash == hash, "immutable receipt page conflict");
+                continue;
+            }
+            pages.push((
+                relative.to_owned(),
+                Authority::upload_entry(&write.bytes)?,
+                write,
+            ));
+        }
+        if pages.is_empty() {
+            return Ok(());
+        }
+        let bodies = pages
+            .iter()
+            .map(|(_, entry, write)| PublicationBody {
+                entry,
+                bytes: &write.bytes,
+            })
+            .collect::<Vec<_>>();
+        let mut added = BTreeMap::new();
+        let mut selected = None;
+        self.authority.transact_with_bodies(&bodies, |root| {
+            self.bound(root)?;
+            let mut entries = BTreeMap::new();
+            for (relative, entry, _) in &pages {
+                ensure!(
+                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
+                    "physical instance collision"
+                );
+                if let Some(existing) = root.objects.get(relative)? {
+                    // A retry or another writer of the same branch may have published this
+                    // content already; the key is its content address.
+                    ensure!(
+                        existing.hash == entry.hash,
+                        "immutable receipt page conflict"
+                    );
+                    entries.insert(relative.clone(), existing);
+                    continue;
+                }
+                root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                root.uploads.insert(entry.blob.clone(), entry.clone())?;
+                root.objects.insert(relative.clone(), entry.clone())?;
+                entries.insert(relative.clone(), entry.clone());
+            }
+            added = self.extend_pin(root, &view, entries)?;
+            selected = Some(Self::selected(root, &self.branch)?);
+            Ok(())
+        })?;
+        Self::refresh(
+            &mut view,
+            selected.context("branch page publication view missing")?,
+            added,
+        );
+        Ok(())
+    }
+
     pub(super) fn publish_wal_append(
         &self,
         encoded: &crate::wal::EncodedWalRecord,

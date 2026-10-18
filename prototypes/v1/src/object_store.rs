@@ -163,6 +163,16 @@ pub trait ObjectStore: Send + Sync {
             .map(|write| self.put(&write.key, &write.bytes, write.condition.clone()))
             .collect()
     }
+
+    /// Publish immutable, content-addressed pages as one durability group.
+    ///
+    /// The caller has already ordered its work so that no visible head references these
+    /// pages before this returns. `Ok(false)` means the backend has no batched form and the
+    /// caller falls back to `put` per page; the default keeps every other backend unchanged.
+    fn publish_pages(&self, _writes: &[GroupWrite]) -> Result<bool> {
+        Ok(false)
+    }
+
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()>;
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
 

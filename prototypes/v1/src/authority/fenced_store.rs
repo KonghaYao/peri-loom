@@ -245,6 +245,13 @@ impl ObjectStore for GatedWalStore {
         Ok(result)
     }
 
+    fn publish_pages(&self, writes: &[crate::object_store::GroupWrite]) -> Result<bool> {
+        self.validate_session()?;
+        self.inner.publish_wal_pages(writes)?;
+        self.validate_session()?;
+        Ok(true)
+    }
+
     fn delete(&self, _: &str, _: Option<&str>) -> Result<()> {
         anyhow::bail!("Unauthorized WAL append delete")
     }

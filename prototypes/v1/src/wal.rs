@@ -747,11 +747,14 @@ impl RemoteWal {
         if candidates.is_empty() {
             return Ok(());
         }
+        let pending =
+            std::cell::RefCell::new(crate::authority::paged_index::PendingPages::default());
         let pages = crate::authority::paged_index::PagedIndex::with_prefix(
             self.store.as_ref(),
             namespace,
             WAL_RECEIPT_PAGE_PREFIX,
-        );
+        )
+        .deferring(&pending);
         let mut root = index.receipt_index.clone();
         for batch in candidates.chunks(WAL_RECEIPT_ARCHIVE_BATCH) {
             let mut updates = BTreeMap::new();
@@ -771,6 +774,29 @@ impl RemoteWal {
             }
             root = Some(pages.insert_many(root.as_deref(), updates)?);
         }
+        // One durability group for the whole roll when the store can publish pages in
+        // batch; the per-page path below is what every other store keeps doing. Publishing
+        // the pages before the head that references them is the ordering that makes a lost
+        // head harmless.
+        let staged = pending.borrow();
+        if !self.store.publish_pages(staged.writes())? {
+            for write in staged.writes() {
+                if let Err(error) = self
+                    .store
+                    .put(&write.key, &write.bytes, PutCondition::Absent)
+                {
+                    let existing = self
+                        .store
+                        .get(&write.key)?
+                        .context("index page upload unresolved")?;
+                    ensure!(
+                        existing.bytes == write.bytes,
+                        "immutable index page conflict: {error}"
+                    );
+                }
+            }
+        }
+        drop(staged);
         for (_, identity) in &candidates {
             index.receipts.remove(identity);
             index.receipt_digests.remove(identity);
@@ -2868,6 +2894,85 @@ mod truncate_tests {
         let failure = wal.append_local(&original).unwrap_err().to_string();
         assert!(failure.contains("content unavailable"), "{failure}");
         assert_eq!(wal.index(&namespace)?.0.last_lsn, 2);
+        Ok(())
+    }
+
+    struct BatchedPageStore {
+        inner: LocalObjectStore,
+        batches: std::sync::atomic::AtomicUsize,
+        pages: std::sync::atomic::AtomicUsize,
+    }
+
+    impl BatchedPageStore {
+        fn open(path: &std::path::Path) -> Result<Self> {
+            Ok(Self {
+                inner: LocalObjectStore::open(path)?,
+                batches: std::sync::atomic::AtomicUsize::new(0),
+                pages: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl ObjectStore for BatchedPageStore {
+        fn get(&self, key: &str) -> Result<Option<crate::object_store::StoredObject>> {
+            self.inner.get(key)
+        }
+
+        fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+            self.inner.put(key, bytes, condition)
+        }
+
+        fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+            self.inner.delete(key, expected)
+        }
+
+        fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            self.inner.list(prefix)
+        }
+
+        fn publish_pages(&self, writes: &[crate::object_store::GroupWrite]) -> Result<bool> {
+            self.batches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.pages
+                .fetch_add(writes.len(), std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_group(writes)?;
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn a_receipt_roll_publishes_its_pages_in_one_batch() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(BatchedPageStore::open(directory.path())?);
+        let wal = RemoteWal::new(store.clone());
+        let namespace = Namespace::new("receipt", "batched")?;
+        for ordinal in 1..=(WAL_RECEIPT_INLINE_LIMIT + WAL_RECEIPT_ROLL_BATCH + 1) {
+            assert_eq!(
+                wal.append_local(&append_request(
+                    &namespace,
+                    &format!("append-{ordinal}"),
+                    &[]
+                ))?,
+                ordinal as u64
+            );
+        }
+        assert_eq!(
+            store.batches.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the roll must reach the store as one batched page publication"
+        );
+        assert!(
+            store.pages.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the roll must archive at least one page"
+        );
+        assert!(wal.metadata(&namespace)?.receipt_index.is_some());
+        let bytes = index_bytes(&store.inner, &namespace)?;
+        validate_cold(&store.inner, &namespace, &bytes)?;
+        assert_eq!(
+            wal.append_local(&append_request(&namespace, "append-1", &[]))?,
+            1,
+            "an archived receipt must still answer a duplicate"
+        );
         Ok(())
     }
 }
