@@ -385,13 +385,36 @@ def experimental_environment(environment, maintenance=False):
     The maintenance scheduler and the work-metrics snapshot are experiment inputs; they are
     off unless the operator sets them. Only these names cross into the child, so credentials
     and unrelated switches still require their own explicit wiring. The scheduler belongs to
-    the data plane, so its switches are forwarded to workers only.
+    the data plane, so its switches are forwarded to workers only. The PERI_DIAG_* pair is
+    temporary slow-diagnostics wiring guarded by prepare_slow_diagnostic_directory.
     """
     for name, value in os.environ.items():
-        if (name in ("PERI_WORK_METRICS", "PERI_WORKER_DB_IDLE_UNLOAD_MS", "PERI_ADMISSION_TRACE")
+        # Temporary diagnostic forwarding: remove these two names and their guard once slow
+        # diagnostics become a supported flag or are no longer needed.
+        if (name in ("PERI_WORK_METRICS", "PERI_WORKER_DB_IDLE_UNLOAD_MS", "PERI_ADMISSION_TRACE",
+                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR")
                 or (maintenance and name.startswith("PERI_MAINTENANCE_"))):
             environment[name] = value
     return environment
+
+
+def prepare_slow_diagnostic_directory():
+    """Create the slow-diagnostic output directory or reject an unrecordable start.
+
+    Temporary experiment wiring: the Rust sink disables itself silently when PERI_DIAG_DIR
+    is missing or unusable, so an enabled diagnostic must fail the launch here instead of
+    leaving a campaign without evidence. Remove this guard together with the PERI_DIAG_*
+    forwarding once slow diagnostics become a supported flag or are no longer needed.
+    """
+    if os.environ.get("PERI_DIAG_SLOW") != "1":
+        return
+    directory = os.environ.get("PERI_DIAG_DIR")
+    if not directory:
+        raise RuntimeError("PERI_DIAG_SLOW=1 requires PERI_DIAG_DIR to name a private directory")
+    try:
+        private_directory(pathlib.Path(directory))
+    except (OSError, RuntimeError) as error:
+        raise RuntimeError("PERI_DIAG_DIR must be a private directory without symlinks: " + directory + ": " + str(error)) from error
 
 
 def bootstrap_credential():
@@ -1391,6 +1414,9 @@ class Project:
     def run(self):
         self.acquire_run_lock()
         self.prepare()
+        # Fail closed before any Rust process starts: an unusable diagnostic directory
+        # would otherwise disable the sink without failing the launch.
+        prepare_slow_diagnostic_directory()
         authority_environment = safe_environment(capacity_trace=True)
         experimental_environment(authority_environment)
         authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
