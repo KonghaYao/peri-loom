@@ -1,14 +1,25 @@
 import argparse
+import contextlib
 import hashlib
 import hmac
 import importlib.util
+import io
 import json
 import os
 import pathlib
+import queue
+import secrets
+import signal
 import socket
+import ssl
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import Mock, patch
 
 
@@ -16,6 +27,38 @@ source = pathlib.Path(__file__).resolve().parents[1] / "dev.py"
 spec = importlib.util.spec_from_file_location("owned_launcher", source)
 dev = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev)
+
+
+class LiveSQLClient:
+    def __init__(self, run_directory):
+        connection = json.loads((pathlib.Path(run_directory) / "connection.json").read_text())
+        self.endpoint = connection["endpoint"]
+        self.database = connection["database"]
+        self.project_key = connection["project_api_key"]
+        context = ssl.create_default_context(cafile=connection["ca_file"])
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), dev.NoRedirect(),
+            urllib.request.HTTPSHandler(context=context))
+
+    def post(self, path, body):
+        request_id = secrets.token_hex(16)
+        payload = dict(body, request_id=request_id)
+        request = urllib.request.Request(
+            self.endpoint + path, data=json.dumps(payload).encode(), method="POST",
+            headers={"Authorization": "Bearer " + self.project_key,
+                     "Content-Type": "application/json", "X-Request-ID": request_id})
+        with self.opener.open(request, timeout=30) as response:
+            reply = json.loads(response.read())
+        if reply.get("request_id") != request_id or reply.get("ok") is not True:
+            raise RuntimeError("SQL request failed: " + str(reply))
+        return reply["result"]
+
+    def statement(self, sql, kind):
+        session = self.post("/v1/sql/open", {"database": self.database})["session"]
+        try:
+            return self.post("/v1/sql/" + kind, {"session": session, "sql": sql})
+        finally:
+            self.post("/v1/sql/close", {"session": session})
 
 
 class OwnedStopProofTests(unittest.TestCase):
@@ -197,6 +240,7 @@ class OwnedStopProofTests(unittest.TestCase):
                 authority.write_bytes(b"clean\n")
                 dev.private_json(project.directory / "platform/state.json", {"payload": {"owned_run_generation": old_generation, "operations": {}}})
                 dev.private_json(project.directory / "platform/state.json.floor", {"version": 1})
+                self.write_clean_stop(project, configuration)
                 dev.atomic_private_json(project.directory / "launcher-terminal.json", dev.signed_owned_identity(configuration, dev.terminal_record(project.directory, configuration)))
                 restarted = dev.Project(project.arguments)
                 restarted.prepare()
@@ -208,6 +252,12 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertEqual(len(list(archives[0].iterdir())), 4)
                 with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
                     dev.Project(project.arguments).prepare()
+
+    def write_clean_stop(self, project, configuration):
+        record = {"version": 1, "generation": configuration["generation"], "outcome": "clean",
+                  "reason": "terminal_proof_written", "deadline_ms": 1, "stages": [],
+                  "unresolved_operations": False}
+        dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, record))
 
     def clean_run_directory(self, directory):
         project = self.project(directory)
@@ -221,10 +271,7 @@ class OwnedStopProofTests(unittest.TestCase):
         dev.private_json(project.directory / "platform/state.json", {"payload": {"owned_run_generation": configuration["generation"], "operations": {}}})
         dev.private_json(project.directory / "platform/state.json.floor", {"version": 1})
         (project.directory / "authority/authority.lock").write_bytes(b"clean\n")
-        project.stop_record = {"version": 1, "generation": configuration["generation"], "outcome": "clean",
-                               "reason": "terminal_proof_written", "deadline_ms": 1, "stages": [],
-                               "unresolved_operations": False}
-        project.write_stop_record()
+        self.write_clean_stop(project, configuration)
         dev.atomic_private_json(project.directory / "launcher-terminal.json", dev.signed_owned_identity(configuration, dev.terminal_record(project.directory, configuration)))
         return project
 
@@ -268,6 +315,9 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertIn("operation_incomplete", record["error"])
             self.assertTrue(record["teardown_completed"])
             self.assertTrue(record["clean_evidence"]["restored"])
+            self.assertFalse(record["requires_operator"])
+            self.assertEqual(record["not_rolled_back"], [])
+            self.assertIsNotNone(record["clean_evidence"]["authority_lock_sha256"])
             self.assertEqual(record["clean_evidence"]["terminal_sha256"], hashlib.sha256(terminal_bytes).hexdigest())
             self.assertEqual(record["clean_evidence"]["stop_sha256"], hashlib.sha256(stop_bytes).hexdigest())
             self.assertEqual(json.loads(json.loads(stop_bytes)["payload"])["outcome"], "clean")
@@ -275,6 +325,8 @@ class OwnedStopProofTests(unittest.TestCase):
             failed = list((root / "owned-proof-history").glob(configuration["generation"] + "-failed-*"))
             self.assertEqual(len(failed), 1)
             self.assertEqual([entry.name for entry in failed[0].iterdir()], ["worker-a.identity.json"])
+            # A restored startup failure keeps the run dir reusable.
+            dev.Project(fixture.arguments).prepare()
 
     def test_prepare_refusal_does_not_rewrite_previous_clean_evidence(self):
         with tempfile.TemporaryDirectory(prefix="restart-refusal-", dir="/tmp") as directory:
@@ -318,10 +370,15 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertFalse((root / "launcher-terminal.json").exists())
             self.assertFalse((root / "launcher-restart-failure.json").exists())
 
-    def test_startup_failure_with_unclean_teardown_never_claims_clean(self):
+    def test_cleanup_failure_still_restores_previous_clean_evidence(self):
+        # A platform that never became ready cannot write a clean stop proof; the
+        # teardown failure must not prevent restoring the last clean snapshot.
         with tempfile.TemporaryDirectory(prefix="restart-teardown-", dir="/tmp") as directory:
-            self.clean_run_directory(directory)
+            fixture = self.clean_run_directory(directory)
             root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
+            observed = {}
 
             def failing_run(project):
                 project.acquire_run_lock()
@@ -330,15 +387,242 @@ class OwnedStopProofTests(unittest.TestCase):
                 process.poll.return_value = None
                 process.wait.return_value = 1
                 project.processes["platform"] = process
+                observed["process"] = process
+                raise RuntimeError("platform did not become ready; inspect private logs")
+
+            with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            observed["process"].terminate.assert_called_once()
+            observed["process"].wait.assert_called()
+            self.assertEqual(stop_path.read_bytes(), stop_bytes)
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
+            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+            self.assertFalse(record["teardown_completed"])
+            self.assertIn("platform exited without a clean proof", record["teardown_error"])
+            self.assertTrue(record["clean_evidence"]["restored"])
+            self.assertFalse(record["requires_operator"])
+            dev.verify_clean_terminal(root, fixture.config["owned_stop_proof"])
+            dev.Project(fixture.arguments).prepare()
+
+    def test_restore_verification_failure_quarantines_terminal_and_blocks_reuse(self):
+        with tempfile.TemporaryDirectory(prefix="restart-quarantine-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                # launch.json is part of the terminal hash and is not restored.
+                with (project.directory / "launch.json").open("a") as output:
+                    output.write(" ")
                 raise RuntimeError("request rejected: operation_incomplete")
 
             with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
                 self.assertEqual(dev.main(), 1)
-            self.assertEqual(json.loads(json.loads((root / "launcher-stop.json").read_text())["payload"])["outcome"], "unclean")
-            self.assertFalse((root / "launcher-terminal.json").exists())
+            self.assertEqual(stop_path.read_bytes(), stop_bytes)
+            self.assertFalse(terminal_path.exists())
+            quarantined = list((root / "launcher-clean-evidence-quarantine").iterdir())
+            self.assertEqual(len(quarantined), 1)
+            self.assertEqual((quarantined[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
             record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
-            self.assertFalse(record["teardown_completed"])
+            self.assertTrue(record["requires_operator"])
             self.assertFalse(record["recovery"]["restored"])
+            self.assertEqual(record["teardown"]["outcome"], "unclean")
+            self.assertEqual(record["clean_evidence_quarantine"]["directory"], str(quarantined[0]))
+            with self.assertRaisesRegex(RuntimeError, "operator"):
+                dev.Project(fixture.arguments).prepare()
+
+    def test_reconciling_failure_preserves_clean_evidence_for_operator(self):
+        with tempfile.TemporaryDirectory(prefix="restart-reconciling-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes, terminal_bytes = stop_path.read_bytes(), terminal_path.read_bytes()
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                project.phase = "reconciling"
+                replacement = project.directory / "platform/state.json.attempt"
+                replacement.write_bytes(b'{"payload":{"owned_run_generation":"attempt","operations":{}}}')
+                os.replace(replacement, project.directory / "platform/state.json")
+                worker = next(iter(project.launch["workers"]))
+                (project.directory / "owned-proof" / (worker + ".identity.json")).write_bytes(b"attempt incarnation")
+                raise RuntimeError("request rejected: operation_incomplete")
+
+            with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
+                self.assertEqual(dev.main(), 1)
+            self.assertEqual(stop_path.read_bytes(), stop_bytes)
+            self.assertFalse(terminal_path.exists())
+            preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
+            self.assertTrue((preserved[0] / "owned-proof" / "worker-a.identity.json").is_file())
+            self.assertTrue((preserved[0] / "platform/state.json").is_file())
+            self.assertTrue((preserved[0] / "authority/authority.lock").is_file())
+            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+            self.assertTrue(record["requires_operator"])
+            self.assertFalse(record["clean_evidence"]["restored"])
+            self.assertTrue(record["clean_evidence"]["preserved"])
+            self.assertEqual(record["clean_evidence"]["preserved_at"], str(preserved[0]))
+            self.assertIn("authority backend/leases", record["not_rolled_back"])
+            self.assertIn("platform operations sidecar", record["not_rolled_back"])
+            with self.assertRaisesRegex(RuntimeError, "operator"):
+                dev.Project(fixture.arguments).prepare()
+
+    def test_failure_record_write_error_does_not_block_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix="restart-record-error-", dir="/tmp") as directory:
+            self.clean_run_directory(directory)
+            root = pathlib.Path(directory).resolve()
+            stop_path, terminal_path = root / "launcher-stop.json", root / "launcher-terminal.json"
+            stop_bytes = stop_path.read_bytes()
+            observed = {}
+
+            def failing_run(project):
+                project.acquire_run_lock()
+                project.prepare()
+                process = Mock(stdout=None)
+                process.poll.return_value = None
+                process.wait.return_value = 0
+                project.processes["platform"] = process
+                observed["process"] = process
+                raise RuntimeError("request rejected: operation_incomplete")
+
+            stderr = io.StringIO()
+            with patch.object(dev.Project, "persist_restart_failure", side_effect=OSError("disk full")), \
+                    patch.object(dev.Project, "run", failing_run), \
+                    patch.object(sys, "argv", self.launcher_arguments(root)), \
+                    contextlib.redirect_stderr(stderr):
+                self.assertEqual(dev.main(), 1)
+            observed["process"].terminate.assert_called_once()
+            observed["process"].wait.assert_called()
+            self.assertEqual(stop_path.read_bytes(), stop_bytes)
+            self.assertFalse(terminal_path.exists())
+            self.assertIn("request rejected: operation_incomplete", stderr.getvalue())
+            self.assertIn("restart failure record unavailable", stderr.getvalue())
+            self.assertIn("disk full", stderr.getvalue())
+
+    def test_prepare_requires_clean_stop_outcome(self):
+        for outcome in ("unclean", "missing"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory(prefix="restart-stop-gate-", dir="/tmp") as directory:
+                project = self.clean_run_directory(directory)
+                root = pathlib.Path(directory).resolve()
+                configuration = project.config["owned_stop_proof"]
+                if outcome == "missing":
+                    (root / "launcher-stop.json").unlink()
+                else:
+                    dev.atomic_private_json(root / "launcher-stop.json", dev.signed_owned_identity(configuration, {
+                        "version": 1, "generation": configuration["generation"], "outcome": "unclean",
+                        "reason": "synthetic", "deadline_ms": 1, "stages": [],
+                        "unresolved_operations": "not_verified"}))
+                with self.assertRaisesRegex(RuntimeError, "operator"):
+                    dev.Project(project.arguments).prepare()
+                self.assertTrue((root / "launcher-terminal.json").is_file())
+                self.assertTrue((root / "owned-proof").is_dir())
+
+    def live_port(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return probe.getsockname()[1]
+
+    def live_environment(self):
+        environment = dev.safe_environment()
+        environment["PERI_RUST_BINARY"] = os.environ["PERI_RUST_BINARY"]
+        environment["PERI_PLATFORM_BINARY"] = os.environ["PERI_PLATFORM_BINARY"]
+        return environment
+
+    def launch_live(self, root, port):
+        process = subprocess.Popen(
+            [sys.executable, str(source), "--run-dir", str(root),
+             "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+            env=self.live_environment(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        lines = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True).start()
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            try:
+                line = lines.get(timeout=0.2)
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("ready") is True:
+                return process
+        error_text = ""
+        if process.poll() is not None and process.stderr is not None:
+            error_text = process.stderr.read()
+        self.stop_live(process, expect=None, force=True)
+        raise RuntimeError("live launcher did not become ready: " + error_text)
+
+    def stop_live(self, process, expect=0, force=False):
+        if process.poll() is None:
+            process.kill() if force else process.send_signal(signal.SIGTERM)
+        try:
+            code = process.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            code = process.wait(timeout=10)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        if expect is not None:
+            self.assertEqual(code, expect)
+        return code
+
+    @unittest.skipUnless(
+        os.environ.get("PERI_RESTART_LIVE") == "1"
+        and pathlib.Path(os.environ.get("PERI_RUST_BINARY", "")).is_file()
+        and pathlib.Path(os.environ.get("PERI_PLATFORM_BINARY", "")).is_file(),
+        "set PERI_RESTART_LIVE=1 and PERI_RUST_BINARY/PERI_PLATFORM_BINARY to run the live restart")
+    def test_live_port_conflict_restores_clean_evidence_and_data(self):
+        with tempfile.TemporaryDirectory(prefix="restart-live-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE restart_live (id INTEGER PRIMARY KEY, note TEXT)", "execute")
+                client.statement("INSERT INTO restart_live (id, note) VALUES (1, 'keep-me')", "execute")
+                self.assertEqual(client.statement("SELECT id, note FROM restart_live ORDER BY id", "query"), [[1, "keep-me"]])
+            finally:
+                self.stop_live(first)
+            stop_bytes = (root / "launcher-stop.json").read_bytes()
+            terminal_bytes = (root / "launcher-terminal.json").read_bytes()
+            holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            holder.bind(("127.0.0.1", port))
+            holder.listen(8)
+            try:
+                failed = subprocess.Popen(
+                    [sys.executable, str(source), "--run-dir", str(root),
+                     "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+                    env=self.live_environment(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.assertEqual(failed.wait(timeout=180), 1)
+            finally:
+                holder.close()
+            self.assertEqual((root / "launcher-stop.json").read_bytes(), stop_bytes)
+            self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
+            configuration = json.loads((root / "platform.json").read_text())["owned_stop_proof"]
+            launch = json.loads((root / "launch.json").read_text())
+            dev.verify_owned_stop_proofs(root, configuration, launch["workers"])
+            dev.verify_clean_terminal(root, configuration)
+            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
+            self.assertEqual(record["phase"], "startup")
+            self.assertFalse(record["requires_operator"])
+            self.assertTrue(record["clean_evidence"]["restored"])
+            second = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                self.assertEqual(client.statement("SELECT id, note FROM restart_live ORDER BY id", "query"), [[1, "keep-me"]])
+            finally:
+                self.stop_live(second)
+            dev.verify_clean_terminal(root, configuration)
 
     def test_clean_terminal_rejects_dirty_authority_and_modified_configuration(self):
         with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:

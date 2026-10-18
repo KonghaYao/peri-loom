@@ -471,6 +471,10 @@ class TestCleanReuseRequiresMaterializedView(ShutdownFixture):
             dev.atomic_private_json(self.project.directory / "owned-proof" / (worker + ".stop.json"), dev.signed_owned_identity(configuration, record))
         self.lock.write_bytes(b"clean\n")
         dev.atomic_private_json(self.project.directory / "launcher-terminal.json", dev.signed_owned_identity(configuration, dev.terminal_record(self.project.directory, configuration)))
+        dev.atomic_private_json(self.project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, {
+            "version": 1, "generation": configuration["generation"], "outcome": "clean",
+            "reason": "terminal_proof_written", "deadline_ms": 1, "stages": [],
+            "unresolved_operations": False}))
         return configuration
 
     def test_materialized_payload_authorizes_reuse(self):
