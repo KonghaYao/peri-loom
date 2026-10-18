@@ -40,6 +40,10 @@ pub struct RemoteDatabase {
     cleanup: AtomicBool,
     engine: Mutex<Option<Arc<Database>>>,
     operations: RwLock<()>,
+    /// Serializes maintenance units with each other, not with SQL. A checkpoint runs
+    /// concurrently with foreground traffic, but it must not overlap a compaction that
+    /// resets the same pager and WAL state.
+    maintenance_unit: Mutex<()>,
     io: Arc<RemoteIO>,
     admission: Arc<WriterAdmission>,
 }
@@ -145,6 +149,7 @@ impl RemoteDatabase {
             cleanup: AtomicBool::new(false),
             engine: Mutex::new(Some(database)),
             operations: RwLock::new(()),
+            maintenance_unit: Mutex::new(()),
             io,
             admission,
         };
@@ -177,12 +182,19 @@ impl RemoteDatabase {
         self.lane.query(self, sql, &Budget::trusted_default())
     }
 
-    /// Full checkpoint. This is the only entry point for the unit, so the admin RPC, the CLI
-    /// and the scheduled lane all take the same path and the same admission, fencing and
+    /// Passive checkpoint. This is the only entry point for the unit, so the admin RPC, the
+    /// CLI and the scheduled lane all take the same path and the same admission, fencing and
     /// deadline checks. The unit records its own start, which is what makes "a commit
     /// checkpointed" observable: no request path may move that counter.
+    ///
+    /// Unlike compaction, a checkpoint does not take the writer admission or the operations
+    /// gate. The native engine only backfills frames that no reader can still need and
+    /// never blocks readers or writers itself; excluding foreground SQL here turned every
+    /// scheduled backfill into a multi-second stall without adding any fence the native
+    /// read marks do not already provide.
     pub fn checkpoint(&self) -> Result<()> {
         let _reads = crate::authority::request_reads::Scope::enter();
+        let _unit = self.maintenance_unit()?;
         self.maintenance
             .record_execution(MaintenanceLane::Checkpoint);
         let timer = crate::work_metrics::MaintenanceTimer::begin(MaintenanceLane::Checkpoint);
@@ -194,19 +206,36 @@ impl RemoteDatabase {
 
     fn checkpoint_once(&self) -> Result<()> {
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
-        let mut permit = self.admission.maintenance()?;
+        self.admission.healthy()?;
         let connection = self.lane.maintenance_connection(&deadline, self)?;
         let connection = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
-        let _operation = self.maintenance_operation(&deadline)?;
         self.io.check_writer()?;
+        self.io.storage().store().validate_local()?;
         self.io.storage().store().validate_transaction(false)?;
         configure(connection);
-        permit.dispatch();
+        // A passive unit dispatches no client SQL and is safe to retry, so its failure is
+        // recorded against the maintenance lane instead of being reported as an unsettled
+        // SQL outcome. An upload that actually failed already leaves `publication_failed`
+        // set, which keeps compaction and log reset closed until a later publication
+        // succeeds; tagging the unit here would only schedule reclamation for work that
+        // never happened.
         connection
-            .checkpoint(CheckpointMode::Full)
-            .context("checkpoint remote database")
-            .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))?;
-        permit.complete()
+            .checkpoint(CheckpointMode::Passive {
+                upper_bound_inclusive: None,
+            })
+            .context("checkpoint remote database")?;
+        Ok(())
+    }
+
+    /// The unit lock for maintenance work. It is a `try_lock` because a unit already in
+    /// flight is a reason to retry later, not to queue more work behind it.
+    fn maintenance_unit(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        self.maintenance_unit
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => AdmissionError::Conflict.into(),
+                TryLockError::Poisoned(_) => AdmissionError::Quarantine.into(),
+            })
     }
 
     pub fn session(self: &Arc<Self>) -> Result<RemoteSession> {
@@ -245,6 +274,7 @@ impl RemoteDatabase {
     /// returns before `compact_wal` touches the WAL index, so the old references stay.
     pub fn compact_wal(&self) -> Result<()> {
         let _reads = crate::authority::request_reads::Scope::enter();
+        let _unit = self.maintenance_unit()?;
         self.maintenance
             .record_execution(MaintenanceLane::IndexCompact);
         let timer = crate::work_metrics::MaintenanceTimer::begin(MaintenanceLane::IndexCompact);
@@ -284,6 +314,7 @@ impl RemoteDatabase {
 
     fn compact_wal_once(&self) -> Result<()> {
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+        self.predrain_for_compaction(&deadline)?;
         let mut permit = self.admission.maintenance()?;
         let connection = self.lane.maintenance_connection(&deadline, self)?;
         let connection = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
@@ -322,6 +353,26 @@ impl RemoteDatabase {
             .compact_wal()
             .map_err(|error| error.context(crate::session::UnsettledSqlOutcome))?;
         permit.complete()
+    }
+
+    /// A truncate checkpoint has to copy every frame no reader needs before it may restart
+    /// the log. Do that copy as a passive unit first: it runs beside foreground SQL and
+    /// leaves only the restart inside the exclusive window. Without this, the whole backfill
+    /// would happen while the operations gate and the writer admission hold every request.
+    fn predrain_for_compaction(&self, deadline: &RequestDeadline) -> Result<()> {
+        self.admission.healthy()?;
+        let connection = self.lane.maintenance_connection(deadline, self)?;
+        let connection = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
+        self.io.check_writer()?;
+        self.io.storage().store().validate_local()?;
+        self.io.storage().store().validate_transaction(false)?;
+        configure(connection);
+        connection
+            .checkpoint(CheckpointMode::Passive {
+                upper_bound_inclusive: None,
+            })
+            .context("pre-drain compaction backfill")?;
+        Ok(())
     }
 
     fn require_complete_backfill(complete: bool) -> Result<()> {

@@ -132,18 +132,22 @@ impl File for RemoteFile {
     ) -> turso_core::Result<Completion> {
         let result = (|| {
             self.shared.check_writer()?;
-            let append = self.shared.append_guard()?;
             if self.wal {
+                let append = self.shared.append_guard()?;
                 self.shared.sync_wal(&append)?;
             } else {
-                // The publication bookkeeping is frozen under the state lock and settled
-                // under it again, but the segment/manifest/HEAD writes run outside: WAL
-                // readers only need the image and must not wait for them.
+                // Freeze under the append gate so no append is in flight and no batch is
+                // pending. The uploads then run without it: a WAL commit that lands while
+                // the database image is uploading is newer than the published checkpoint
+                // position, so it stays in the WAL for recovery to replay instead of
+                // making publication fail or making every writer wait for the upload.
                 let publication = {
+                    let _append = self.shared.append_guard()?;
                     let mut state = self.shared.lock()?;
                     self.shared.freeze_publication(&mut state)?
                 };
                 let published = self.shared.publish_frozen(&publication);
+                let _append = self.shared.append_guard()?;
                 let mut state = self.shared.lock()?;
                 self.shared
                     .finish_publication(&mut state, &publication, published)?;

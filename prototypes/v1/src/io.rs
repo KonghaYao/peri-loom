@@ -537,6 +537,12 @@ impl Shared {
     /// writes run in [`Self::publish_frozen`] after the lock is dropped: segment uploads,
     /// the manifest PUT and the HEAD comparison can take long enough that keeping the
     /// state lock across them stalls WAL readers for work they never touch.
+    ///
+    /// Only one main-database publication may be in flight. The append gate no longer
+    /// enforces that, because WAL appends must proceed during the upload: every checkpoint
+    /// runs under the database's maintenance unit, and the open-header publication happens
+    /// before the database handle is shared, so no second caller can reach the uploads.
+    /// A new publisher needs its own exclusion before calling this.
     fn freeze_publication(&self, state: &mut State) -> Result<FrozenPublication> {
         self.check_writer()?;
         ensure!(
@@ -576,10 +582,12 @@ impl Shared {
         published: Result<()>,
     ) -> Result<()> {
         published?;
+        // A commit that lands while the publication uploads advances `lsn`; that frame is
+        // newer than the checkpoint position this image was frozen at and recovery replays
+        // it from the WAL. The image itself is still the one the checkpoint produced, so
+        // only the checkpoint position and the dirty snapshot must stand still.
         ensure!(
-            state.lsn == publication.applied_lsn
-                && state.position == publication.state_position
-                && state.dirty == publication.dirty,
+            state.position == publication.state_position && state.dirty == publication.dirty,
             "database state changed while the publication was in flight"
         );
         state.position = None;

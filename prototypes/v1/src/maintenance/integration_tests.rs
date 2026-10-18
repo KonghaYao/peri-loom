@@ -16,7 +16,8 @@ use super::policy::{MaintenancePolicy, Watermark};
 use super::{MaintenanceLane, MaintenanceScheduler, MaintenanceTarget, PreSuspendReason};
 use crate::database::RemoteDatabase;
 use crate::namespace::Namespace;
-use crate::object_store::MemoryObjectStore;
+use crate::object_store::{MemoryObjectStore, ObjectStore, PutCondition, StoredObject};
+use crate::session::{Budget, RequestDeadline};
 use crate::wal::RemoteWal;
 
 const MIB: u64 = 1024 * 1024;
@@ -447,4 +448,146 @@ fn a_suspend_pre_tidy_blocked_by_a_reader_records_the_long_reader() -> Result<()
     assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
     assert_eq!(fixture.values()?, "4");
     Ok(())
+}
+
+/// A checkpoint is background work. An operation that already holds the operations gate
+/// must not wait for the backfill, and the checkpoint must not wait for that operation
+/// before it may start.
+#[test]
+fn a_checkpoint_does_not_queue_behind_the_foreground_gate() -> Result<()> {
+    let fixture = Fixture::open("checkpoint_gate")?;
+    let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+    let operation = fixture.database.operation_until(&deadline, false)?;
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let database = fixture.database.clone();
+    let worker = std::thread::spawn(move || {
+        let _ = sender.send(database.checkpoint());
+    });
+    let observed = receiver.recv_timeout(Duration::from_secs(5));
+    // A timeout means the checkpoint waited for the foreground gate: release it so the
+    // worker can finish before the assertion below reports the failure.
+    if observed.is_err() {
+        drop(operation);
+    }
+    worker.join().expect("checkpoint thread");
+    let result = observed.expect("a checkpoint must not wait for the operations gate");
+    result.expect("checkpoint");
+    Ok(())
+}
+
+/// A commit that lands while the main database publication uploads is newer than the
+/// checkpoint position the publication froze. It must survive the settle and the reopen;
+/// it must not turn the publication into a failure or make the commit wait for the upload.
+#[test]
+fn a_commit_that_lands_during_a_publication_is_not_lost() -> Result<()> {
+    let cache = tempfile::tempdir()?;
+    let namespace = Namespace::new("maintenance", "commit_during_publication")?;
+    let store = Arc::new(GatedStore::default());
+    let database = Arc::new(RemoteDatabase::open(
+        store.clone(),
+        namespace.clone(),
+        cache.path(),
+        0,
+    )?);
+    database.execute("CREATE TABLE entries(value INTEGER)")?;
+    for value in 0..4 {
+        database.execute(&format!("INSERT INTO entries VALUES({value})"))?;
+    }
+
+    store.arm();
+    let checkpoint = {
+        let database = database.clone();
+        std::thread::spawn(move || database.checkpoint())
+    };
+    assert!(
+        store.wait_until_blocked(Duration::from_secs(10)),
+        "the checkpoint never reached the segment upload"
+    );
+
+    let session = database.session()?;
+    session.execute("INSERT INTO entries VALUES(5)")?;
+    store.release();
+    checkpoint.join().expect("checkpoint thread")?;
+
+    // A reopen sees only what the publication settled: the concurrent commit has to be in
+    // the WAL and replay on a cold engine with a fresh cache.
+    let reopen_cache = tempfile::tempdir()?;
+    let reopened = RemoteDatabase::open(store, namespace, reopen_cache.path(), 0)?;
+    assert_eq!(
+        reopened.query("SELECT count(*) FROM entries")?[0][0].to_string(),
+        "5",
+        "a commit newer than the checkpoint position stays in the WAL and replays"
+    );
+    Ok(())
+}
+
+#[derive(Default)]
+struct GatedStore {
+    inner: MemoryObjectStore,
+    gate: std::sync::Mutex<Gate>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct Gate {
+    armed: bool,
+    blocked: bool,
+    released: bool,
+}
+
+impl GatedStore {
+    fn arm(&self) {
+        self.gate.lock().expect("upload gate").armed = true;
+    }
+
+    fn wait_until_blocked(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut gate = self.gate.lock().expect("upload gate");
+        while !gate.blocked {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            gate = self
+                .changed
+                .wait_timeout(gate, remaining)
+                .expect("upload gate")
+                .0;
+        }
+        true
+    }
+
+    fn release(&self) {
+        self.gate.lock().expect("upload gate").released = true;
+        self.changed.notify_all();
+    }
+}
+
+impl ObjectStore for GatedStore {
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if key.contains("/segments/") {
+            let mut gate = self.gate.lock().expect("upload gate");
+            if gate.armed {
+                gate.armed = false;
+                gate.blocked = true;
+                self.changed.notify_all();
+                while !gate.released {
+                    gate = self.changed.wait(gate).expect("upload gate");
+                }
+            }
+        }
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
 }
