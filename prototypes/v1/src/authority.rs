@@ -61,7 +61,7 @@ pub struct Authority {
 /// verified is still recognized after the head moves, which is exactly the fact the record
 /// exists to preserve.
 mod admitted {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Mutex, OnceLock};
 
     const MAX_DATABASES: usize = 1024;
@@ -88,6 +88,100 @@ mod admitted {
             .flat_map(|lineages| lineages.values())
             .map(Vec::len)
             .sum()
+    }
+
+    /// Diagnostic only: `PERI_ADMISSION_TRACE=1` classifies every deep walk, so a
+    /// recurring one can be attributed to a missed race or to a head this process never
+    /// recorded. Off by default; nothing below runs unless the switch is on.
+    struct Seen {
+        seq: u64,
+        entries: BTreeMap<String, (u64, u64)>,
+        order: VecDeque<String>,
+    }
+
+    fn tracing() -> bool {
+        static TRACE: OnceLock<bool> = OnceLock::new();
+        *TRACE.get_or_init(|| std::env::var("PERI_ADMISSION_TRACE").as_deref() == Ok("1"))
+    }
+
+    fn seen() -> &'static Mutex<Seen> {
+        static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
+        SEEN.get_or_init(|| {
+            Mutex::new(Seen {
+                seq: 0,
+                entries: BTreeMap::new(),
+                order: VecDeque::new(),
+            })
+        })
+    }
+
+    fn short(digest: &str) -> &str {
+        &digest[..digest.len().min(12)]
+    }
+
+    pub(super) fn trace_remember(_database: &str, _lineage: &str, digest: &str, revision: u64) {
+        if !tracing() {
+            return;
+        }
+        let Ok(mut seen) = seen().lock() else {
+            return;
+        };
+        seen.seq += 1;
+        let seq = seen.seq;
+        if seen
+            .entries
+            .insert(digest.to_owned(), (seq, revision))
+            .is_none()
+        {
+            seen.order.push_back(digest.to_owned());
+            while seen.order.len() > MAX_DIGESTS {
+                if let Some(old) = seen.order.pop_front() {
+                    seen.entries.remove(&old);
+                }
+            }
+        }
+    }
+
+    /// Called just before a snapshot pays the registry walk. `seq` is the number of
+    /// remembers this process made; an age near zero means the missed head was published
+    /// moments earlier (a race), a large age means the read saw a head this process
+    /// recorded long ago and then lost from the ring.
+    pub(super) fn trace_miss(database: &str, lineage: &str, digest: &str, revision: u64) {
+        if !tracing() {
+            return;
+        }
+        let ring = table()
+            .lock()
+            .ok()
+            .and_then(|table| {
+                table
+                    .get(database)
+                    .and_then(|lineages| lineages.get(lineage))
+                    .cloned()
+            })
+            .unwrap_or_default();
+        let Ok(seen) = seen().lock() else {
+            return;
+        };
+        let (kind, age, prior) = match seen.entries.get(digest) {
+            Some((seq, prior)) => ("evicted", seen.seq.saturating_sub(*seq), prior.to_string()),
+            None => ("never", u64::MAX, "none".to_owned()),
+        };
+        let ring = ring
+            .iter()
+            .map(|held| match seen.entries.get(held) {
+                Some((_, held_revision)) => format!("{}@{held_revision}", short(held)),
+                None => format!("{}@?", short(held)),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!(
+            "ADMISSION_MISS kind={kind} db={database} lineage={} digest={} rev={revision} \
+             prior_rev={prior} age={age} remembers={} ring=[{ring}]",
+            short(lineage),
+            short(digest),
+            seen.seq
+        );
     }
 
     /// A lock that cannot be taken is not a reason to trust a head, so it reports the head
@@ -299,6 +393,7 @@ impl Authority {
     /// whole of.
     fn remember(&self, key: &str, root: &CatalogRoot, digest: &str) {
         admitted::remember(key, &root.incarnation, digest);
+        admitted::trace_remember(key, &root.incarnation, digest, root.revision);
     }
 
     pub(super) fn check(&self, stage: MutationStage) -> Result<()> {
@@ -343,6 +438,7 @@ impl Authority {
             // the document is self-consistent, not that this authority wrote it, and a
             // reference that was never registered can only be caught by resolving it.
             // Verify the way boot does before any statement trusts the head.
+            admitted::trace_miss(&key, &root.incarnation, &digest, root.revision);
             snapshot.stage(SnapshotStage::Deep);
             self.verify_deep(&root)?;
             self.remember(&key, &root, &digest);
