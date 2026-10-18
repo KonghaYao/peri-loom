@@ -274,6 +274,116 @@ pub(crate) fn observe_root_publish_retry() {
     add(&ROOT_PUBLISH_RETRIES, 1);
 }
 
+/// The stages of one authority publication. A publication is the unit a slow statement hides
+/// in, so the longest single stage is what says whether the cost is the root snapshot, the
+/// catalog work, the encoded head, or the store group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublishStage {
+    Snapshot,
+    Clone,
+    Mutate,
+    Prepare,
+    Receipt,
+    Validate,
+    Index,
+    Seal,
+    Encode,
+    Group,
+    Recover,
+}
+
+impl PublishStage {
+    pub(crate) const ALL: [Self; 11] = [
+        Self::Snapshot,
+        Self::Clone,
+        Self::Mutate,
+        Self::Prepare,
+        Self::Receipt,
+        Self::Validate,
+        Self::Index,
+        Self::Seal,
+        Self::Encode,
+        Self::Group,
+        Self::Recover,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Clone => "clone",
+            Self::Mutate => "mutate",
+            Self::Prepare => "prepare",
+            Self::Receipt => "receipt",
+            Self::Validate => "validate",
+            Self::Index => "index",
+            Self::Seal => "seal",
+            Self::Encode => "encode",
+            Self::Group => "group",
+            Self::Recover => "recover",
+        }
+    }
+}
+
+static PUBLISH_STAGE_CALLS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+static PUBLISH_STAGE_NANOS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+static PUBLISH_STAGE_MAX_NANOS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+static PUBLISH_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);
+static PUBLISH_TOTAL_MAX_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Timer for one authority publication attempt. Disabled, it carries no clock and every call
+/// below is a branch on a missing instant.
+pub(crate) struct PublishTimer {
+    started: Option<Instant>,
+    stage: Option<(PublishStage, Instant)>,
+}
+
+impl PublishTimer {
+    pub(crate) fn begin() -> Self {
+        Self {
+            started: enabled().then(Instant::now),
+            stage: None,
+        }
+    }
+
+    /// Close the stage that just ended and start the next one. A stage is charged the wall time
+    /// between its own start and the next transition, so the attempt total is their sum plus
+    /// the untracked fragments (write assembly, guard validation).
+    pub(crate) fn stage(&mut self, stage: PublishStage) {
+        if self.started.is_none() {
+            return;
+        }
+        self.close_stage();
+        self.stage = Some((stage, Instant::now()));
+    }
+
+    fn close_stage(&mut self) {
+        let Some((stage, started)) = self.stage.take() else {
+            return;
+        };
+        let elapsed = nanos(started.elapsed());
+        let index = stage.index();
+        add(&PUBLISH_STAGE_CALLS[index], 1);
+        add(&PUBLISH_STAGE_NANOS[index], elapsed);
+        PUBLISH_STAGE_MAX_NANOS[index].fetch_max(elapsed, Ordering::Relaxed);
+    }
+}
+
+impl Drop for PublishTimer {
+    fn drop(&mut self) {
+        let Some(started) = self.started else {
+            return;
+        };
+        self.close_stage();
+        let elapsed = nanos(started.elapsed());
+        add(&PUBLISH_TOTAL_NANOS, elapsed);
+        PUBLISH_TOTAL_MAX_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+    }
+}
+
 /// One `wal/index` publication: the encoded index size, the idempotency receipts it has to
 /// carry, and one retry when the conditional write lost its race.
 pub(crate) fn observe_wal_index_commit(encoded_bytes: usize, receipts: usize) {
@@ -480,6 +590,7 @@ impl<T> Drop for ObservedLock<'_, T> {
 
 static EXECUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 static EXECUTE_NANOS: AtomicU64 = AtomicU64::new(0);
+static EXECUTE_MAX_NANOS: AtomicU64 = AtomicU64::new(0);
 static EXECUTE_STEPS: AtomicU64 = AtomicU64::new(0);
 
 /// Timer for a span that has no guard to hang the measurement on. Disabled, it carries no
@@ -505,7 +616,9 @@ impl ExecuteTimer {
             return;
         };
         add(&EXECUTE_CALLS, 1);
-        add(&EXECUTE_NANOS, nanos(started.elapsed()));
+        let elapsed = nanos(started.elapsed());
+        add(&EXECUTE_NANOS, elapsed);
+        EXECUTE_MAX_NANOS.fetch_max(elapsed, Ordering::Relaxed);
         if let Some(steps) = steps {
             add(&EXECUTE_STEPS, steps);
         }
@@ -704,6 +817,15 @@ pub(crate) struct MetadataWork {
     pub index_page_reads: u64,
     pub index_page_writes: u64,
     pub index_page_write_bytes: u64,
+    /// Per stage, in `PublishStage::ALL` order: attempts that reached the stage, the time they
+    /// spent there, and the longest single stay. A dropped attempt still charges the stage it
+    /// was in, so an error path does not vanish from the account.
+    pub publish_stage_calls: BTreeMap<&'static str, u64>,
+    pub publish_stage_ns: BTreeMap<&'static str, u64>,
+    pub publish_stage_max_ns: BTreeMap<&'static str, u64>,
+    /// Wall time of every publication attempt, and the longest one.
+    pub publish_total_ns: u64,
+    pub publish_total_max_ns: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -721,6 +843,9 @@ pub(crate) struct ExecutionWork {
     /// Native statement executions observed.
     pub native_execute_calls: u64,
     pub native_execute_ns: u64,
+    /// Longest single execution. A multi-second request that is not charged here happened
+    /// outside the native statement, i.e. in the handler's lane or durability path.
+    pub native_execute_max_ns: u64,
     /// Engine VM steps of the executions that reached the success path.
     pub native_execute_steps: u64,
 }
@@ -842,11 +967,25 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             index_page_reads: load(&INDEX_PAGE_READS),
             index_page_writes: load(&INDEX_PAGE_WRITES),
             index_page_write_bytes: load(&INDEX_PAGE_WRITE_BYTES),
+            publish_stage_calls: report(
+                &PublishStage::ALL,
+                PublishStage::name,
+                &PUBLISH_STAGE_CALLS,
+            ),
+            publish_stage_ns: report(&PublishStage::ALL, PublishStage::name, &PUBLISH_STAGE_NANOS),
+            publish_stage_max_ns: report(
+                &PublishStage::ALL,
+                PublishStage::name,
+                &PUBLISH_STAGE_MAX_NANOS,
+            ),
+            publish_total_ns: load(&PUBLISH_TOTAL_NANOS),
+            publish_total_max_ns: load(&PUBLISH_TOTAL_MAX_NANOS),
         },
         locks: locks(),
         execution: ExecutionWork {
             native_execute_calls: load(&EXECUTE_CALLS),
             native_execute_ns: load(&EXECUTE_NANOS),
+            native_execute_max_ns: load(&EXECUTE_MAX_NANOS),
             native_execute_steps: load(&EXECUTE_STEPS),
         },
         results: ResultWork {

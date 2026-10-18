@@ -53,7 +53,38 @@ fn armed_execute_timer_records_the_span_it_bracketed() {
         after.execution.native_execute_ns - before.execution.native_execute_ns >= 1_000_000,
         "a 2 ms span was not reported"
     );
+    assert!(after.execution.native_execute_max_ns >= 1_000_000);
     assert!(after.execution.native_execute_steps - before.execution.native_execute_steps >= 9);
+}
+
+#[test]
+fn armed_publish_timer_records_each_stage_and_the_attempt_total() {
+    set_enabled(true);
+    let before = snapshot().expect("enabled snapshot");
+    {
+        let mut timer = PublishTimer::begin();
+        timer.stage(PublishStage::Prepare);
+        std::thread::sleep(Duration::from_millis(2));
+        timer.stage(PublishStage::Group);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let after = snapshot().expect("enabled snapshot");
+    for stage in ["prepare", "group"] {
+        assert!(
+            after.metadata.publish_stage_calls[stage] - before.metadata.publish_stage_calls[stage]
+                >= 1,
+            "the timer did not charge {stage}"
+        );
+    }
+    assert!(
+        after.metadata.publish_stage_max_ns["prepare"] >= 1_000_000,
+        "a 2 ms stage was not reported"
+    );
+    assert!(
+        after.metadata.publish_total_ns - before.metadata.publish_total_ns >= 3_000_000,
+        "the attempt total did not cover both stages"
+    );
+    assert!(after.metadata.publish_total_max_ns >= 3_000_000);
 }
 
 #[test]

@@ -19,6 +19,7 @@ pub use branch::BranchStore;
 pub use types::{BranchRef, CatalogRoot, ObjectEntry, RecoveryPoint, RootSnapshot, Tombstone};
 
 use crate::ownership::types::{CommandReceipt, MutationGuard, MutationStage};
+use crate::work_metrics::{PublishStage, PublishTimer};
 use crate::{
     namespace::Namespace,
     object_store::{ObjectStore, PreconditionFailed, PutCondition},
@@ -503,6 +504,8 @@ impl Authority {
         let _reads = request_reads::Scope::enter();
         let operation = unique_id()?;
         for _ in 0..128 {
+            let mut publish = PublishTimer::begin();
+            publish.stage(PublishStage::Snapshot);
             let current = self.snapshot()?;
             if let Some(revision) = expected_revision {
                 ensure!(current.root.revision == revision, PreconditionFailed);
@@ -513,12 +516,15 @@ impl Authority {
             let pending = std::cell::RefCell::new(paged_index::PendingPages::default());
             let publishing = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
                 .deferring(&pending);
+            publish.stage(PublishStage::Clone);
             let mut candidate = {
                 #[cfg(test)]
                 let _probe = scaling_probe::stage("clone", scaling_probe::entries(&current.root));
                 current.root.clone()
             };
+            publish.stage(PublishStage::Mutate);
             mutation(&mut candidate)?;
+            publish.stage(PublishStage::Prepare);
             self.prepare(&current.root, &mut candidate, deletion, bodies)?;
             let ownership_changed = candidate.ownership != current.root.ownership;
             candidate.revision = current
@@ -526,18 +532,23 @@ impl Authority {
                 .revision
                 .checked_add(1)
                 .context("authority revision overflow")?;
+            publish.stage(PublishStage::Receipt);
             self.record_receipt(&mut candidate, operation.clone(), &publishing)?;
             if ownership_changed {
                 self.archive_commands(&mut candidate, &publishing)?;
             }
+            publish.stage(PublishStage::Validate);
             self.validate_head_with(&candidate, Some(&pending))?;
             self.validate_references(&candidate, bodies)?;
+            publish.stage(PublishStage::Index);
             candidate.blobs.publish(&publishing)?;
             candidate.objects.publish(&publishing)?;
             candidate.pin_entries.publish(&publishing)?;
             candidate.uploads.publish(&publishing)?;
             candidate.tombstones.publish(&publishing)?;
+            publish.stage(PublishStage::Seal);
             candidate.seal()?;
+            publish.stage(PublishStage::Encode);
             let (encoded, digest) = encode_with_digest(&candidate)?;
             crate::work_metrics::observe_root_publish(
                 encoded.len(),
@@ -571,6 +582,7 @@ impl Authority {
             let grouped = GROUP_COMMIT.load(Ordering::Relaxed);
             #[cfg(not(test))]
             let grouped = true;
+            publish.stage(PublishStage::Group);
             let published = if grouped {
                 self.store.put_group(&writes)
             } else {
@@ -614,6 +626,7 @@ impl Authority {
                 }
                 Err(error) => {
                     self.uncertain(MutationStage::RootPublish, &error);
+                    publish.stage(PublishStage::Recover);
                     let observed = self.snapshot()?;
                     if self.receipt_in(&observed.root, &operation)? == Some(candidate.revision) {
                         return Ok(observed);
@@ -885,6 +898,31 @@ mod upload_batch_tests {
         assert!(authority.upload_segments(&[]).is_err());
         assert!(authority.upload_segments(&[vec![0; 1]]).is_err());
         assert_eq!(authority.snapshot()?.root.revision, before);
+        Ok(())
+    }
+
+    #[test]
+    fn a_publication_reports_its_stages_when_the_switch_is_on() -> Result<()> {
+        crate::work_metrics::set_enabled(true);
+        let before = crate::work_metrics::snapshot().expect("enabled snapshot");
+        let directory = tempfile::tempdir()?;
+        let authority = Authority::open(
+            Arc::new(LocalObjectStore::open(directory.path())?),
+            Namespace::new("bulk", "stages")?,
+        )?;
+        let entry = authority.upload(&[0x5a; 64])?;
+        assert_eq!(authority.read_blob(&entry)?, vec![0x5a; 64]);
+        let after = crate::work_metrics::snapshot().expect("enabled snapshot");
+        for stage in [
+            "snapshot", "clone", "mutate", "prepare", "receipt", "validate", "index", "seal",
+            "encode", "group",
+        ] {
+            let calls = after.metadata.publish_stage_calls[stage]
+                - before.metadata.publish_stage_calls[stage];
+            assert!(calls >= 1, "the publication did not charge {stage}");
+        }
+        assert!(after.metadata.publish_total_ns > before.metadata.publish_total_ns);
+        assert!(after.metadata.publish_total_max_ns >= 1);
         Ok(())
     }
 
