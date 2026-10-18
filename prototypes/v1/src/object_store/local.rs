@@ -228,7 +228,11 @@ impl ObjectStore for LocalObjectStore {
         let started = std::time::Instant::now();
         validate_key(key)?;
         let _guard = self.lock()?;
-        check_condition(self.read(key)?.as_ref(), &condition)?;
+        // `Any` imposes no condition, so the existing object cannot change the outcome and
+        // reading it would only decode and checksum bytes the publication overwrites.
+        if !matches!(condition, PutCondition::Any) {
+            check_condition(self.read(key)?.as_ref(), &condition)?;
+        }
         let etag = fresh_etag(bytes);
         let envelope = Envelope {
             key: key.to_owned(),
@@ -301,39 +305,91 @@ impl ObjectStore for LocalObjectStore {
         // rejected group leaves no partially visible write behind.
         let mut etags = Vec::with_capacity(writes.len());
         for write in writes {
-            check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
+            // A group is mostly content-addressed bodies with `Any`, and for those the
+            // pre-group check is vacuous: skipping it avoids one open/decode per body.
+            if !matches!(write.condition, PutCondition::Any) {
+                check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
+            }
             etags.push(fresh_etag(&write.bytes));
         }
-        let mut staged = Vec::with_capacity(writes.len());
+        let mut staged: Vec<(Option<PathBuf>, PathBuf, File)> = Vec::with_capacity(writes.len());
         let result = (|| -> Result<()> {
-            for (write, etag) in writes.iter().zip(etags.iter()) {
+            for (index, write) in writes.iter().enumerate() {
                 let envelope = Envelope {
                     key: write.key.clone(),
                     bytes: write.bytes.clone(),
-                    etag: etag.clone(),
+                    etag: etags[index].clone(),
                     checksum: blake3::hash(&write.bytes).to_hex().to_string(),
                 };
-                let temporary = self.temporary_path(etag);
+                let target = self.path(&write.key);
+                let bytes = serde_json::to_vec(&envelope)?;
+                // Content-addressed bodies with `Any` cannot collide with a live key, so
+                // they are written straight to their final name: the rename and the
+                // pre-group read bought no condition and the body bytes never change
+                // under an identical key. Anything else keeps the temp+rename path,
+                // because `Match` *is* the head CAS and must stay atomic.
+                if matches!(write.condition, PutCondition::Any) {
+                    match OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)
+                    {
+                        Ok(mut file) => {
+                            file.write_all(&bytes)?;
+                            flush_file(&file)?;
+                            staged.push((None, target, file));
+                            continue;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                            match self.read(&write.key) {
+                                Ok(Some(existing)) if existing.bytes == write.bytes => {
+                                    // A body an earlier attempt already landed: keep its
+                                    // etag so a caller that later fences on this key uses
+                                    // the value the store actually holds.
+                                    etags[index] = existing.etag;
+                                    continue;
+                                }
+                                Ok(Some(_)) => {
+                                    anyhow::bail!("immutable object conflict: {}", write.key)
+                                }
+                                Ok(None) => {}
+                                // A partial body from a crashed attempt fails its
+                                // envelope, so no durable head can reference it.
+                                Err(_) => {
+                                    fs::remove_file(&target)?;
+                                }
+                            }
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                let temporary = self.temporary_path(&etags[index]);
                 let mut file = OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(&temporary)?;
-                file.write_all(&serde_json::to_vec(&envelope)?)?;
+                file.write_all(&bytes)?;
                 flush_file(&file)?;
-                staged.push((temporary, self.path(&write.key), file));
+                staged.push((Some(temporary), target, file));
             }
             for (temporary, target, _file) in &staged {
-                fs::rename(temporary, target)?;
+                if let Some(temporary) = temporary {
+                    fs::rename(temporary, target)?;
+                }
             }
-            flush_directory(&self.root)?;
-            if let Some((_temporary, _target, file)) = staged.first() {
-                publish_barrier(file)?;
+            if !staged.is_empty() {
+                flush_directory(&self.root)?;
+                if let Some((_temporary, _target, file)) = staged.first() {
+                    publish_barrier(file)?;
+                }
             }
             Ok(())
         })();
         if result.is_err() {
             for (temporary, _, _file) in &staged {
-                let _ = fs::remove_file(temporary);
+                if let Some(temporary) = temporary {
+                    let _ = fs::remove_file(temporary);
+                }
             }
         }
         result?;
@@ -440,6 +496,42 @@ mod group_tests {
         assert!(store.get("pages/00").unwrap().is_none());
         assert_eq!(store.get("root").unwrap().unwrap().bytes, b"current");
     }
+
+    #[test]
+    fn repeated_content_addressed_body_keeps_its_stored_etag() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let stored = store.put("pages/a", b"body", PutCondition::Any).unwrap();
+        let writes = vec![
+            GroupWrite::new("pages/a", b"body".to_vec(), PutCondition::Any),
+            GroupWrite::new("pages/b", b"other".to_vec(), PutCondition::Any),
+        ];
+        let etags = store.put_group(&writes).unwrap();
+        assert_eq!(etags[0], stored, "a skip reports the etag the store holds");
+        assert_eq!(store.get("pages/a").unwrap().unwrap().etag, stored);
+        assert_eq!(store.get("pages/b").unwrap().unwrap().bytes, b"other");
+    }
+
+    #[test]
+    fn partial_body_from_a_crashed_attempt_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let target = store.path("pages/a");
+        fs::write(&target, b"partial envelope").unwrap();
+        let writes = vec![
+            GroupWrite::new("pages/a", b"complete body".to_vec(), PutCondition::Any),
+            GroupWrite::new("pages/b", b"another body".to_vec(), PutCondition::Any),
+        ];
+        store.put_group(&writes).unwrap();
+        assert_eq!(
+            store.get("pages/a").unwrap().unwrap().bytes,
+            b"complete body"
+        );
+        assert_eq!(
+            store.get("pages/b").unwrap().unwrap().bytes,
+            b"another body"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -495,6 +587,54 @@ mod group_latency_tests {
             sequential[0],
             median(&sequential) - median(&grouped),
             (median(&sequential) - median(&grouped)) / 5,
+        );
+    }
+
+    /// Samples the shape a publication actually writes: 25 immutable bodies per group.
+    /// `Any` takes the direct-write path; `Absent` keeps the temp+rename path, so the
+    /// difference is the rename the direct path removes for content-addressed bodies.
+    #[test]
+    fn content_addressed_group_latency_sample() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        let mut direct = Vec::new();
+        let mut renamed = Vec::new();
+        for round in 0..20 {
+            let batch: Vec<GroupWrite> = (0..25)
+                .map(|index| {
+                    GroupWrite::new(
+                        format!("d{round}/{index:02}"),
+                        vec![(round * 25 + index) as u8; 4096],
+                        PutCondition::Any,
+                    )
+                })
+                .collect();
+            let started = Instant::now();
+            store.put_group(&batch).unwrap();
+            direct.push(started.elapsed().as_micros());
+
+            let batch: Vec<GroupWrite> = (0..25)
+                .map(|index| {
+                    GroupWrite::absent(
+                        format!("a{round}/{index:02}"),
+                        vec![(round * 25 + index) as u8; 4096],
+                    )
+                })
+                .collect();
+            let started = Instant::now();
+            store.put_group(&batch).unwrap();
+            renamed.push(started.elapsed().as_micros());
+        }
+        direct.sort_unstable();
+        renamed.sort_unstable();
+        let median = |values: &[u128]| values[values.len() / 2];
+        println!(
+            "GROUP_ANY_LATENCY writes=25 direct_us_median={} direct_us_min={} renamed_us_median={} renamed_us_min={} saved_us_median={}",
+            median(&direct),
+            direct[0],
+            median(&renamed),
+            renamed[0],
+            median(&renamed) - median(&direct),
         );
     }
 }
