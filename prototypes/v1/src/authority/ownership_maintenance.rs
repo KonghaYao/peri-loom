@@ -94,7 +94,7 @@ fn reconcile_leases(service: &super::Service) -> Result<()> {
     let snapshot = service
         .authority
         .snapshot()
-        .inspect_err(|_| service.block())?;
+        .inspect_err(|_| service.block("maintenance-reconcile-snapshot"))?;
     service
         .memory
         .lock()

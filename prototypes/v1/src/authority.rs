@@ -406,6 +406,7 @@ impl Authority {
     fn uncertain(&self, stage: MutationStage, error: &anyhow::Error) {
         if !error.is::<PreconditionFailed>() {
             if let Some(guard) = &self.guard {
+                eprintln!("level=error event=mutation_uncertain stage={stage:?} 原因：{error:#}");
                 guard.uncertain(stage);
             }
         }

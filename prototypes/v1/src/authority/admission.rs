@@ -94,8 +94,9 @@ impl MutationGuard for Guard {
         Ok(())
     }
 
-    fn uncertain(&self, _: MutationStage) {
-        self.service.block();
+    fn uncertain(&self, stage: MutationStage) {
+        self.service
+            .block(&format!("admission-uncertain:{stage:?}"));
     }
 }
 

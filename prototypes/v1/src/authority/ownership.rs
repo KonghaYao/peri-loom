@@ -195,7 +195,7 @@ impl OwnershipAuthority {
         let expires = match now.checked_add(30_000) {
             Some(expires) => expires,
             None => {
-                service.block();
+                service.block("nonce-deadline-overflow");
                 anyhow::bail!("Unavailable nonce deadline overflow");
             }
         };
@@ -229,7 +229,7 @@ impl OwnershipAuthority {
     }
 
     pub fn quarantine_database(&self, identifier: &DatabaseId) -> Result<()> {
-        self.service(identifier)?.block();
+        self.service(identifier)?.block("quarantine");
         Ok(())
     }
     pub fn renew(&self, request: RenewRequest) -> Result<GrantReply> {
@@ -322,12 +322,20 @@ impl OwnershipAuthority {
     }
 }
 
+fn mark_blocked(memory: &mut Memory, origin: &str) {
+    if !memory.blocked {
+        memory.blocked = true;
+        eprintln!("level=error event=namespace_blocked origin={origin}");
+    }
+}
+
 impl Service {
-    fn block(&self) {
-        self.memory
+    fn block(&self, origin: &str) {
+        let mut memory = self
+            .memory
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .blocked = true;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        mark_blocked(&mut memory, origin);
     }
 
     fn available(&self) -> Result<()> {
@@ -352,12 +360,12 @@ impl Service {
         let now = match self.clock.now_ms() {
             Ok(now) => now,
             Err(error) => {
-                memory.blocked = true;
+                mark_blocked(&mut memory, "lease-clock");
                 return Err(error.context("Unavailable lease clock"));
             }
         };
         if memory.last_clock.is_some_and(|previous| now < previous) {
-            memory.blocked = true;
+            mark_blocked(&mut memory, "lease-clock-regression");
             anyhow::bail!("Unavailable monotonic clock regression");
         }
         memory.last_clock = Some(now);
@@ -385,7 +393,7 @@ impl Service {
         match self.now()?.checked_add(ttl_ms) {
             Some(deadline) => Ok(deadline),
             None => {
-                self.block();
+                self.block("lease-deadline-overflow");
                 anyhow::bail!("Unavailable lease deadline overflow");
             }
         }

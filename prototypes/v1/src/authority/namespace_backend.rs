@@ -125,7 +125,10 @@ impl NamespaceBackend {
             Err(error) if error.is::<PreconditionFailed>() => {
                 self.rejected.fetch_add(1, Ordering::Release);
             }
-            Err(_) => self.uncertain.store(true, Ordering::Release),
+            Err(error) => {
+                eprintln!("level=error event=namespace_backend_uncertain 原因：{error:#}");
+                self.uncertain.store(true, Ordering::Release)
+            }
         }
         outcome
     }
