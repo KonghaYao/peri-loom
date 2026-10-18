@@ -628,6 +628,16 @@ impl Authority {
             let grouped = GROUP_COMMIT.load(Ordering::Relaxed);
             #[cfg(not(test))]
             let grouped = true;
+            // The head becomes visible at the group's rename, but its admission could only
+            // be recorded after the barrier returned. A snapshot that observed the new
+            // head inside that window found it unverified and paid a full registry walk;
+            // under load the barrier window is a measurable share of the timeline, which
+            // is where the recurring deep walks came from. This attempt built the head
+            // from a verified one and validated the change set, so recording it here
+            // carries the same guarantee `remember` documents. A failed CAS leaves a
+            // digest no stored head carries, so admitting early cannot vouch for a
+            // document that never landed.
+            self.remember(&self.namespace.key("authority/root")?, &candidate, &digest);
             publish.stage(PublishStage::Group);
             let published = if grouped {
                 self.store.put_group(&writes)
@@ -657,11 +667,8 @@ impl Authority {
                             body.bytes,
                         );
                     }
-                    // This attempt built the head from a verified one and validated the
-                    // change set, so the head is verified for the same reason a boot-verified
-                    // one is: recording it is what keeps the next statement on the cheap
-                    // path.
-                    self.remember(&self.namespace.key("authority/root")?, &candidate, &digest);
+                    // The head this attempt recorded before the group is the one the CAS
+                    // landed; nothing further to admit.
                     return Ok(RootSnapshot {
                         root: candidate,
                         etag: etags

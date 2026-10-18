@@ -237,6 +237,67 @@ fn a_head_this_process_never_verified_is_walked_once_and_then_admitted() -> Resu
     Ok(())
 }
 
+#[derive(Default)]
+struct GroupProbe {
+    inner: MemoryObjectStore,
+    heads_written: AtomicUsize,
+}
+
+impl ObjectStore for GroupProbe {
+    fn supports_strict_fencing(&self) -> bool {
+        true
+    }
+
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn put_group(&self, writes: &[crate::object_store::GroupWrite]) -> Result<Vec<String>> {
+        for write in writes {
+            if write.key.ends_with("/authority/root") {
+                let (root, digest) = codec::decode_with_digest(&write.bytes)?;
+                assert!(
+                    admitted::holds(&write.key, &root.incarnation, &digest),
+                    "a head became visible before this process admitted it"
+                );
+                self.heads_written.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        self.inner.put_group(writes)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+#[test]
+fn a_head_is_admitted_before_its_group_becomes_visible() -> Result<()> {
+    let store = Arc::new(GroupProbe::default());
+    let authority = Authority::open(
+        store.clone(),
+        Namespace::new("group-admission", unique_id()?)?,
+    )?;
+    authority.transact(None, |root| {
+        root.branches.get_mut("main").unwrap().last_commit_ms = 2;
+        Ok(())
+    })?;
+    assert_eq!(
+        store.heads_written.load(Ordering::SeqCst),
+        1,
+        "the publication group did not carry the head"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_rejected_boot_candidate_is_not_admitted_before_its_successful_retry() -> Result<()> {
     let (store, authority, database) = fixture()?;
