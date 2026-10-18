@@ -117,8 +117,9 @@ func (controller *Controller) heartbeatProbeLimit() time.Duration {
 }
 
 // refreshStaleWorker re-observes one worker whose heartbeat aged out during a
-// reconcile pass. A pass probes each worker at most once, so a genuinely dead
-// worker costs one bounded probe instead of one per placement.
+// reconcile pass. A pass re-probes each worker at most
+// maxWorkerReprobesPerPass times and stops after a failed probe, so a genuinely
+// dead worker costs a bounded number of probes instead of one per placement.
 func (controller *Controller) refreshStaleWorker(ctx context.Context, pass *reconcilePass, identifier string) error {
 	reprobes := 1
 	var observation *workerObservation

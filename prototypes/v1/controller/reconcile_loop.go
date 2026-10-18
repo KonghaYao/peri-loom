@@ -12,9 +12,10 @@ import (
 const reconcileRetryDelay = 100 * time.Millisecond
 
 // maxWorkerReprobesPerPass bounds how often one pass may re-observe a worker.
-// A 10s management pass at the default 5s heartbeat needs at most two refreshes;
-// four leaves headroom for shorter configured windows while staying a small
-// constant, so a slow pass cannot turn into O(placements) RPCs per worker.
+// A 20s management pass at the default 5s heartbeat can refresh three times
+// before the deadline; four leaves headroom for the boundary and for shorter
+// configured windows while staying a small constant, so a slow pass cannot turn
+// into O(placements) RPCs per worker.
 const maxWorkerReprobesPerPass = 4
 
 // reconcilePass carries observations that are only valid for one pass. A pass
