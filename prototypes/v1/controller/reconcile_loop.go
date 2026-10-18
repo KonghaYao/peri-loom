@@ -3,9 +3,24 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"sort"
 	"time"
 )
+
+const reconcileRetryDelay = 100 * time.Millisecond
+
+// reconcilePass carries observations that are only valid for one pass. A pass
+// can outlive the heartbeat window while it reacquires many databases, so it
+// remembers which workers it already re-probed instead of probing one twice.
+type reconcilePass struct {
+	probed map[string]bool
+}
+
+func newReconcilePass() *reconcilePass {
+	return &reconcilePass{probed: make(map[string]bool)}
+}
 
 func (controller *Controller) Reconcile(ctx context.Context) error {
 	release, err := controller.enter(ctx)
@@ -16,6 +31,7 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 	if err := controller.pollWorkers(ctx); err != nil {
 		return err
 	}
+	pass := newReconcilePass()
 	metadata, err := readReconcileView(controller.store)
 	if err != nil {
 		return err
@@ -48,13 +64,46 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 				_, err = controller.converge(ctx, placement)
 			}
 		} else if placement.Phase == "active" {
-			err = controller.reconcileActive(ctx, &placement)
+			err = controller.reconcileActive(ctx, &placement, pass)
 		}
 		if err != nil {
-			failures = append(failures, err)
+			// The caller sees one joined failure; naming the placement keeps the
+			// private log able to say which database could not converge.
+			failures = append(failures, fmt.Errorf("%s: %w", key, err))
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// ReconcileWithin retries a desired-state pass until the deadline. Reconcile
+// never dispatches SQL, so a retry cannot duplicate an admitted mutation; the
+// durable placement and grant records make every pass idempotent.
+func (controller *Controller) ReconcileWithin(ctx context.Context, until time.Time) error {
+	for attempt := 1; ; attempt++ {
+		err := controller.Reconcile(ctx)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("控制面 reconcile 重试后完成：attempts=%d", attempt)
+			}
+			return nil
+		}
+		if ctx.Err() != nil {
+			return err
+		}
+		remaining := time.Until(until)
+		if remaining <= 0 {
+			log.Printf("控制面 reconcile 重试预算耗尽：attempts=%d 底层错误=%v", attempt, err)
+			return err
+		}
+		log.Printf("控制面 reconcile 未完成，准备重试：attempt=%d 剩余预算=%dms 底层错误=%v", attempt, remaining.Milliseconds(), err)
+		timer := time.NewTimer(min(reconcileRetryDelay, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
 }
 
 // RefreshWorkers reestablishes live worker observations before a restarted
@@ -68,7 +117,7 @@ func (controller *Controller) RefreshWorkers(ctx context.Context, identifiers ..
 	return controller.pollWorkersSelected(ctx, identifiers)
 }
 
-func (controller *Controller) reconcileActive(ctx context.Context, placement *Placement) error {
+func (controller *Controller) reconcileActive(ctx context.Context, placement *Placement, pass *reconcilePass) error {
 	actual, err := controller.authorityState(ctx, placement.Database)
 	if err != nil {
 		return err
@@ -78,8 +127,21 @@ func (controller *Controller) reconcileActive(ctx context.Context, placement *Pl
 		return err
 	}
 	now := time.Now().UnixMilli()
-	fresh := exists && worker.Healthy && now >= worker.LastHeartbeatMS && now-worker.LastHeartbeatMS < controller.cfg.HeartbeatTimeout.Milliseconds()
-	if !fresh {
+	if exists && !controller.workerFresh(worker, now) {
+		// The observation may have aged out only because this pass is still
+		// reacquiring earlier placements. Probe the desired worker once before
+		// treating it as gone; a worker that really stopped still fails the
+		// selection below, and the probe itself is deadline-bounded.
+		if err := controller.refreshStaleWorker(ctx, pass, placement.DesiredWorker); err != nil {
+			return err
+		}
+		worker, exists, err = readWorker(controller.store, placement.DesiredWorker)
+		if err != nil {
+			return err
+		}
+		now = time.Now().UnixMilli()
+	}
+	if !controller.workerFresh(worker, now) {
 		selected, err := controller.selectWorker(placement.Region, placement.DesiredWorker)
 		if err != nil {
 			return err

@@ -26,7 +26,10 @@ type RPCError struct {
 	Rejected           bool
 	PreconditionFailed bool
 	StatusCode         int
-	cause              error
+	// Detail keeps the backend's error text out of Error(), so it is never
+	// returned to a client, while private diagnostics can still log the cause.
+	Detail string
+	cause  error
 }
 
 func (failure *RPCError) Error() string { return failure.Message }

@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -102,6 +104,32 @@ func (controller *Controller) pollWorkersSelected(ctx context.Context, selected 
 	return errors.Join(append(all, ctx.Err())...)
 }
 
+func (controller *Controller) workerFresh(worker Worker, nowMS int64) bool {
+	return worker.Healthy && nowMS >= worker.LastHeartbeatMS && nowMS-worker.LastHeartbeatMS < controller.cfg.HeartbeatTimeout.Milliseconds()
+}
+
+func (controller *Controller) heartbeatProbeLimit() time.Duration {
+	limit := min(controller.cfg.HeartbeatTimeout/2, 2*time.Second)
+	if limit < time.Millisecond {
+		limit = time.Millisecond
+	}
+	return limit
+}
+
+// refreshStaleWorker re-observes one worker whose heartbeat aged out during a
+// reconcile pass. A pass probes each worker at most once, so a genuinely dead
+// worker costs one bounded probe instead of one per placement.
+func (controller *Controller) refreshStaleWorker(ctx context.Context, pass *reconcilePass, identifier string) error {
+	if pass != nil {
+		if pass.probed[identifier] {
+			return nil
+		}
+		pass.probed[identifier] = true
+	}
+	log.Printf("控制面心跳观测过期：worker=%s，单次重探上限=%dms", identifier, controller.heartbeatProbeLimit().Milliseconds())
+	return controller.pollWorkersSelected(ctx, []string{identifier})
+}
+
 func (controller *Controller) pollWorker(ctx context.Context, identifier string, worker Worker) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -110,11 +138,7 @@ func (controller *Controller) pollWorker(ctx context.Context, identifier string,
 	if err != nil {
 		return err
 	}
-	limit := min(controller.cfg.HeartbeatTimeout/2, 2*time.Second)
-	if limit < time.Millisecond {
-		limit = time.Millisecond
-	}
-	probe, cancel := context.WithTimeout(ctx, limit)
+	probe, cancel := context.WithTimeout(ctx, controller.heartbeatProbeLimit())
 	defer cancel()
 	var report workerReport
 	rpcErr := controller.transport.Worker(probe, worker, requestID, workerAction{Command: "get_worker_heartbeat"}, &report)
@@ -220,7 +244,7 @@ func (controller *Controller) drain(ctx context.Context, placement *Placement) e
 	defer cancel()
 	actual, err := controller.workerState(bounded, worker, placement.Database)
 	if err != nil {
-		return err
+		return fmt.Errorf("drain worker state %s: %w", worker.ID, err)
 	}
 	if actual.Epoch != placement.Grant.Binding.Epoch {
 		return errors.New("drain ownership changed")
@@ -235,12 +259,12 @@ func (controller *Controller) drain(ctx context.Context, placement *Placement) e
 		}
 		epoch := placement.Grant.Binding.Epoch
 		if err := controller.sendWorker(bounded, worker, identifier, workerAction{Command: "drain_database", Database: &placement.Database, ExpectedEpoch: &epoch}); err != nil {
-			return err
+			return fmt.Errorf("drain command %s: %w", worker.ID, err)
 		}
 		for {
 			actual, err = controller.workerState(bounded, worker, placement.Database)
 			if err != nil {
-				return err
+				return fmt.Errorf("drain worker poll %s: %w", worker.ID, err)
 			}
 			if actual.Mode == "detached" && actual.Epoch == epoch {
 				break
@@ -252,7 +276,7 @@ func (controller *Controller) drain(ctx context.Context, placement *Placement) e
 			select {
 			case <-bounded.Done():
 				timer.Stop()
-				return bounded.Err()
+				return fmt.Errorf("drain deadline %s mode=%s: %w", worker.ID, actual.Mode, bounded.Err())
 			case <-timer.C:
 			}
 		}

@@ -111,7 +111,7 @@ func decodeRPCResponseContext(ctx context.Context, body []byte, requestID string
 	if message == nil || !bytes.Equal(result, []byte("null")) {
 		return invalid()
 	}
-	return &RPCError{Message: "RPC operation rejected", Ambiguous: !precondition, Rejected: precondition, PreconditionFailed: precondition}
+	return &RPCError{Message: "RPC operation rejected", Detail: *message, Ambiguous: !precondition, Rejected: precondition, PreconditionFailed: precondition}
 }
 
 func validateJSONValue(decoder *json.Decoder, depth int, ctx context.Context) error {

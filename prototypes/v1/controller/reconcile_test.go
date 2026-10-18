@@ -555,3 +555,87 @@ func TestReconcileContextAndCapacityPreconditions(test *testing.T) {
 		test.Fatal("unsupported role accepted")
 	}
 }
+
+// A restarted controller reacquires every active placement in one pass. When
+// that work outlives the heartbeat window, the later placements used to see a
+// stale observation and either migrate a healthy placement or fail with
+// ErrNoEligibleWorker. The pass must re-probe the desired worker once instead.
+func TestReconcileRefreshesHeartbeatThatAgesOutDuringThePass(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	fixture.config.HeartbeatTimeout = 250 * time.Millisecond
+	controller, err := NewController(fixture.store, fixture.fake, fixture.config)
+	if err != nil {
+		test.Fatal(err)
+	}
+	first, second := reconcileDatabase("first"), reconcileDatabase("second")
+	if _, err := controller.Place(context.Background(), first, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	if _, err := controller.Place(context.Background(), second, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	before, err := controller.Status(second)
+	if err != nil {
+		test.Fatal(err)
+	}
+	firstStatus, err := controller.Status(first)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if firstStatus.DesiredWorker == before.DesiredWorker {
+		test.Fatalf("fixture did not spread placements: %+v %+v", firstStatus, before)
+	}
+	// A worker restart drops its local instances while the authority keeps the
+	// grants; reacquiring the first database holds the pass past the window.
+	fixture.fake.workers = make(map[string]map[string]Actual)
+	fixture.fake.delay[first.Key()] = 500 * time.Millisecond
+	acquired := fixture.fake.calls["acquire_database"]
+	if err := controller.Reconcile(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	after, err := controller.Status(second)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if after.Phase != "active" || after.DesiredWorker != before.DesiredWorker {
+		test.Fatalf("stale pass observation moved a healthy placement: %+v", after)
+	}
+	if fixture.fake.calls["acquire_database"]-acquired != 2 {
+		test.Fatalf("restart did not reacquire both placements: %+v", fixture.fake.calls)
+	}
+}
+
+func TestReconcileWithinRetriesTransientAuthorityFailure(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	database := reconcileDatabase("retry")
+	if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	fixture.fake.authorityReject = 2
+	if err := fixture.controller.ReconcileWithin(context.Background(), time.Now().Add(2*time.Second)); err != nil {
+		test.Fatal(err)
+	}
+	if fixture.fake.calls["get_database_state"] < 3 {
+		test.Fatalf("transient failure was not retried: %+v", fixture.fake.calls)
+	}
+}
+
+func TestReconcileWithinStopsAtDeadline(test *testing.T) {
+	fixture := newReconcileFixture(test)
+	database := reconcileDatabase("deadline")
+	if _, err := fixture.controller.Place(context.Background(), database, "local", "writer"); err != nil {
+		test.Fatal(err)
+	}
+	fixture.fake.authorityReject = 100
+	started := time.Now()
+	err := fixture.controller.ReconcileWithin(context.Background(), started.Add(200*time.Millisecond))
+	if err == nil {
+		test.Fatal("deadline expiration returned success")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		test.Fatalf("retry loop ignored its deadline: %s", elapsed)
+	}
+	if attempts := fixture.fake.calls["get_database_state"]; attempts < 2 || attempts > 10 {
+		test.Fatalf("retry attempts were not bounded by the deadline: %d", attempts)
+	}
+}

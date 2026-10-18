@@ -112,7 +112,7 @@ func (controller *Controller) Place(ctx context.Context, database DatabaseID, re
 		if err != nil {
 			return placement, err
 		}
-		if err := controller.reconcileActive(ctx, &placement); err != nil {
+		if err := controller.reconcileActive(ctx, &placement, nil); err != nil {
 			return placement, err
 		}
 		return controller.Status(database)

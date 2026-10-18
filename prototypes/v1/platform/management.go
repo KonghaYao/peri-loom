@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -59,6 +60,8 @@ type managementRequest struct {
 }
 
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+const managementReconcileBudget = 10 * time.Second
 
 var errManagementForbidden = errors.New("forbidden")
 var errDatabaseQuotaExceeded = errors.New("database quota exceeded")
@@ -129,46 +132,55 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 	}
 	if err != nil {
 		if managementOutcomeUnknown(err) {
+			log.Printf("管理请求失败：path=%s request_id=%s 隔离原因=%s 底层错误=%v", request.URL.Path, input.RequestID, "outcome_unknown", err)
 			managementUnknownReply(response, input.RequestID, err)
 			return
 		}
-		if errors.Is(err, ErrDatabaseQuarantined) || errors.Is(err, ErrOperationExists) {
-			managementReply(response, 409, input.RequestID, nil, "database_isolated")
-			return
+		status, code := managementFailure(err)
+		// 对外只保留折叠后的稳定错误码，底层原因必须留在私有日志里，
+		// 否则 /v1/reconcile 与只读检查失败无法区分，也无法定位控制面根因。
+		detail := "-"
+		var rejected *controller.RPCError
+		if errors.As(err, &rejected) && rejected.Detail != "" {
+			detail = rejected.Detail
 		}
-		// The release refusals name the missing proof instead of collapsing into the
-		// generic isolation code, so an operator can tell where the path is stuck.
-		if errors.Is(err, errReleaseNotRetired) {
-			managementReply(response, 409, input.RequestID, nil, "release_not_retired")
-			return
-		}
-		if errors.Is(err, errReleaseProofMissing) {
-			managementReply(response, 409, input.RequestID, nil, "release_stop_proof_missing")
-			return
-		}
-		if errors.Is(err, errReleaseFenceUnavailable) {
-			managementReply(response, 409, input.RequestID, nil, "release_fencing_proof_unavailable")
-			return
-		}
-		if errors.Is(err, errReleaseScopeMismatch) {
-			managementReply(response, 409, input.RequestID, nil, "release_scope_mismatch")
-			return
-		}
-		var native *nativeToolError
-		if !errors.As(err, &native) {
-			if errors.Is(err, errManagementForbidden) {
-				managementReply(response, 403, input.RequestID, nil, "forbidden")
-				return
-			}
-			if errors.Is(err, errDatabaseQuotaExceeded) {
-				managementReply(response, 429, input.RequestID, nil, "quota_exceeded")
-				return
-			}
-		}
-		managementReply(response, 409, input.RequestID, nil, "operation_incomplete")
+		log.Printf("管理请求失败：path=%s request_id=%s 隔离原因=%s 底层错误=%v 底层错误详情=%s", request.URL.Path, input.RequestID, code, err, detail)
+		managementReply(response, status, input.RequestID, nil, code)
 		return
 	}
 	managementReply(response, 200, input.RequestID, result, "")
+}
+
+// managementFailure maps a dispatch error to the public status and code. The
+// order preserves the contract the error matrix tests already pin.
+func managementFailure(err error) (int, string) {
+	if errors.Is(err, ErrDatabaseQuarantined) || errors.Is(err, ErrOperationExists) {
+		return 409, "database_isolated"
+	}
+	// The release refusals name the missing proof instead of collapsing into the
+	// generic isolation code, so an operator can tell where the path is stuck.
+	if errors.Is(err, errReleaseNotRetired) {
+		return 409, "release_not_retired"
+	}
+	if errors.Is(err, errReleaseProofMissing) {
+		return 409, "release_stop_proof_missing"
+	}
+	if errors.Is(err, errReleaseFenceUnavailable) {
+		return 409, "release_fencing_proof_unavailable"
+	}
+	if errors.Is(err, errReleaseScopeMismatch) {
+		return 409, "release_scope_mismatch"
+	}
+	var native *nativeToolError
+	if !errors.As(err, &native) {
+		if errors.Is(err, errManagementForbidden) {
+			return 403, "forbidden"
+		}
+		if errors.Is(err, errDatabaseQuotaExceeded) {
+			return 429, "quota_exceeded"
+		}
+	}
+	return 409, "operation_incomplete"
 }
 
 func (management *Management) dispatch(request *http.Request, principal Principal, input managementRequest) (any, error) {
@@ -218,7 +230,9 @@ func (management *Management) dispatch(request *http.Request, principal Principa
 		if principal.Role != "admin" || principal.Project != "*" {
 			return nil, errManagementForbidden
 		}
-		return map[string]bool{"ok": true}, management.config.Controller.Reconcile(request.Context())
+		// 启动收敛是期望状态操作，不是 SQL；重启后 worker 心跳与本地实例可能仍在建立，
+		// 因此在明确预算内重试，预算耗尽仍返回最后一次底层错误。
+		return map[string]bool{"ok": true}, management.config.Controller.ReconcileWithin(request.Context(), time.Now().Add(managementReconcileBudget))
 	case "/v1/organizations/create":
 		return management.createOrganization(principal, input)
 	case "/v1/projects/create":

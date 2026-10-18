@@ -12,22 +12,26 @@ import (
 )
 
 type reconcileFake struct {
-	mutex       sync.Mutex
-	store       MetadataStore
-	authority   map[string]Actual
-	workers     map[string]map[string]Actual
-	offline     map[string]bool
-	busy        map[string]bool
-	receipts    map[string]Grant
-	payloads    map[string]string
-	lost        map[string]int
-	calls       map[string]int
-	trace       []string
-	rejectGrant bool
+	mutex     sync.Mutex
+	store     MetadataStore
+	authority map[string]Actual
+	workers   map[string]map[string]Actual
+	offline   map[string]bool
+	busy      map[string]bool
+	receipts  map[string]Grant
+	payloads  map[string]string
+	lost      map[string]int
+	calls     map[string]int
+	delay     map[string]time.Duration
+	// authorityReject fails that many authority state reads, so a test can hold
+	// one reconcile pass transiently incomplete.
+	authorityReject int
+	trace           []string
+	rejectGrant     bool
 }
 
 func newReconcileFake(store MetadataStore) *reconcileFake {
-	return &reconcileFake{store: store, authority: make(map[string]Actual), workers: make(map[string]map[string]Actual), offline: make(map[string]bool), busy: make(map[string]bool), receipts: make(map[string]Grant), payloads: make(map[string]string), lost: make(map[string]int), calls: make(map[string]int)}
+	return &reconcileFake{store: store, authority: make(map[string]Actual), workers: make(map[string]map[string]Actual), offline: make(map[string]bool), busy: make(map[string]bool), receipts: make(map[string]Grant), payloads: make(map[string]string), lost: make(map[string]int), calls: make(map[string]int), delay: make(map[string]time.Duration)}
 }
 
 func reconcileDecode(input, output any) error {
@@ -45,6 +49,21 @@ func (fake *reconcileFake) Authority(ctx context.Context, identifier string, inp
 	var action authorityAction
 	if err := reconcileDecode(input, &action); err != nil {
 		return err
+	}
+	if action.Command == "get_database_state" && action.Database != nil {
+		fake.mutex.Lock()
+		delay := fake.delay[action.Database.Key()]
+		reject := fake.authorityReject > 0
+		if reject {
+			fake.authorityReject--
+		}
+		fake.mutex.Unlock()
+		if reject {
+			return &RPCError{Rejected: true, Message: "transient authority rejection"}
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
 	}
 	metadata, err := fake.store.Snapshot()
 	if err != nil {
