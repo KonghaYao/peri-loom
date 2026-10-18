@@ -109,15 +109,20 @@ class ObserverTests(unittest.TestCase):
             "PERI_WORK_METRICS": "1",
             "PERI_MAINTENANCE_SCHEDULE": "1",
             "PERI_MAINTENANCE_COOLDOWN_MS": "5000",
+            "PERI_DIAG_GROUP_PHASE": "1",
             "PERI_UNRELATED": "not-forwarded",
         }):
             authority = dev.experimental_environment({})
             worker = dev.experimental_environment({}, maintenance=True)
-        self.assertEqual(authority, {"PERI_WORK_METRICS": "1"})
+        self.assertEqual(authority, {
+            "PERI_WORK_METRICS": "1",
+            "PERI_DIAG_GROUP_PHASE": "1",
+        })
         self.assertEqual(worker, {
             "PERI_WORK_METRICS": "1",
             "PERI_MAINTENANCE_SCHEDULE": "1",
             "PERI_MAINTENANCE_COOLDOWN_MS": "5000",
+            "PERI_DIAG_GROUP_PHASE": "1",
         })
 
     def test_experiment_switches_reach_authority_and_workers_but_not_platform(self):

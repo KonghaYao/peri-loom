@@ -385,14 +385,15 @@ def experimental_environment(environment, maintenance=False):
     The maintenance scheduler and the work-metrics snapshot are experiment inputs; they are
     off unless the operator sets them. Only these names cross into the child, so credentials
     and unrelated switches still require their own explicit wiring. The scheduler belongs to
-    the data plane, so its switches are forwarded to workers only. The PERI_DIAG_* pair is
-    temporary slow-diagnostics wiring guarded by prepare_slow_diagnostic_directory.
+    the data plane, so its switches are forwarded to workers only. The PERI_DIAG_* switches are
+    temporary slow/phase diagnostics wiring; only the slow pair needs
+    prepare_slow_diagnostic_directory, while the group-phase switch writes to stderr only.
     """
     for name, value in os.environ.items():
-        # Temporary diagnostic forwarding: remove these two names and their guard once slow
+        # Temporary diagnostic forwarding: remove these names and their guard once slow
         # diagnostics become a supported flag or are no longer needed.
         if (name in ("PERI_WORK_METRICS", "PERI_WORKER_DB_IDLE_UNLOAD_MS", "PERI_ADMISSION_TRACE",
-                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR")
+                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR", "PERI_DIAG_GROUP_PHASE")
                 or (maintenance and name.startswith("PERI_MAINTENANCE_"))):
             environment[name] = value
     return environment
