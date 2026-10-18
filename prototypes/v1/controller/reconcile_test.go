@@ -632,7 +632,7 @@ func TestReconcileWithinStopsAtDeadline(test *testing.T) {
 	if err == nil {
 		test.Fatal("deadline expiration returned success")
 	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		test.Fatalf("retry loop ignored its deadline: %s", elapsed)
 	}
 	if attempts := fixture.fake.calls["get_database_state"]; attempts < 2 || attempts > 10 {

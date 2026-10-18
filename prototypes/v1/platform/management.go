@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,9 +62,14 @@ type managementRequest struct {
 
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// managementReconcileBudget bounds every reconcile pass, not just the retry
-// interval, and stays well below the launcher's 30s request timeout.
+// managementReconcileBudget bounds the RPCs of every reconcile pass and stops
+// new passes once it expires. It is not a strict wall-clock bound: a pass that
+// already converged may return success just after the boundary, and
+// context-free local metadata reads are not interruptible. It stays well below
+// the launcher's 30s request timeout.
 const managementReconcileBudget = 10 * time.Second
+
+const managementLogDetailLimit = 512
 
 var errManagementForbidden = errors.New("forbidden")
 var errDatabaseQuotaExceeded = errors.New("database quota exceeded")
@@ -143,14 +149,28 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 		// 否则 /v1/reconcile 与只读检查失败无法区分，也无法定位控制面根因。
 		detail := "-"
 		var rejected *controller.RPCError
-		if errors.As(err, &rejected) && rejected.Detail != "" {
-			detail = rejected.Detail
+		if errors.As(err, &rejected) {
+			detail = managementLogDetail(rejected.Detail)
 		}
 		log.Printf("管理请求失败：path=%s request_id=%s 隔离原因=%s 底层错误=%v 底层错误详情=%s", request.URL.Path, input.RequestID, code, err, detail)
 		managementReply(response, status, input.RequestID, nil, code)
 		return
 	}
 	managementReply(response, 200, input.RequestID, result, "")
+}
+
+// managementLogDetail bounds and quotes backend error text before it reaches
+// the private log. Truncation is byte-bounded, and ToValidUTF8 repairs a split
+// rune; Quote escapes newlines and control characters so a backend message
+// cannot forge a log line.
+func managementLogDetail(detail string) string {
+	if detail == "" {
+		return "-"
+	}
+	if len(detail) > managementLogDetailLimit {
+		detail = detail[:managementLogDetailLimit]
+	}
+	return strconv.Quote(strings.ToValidUTF8(detail, "\uFFFD"))
 }
 
 // managementFailure maps a dispatch error to the public status and code. The

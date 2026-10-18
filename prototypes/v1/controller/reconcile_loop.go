@@ -77,9 +77,12 @@ func (controller *Controller) Reconcile(ctx context.Context) error {
 
 // ReconcileWithin retries a desired-state pass until the deadline. Every pass
 // carries that deadline into its context, so an authority or worker RPC cannot
-// outlive the budget. Reconcile never dispatches SQL, so a retry cannot
-// duplicate an admitted mutation; the durable placement and grant records make
-// every pass idempotent.
+// outlive the budget. The deadline bounds those RPCs and the operation-gate
+// wait; context-free local metadata reads are not interruptible, so this is not
+// a strict wall-clock bound, and a pass that already converged may return
+// success just after the boundary. Reconcile never dispatches SQL, so a retry
+// cannot duplicate an admitted mutation; the durable placement and grant
+// records make every pass idempotent.
 func (controller *Controller) ReconcileWithin(ctx context.Context, until time.Time) error {
 	var last error
 	for attempt := 1; ; attempt++ {

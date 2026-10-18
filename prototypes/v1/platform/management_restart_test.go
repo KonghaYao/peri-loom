@@ -21,6 +21,9 @@ type restartTransport struct {
 	delay    map[string]time.Duration
 	rejects  int
 	acquires int
+	// rejectDetail is what the authority puts in the private RPC detail of a
+	// transient rejection, so tests can prove it never reaches the client.
+	rejectDetail string
 }
 
 func newRestartTransport(placements controller.Metadata) *restartTransport {
@@ -62,7 +65,7 @@ func (transport *restartTransport) Authority(ctx context.Context, identifier str
 		actual := transport.actual[fields.Database.Key()]
 		transport.mu.Unlock()
 		if reject {
-			return &controller.RPCError{Rejected: true, Message: "transient authority rejection"}
+			return &controller.RPCError{Rejected: true, Message: "transient authority rejection", Detail: transport.rejectDetail}
 		}
 		time.Sleep(delay)
 		return decodeTestJSON(actual, output)
@@ -189,10 +192,14 @@ func TestManagementReconcileReadyAfterRestart(test *testing.T) {
 	management := &Management{config: ManagementConfig{State: state, Placements: placements, Controller: control, Identity: identity, Audit: &gatewayTestAudit{}}}
 	request := httptest.NewRequest("POST", "/v1/reconcile", strings.NewReader(`{"request_id":"restart-reconcile"}`))
 	request.Header.Set("Authorization", "Bearer restart-bootstrap-credential-0123456789")
+	transport.rejectDetail = "secret-marker\nforged=1"
 	response := httptest.NewRecorder()
 	management.ServeHTTP(response, request)
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"ok":true`) {
 		test.Fatalf("restart reconcile was not ready: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "secret-marker") || strings.ContainsRune(response.Body.String(), 0) {
+		test.Fatalf("private backend detail reached the public reply: %s", response.Body.String())
 	}
 	after, err := placements.Snapshot()
 	if err != nil {
@@ -206,5 +213,29 @@ func TestManagementReconcileReadyAfterRestart(test *testing.T) {
 	}
 	if transport.acquires != 2 {
 		test.Fatalf("restart did not reacquire both placements: %d", transport.acquires)
+	}
+}
+
+func TestManagementDetailStaysPrivateAndSanitized(test *testing.T) {
+	detail := "secret-marker\nforged=1\x00" + strings.Repeat("x", managementLogDetailLimit*2)
+	failure := &controller.RPCError{Rejected: true, Message: "rejected", Detail: detail}
+	status, code := managementFailure(failure)
+	if status != 409 || code != "operation_incomplete" {
+		test.Fatalf("detail changed the public failure mapping: %d %s", status, code)
+	}
+	response := httptest.NewRecorder()
+	managementReply(response, status, "request-detail", nil, code)
+	if strings.Contains(response.Body.String(), "secret-marker") || strings.ContainsRune(response.Body.String(), 0) {
+		test.Fatalf("private backend detail reached the public reply: %s", response.Body.String())
+	}
+	sanitized := managementLogDetail(detail)
+	if strings.ContainsRune(sanitized, '\n') || strings.ContainsRune(sanitized, 0) {
+		test.Fatalf("detail kept raw control characters: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, `secret-marker\nforged=1\x00`) {
+		test.Fatalf("detail was not escaped for the private log: %q", sanitized)
+	}
+	if len(sanitized) > 4*managementLogDetailLimit+2 {
+		test.Fatalf("detail was not bounded before logging: %d bytes", len(sanitized))
 	}
 }
