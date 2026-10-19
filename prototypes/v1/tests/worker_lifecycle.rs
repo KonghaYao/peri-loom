@@ -128,6 +128,91 @@ fn worker_deadline_reclaims_lost_open_cursor_and_mapping_without_commit() -> Res
     Ok(())
 }
 
+/// A database-bearing worker with the maintenance driver armed must still prove a safe
+/// retirement boundary when no write is in flight. The unit-level tests cover the
+/// in-flight lock attribution; this exercises the full `sessions.clear` → quiesce →
+/// bounded sample → clean exit chain.
+#[test]
+fn database_worker_with_maintenance_enabled_shuts_down_clean() -> Result<()> {
+    if std::env::var_os("PERI_MAINTENANCE_SHUTDOWN_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "database_worker_with_maintenance_enabled_shuts_down_clean",
+                "--nocapture",
+            ])
+            .env("PERI_MAINTENANCE_SHUTDOWN_CHILD", "1")
+            .env("PERI_MAINTENANCE_SCHEDULE", "1")
+            .env("PERI_WORKER_DB_IDLE_UNLOAD_MS", "600000")
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(());
+    }
+    let fixture = remote::Fixture::new(AccessRole::Writer, 60_000)?;
+    fixture.acquire(AccessRole::Writer)?;
+    let control = uuid_token();
+    let sql = uuid_token();
+    let server = WorkerServer::bind(
+        "127.0.0.1:0".parse()?,
+        fixture.runtime.clone(),
+        control.clone(),
+        sql.clone(),
+    )?;
+    let address = server.local_addr()?;
+    let server = std::thread::spawn(move || server.run());
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let call = |command: Value, id: &str, admin: bool| -> Result<Value> {
+        let response: Value = client
+            .post(format!(
+                "http://{address}/{}",
+                if admin { "control" } else { "sql" }
+            ))
+            .bearer_auth(if admin { &control } else { &sql })
+            .json(&json!({"version":1,"request_id":id,"command":command}))
+            .send()?
+            .json()?;
+        ensure!(
+            response["ok"] == true,
+            "worker operation failed: {response}"
+        );
+        Ok(response["result"].clone())
+    };
+    let session = call(
+        json!({"command":"open_session","database":fixture.identifier}),
+        "open",
+        false,
+    )?["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    call(
+        json!({"command":"execute","session":session,"sql":"CREATE TABLE items(value); INSERT INTO items VALUES(7)"}),
+        "write",
+        false,
+    )?;
+    call(
+        json!({"command":"close_session","session":session}),
+        "close",
+        false,
+    )?;
+    // Let the watchdog start the maintenance driver, so shutdown quiesces a live scheduler
+    // rather than a runtime on which maintenance never started.
+    std::thread::sleep(Duration::from_millis(150));
+    let shutdown = call(json!({"command":"shutdown"}), "shutdown", true)?;
+    assert_eq!(shutdown["stopping"], true);
+    let joined = server.join().expect("worker server thread panicked");
+    ensure!(joined.is_ok(), "worker shutdown was unclean: {joined:?}");
+    Ok(())
+}
+
 fn uuid_token() -> String {
     use std::io::Read;
     let mut bytes = [0u8; 32];

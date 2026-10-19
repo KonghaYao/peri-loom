@@ -8,7 +8,7 @@ use serde_json::Value;
 /// clean, and a missing counter is treated the same way.
 pub(super) fn retirement_unproven(health: &Value) -> Option<String> {
     if health["available"] != true {
-        return Some("retirement sample unavailable".to_owned());
+        return Some(unavailable_reason(health));
     }
     let mut outstanding = Vec::new();
     for key in [
@@ -29,17 +29,72 @@ pub(super) fn retirement_unproven(health: &Value) -> Option<String> {
     (!outstanding.is_empty()).then(|| outstanding.join(","))
 }
 
+/// Keeps every attributable field the sampler produced. An operator must be able to tell
+/// a registry race from a held lane connection without reproducing the shutdown.
+fn unavailable_reason(health: &Value) -> String {
+    let mut details = vec![format!(
+        "reason={}",
+        health["reason"].as_str().unwrap_or("unknown")
+    )];
+    for key in ["lock", "state", "database", "lock_held", "waited_ms"] {
+        match &health[key] {
+            Value::String(value) => details.push(format!("{key}={value}")),
+            Value::Bool(value) => details.push(format!("{key}={value}")),
+            Value::Number(value) => details.push(format!("{key}={value}")),
+            _ => {}
+        }
+    }
+    if let Some(unavailable) = health["unavailable"].as_array() {
+        for entry in unavailable {
+            let mut fields = Vec::new();
+            for key in ["database", "reason", "lock", "lock_held", "state"] {
+                match &entry[key] {
+                    Value::String(value) => fields.push(format!("{key}={value}")),
+                    Value::Bool(value) => fields.push(format!("{key}={value}")),
+                    Value::Number(value) => fields.push(format!("{key}={value}")),
+                    _ => {}
+                }
+            }
+            if !fields.is_empty() {
+                details.push(format!("unavailable[{}]", fields.join(" ")));
+            }
+        }
+    }
+    format!("retirement sample unavailable ({})", details.join(" "))
+}
+
 /// Names the counters an operator needs when a shutdown is unclean, keeping the
 /// numeric fields ahead of the free-text reason.
 pub(super) fn unclean_log_line(reason: &str, health: &Value) -> String {
+    let unavailable = health["unavailable"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}:{}:{}",
+                        entry["database"].as_str().unwrap_or("-"),
+                        entry["lock"].as_str().unwrap_or("-"),
+                        entry["state"].as_str().unwrap_or("-")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
     format!(
-        "level=error event=worker_shutdown outcome=unclean quarantined_databases={} retiring_databases={} pending_statements={} pending_io={} retained_engines={} retained_connections={} reason={reason}",
+        "level=error event=worker_shutdown outcome=unclean quarantined_databases={} retiring_databases={} pending_statements={} pending_io={} retained_engines={} retained_connections={} retirement_reason={} retirement_lock={} retirement_database={} retirement_waited_ms={} unavailable_databases={unavailable} reason={reason}",
         health["quarantined_databases"],
         health["retiring_databases"],
         health["pending_statements"],
         health["pending_io"],
         health["retained_engines"],
         health["retained_connections"],
+        health["reason"].as_str().unwrap_or("-"),
+        health["lock"].as_str().unwrap_or("-"),
+        health["database"].as_str().unwrap_or("-"),
+        health["waited_ms"],
     )
 }
 
@@ -97,7 +152,10 @@ impl WorkerThreads {
         // whichever failed first, and no stage may skip the ones after it.
         let clear = clear();
         let mut failure = self.failure;
-        for (label, later) in [("session cleanup", clear.err()), ("run loop", result.err())] {
+        for (label, later) in [
+            ("shutdown cleanup", clear.err()),
+            ("run loop", result.err()),
+        ] {
             let Some(later) = later else { continue };
             failure = Some(match failure {
                 Some(previous) => previous.context(format!("{label}: {later:#}")),
@@ -305,6 +363,49 @@ mod tests {
         assert!(line.contains("retained_engines=3"));
         assert!(line.contains("pending_statements=1"));
         assert!(line.ends_with("reason=1 session cleanups failed"));
+    }
+
+    #[test]
+    fn unavailable_sample_names_the_lock_and_database() {
+        let health = serde_json::json!({
+            "available": false,
+            "reason": "native_sample_unavailable",
+            "lock": "database",
+            "lock_held": true,
+            "waited_ms": 120,
+            "quarantined_databases": null,
+            "retiring_databases": null,
+            "pending_statements": null,
+            "pending_io": null,
+            "retained_engines": null,
+            "retained_connections": null,
+            "unavailable": [{
+                "database": "tenant/db/",
+                "reason": "native_lock_unavailable",
+                "lock": "lane.connection",
+                "lock_held": true,
+                "state": "state_locked"
+            }]
+        });
+        let message = super::retirement_unproven(&health).unwrap();
+        for expected in [
+            "reason=native_sample_unavailable",
+            "lock=database",
+            "lock_held=true",
+            "waited_ms=120",
+            "database=tenant/db/",
+            "lock=lane.connection",
+            "state=state_locked",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+        let line = super::unclean_log_line("retirement unproven", &health);
+        assert!(
+            line.contains("unavailable_databases=tenant/db/:lane.connection:state_locked"),
+            "{line}"
+        );
+        assert!(line.contains("retirement_lock=database"), "{line}");
+        assert!(line.contains("retirement_waited_ms=120"), "{line}");
     }
 
     #[test]

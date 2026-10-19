@@ -891,3 +891,63 @@ fn only_one_pre_tidy_per_database_is_in_flight() {
     assert_eq!(first.join().unwrap().reason, PreSuspendReason::Completed);
     assert_eq!(target.runs(), 1);
 }
+
+fn wait_for_run(target: &FakeTarget) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while target.runs() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the maintenance unit never started"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn quiesce_waits_for_the_in_flight_unit_and_refuses_new_ones() {
+    let scheduler = scheduler(policy(true), budget(1, 1, 100, u64::MAX));
+    let target = FakeTarget::slow("quiesce", 4096, Duration::from_millis(150));
+    let now = armed_now(&target.ledger);
+    observe(&scheduler, &target, now);
+    let driver = {
+        let scheduler = scheduler.clone();
+        std::thread::spawn(move || scheduler.drain(1, Instant::now()))
+    };
+    wait_for_run(&target);
+    let started = Instant::now();
+    scheduler
+        .quiesce(Instant::now() + Duration::from_secs(2))
+        .expect("an in-budget unit reaches its safe boundary");
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "quiesce returned before the 150 ms unit could have finished"
+    );
+    assert_eq!(driver.join().unwrap().completed, 1);
+    assert_eq!(target.runs(), 1);
+
+    // After quiesce, neither the observer nor a direct drain may start another unit.
+    observe(&scheduler, &target, now + Duration::from_secs(10));
+    assert_eq!(scheduler.drain(8, Instant::now()).completed, 0);
+    assert_eq!(target.runs(), 1);
+}
+
+#[test]
+fn quiesce_timeout_names_maintenance_in_flight() {
+    let scheduler = scheduler(policy(true), budget(1, 1, 100, u64::MAX));
+    let target = FakeTarget::slow("quiesce_timeout", 4096, Duration::from_millis(300));
+    observe(&scheduler, &target, armed_now(&target.ledger));
+    let driver = {
+        let scheduler = scheduler.clone();
+        std::thread::spawn(move || scheduler.drain(1, Instant::now()))
+    };
+    wait_for_run(&target);
+    let error = scheduler
+        .quiesce(Instant::now() + Duration::from_millis(30))
+        .unwrap_err();
+    let reported = format!("{error:#}");
+    assert!(
+        reported.contains("maintenance_in_flight"),
+        "a timed-out quiesce must name the in-flight unit: {reported}"
+    );
+    assert_eq!(driver.join().unwrap().completed, 1);
+}

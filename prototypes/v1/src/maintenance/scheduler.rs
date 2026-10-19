@@ -27,7 +27,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -196,6 +196,30 @@ pub(crate) struct MaintenanceScheduler {
     pre_suspend_active: Mutex<BTreeSet<String>>,
     queue: Mutex<VecDeque<Queued>>,
     started: AtomicBool,
+    /// Shutdown handshake. `stopping` refuses new units; `active` counts units that have
+    /// already crossed the start boundary, including one native unit that cannot be
+    /// cancelled. `idle` wakes a quiesce once the count reaches zero.
+    stopping: AtomicBool,
+    active: Mutex<usize>,
+    idle: Condvar,
+}
+
+/// Keeps an in-flight unit visible to `quiesce`. It is created while holding `active`, after
+/// checking `stopping`, so a unit cannot start behind a quiesce that already observed zero.
+struct ActiveUnit<'scheduler> {
+    scheduler: &'scheduler MaintenanceScheduler,
+}
+
+impl Drop for ActiveUnit<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .scheduler
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = active.saturating_sub(1);
+        self.scheduler.idle.notify_all();
+    }
 }
 
 impl MaintenanceScheduler {
@@ -235,6 +259,9 @@ impl MaintenanceScheduler {
             pre_suspend_active: Mutex::new(BTreeSet::new()),
             queue: Mutex::new(VecDeque::new()),
             started: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            active: Mutex::new(0),
+            idle: Condvar::new(),
         }
     }
 
@@ -320,6 +347,56 @@ impl MaintenanceScheduler {
         &self.policy
     }
 
+    /// Refuses new units and waits, until `deadline`, for the one already running to reach
+    /// its safe boundary. The native unit itself cannot be cancelled: the scheduler only
+    /// stops admitting work and reports whether the last unit finished inside the budget.
+    pub(crate) fn quiesce(&self, deadline: Instant) -> Result<()> {
+        let started = Instant::now();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Set the flag while holding the same lock `begin_unit` uses: a unit that has not
+        // observed `stopping` yet either has already incremented `active` (and is waited
+        // for) or will refuse to start.
+        self.stopping.store(true, Ordering::SeqCst);
+        while *active > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!(
+                    "maintenance_in_flight units={} waited_ms={}",
+                    *active,
+                    started.elapsed().as_millis()
+                );
+            }
+            let (guard, timeout) = self
+                .idle
+                .wait_timeout(active, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            active = guard;
+            if timeout.timed_out() && *active > 0 {
+                anyhow::bail!(
+                    "maintenance_in_flight units={} waited_ms={}",
+                    *active,
+                    started.elapsed().as_millis()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn begin_unit(&self) -> Option<ActiveUnit<'_>> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.stopping.load(Ordering::SeqCst) {
+            return None;
+        }
+        *active += 1;
+        Some(ActiveUnit { scheduler: self })
+    }
+
     /// One scheduling pass over one database. Callers pass every loaded database from a
     /// periodic driver that is not serving requests.
     ///
@@ -327,7 +404,7 @@ impl MaintenanceScheduler {
     /// thread. A test can therefore drain the same queue deterministically, and a worker that
     /// schedules without an executor cannot have one appear underneath it.
     pub(crate) fn observe(&self, target: &Arc<dyn MaintenanceTarget>, now: Instant) -> Result<()> {
-        if !self.policy.enabled() {
+        if !self.policy.enabled() || self.stopping.load(Ordering::SeqCst) {
             return Ok(());
         }
         let ledger = target.ledger();
@@ -366,7 +443,16 @@ impl MaintenanceScheduler {
     pub(crate) fn drain(&self, max_units: usize, now: Instant) -> MaintenanceDrain {
         let mut summary = MaintenanceDrain::default();
         for _ in 0..max_units {
+            if self.stopping.load(Ordering::SeqCst) {
+                break;
+            }
             let Some(queued) = self.lock().pop_front() else {
+                break;
+            };
+            let Some(_active) = self.begin_unit() else {
+                // Shutdown started between the pop and the start boundary. The unit is
+                // dropped rather than run behind a quiesce that already observed zero;
+                // nothing was executed, so there is nothing to prove.
                 break;
             };
             let ledger = queued.target.ledger();
@@ -591,6 +677,9 @@ impl MaintenanceScheduler {
             .name("peri-maintenance".to_owned())
             .spawn(move || {
                 while let Some(scheduler) = weak.upgrade() {
+                    if scheduler.stopping.load(Ordering::SeqCst) {
+                        return;
+                    }
                     scheduler.drain(UNITS_PER_DRAIN, Instant::now());
                     std::thread::sleep(DRIVER_INTERVAL);
                 }

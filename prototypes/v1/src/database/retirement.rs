@@ -1,4 +1,5 @@
 use std::sync::RwLockWriteGuard;
+use std::time::Instant;
 
 use anyhow::Result;
 use turso_core::{NativeIoRetirementGuard, IO};
@@ -20,30 +21,66 @@ impl NativeIoRetirementGuard for DatabaseRetirementGuard<'_> {
 
 impl RemoteDatabase {
     pub(crate) fn retirement_health(&self) -> serde_json::Value {
-        let sample = (|| -> Option<serde_json::Value> {
-            let quarantined = self.admission.try_quarantined()?;
-            let pending = self.pending.try_lock().ok()?;
-            let engine = self.engine.try_lock().ok()?;
-            let lanes = self.lanes.try_lock().ok()?;
-            let mut connections = 0;
-            for lane in lanes.iter().filter_map(std::sync::Weak::upgrade) {
-                connections += usize::from(lane.connection.try_lock().ok()?.is_some());
-            }
-            Some(serde_json::json!({
-                "available": true,
-                "quarantined": quarantined,
+        let started = Instant::now();
+        // Every field below is a non-blocking probe. The user needs the *name* of the
+        // lock and the database it belongs to, because shutdown cannot distinguish a
+        // transient sampler race from real outstanding work from a bare boolean.
+        let fail = |lock: &'static str, state: &'static str| {
+            serde_json::json!({
+                "available": false,
+                "reason": "native_lock_unavailable",
+                "lock": lock,
+                "lock_held": true,
+                "state": state,
+                "database": self.storage().namespace().prefix(),
+                "elapsed_us": started
+                    .elapsed()
+                    .as_micros()
+                    .min(u64::MAX as u128) as u64,
+                "quarantined": null,
                 "cleanup_active": self.cleanup.load(std::sync::atomic::Ordering::Acquire),
-                "pending_retained_statements": pending.len(),
-                "live_engines": usize::from(engine.is_some()),
-                "live_connections": connections,
-                "retained_engines": if quarantined { usize::from(engine.is_some()) } else { 0 },
-                "retained_connections": if quarantined { connections } else { 0 },
+                "pending_retained_statements": null,
+                "live_engines": null,
+                "live_connections": null,
+                "retained_engines": null,
+                "retained_connections": null,
                 "io": self.io.native_health(),
-            }))
-        })();
-        sample.unwrap_or_else(
-            || serde_json::json!({"available": false, "reason": "native_lock_unavailable"}),
-        )
+            })
+        };
+        let Some(quarantined) = self.admission.try_quarantined() else {
+            return fail("admission", "state_locked");
+        };
+        let Ok(pending) = self.pending.try_lock() else {
+            return fail("pending", "state_locked");
+        };
+        let Ok(engine) = self.engine.try_lock() else {
+            return fail("engine", "state_locked");
+        };
+        let Ok(lanes) = self.lanes.try_lock() else {
+            return fail("lanes", "state_locked");
+        };
+        let mut connections = 0;
+        for lane in lanes.iter().filter_map(std::sync::Weak::upgrade) {
+            let Ok(connection) = lane.connection.try_lock() else {
+                return fail("lane.connection", "state_locked");
+            };
+            connections += usize::from(connection.is_some());
+        }
+        serde_json::json!({
+            "available": true,
+            "quarantined": quarantined,
+            "cleanup_active": self.cleanup.load(std::sync::atomic::Ordering::Acquire),
+            "pending_retained_statements": pending.len(),
+            "live_engines": usize::from(engine.is_some()),
+            "live_connections": connections,
+            "retained_engines": if quarantined { usize::from(engine.is_some()) } else { 0 },
+            "retained_connections": if quarantined { connections } else { 0 },
+            "io": self.io.native_health(),
+            "sampled_after_us": started
+                .elapsed()
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+        })
     }
 
     pub(crate) fn retirement_guard(

@@ -269,6 +269,18 @@ impl OwnershipRuntime {
         self.worker.retirement_health()
     }
 
+    /// Bounded shutdown sampling: retries until clean or the deadline passes, and returns
+    /// the last attributable sample either way.
+    pub fn retirement_health_until(&self, deadline: std::time::Instant) -> serde_json::Value {
+        self.worker.retirement_health_until(deadline)
+    }
+
+    /// Refuses new maintenance units and waits for the in-flight one to reach its safe
+    /// boundary, bounded by `deadline`.
+    pub fn quiesce_maintenance(&self, deadline: std::time::Instant) -> Result<()> {
+        self.worker.quiesce_maintenance(deadline)
+    }
+
     pub fn capacity_trace_snapshot(&self) -> serde_json::Value {
         self.worker.capacity_trace_snapshot()
     }

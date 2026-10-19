@@ -29,6 +29,12 @@ use shutdown::WorkerThreads;
 /// budget is what would let idle clients starve real requests.
 const MAX_CONNECTIONS: usize = 256;
 
+/// Inner shutdown waits are capped by the remaining process-wide budget. The quiesce
+/// waits for a native maintenance unit that cannot be cancelled; the sample then retries
+/// a transient try_lock race. Both are deliberately shorter than the default 10 s budget.
+const RETIREMENT_QUIESCE_BUDGET: Duration = Duration::from_millis(2_000);
+const RETIREMENT_SAMPLE_BUDGET: Duration = Duration::from_millis(1_000);
+
 /// Counts the bytes a result would encode to without retaining a second copy of the payload.
 #[derive(Default)]
 struct ResultByteCounter(usize);
@@ -92,6 +98,13 @@ impl State {
         self.shutdown_budget.start();
         self.stopped.store(true, Ordering::SeqCst);
         self.wakeup.wake();
+    }
+
+    /// An absolute deadline that never outlives the shutdown budget the launcher
+    /// granted, including a `shutdown_within` budget that is already smaller.
+    fn retirement_deadline(&self, cap: Duration) -> Instant {
+        let remaining = self.shutdown_budget.remaining().unwrap_or(cap);
+        Instant::now() + remaining.min(cap)
     }
 }
 
@@ -280,10 +293,33 @@ impl WorkerServer {
             Ok(())
         })();
         self.state.stop();
-        let shutdown = workers.finish(watchdog, result, || self.state.sessions.clear());
+        let shutdown = workers.finish(watchdog, result, || {
+            // Stop new maintenance units before closing sessions: a unit that starts
+            // after the sample would invalidate the proof, and one already running has
+            // to be waited for (bounded) before the retirement sample is meaningful.
+            // The deadline is read after the joins so it reflects the budget still left.
+            let quiesce_deadline = self.state.retirement_deadline(RETIREMENT_QUIESCE_BUDGET);
+            let mut failures = Vec::new();
+            if let Err(error) = self.state.runtime.quiesce_maintenance(quiesce_deadline) {
+                failures.push(format!("maintenance quiesce: {error:#}"));
+            }
+            if let Err(error) = self.state.sessions.clear() {
+                failures.push(format!("session cleanup: {error:#}"));
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                anyhow::bail!(failures.join("; "))
+            }
+        });
         // Sample retirement unconditionally: a failed session cleanup must not hide
-        // why the worker is unclean, which is exactly what an early `?` did.
-        let health = self.state.runtime.retirement_health();
+        // why the worker is unclean, which is exactly what an early `?` did. The sample
+        // is bounded and retried because a non-blocking try_lock can lose a transient
+        // race; it still returns an unattributed/unavailable sample as unproven.
+        let health = self
+            .state
+            .runtime
+            .retirement_health_until(self.state.retirement_deadline(RETIREMENT_SAMPLE_BUDGET));
         let mut failures = Vec::new();
         if let Err(error) = shutdown {
             failures.push(format!("{error:#}"));

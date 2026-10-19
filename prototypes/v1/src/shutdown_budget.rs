@@ -115,6 +115,19 @@ impl ShutdownBudget {
         });
     }
 
+    /// Time left in the process-wide shutdown budget, or `None` before it is started.
+    /// Inner waits cap themselves with this so they cannot outlive the watchdog.
+    pub fn remaining(&self) -> Option<Duration> {
+        let state = self
+            .state
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .as_ref()
+            .map(|(deadline, _)| deadline.saturating_duration_since(Instant::now()))
+    }
+
     pub fn check(&self) -> Result<()> {
         let state = self
             .state

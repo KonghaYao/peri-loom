@@ -8,6 +8,7 @@ use turso_core::io::{Buffer, Completion, OpenFlags, IO};
 use crate::database::RemoteDatabase;
 use crate::namespace::Namespace;
 use crate::object_store::LocalObjectStore;
+use crate::session::{Budget, RequestDeadline};
 
 #[test]
 fn real_native_callback_and_retained_refs_are_visible_without_blocking() -> Result<()> {
@@ -47,7 +48,12 @@ fn real_native_callback_and_retained_refs_are_visible_without_blocking() -> Resu
         assert_eq!(sample["retained_engines"], 1);
         assert_eq!(sample["retained_connections"], 1);
         let pending = database.pending.lock().unwrap();
-        assert_eq!(database.retirement_health()["available"], false);
+        let sample = database.retirement_health();
+        assert_eq!(sample["available"], false);
+        assert_eq!(sample["reason"], "native_lock_unavailable");
+        assert_eq!(sample["lock"], "pending");
+        assert_eq!(sample["lock_held"], true);
+        assert_eq!(sample["database"], "health/callback/");
         drop(pending);
         resume.send(())?;
         assert!(writing.join().unwrap()?.finished());
@@ -61,5 +67,29 @@ fn real_native_callback_and_retained_refs_are_visible_without_blocking() -> Resu
     let sample = database.retirement_health();
     assert_eq!(sample["retained_engines"], 0);
     assert_eq!(sample["retained_connections"], 0);
+    Ok(())
+}
+
+/// This is the lock a checkpoint or compaction holds through
+/// `maintenance_connection` for the whole unit. The sampler must name it, because an
+/// unavailable sample at shutdown cannot otherwise be told apart from a registry race.
+#[test]
+fn maintenance_connection_is_reported_as_lane_connection() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let database = RemoteDatabase::open(
+        Arc::new(LocalObjectStore::open(directory.path().join("objects"))?),
+        Namespace::new("health", "maintenance")?,
+        directory.path().join("cache"),
+        10,
+    )?;
+    let deadline = RequestDeadline::new(&Budget::trusted_default())?;
+    let connection = database.lane.maintenance_connection(&deadline, &database)?;
+    let sample = database.retirement_health();
+    assert_eq!(sample["available"], false);
+    assert_eq!(sample["lock"], "lane.connection");
+    assert_eq!(sample["lock_held"], true);
+    assert_eq!(sample["database"], "health/maintenance/");
+    drop(connection);
+    assert_eq!(database.retirement_health()["available"], true);
     Ok(())
 }

@@ -618,6 +618,13 @@ impl WorkerRuntime {
         registry.finish_retiring(identifier);
     }
 
+    /// Stops admitting maintenance units and waits, until `deadline`, for the one already
+    /// in flight. The unit cannot be cancelled safely; an over-budget wait is reported so
+    /// shutdown stays unclean instead of claiming a boundary it did not observe.
+    pub(crate) fn quiesce_maintenance(&self, deadline: Instant) -> Result<()> {
+        self.maintenance.quiesce(deadline)
+    }
+
     /// One scheduling pass over every database this worker has open.
     ///
     /// This is the only trigger for scheduled maintenance, and its caller is the worker
