@@ -37,7 +37,9 @@ V1 的运行与安全边界见 `prototypes/v1/README.md` 和 `prototypes/v1/plat
 2. 平台对外接口的 turso serverless sdk 兼容一定要做好
 3. 平台自身的 serverless 能力，diskless 能力一定要保证好
 
-> v1 已包含默认关闭的实验性 Hrana HTTP/WS 适配；已测试的 SDK/协议范围及未证实的边界见 `prototypes/v1/platform/README.md`，不要宣称完整 Hrana 兼容。
+> v1 已包含默认关闭的实验性 Hrana HTTP/WS 适配；E1（HTTP v3 写 cursor abort 无可确认回滚证明）是显式
+> known-gap，默认矩阵每轮执行 26/27、2 轮共 52 runs + 2 个 skip。已测试的 SDK/协议范围及未证实的边界见
+> `prototypes/v1/platform/README.md`，不要宣称完整 Hrana 兼容。
 
 ## 命令
 
@@ -97,21 +99,31 @@ scripts/p0-gate.sh
 ## 测试与验收口径
 
 - **P0 发布门禁**：`scripts/p0-gate.sh` 校验 `prototypes/p0/turso` 停在父仓库锁定的 gitlink 后，
-  运行 `prototypes/p0` 全部测试与固定 Turso commit 的 SQL 冒烟。`.github/workflows/p0-gate.yml`
-  在每次 push / pull request 与 tag 发布时调用它；P0 未通过时 `v1-image` 不会构建镜像、发布
-  manifest 或创建 release。不得在发布流程中绕过或裁减该测试集。
+  运行 `prototypes/p0` 全部测试与固定 Turso commit 的 SQL 冒烟。`.github/workflows/v1-baseline.yml`
+  同时包含 P0 与官方 JS SDK 矩阵；tag 发布时 `v1-image` 通过 `workflow_call` 调用它，`build` 依赖
+  `[check, baseline]`，P0 每个 tag 只跑一次（`v1-baseline` 的独立 push 触发以 `tags-ignore: v*` 排除
+  发布 tag，避免重复）。矩阵 declared 27/27，默认每轮执行 26/27（E1 known-gap 跳过），2 轮共
+  52 runs + 2 个 known-gap skips；证据经 `scripts/redact-matrix-evidence.sh` 脱敏后作为 artifact 留存。
+  门禁失败时 `v1-image` 不会构建镜像、发布 manifest 或创建 release。不得在发布流程中绕过或裁减该测试集。
 - **SQL 兼容标准**（2026-10-10 用户改定）：停止官方 SQLite 原始测试，以 TursoDB 自带测试为准
   （`prototypes/p0/turso` 的 `sqlite-sqltests` / `turso-sqltests`，Rust 后端）。固定 64 MiB hash
   预算、禁用快照更新；跑门禁时不要自行改预算或启用快照更新，结果不可与既有门禁数字混用。
 - **SQL 门禁不可宣称全绿**：R21 与 view rename 已有修复代码和回归用例，仍须按固定 64 MiB
   hash 预算重测；分别记录 SQL 结果、约束与 plan snapshot 差异，不自行更新快照。
+- **v1.1.8 修复与 Hrana 已知缺口**：R1——close 失败不再覆盖首个终止语句失败，close 失败以独立
+  `cleanup_error` 表达；D1——CLI/SDK 展示脱敏 `error.message`，`outcome_unknown` 展示 `operation_id`/
+  `may_have_committed`/`execution_proven`；D2——已结算错误路径关闭 session，`outcome_unknown`/
+  `session_moved` 保持不透明，不重连、不重放。E1 是显式 known-gap：HTTP v3 写 cursor abort 无
+  可确认回滚证明；默认矩阵每轮执行 26/27，2 轮 52 runs + 2 skips，
+  `PERI_HRANA_INCLUDE_KNOWN_GAPS=1` 可执行但不保证通过，不是完整 Hrana 兼容。
 - **当前交付缺口**：同一持久卷的*正常*重启仍被 launcher 拒绝（clean 门禁未放宽）；原数据库在 Unknown 后已有
   有证明条件的隔离释放路径（`operations/decision` → `operations/retire-local` → `isolation/release`，由
   `dev.py --recover` 在 SQL 关闭的恢复实例中执行，需 owned worker stop proof 与 authority fencing attestation，
   且不删除 ownership marker），但“释放后正常重启”的端到端验证尚未跑通。审计已经按 64 MiB 分段并验证连续
   hash chain，但磁盘空间耗尽前的并发安全准入预留仍未实现。
   可信 SQL 回执不再被审计失败改写为 Unknown。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestAudit|TestDurableRecovery|TestGatewayRealAudit' -count=1`。
-  最小 SQL／官方 JS SDK CI 见 `.github/workflows/v1-baseline.yml`；尚未运行远端 CI 或完整支持矩阵。
+  最小 SQL／官方 JS SDK 矩阵已纳入 `.github/workflows/v1-baseline.yml` 发布门禁；E1 known-gap 如上，
+  远端 CI 结果以 tag run 为准，不宣称完整支持矩阵。
   下一项：正常重启的 clean proof、lease fencing 与持久身份轮换；launcher 并发锁已有针对性回归。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。

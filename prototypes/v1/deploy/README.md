@@ -72,13 +72,22 @@ denied. Operators must not mistake an initial successful start for production re
 
 ## CI and image releases
 
-`.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. A `p0` job
-first runs the release gate (`.github/workflows/p0-gate.yml` →
-`scripts/p0-gate.sh`): it checks that `prototypes/p0/turso` matches the pinned
-gitlink, runs every `prototypes/p0` test, and runs the pinned Turso SQL smoke.
-`build` depends on both `p0` and `check`, so a failing gate blocks the image
-builds, the multi-architecture manifest, and the GitHub Release. The tag must
-match `v<prototypes/v1/Cargo.toml version>`. A `check` job validates the version and
+`.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. A reusable
+`baseline` job calls `.github/workflows/v1-baseline.yml` via `workflow_call`;
+that workflow contains the P0 release gate (`.github/workflows/p0-gate.yml` →
+`scripts/p0-gate.sh`, which checks that `prototypes/p0/turso` matches the pinned
+gitlink, runs every `prototypes/p0` test, and runs the pinned Turso SQL smoke)
+and the full official JS SDK matrix. The standalone `v1-baseline` push trigger
+uses `tags-ignore: v*`, so a release tag has exactly one P0/matrix run. `build`
+depends on `[check, baseline]`, so a failing gate blocks the image builds, the
+multi-architecture manifest, and the GitHub Release. The matrix declares 27/27
+scripts and default-executes 26/27 per round for 2 rounds: 52 passed runs and 2
+known-gap skips. E1 (`http-abort-write-cursor-live.mjs`) is the explicit known
+gap because HTTP v3 write-cursor abort has no acknowledged rollback proof.
+`PERI_HRANA_INCLUDE_KNOWN_GAPS=1` executes E1 but does not guarantee a pass; this
+is not a full Hrana compatibility claim. Matrix evidence is passed through
+`scripts/redact-matrix-evidence.sh` and retained as a workflow artifact. The tag
+must match `v<prototypes/v1/Cargo.toml version>`. A `check` job validates the version and
 the Compose/verifier configuration, then a `build` matrix runs one **native** runner
 per architecture (`ubuntu-24.04` for `linux/amd64`, `ubuntu-24.04-arm` for
 `linux/arm64`). Each runner builds only its own platform, runs `verify-image.py`
