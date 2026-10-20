@@ -251,6 +251,40 @@ checkpoint is only half of a reuse judgment: it proves the sidecar view reached
 the payload, never that the stop itself was clean, and a checkpoint step the
 deadline abandoned can still commit after the stop was reported unclean.
 
+v1.1.6 changes how the Authority RPC carries object bytes: `Put` bodies,
+`UploadSegments` batches and `Get` replies use base64 strings instead of JSON
+integer arrays, so a 4 MiB object takes about 5.6 MB on the wire instead of about
+15 MB; the 32 MiB message cap is unchanged. The new decoder still accepts the
+integer-array form and can read a message produced by an older peer, but an older
+decoder cannot read base64. `PROTOCOL_VERSION` remains 1, so this release's
+Authority and Worker binaries must be deployed together: a mixed pair is not
+rejected by a version check, and fails at the first object the older side has to
+decode from the new encoder.
+
+The ownership root advances to schema version 5, which adds the paged command
+index. Boot rewrites a version 1, 2 or 4 root to version 5, and v1.1.5 and
+earlier reject version 5, so opening a database with v1.1.6 is a one-way disk
+upgrade: rolling back to an earlier release needs the pre-upgrade object store,
+not just the earlier binary. Command receipts beyond the inline window and WAL
+receipt pages written by truncation are content-addressed and verified on read,
+with a missing or altered page failing closed; a replayed WAL receipt that
+predates the archive and carries no digest is refused instead of being served
+from the old inline record.
+
+The maintenance scheduler is still off unless `PERI_MAINTENANCE_SCHEDULE=1`;
+with the switch unset, maintenance cadence is unchanged and a tick is one static
+read per loaded database. Enabling it opts into watermarks, cooldowns and budgets
+whose defaults are experiment inputs, not measured production thresholds.
+`PERI_WORK_METRICS=1` exposes the new admission-wait, connection-wait,
+storage-lock, WAL-workload, metadata and lock-wait counters. The Go platform also
+records operation-journal encode, verification, assembly, write, Sync and
+witness durations as plain counters; the per-request read-phase profile stays
+behind its existing default-off switch. None of these observations changes SQL,
+WAL, publication, audit or fencing behaviour. The Go SDK adds
+`Options.ConnectionReuse` (default false) for external connection reuse; a
+failure after a request was dispatched is still `outcome_unknown` and is never
+replayed.
+
 ## Build, test, and SDKs
 
 ```sh
