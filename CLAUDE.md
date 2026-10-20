@@ -3,6 +3,14 @@
 面向在本仓库工作的 AI agent。项目介绍、目录结构、环境安装、本地启动见 `README.md`；
 V1 的运行与安全边界见 `prototypes/v1/README.md` 和 `prototypes/v1/platform/README.md`。
 
+## 协作与汇报约定
+
+- **观察者不是数据库专家**：用户没有数据库与调优经验，不负责裁决技术要点和关键实现决策。
+  这类问题应依据仓库证据、领域约束与测试结果自行判断并执行；只有目标、授权范围、
+  不可逆结果或对外承诺存在歧义时才询问。
+- **汇报百分比与关键信息**：任务完成度、测试通过率、性能与容量变化用百分比或明确数字表达；
+  只陈述影响决策的事实、证据位置和剩余风险，不复述过程细节。
+
 ## 核心工程原则 v1.8
 
 1. **架构与领域优先**：编码前明确目标、领域边界、职责、依赖方向和数据流。复用型抽象等第二个真实用例再提取；协议隔离、依赖反转和确定的可替换边界可在首个用例建立接口，须说明当前需要。
@@ -48,6 +56,9 @@ cd prototypes/v1/controller && go test ./...
 
 # 全栈本地启动（Authority + 两台加密 Worker + Controller + Gateway + Key Broker）
 python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
+
+# P0 发布门禁（每次上线必需；CI 的 push/PR 与 tag 镜像发布共用）
+scripts/p0-gate.sh
 ```
 
 ## 环境陷阱
@@ -85,13 +96,20 @@ python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
 
 ## 测试与验收口径
 
+- **P0 发布门禁**：`scripts/p0-gate.sh` 校验 `prototypes/p0/turso` 停在父仓库锁定的 gitlink 后，
+  运行 `prototypes/p0` 全部测试与固定 Turso commit 的 SQL 冒烟。`.github/workflows/p0-gate.yml`
+  在每次 push / pull request 与 tag 发布时调用它；P0 未通过时 `v1-image` 不会构建镜像、发布
+  manifest 或创建 release。不得在发布流程中绕过或裁减该测试集。
 - **SQL 兼容标准**（2026-10-10 用户改定）：停止官方 SQLite 原始测试，以 TursoDB 自带测试为准
   （`prototypes/p0/turso` 的 `sqlite-sqltests` / `turso-sqltests`，Rust 后端）。固定 64 MiB hash
   预算、禁用快照更新；跑门禁时不要自行改预算或启用快照更新，结果不可与既有门禁数字混用。
 - **SQL 门禁不可宣称全绿**：R21 与 view rename 已有修复代码和回归用例，仍须按固定 64 MiB
   hash 预算重测；分别记录 SQL 结果、约束与 plan snapshot 差异，不自行更新快照。
-- **当前交付缺口**：同一持久卷正常重启仍被 launcher 拒绝；审计已经按 64 MiB 分段并验证连续 hash chain，
-  但磁盘空间耗尽前的并发安全准入预留仍未实现；原数据库在 Unknown 后仍需有证明条件的恢复路径。
+- **当前交付缺口**：同一持久卷的*正常*重启仍被 launcher 拒绝（clean 门禁未放宽）；原数据库在 Unknown 后已有
+  有证明条件的隔离释放路径（`operations/decision` → `operations/retire-local` → `isolation/release`，由
+  `dev.py --recover` 在 SQL 关闭的恢复实例中执行，需 owned worker stop proof 与 authority fencing attestation，
+  且不删除 ownership marker），但“释放后正常重启”的端到端验证尚未跑通。审计已经按 64 MiB 分段并验证连续
+  hash chain，但磁盘空间耗尽前的并发安全准入预留仍未实现。
   可信 SQL 回执不再被审计失败改写为 Unknown。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestAudit|TestDurableRecovery|TestGatewayRealAudit' -count=1`。
   最小 SQL／官方 JS SDK CI 见 `.github/workflows/v1-baseline.yml`；尚未运行远端 CI 或完整支持矩阵。
   下一项：正常重启的 clean proof、lease fencing 与持久身份轮换；launcher 并发锁已有针对性回归。
