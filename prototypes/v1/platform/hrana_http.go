@@ -226,6 +226,18 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	request = request.WithContext(ctx)
 	resultBytes := 0
 	dispatched := false
+	var firstFailure *hranaReply
+	firstFailureLocal := false
+	rememberFailure := func(reply hranaReply) {
+		if firstFailure == nil {
+			firstFailure = &reply
+		}
+	}
+	rememberLocalFailure := func(reply hranaReply) {
+		if firstFailure == nil {
+			firstFailure, firstFailureLocal = &reply, true
+		}
+	}
 	limitFailure := func(status int, code string) {
 		if newStream && stream.session != "" {
 			if pipeline.Baton != "" {
@@ -274,7 +286,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				entry.SQL = stream.storedSQL[entry.SQLID]
 			}
 			if entry.SQL == "" {
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": "invalid_arguments"}})
+				missing := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
+				rememberLocalFailure(missing)
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": missing.code}})
 				continue
 			}
 			reply := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": stream.session, "sql": entry.SQL})
@@ -283,6 +297,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			if reply.code != "" {
+				rememberFailure(reply)
 				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
 			} else {
 				var result map[string]any
@@ -299,6 +314,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 					return
 				}
+				rememberFailure(reply)
 				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
 				continue
 			}
@@ -308,7 +324,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				entry.SQL = stream.storedSQL[entry.SQLID]
 			}
 			if entry.SQL == "" {
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": "invalid_arguments"}})
+				missing := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
+				rememberLocalFailure(missing)
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": missing.code}})
 				continue
 			}
 			dispatched = true
@@ -322,6 +340,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			if reply.code != "" {
+				rememberFailure(reply)
 				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
 			} else {
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "sequence"}})
@@ -340,7 +359,15 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			if stream.session != "" {
 				reply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": stream.session})
 				if reply.status != 200 || reply.code != "" {
-					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+					if firstFailure != nil {
+						if firstFailureLocal {
+							hranaPipelineFailureWithResults(writer, pipeline.Baton, dispatched, *firstFailure, response.Results, reply)
+						} else {
+							hranaPipelineFailure(writer, pipeline.Baton, dispatched, *firstFailure, reply)
+						}
+					} else {
+						hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+					}
 					return
 				}
 			}
@@ -361,6 +388,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			if reply.code != "" {
+				rememberFailure(reply)
 				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
 			} else {
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}})
@@ -383,6 +411,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 							hranaPipelineFailure(writer, pipeline.Baton, dispatched, conditionReply)
 							return
 						}
+						rememberFailure(conditionReply)
 						errors[index] = map[string]any{"message": conditionReply.code, "code": conditionReply.code}
 						continue
 					}
@@ -404,6 +433,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					return
 				}
 				if reply.code != "" {
+					rememberFailure(reply)
 					errors[index] = map[string]any{"message": reply.code, "code": reply.code}
 					continue
 				}
@@ -584,13 +614,31 @@ func (handler *hranaHTTP) autocommit(request *http.Request, credential, session 
 	return *native.Autocommit, hranaReply{}
 }
 
-// hranaPipelineFailure answers a pipeline that can no longer continue. The
-// pipeline protocol has no place for a partial result, so the error carries the
-// platform's code together with its correlation and commit risk, and repeats the
-// baton when one already exists so the caller can tie the failure to the stream
-// it used. A caller must not retry: the reply may leave an outcome unresolved.
-func hranaPipelineFailure(writer http.ResponseWriter, baton string, dispatched bool, reply hranaReply) {
+// hranaPipelineFailure answers a pipeline that can no longer continue. A
+// dispatched statement has no place for a partial result, so the error carries
+// the platform's code together with its correlation and commit risk, and repeats
+// the baton when one already exists so the caller can tie the failure to the
+// stream it used. A caller must not retry: the reply may leave an outcome
+// unresolved.
+func hranaPipelineFailure(writer http.ResponseWriter, baton string, dispatched bool, reply hranaReply, cleanup ...hranaReply) {
+	hranaPipelineFailureReply(writer, baton, dispatched, reply, nil, cleanup...)
+}
+
+// hranaPipelineFailureWithResults is the local-validation exception: the first
+// failure is already a step result, so a later close failure must not erase it.
+func hranaPipelineFailureWithResults(writer http.ResponseWriter, baton string, dispatched bool, reply hranaReply, results []any, cleanup ...hranaReply) {
+	hranaPipelineFailureReply(writer, baton, dispatched, reply, results, cleanup...)
+}
+
+func hranaPipelineFailureReply(writer http.ResponseWriter, baton string, dispatched bool, reply hranaReply, results []any, cleanup ...hranaReply) {
 	body := map[string]any{"error": hranaFailureFields(reply, dispatched)}
+	if results != nil {
+		body["results"] = results
+	}
+	if len(cleanup) > 0 {
+		// 清理失败单独关联，不能覆盖语句本身的状态、关联标识或执行证据。
+		body["cleanup_error"] = map[string]any{"status": cleanup[0].status, "error": hranaFailureFields(cleanup[0], false)}
+	}
 	if baton != "" {
 		body["baton"] = baton
 	}
