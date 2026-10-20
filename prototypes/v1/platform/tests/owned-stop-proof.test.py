@@ -246,12 +246,14 @@ class OwnedStopProofTests(unittest.TestCase):
                 restarted = dev.Project(project.arguments)
                 restarted.prepare()
                 self.assertEqual(restarted.config["owned_stop_proof"]["generation"], old_generation)
-                self.assertFalse((project.directory / "launcher-terminal.json").exists())
-                self.assertEqual(list((project.directory / "owned-proof").iterdir()), [])
+                self.assertTrue((project.directory / "launcher-terminal.json").exists())
+                self.assertEqual(len(list((project.directory / "owned-proof").iterdir())), 4)
                 archives = list((project.directory / "owned-proof-history").glob(old_generation + "-*"))
                 self.assertEqual(len(archives), 1)
                 self.assertEqual(len(list(archives[0].iterdir())), 4)
-                with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
+                dev.Project(project.arguments).prepare()
+                restarted.write_startup_intent(configuration, services_started=["authority"])
+                with self.assertRaisesRegex(RuntimeError, "interrupted startup"):
                     dev.Project(project.arguments).prepare()
 
     def write_clean_stop(self, project, configuration):
@@ -354,7 +356,7 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertEqual(len(list((root / "owned-proof").iterdir())), 4)
             failed = list((root / "owned-proof-history").glob(configuration["generation"] + "-failed-*"))
             self.assertEqual(len(failed), 1)
-            self.assertEqual([entry.name for entry in failed[0].iterdir()], ["worker-a.identity.json"])
+            self.assertEqual(len(list(failed[0].iterdir())), 4)
             # A restored startup failure keeps the run dir reusable.
             dev.Project(fixture.arguments).prepare()
 
@@ -375,10 +377,7 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertEqual(dev.main(), 1)
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
             self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
-            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
-            self.assertFalse(record["clean_evidence"]["consumed"])
-            self.assertTrue(record["clean_evidence"]["preserved"])
-            self.assertFalse(record["clean_evidence"]["existing_clean_evidence_verified"])
+            self.assertFalse((root / "launcher-restart-failure.json").exists())
 
     def test_operator_recovery_refusal_keeps_existing_failure_record(self):
         with tempfile.TemporaryDirectory(prefix="restart-refusal-record-", dir="/tmp") as directory:
@@ -450,7 +449,7 @@ class OwnedStopProofTests(unittest.TestCase):
             observed["process"].terminate.assert_called_once()
             observed["process"].wait.assert_called()
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
-            self.assertFalse(terminal_path.exists())
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
             preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
             self.assertEqual(len(preserved), 1)
             self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
@@ -523,7 +522,7 @@ class OwnedStopProofTests(unittest.TestCase):
             with patch.object(dev.Project, "run", failing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
                 self.assertEqual(dev.main(), 1)
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
-            self.assertFalse(terminal_path.exists())
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
             preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
             self.assertEqual(len(preserved), 1)
             self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
@@ -579,7 +578,7 @@ class OwnedStopProofTests(unittest.TestCase):
             # could not be written. Because a service was started, the evidence is
             # preserved for an operator instead of being rolled back.
             self.assertEqual(stop_path.read_bytes(), stop_bytes)
-            self.assertFalse(terminal_path.exists())
+            self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
             preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
             self.assertEqual(len(preserved), 1)
             self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
@@ -638,13 +637,9 @@ class OwnedStopProofTests(unittest.TestCase):
 
                 with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
                     self.assertEqual(dev.main(), 1)
-                record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
-                self.assertTrue(record["requires_operator"])
-                self.assertFalse(record["clean_evidence"]["restored"])
-                self.assertTrue(record["clean_evidence"]["preserved"])
-                self.assertFalse(record["clean_evidence"]["existing_clean_evidence_verified"])
-                self.assertTrue(record["clean_evidence"]["requires_operator"])
-                self.assertIn("stop", record["clean_evidence"]["verification_error"])
+                self.assertFalse((root / "launcher-restart-failure.json").exists())
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    dev.Project(fixture.arguments).prepare()
                 self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
 
     def test_stale_recovered_failure_record_is_replaced_by_new_refusal(self):
@@ -667,10 +662,9 @@ class OwnedStopProofTests(unittest.TestCase):
 
             with patch.object(dev.Project, "run", refusing_run), patch.object(sys, "argv", self.launcher_arguments(root)):
                 self.assertEqual(dev.main(), 1)
-            self.assertNotEqual(failure_path.read_bytes(), previous)
-            record = json.loads(json.loads(failure_path.read_text())["payload"])
-            self.assertTrue(record["requires_operator"])
-            self.assertIn("legacy clean proof", record["error"])
+            self.assertEqual(failure_path.read_bytes(), previous)
+            with self.assertRaisesRegex(RuntimeError, "legacy clean proof"):
+                dev.Project(fixture.arguments).prepare()
 
     def test_failure_gate_rejection_is_never_replaced_by_reuse(self):
         cases = {
@@ -738,10 +732,10 @@ class OwnedStopProofTests(unittest.TestCase):
         environment["PERI_PLATFORM_BINARY"] = os.environ["PERI_PLATFORM_BINARY"]
         return environment
 
-    def launch_live(self, root, port):
+    def launch_live(self, root, port, launcher=source, extra=()):
         process = subprocess.Popen(
-            [sys.executable, str(source), "--run-dir", str(root),
-             "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+            [sys.executable, str(launcher), "--run-dir", str(root),
+             "--listen", f"127.0.0.1:{port}", "--tls", "--no-build", *extra],
             env=self.live_environment(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         lines = queue.Queue()
         threading.Thread(target=lambda: [lines.put(line) for line in process.stdout], daemon=True).start()
@@ -780,12 +774,435 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertEqual(code, expect)
         return code
 
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_new_volume_rebind_and_second_restart(self):
+        with tempfile.TemporaryDirectory(prefix="release-volume-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE release_volume (id INTEGER PRIMARY KEY, value TEXT)", "execute")
+                client.statement("INSERT INTO release_volume VALUES (1, 'before-upgrade')", "execute")
+            finally:
+                self.stop_live(first)
+            launch_bytes = (root / "launch.json").read_bytes()
+            self.assertEqual(json.loads(launch_bytes)["wal_replay_bytes"], 0)
+            rejected = subprocess.run(
+                [sys.executable, str(source), "--run-dir", str(root), "--listen",
+                 f"127.0.0.1:{self.live_port()}", "--tls", "--no-build"],
+                env=self.live_environment(), capture_output=True, text=True, timeout=30)
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("cannot be silently rebound", rejected.stderr)
+            self.assertFalse((root / "launcher-restart-failure.json").exists())
+            for cycle in range(2):
+                upgraded = self.launch_live(root, port)
+                try:
+                    client = LiveSQLClient(root)
+                    self.assertEqual(client.statement("SELECT value FROM release_volume WHERE id = 1", "query"), [["before-upgrade"]])
+                    if cycle == 0:
+                        client.statement("INSERT INTO release_volume VALUES (2, 'after-upgrade')", "execute")
+                    self.assertEqual(client.statement("SELECT value FROM release_volume WHERE id = 2", "query"), [["after-upgrade"]])
+                finally:
+                    self.stop_live(upgraded)
+                self.assertEqual((root / "launch.json").read_bytes(), launch_bytes)
+
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_failed_restart_recovery_supersedes_failure(self):
+        with tempfile.TemporaryDirectory(prefix="restart-recover-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE recovery_volume (value TEXT)", "execute")
+                client.statement("INSERT INTO recovery_volume VALUES ('retained')", "execute")
+            finally:
+                self.stop_live(first)
+            script = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('launcher', sys.argv[1])
+dev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dev)
+original_request = dev.request
+def request(endpoint, credential, path, body, certificate=None, timeout=30):
+    result = original_request(endpoint, credential, path, body, certificate, timeout)
+    if path == '/v1/databases/status': raise RuntimeError('injected pre-ready failure')
+    return result
+dev.request = request
+sys.argv = sys.argv[1:]
+sys.exit(dev.main())
+"""
+            failed = subprocess.run([sys.executable, "-c", script, str(source), "--run-dir", str(root),
+                                     "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+                                    env=self.live_environment(), capture_output=True, text=True, timeout=90)
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("injected pre-ready failure", failed.stderr)
+            failure_path = root / "launcher-restart-failure.json"
+            original = failure_path.read_bytes()
+            self.assertTrue(json.loads(json.loads(original)["payload"])["requires_operator"])
+            recovery = self.launch_live(root, port, extra=("--recover",))
+            self.stop_live(recovery)
+            record = json.loads(json.loads(failure_path.read_bytes())["payload"])
+            self.assertFalse(record["requires_operator"])
+            self.assertEqual(record["superseded_by_terminal_sha256"], dev.file_sha256(root / "launcher-terminal.json"))
+            self.assertEqual((root / "launcher-restart-failure-history" / (hashlib.sha256(original).hexdigest() + ".json")).read_bytes(), original)
+            restarted = self.launch_live(root, port)
+            try:
+                self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM recovery_volume", "query"), [["retained"]])
+            finally:
+                self.stop_live(restarted)
+
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_sigkill_startup_boundaries(self):
+        for boundary, label in (("staging", "E1-staging"), ("authority", "authority-ready"),
+                                ("platform", "E2a-authority+platform"), ("before-ready", "E2b-all-services")):
+            with self.subTest(boundary=label), tempfile.TemporaryDirectory(prefix="kill-startup-", dir="/tmp") as directory:
+                root = pathlib.Path(directory).resolve()
+                port = self.live_port()
+                first = self.launch_live(root, port)
+                try:
+                    client = LiveSQLClient(root)
+                    client.statement("CREATE TABLE startup_kill (value TEXT)", "execute")
+                    client.statement("INSERT INTO startup_kill VALUES ('preserved')", "execute")
+                finally:
+                    self.stop_live(first)
+                terminal_bytes = (root / "launcher-terminal.json").read_bytes()
+                script = """
+import argparse, importlib.util, json, os, pathlib, signal, sys
+spec = importlib.util.spec_from_file_location('launcher', sys.argv[1])
+dev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dev)
+p = dev.Project(argparse.Namespace(run_dir=sys.argv[2], backend='local', listen=sys.argv[3], tls=True, no_build=True, writer_admission=False))
+boundary = sys.argv[4]
+def kill():
+    dev.atomic_private_json(p.directory / 'test-child-pids.json', {name: process.pid for name, process in p.processes.items()})
+    os.kill(os.getpid(), signal.SIGKILL)
+original_prepare, original_start = p.prepare, p.start
+def prepare():
+    original_prepare()
+    if boundary == 'staging': kill()
+def start(name, command, environment):
+    result = original_start(name, command, environment)
+    if boundary == name: kill()
+    return result
+original_request = dev.request
+def request(endpoint, credential, path, body, certificate=None, timeout=30):
+    result = original_request(endpoint, credential, path, body, certificate, timeout)
+    if boundary == 'before-ready' and path == '/v1/databases/status': kill()
+    return result
+p.prepare, p.start, dev.request = prepare, start, request
+p.run()
+"""
+                killed = subprocess.run([sys.executable, "-c", script, str(source), str(root),
+                                         f"127.0.0.1:{port}", boundary], env=self.live_environment(),
+                                        capture_output=True, text=True, timeout=90)
+                self.assertEqual(killed.returncode, -signal.SIGKILL)
+                pids = json.loads((root / "test-child-pids.json").read_text())
+                try:
+                    # launcher 已死，测试只终止自身创建的进程，不制造 joined stop proof。
+                    for name in ("platform", "worker-a", "worker-b", "authority"):
+                        if name in pids:
+                            try:
+                                os.kill(pids[name], signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
+                    deadline = time.monotonic() + 20
+                    alive = set(pids.values())
+                    while alive and time.monotonic() < deadline:
+                        for pid in list(alive):
+                            try:
+                                os.kill(pid, 0)
+                            except ProcessLookupError:
+                                alive.remove(pid)
+                        time.sleep(0.1)
+                    self.assertFalse(alive, "test child processes did not exit")
+                    if boundary == "staging":
+                        restarted = self.launch_live(root, port)
+                        try:
+                            self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM startup_kill", "query"), [["preserved"]])
+                        finally:
+                            self.stop_live(restarted)
+                    else:
+                        refused = subprocess.run(
+                            [sys.executable, str(source), "--run-dir", str(root), "--listen",
+                             f"127.0.0.1:{port}", "--tls", "--no-build"],
+                            env=self.live_environment(), capture_output=True, text=True, timeout=30)
+                        self.assertEqual(refused.returncode, 1)
+                        self.assertIn("interrupted startup", refused.stderr)
+                        self.assertIn("operator recovery", refused.stderr)
+                        self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
+                        recovery = self.launch_live(root, port, extra=("--recover",))
+                        self.stop_live(recovery)
+                        self.assertEqual((root / "authority/authority.lock").read_bytes(), b"clean\n")
+                        restarted = self.launch_live(root, port)
+                        try:
+                            self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM startup_kill", "query"), [["preserved"]])
+                        finally:
+                            self.stop_live(restarted)
+                finally:
+                    for pid in pids.values():
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_new_volume_occupied_port_is_retryable(self):
+        with tempfile.TemporaryDirectory(prefix="new-volume-port-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            holder.bind(("127.0.0.1", port))
+            holder.listen(8)
+            try:
+                failed = subprocess.run(
+                    [sys.executable, str(source), "--run-dir", str(root),
+                     "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+                    env=self.live_environment(), capture_output=True, text=True, timeout=60)
+            finally:
+                holder.close()
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("listener unavailable before startup", failed.stderr)
+            self.assertFalse((root / "launch.json").exists())
+            self.assertFalse((root / "platform.json").exists())
+            self.assertFalse((root / "authority/authority.lock").exists())
+            self.assertFalse((root / "launcher-restart-failure.json").exists())
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE new_volume (value TEXT)", "execute")
+                client.statement("INSERT INTO new_volume VALUES ('retry')", "execute")
+            finally:
+                self.stop_live(first)
+            second = self.launch_live(root, port)
+            try:
+                self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM new_volume", "query"), [["retry"]])
+            finally:
+                self.stop_live(second)
+
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_spawn_window_authority_recovery(self):
+        with tempfile.TemporaryDirectory(prefix="spawn-window-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE spawn_window (value TEXT)", "execute")
+                client.statement("INSERT INTO spawn_window VALUES ('preserved')", "execute")
+            finally:
+                self.stop_live(first)
+            script = """
+import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location('launcher', sys.argv[1])
+dev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dev)
+original_popen = dev.subprocess.Popen
+def popen(*args, **kwargs):
+    process = original_popen(*args, **kwargs)
+    command = args[0] if args else kwargs.get('args')
+    if command and len(command) > 1 and command[1] == 'authority':
+        run_dir = sys.argv[sys.argv.index('--run-dir') + 1]
+        dev.private_json(dev.pathlib.Path(run_dir) / 'test-spawn-pid.json', {'pid': process.pid})
+        os.kill(os.getpid(), signal.SIGKILL)
+    return process
+dev.subprocess.Popen = popen
+sys.argv = sys.argv[1:]
+sys.exit(dev.main())
+"""
+            killed = subprocess.run(
+                [sys.executable, "-c", script, str(source), "--run-dir", str(root),
+                 "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
+                env=self.live_environment(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(killed.returncode, -signal.SIGKILL)
+            child = json.loads((root / "test-spawn-pid.json").read_text())["pid"]
+            decoys = []
+            try:
+                deadline = time.monotonic() + 10
+                marker = root / "authority/authority.lock"
+                while time.monotonic() < deadline:
+                    if marker.is_file() and marker.read_bytes() == b"dirty\n":
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(marker.read_bytes(), b"dirty\n")
+                configuration = json.loads((root / "platform.json").read_text())["owned_stop_proof"]
+                intent = dev.read_signed_private_at(root / "launcher-startup-attempt.json", configuration, "intent")
+                self.assertEqual(intent["starting"], "authority")
+                self.assertEqual(intent["services_started"], [])
+                self.assertEqual(intent["pids"], {})
+                self.assertTrue(intent["start_nonce"])
+                self.assertTrue(intent["seal_before_spawn_sha256"])
+                refused = subprocess.run(
+                    [sys.executable, str(source), "--run-dir", str(root), "--listen",
+                     f"127.0.0.1:{port}", "--tls", "--no-build"],
+                    env=self.live_environment(), capture_output=True, text=True, timeout=30)
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn("interrupted startup", refused.stderr)
+                decoys = [
+                    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", str(root / "authority")],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "authority", str(root / "authority")],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                ]
+                time.sleep(0.2)
+                recovery = self.launch_live(root, port, extra=("--recover",))
+                self.stop_live(recovery)
+                self.assertTrue(all(decoy.poll() is None for decoy in decoys))
+                self.assertEqual((root / "authority/authority.lock").read_bytes(), b"clean\n")
+                recovered = dev.read_signed_private_at(root / "launcher-startup-attempt.json", configuration, "intent")
+                self.assertIn("recovered_from_sha256", recovered)
+                self.assertTrue(list((root / "launcher-startup-recovery").iterdir()))
+                restarted = self.launch_live(root, port)
+                try:
+                    self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM spawn_window", "query"), [["preserved"]])
+                finally:
+                    self.stop_live(restarted)
+            finally:
+                if dev.process_is_running(child):
+                    try:
+                        os.kill(child, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                for decoy in decoys:
+                    if decoy.poll() is None:
+                        decoy.kill()
+                    decoy.wait(timeout=5)
+
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_platform_spawn_window_graceful_stop_then_recover(self):
+        with tempfile.TemporaryDirectory(prefix="spawn-platform-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE spawn_platform (value TEXT)", "execute")
+                client.statement("INSERT INTO spawn_platform VALUES ('preserved')", "execute")
+            finally:
+                self.stop_live(first)
+            project = dev.Project(argparse.Namespace(run_dir=str(root), backend="local",
+                                                     listen=f"127.0.0.1:{port}", tls=True,
+                                                     no_build=True, writer_admission=False))
+            project.acquire_run_lock()
+            try:
+                project.prepare()
+                configuration = project.config["owned_stop_proof"]
+                seal, _, reliable = dev.local_object_any(root / "backend", dev.LOCAL_SEAL_KEY)
+                seal_before = dev.file_sha256(seal) if reliable and seal else None
+            finally:
+                project.release_run_lock()
+            authority_argv = [str(project.rust), "authority", str(root / "backend"),
+                              project.launch["authority"], str(root / "authority")]
+            platform_argv = [str(project.go), "-config", str(root / "platform.json")]
+            authority_env = dev.safe_environment(capacity_trace=True)
+            dev.experimental_environment(authority_env)
+            authority_env.update({"PERI_AUTHORITY_CONTROL_TOKEN": project.config["controller"]["authority_token"],
+                                  "PERI_AUTHORITY_WORKERS_FILE": str(root / "authority-workers.json")})
+            platform_env = dev.safe_environment()
+            platform_env["PERI_SQL_OPEN_OBSERVER"] = "0"
+            platform_env["PERI_HRANA_EXPERIMENTAL"] = "0"
+            platform_env["PERI_SHUTDOWN_STAGE_CAP_MS"] = str(dev.SHUTDOWN_STAGE_CAPS["platform"] * 1000)
+            platform_env["PERI_SHUTDOWN_OUTER_GRACE_MS"] = str(dev.ORCHESTRATION_GRACE_SECONDS * 1000)
+            authority = platform = None
+            try:
+                authority = subprocess.Popen(authority_argv, env=authority_env, stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE, text=True)
+                lines = queue.Queue()
+                threading.Thread(target=lambda: [lines.put(line) for line in authority.stdout], daemon=True).start()
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    try:
+                        event = json.loads(lines.get(timeout=0.2))
+                    except (queue.Empty, ValueError):
+                        if authority.poll() is not None:
+                            break
+                        continue
+                    if event.get("ready") is True:
+                        break
+                else:
+                    raise RuntimeError("manual authority did not become ready")
+                platform = subprocess.Popen(platform_argv, env=platform_env, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, text=True)
+                project.write_startup_intent(configuration, starting="platform", start_nonce="platform-spawn",
+                                             commands={"authority": authority_argv, "platform": platform_argv},
+                                             services_started=["authority"], pids={"authority": authority.pid},
+                                             seal_before_spawn_sha256=seal_before)
+                refused = subprocess.run(
+                    [sys.executable, str(source), "--run-dir", str(root), "--listen",
+                     f"127.0.0.1:{port}", "--tls", "--no-build", "--recover"],
+                    env=self.live_environment(), capture_output=True, text=True, timeout=30)
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn("send SIGTERM", refused.stderr)
+                self.assertIn("materializes the operation view", refused.stderr)
+                self.assertLess(refused.stderr.index("SIGTERM"), refused.stderr.index("rebuild"))
+                self.assertTrue(dev.process_is_running(authority.pid))
+                self.assertTrue(dev.process_is_running(platform.pid))
+                for process in (platform, authority):
+                    process.send_signal(signal.SIGTERM)
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline:
+                    if authority.poll() is not None and platform.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                self.assertIsNotNone(authority.poll())
+                self.assertIsNotNone(platform.poll())
+                recovery = self.launch_live(root, port, extra=("--recover",))
+                self.stop_live(recovery)
+                restarted = self.launch_live(root, port)
+                try:
+                    self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM spawn_platform", "query"), [["preserved"]])
+                finally:
+                    self.stop_live(restarted)
+            finally:
+                for process in (platform, authority):
+                    if process is None:
+                        continue
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=10)
+                    for stream in (process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+
+    @unittest.skipUnless(os.environ.get("PERI_RESTART_LIVE") == "1", "set PERI_RESTART_LIVE=1")
+    def test_live_spawn_window_authority_not_started_is_directly_restartable(self):
+        with tempfile.TemporaryDirectory(prefix="spawn-empty-", dir="/tmp") as directory:
+            root = pathlib.Path(directory).resolve()
+            port = self.live_port()
+            first = self.launch_live(root, port)
+            try:
+                client = LiveSQLClient(root)
+                client.statement("CREATE TABLE spawn_empty (value TEXT)", "execute")
+                client.statement("INSERT INTO spawn_empty VALUES ('preserved')", "execute")
+            finally:
+                self.stop_live(first)
+            arguments = argparse.Namespace(run_dir=str(root), backend="local", listen=f"127.0.0.1:{port}",
+                                           tls=True, no_build=True, writer_admission=False)
+            project = dev.Project(arguments)
+            project.acquire_run_lock()
+            try:
+                project.prepare()
+                seal, _, reliable = dev.local_object_any(project.directory / "backend", dev.LOCAL_SEAL_KEY)
+                project.write_startup_intent(project.config["owned_stop_proof"], starting="authority",
+                                             start_nonce="spawn-empty",
+                                             seal_before_spawn_sha256=dev.file_sha256(seal) if reliable and seal else None)
+            finally:
+                project.release_run_lock()
+            self.assertFalse((root / "authority/authority.lock").read_bytes() == b"dirty\n")
+            restarted = self.launch_live(root, port)
+            try:
+                self.assertEqual(LiveSQLClient(root).statement("SELECT value FROM spawn_empty", "query"), [["preserved"]])
+            finally:
+                self.stop_live(restarted)
+
     @unittest.skipUnless(
         os.environ.get("PERI_RESTART_LIVE") == "1"
         and pathlib.Path(os.environ.get("PERI_RUST_BINARY", "")).is_file()
         and pathlib.Path(os.environ.get("PERI_PLATFORM_BINARY", "")).is_file(),
         "set PERI_RESTART_LIVE=1 and PERI_RUST_BINARY/PERI_PLATFORM_BINARY to run the live restart")
-    def test_live_port_conflict_preserves_clean_evidence_for_operator(self):
+    def test_live_port_conflict_is_retryable_without_consuming_evidence(self):
         with tempfile.TemporaryDirectory(prefix="restart-live-", dir="/tmp") as directory:
             root = pathlib.Path(directory).resolve()
             port = self.live_port()
@@ -811,42 +1228,15 @@ class OwnedStopProofTests(unittest.TestCase):
                 self.assertEqual(failed.wait(timeout=180), 1)
             finally:
                 holder.close()
-            # The failed attempt started the authority (which writes its dirty
-            # marker) and the platform process, so canonical evidence must stay
-            # preserved instead of being rolled back over the dirty marker.
             self.assertEqual((root / "launcher-stop.json").read_bytes(), stop_bytes)
-            self.assertFalse((root / "launcher-terminal.json").exists())
-            self.assertNotEqual((root / "authority/authority.lock").read_bytes(), b"clean\n")
-            preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
-            self.assertEqual(len(preserved), 1)
-            self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
-            self.assertEqual((preserved[0] / "authority/authority.lock").read_bytes(), b"clean\n")
-            launch = json.loads((root / "launch.json").read_text())
-            # prepare() archived the previous proof set for the failed attempt;
-            # preservation carries that archive, while the canonical directory
-            # stays empty until an operator performs a clean restart.
-            expected_proofs = {f"{worker}.{kind}.json"
-                               for worker in launch["workers"] for kind in ("identity", "stop")}
-            self.assertEqual({entry.name for entry in (preserved[0] / "owned-proof").iterdir()}, expected_proofs)
-            self.assertEqual(list((root / "owned-proof").iterdir()), [])
-            receipt = json.loads((preserved[0] / "preservation.json").read_text())
-            self.assertEqual(receipt["kind"], "launcher_clean_evidence_preserved")
-            self.assertTrue(receipt["owned_proof_preserved"])
-            record = json.loads(json.loads((root / "launcher-restart-failure.json").read_text())["payload"])
-            self.assertEqual(record["phase"], "startup")
-            self.assertTrue(record["requires_operator"])
-            self.assertTrue(record["teardown_completed"])
-            self.assertTrue(record["all_processes_stopped"])
-            self.assertFalse(record["clean_evidence"]["restored"])
-            self.assertTrue(record["clean_evidence"]["preserved"])
-            self.assertIn("services were started", record["clean_evidence"]["preservation_reason"])
-            self.assertTrue((root / "launcher-clean-evidence-preserved").is_dir())
-            rejected = subprocess.run(
-                [sys.executable, str(source), "--run-dir", str(root),
-                 "--listen", f"127.0.0.1:{port}", "--tls", "--no-build"],
-                env=self.live_environment(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL, timeout=180)
-            self.assertEqual(rejected.returncode, 1)
+            self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
+            self.assertEqual((root / "authority/authority.lock").read_bytes(), b"clean\n")
+            self.assertFalse((root / "launcher-restart-failure.json").exists())
+            restarted = self.launch_live(root, port)
+            try:
+                self.assertEqual(LiveSQLClient(root).statement("SELECT id, note FROM restart_live", "query"), [[1, "keep-me"]])
+            finally:
+                self.stop_live(restarted)
 
     def test_unconfirmed_process_stops_preserve_evidence_for_operator(self):
         with tempfile.TemporaryDirectory(prefix="restart-unconfirmed-", dir="/tmp") as directory:
@@ -890,7 +1280,7 @@ class OwnedStopProofTests(unittest.TestCase):
                         patch.object(sys, "argv", self.launcher_arguments(root)):
                     self.assertEqual(dev.main(), 1)
                 self.assertEqual(stop_path.read_bytes(), stop_bytes)
-                self.assertFalse(terminal_path.exists())
+                self.assertEqual(terminal_path.read_bytes(), terminal_bytes)
                 preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
                 self.assertEqual(len(preserved), 1)
                 self.assertEqual((preserved[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
@@ -964,21 +1354,137 @@ class OwnedStopProofTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, expected):
                         dev.Project(project.arguments).prepare()
 
-    def test_crash_before_recovery_never_restores_staged_evidence(self):
+    def test_sigkill_after_staging_preserves_canonical_evidence(self):
         with tempfile.TemporaryDirectory(prefix="restart-crash-", dir="/tmp") as directory:
             project = self.clean_run_directory(directory)
             root = pathlib.Path(directory).resolve()
             terminal_bytes = (root / "launcher-terminal.json").read_bytes()
-            dev.Project(project.arguments).prepare()
-            self.assertFalse((root / "launcher-terminal.json").exists())
-            staging = list((root / "launcher-restart-staging").iterdir())
-            self.assertEqual(len(staging), 1)
-            self.assertEqual((staging[0] / "launcher-terminal.json").read_bytes(), terminal_bytes)
-            # No same-process recovery ran (hard kill/crash). The next launcher
-            # must refuse rather than promote the staging copy automatically.
-            with self.assertRaises(RuntimeError):
-                dev.Project(project.arguments).prepare()
-            self.assertFalse((root / "launcher-terminal.json").exists())
+            script = """
+import importlib.util, argparse, os, signal, sys
+spec = importlib.util.spec_from_file_location('launcher', sys.argv[1])
+dev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dev)
+p = dev.Project(argparse.Namespace(run_dir=sys.argv[2], backend='local', listen='127.0.0.1:19443', tls=False, no_build=True, writer_admission=False))
+p.acquire_run_lock()
+p.prepare()
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+            result = subprocess.run([sys.executable, "-c", script, str(source), str(root)], timeout=30)
+            self.assertEqual(result.returncode, -signal.SIGKILL)
+            self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
+            restarted = dev.Project(project.arguments)
+            restarted.acquire_run_lock()
+            try:
+                restarted.prepare()
+            finally:
+                restarted.release_run_lock()
+            self.assertEqual((root / "launcher-terminal.json").read_bytes(), terminal_bytes)
+
+    def test_interrupted_startup_with_changed_state_is_operator_only(self):
+        for stage in ("authority", "platform", "ready-before-announcement"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory(prefix="restart-intent-", dir="/tmp") as directory:
+                fixture = self.clean_run_directory(directory)
+                attempt = dev.Project(fixture.arguments)
+                attempt.prepare()
+                attempt.write_startup_intent(attempt.config["owned_stop_proof"], services_started=[stage])
+                with self.assertRaisesRegex(RuntimeError, "operator recovery.*stop and join"):
+                    dev.Project(fixture.arguments).prepare()
+                self.assertTrue((fixture.directory / "launcher-terminal.json").is_file())
+
+    def test_startup_intent_rejects_changed_sidecar_and_bad_signature(self):
+        for change in ("sidecar", "signature", "dirty"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix="intent-tamper-", dir="/tmp") as directory:
+                fixture = self.clean_run_directory(directory)
+                restarted = dev.Project(fixture.arguments)
+                restarted.prepare()
+                intent = fixture.directory / "launcher-startup-attempt.json"
+                if change == "sidecar":
+                    dev.private_json(fixture.directory / "platform/state.json.operations", {"pending": True})
+                elif change == "signature":
+                    envelope = json.loads(intent.read_bytes())
+                    envelope["mac"] = "0" * 64
+                    dev.atomic_private_json(intent, envelope)
+                else:
+                    (fixture.directory / "authority/authority.lock").write_bytes(b"dirty\n")
+                with self.assertRaises(RuntimeError):
+                    dev.Project(fixture.arguments).prepare()
+                if change == "dirty":
+                    self.assertEqual((fixture.directory / "authority/authority.lock").read_bytes(), b"dirty\n")
+
+    def test_supersede_is_idempotent_and_history_is_bounded(self):
+        with tempfile.TemporaryDirectory(prefix="restart-supersede-idem-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            configuration = fixture.config["owned_stop_proof"]
+            path = fixture.directory / "launcher-restart-failure.json"
+            terminal_hash = dev.file_sha256(fixture.directory / "launcher-terminal.json")
+            for index in range(40):
+                dev.atomic_private_json(path, dev.signed_owned_identity(configuration, {
+                    "version": 1, "kind": "launcher_restart_failure", "requires_operator": True,
+                    "teardown_completed": True, "all_processes_stopped": True, "error": "failure-" + str(index)}))
+                fixture.supersede_restart_failure(terminal_hash)
+                self.assertFalse(fixture.read_signed_private(path, configuration, "failure")["requires_operator"])
+            history = fixture.directory / "launcher-restart-failure-history"
+            self.assertLessEqual(len(list(history.iterdir())), 32)
+            previous = path.read_bytes()
+            fixture.supersede_restart_failure(terminal_hash)
+            self.assertEqual(path.read_bytes(), previous)
+
+
+        with tempfile.TemporaryDirectory(prefix="restart-rebind-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            args = self.launcher_arguments(fixture.directory)
+            args[-1] = "127.0.0.1:19444"
+            with patch.object(sys, "argv", args):
+                self.assertEqual(dev.main(), 1)
+            self.assertFalse((fixture.directory / "launcher-restart-failure.json").exists())
+            dev.Project(fixture.arguments).prepare()
+
+    def test_v115_shaped_launch_normalizes_before_worker_start(self):
+        with tempfile.TemporaryDirectory(prefix="launch-defaults-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            launch = dict(fixture.launch)
+            launch.pop("wal_replay_bytes")
+            dev.atomic_private_json(fixture.directory / "launch.json", launch)
+            configuration = fixture.config["owned_stop_proof"]
+            dev.atomic_private_json(fixture.directory / "launcher-terminal.json",
+                                    dev.signed_owned_identity(configuration, dev.terminal_record(fixture.directory, configuration)))
+            restarted = dev.Project(fixture.arguments)
+            observed = []
+            def start(name, command, environment):
+                observed.append(name)
+                if name.startswith("worker"):
+                    self.assertNotIn("PERI_WORKER_WAL_REPLAY_BYTES", environment)
+                restarted.processes[name] = Mock(pid=10001)
+            restarted.stop.set()
+            try:
+                with patch.object(restarted, "start", start), patch.object(restarted, "start_maintenance"), \
+                        patch.object(dev, "request", return_value={"credential": "fixture"}), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    restarted.run()
+                self.assertEqual(observed, ["authority", "platform", "worker-a", "worker-b"])
+                self.assertNotIn("wal_replay_bytes", json.loads((fixture.directory / "launch.json").read_bytes()))
+            finally:
+                restarted.release_run_lock()
+
+    def test_superseding_failure_preserves_original_signed_record(self):
+        with tempfile.TemporaryDirectory(prefix="restart-supersede-", dir="/tmp") as directory:
+            fixture = self.clean_run_directory(directory)
+            configuration = fixture.config["owned_stop_proof"]
+            path = fixture.directory / "launcher-restart-failure.json"
+            dev.atomic_private_json(path, dev.signed_owned_identity(configuration, {
+                "version": 1, "kind": "launcher_restart_failure", "requires_operator": True,
+                "teardown_completed": True, "all_processes_stopped": True}))
+            original = path.read_bytes()
+            fixture.verify_clean_evidence()
+            fixture.verify_clean_stop_record(configuration)
+            terminal_hash = dev.file_sha256(fixture.directory / "launcher-terminal.json")
+            fixture.supersede_restart_failure(terminal_hash)
+            fixture.verify_clean_reuse_gate()
+            record = fixture.read_signed_private(path, configuration, "failure")
+            self.assertFalse(record["requires_operator"])
+            self.assertEqual(record["superseded_by_terminal_sha256"], terminal_hash)
+            archive = fixture.directory / "launcher-restart-failure-history" / (hashlib.sha256(original).hexdigest() + ".json")
+            self.assertEqual(archive.read_bytes(), original)
 
     def blake3_module(self):
         try:
@@ -1101,7 +1607,7 @@ class OwnedStopProofTests(unittest.TestCase):
                     stack.enter_context(patch.object(dev.Project, "run", failing_run))
                     stack.enter_context(patch.object(sys, "argv", self.launcher_arguments(root)))
                     self.assertEqual(dev.main(), 1)
-                self.assertFalse((root / "launcher-terminal.json").exists())
+                self.assertTrue((root / "launcher-terminal.json").exists())
                 preserved = list((root / "launcher-clean-evidence-preserved").iterdir())
                 self.assertEqual(len(preserved), 1)
                 self.assertEqual((preserved[0] / "launcher-terminal.json").exists(), True)

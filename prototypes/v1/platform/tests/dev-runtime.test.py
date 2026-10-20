@@ -19,6 +19,52 @@ spec.loader.exec_module(dev)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_recorded_argv_matching_rejects_lookalike_decoys(self):
+        argv = ["/opt/peri/loom-v1", "authority", "/run/backend", "127.0.0.1:9444", "/run/authority"]
+        table = dev.parse_process_table("\n".join([
+            "101 python3 -c time.sleep(120) authority /run/authority",
+            "102 /run/authority",
+            "103 " + " ".join(argv),
+            "104 " + " ".join(argv) + " extra",
+        ]))
+        self.assertEqual(dev.match_recorded_argv(table, argv), {103})
+        self.assertFalse(dev.pid_matches_recorded_argv(table, 101, argv))
+        self.assertFalse(dev.pid_matches_recorded_argv(table, 102, argv))
+        self.assertTrue(dev.pid_matches_recorded_argv(table, 103, argv))
+        self.assertFalse(dev.pid_matches_recorded_argv(table, 104, argv))
+        reused = dev.parse_process_table("103 python3 -c time.sleep(120)")
+        self.assertFalse(dev.pid_matches_recorded_argv(reused, 103, argv))
+        for attempt in ({}, {"commands": {}}, {"commands": {"authority": []}},
+                        {"commands": {"authority": ["", "authority"]}}):
+            with self.assertRaisesRegex(RuntimeError, "argv"):
+                dev.recorded_argv(attempt, "authority")
+        with self.assertRaisesRegex(RuntimeError, "argv"):
+            dev.match_recorded_argv(table, [])
+
+    def test_legacy_launch_defaults_do_not_rewrite_proof_bound_config(self):
+        legacy = {"backend": "local", "listen": "127.0.0.1:9443", "tls": True,
+                  "authority": "127.0.0.1:9000", "workers": {
+                      identity: {name: "fixture" for name in ("address", "cache", "authority_token", "control_token", "sql_token", "key_token")}
+                      for identity in ("worker-a", "worker-b")}}
+        normalized = dev.normalize_launch(legacy)
+        self.assertEqual(normalized["wal_replay_bytes"], 0)
+        self.assertEqual(normalized["worker_max_request_bytes"], 512 * 1024)
+        self.assertEqual(normalized["dev_sql_timeout_seconds"], 30)
+        self.assertEqual(normalized["sql_max_duration_ms"], 5000)
+        self.assertFalse(normalized["writer_admission"])
+        self.assertFalse(normalized["sql_open_observer"])
+        self.assertNotIn("wal_replay_bytes", legacy)
+        for invalid in (None, "0", True):
+            with self.assertRaisesRegex(RuntimeError, "wal_replay_bytes"):
+                dev.normalize_launch({**legacy, "wal_replay_bytes": invalid})
+
+    def test_unmaterialized_legacy_state_reports_graceful_stop_before_rebuild(self):
+        with self.assertRaisesRegex(dev.OperationViewNotMaterialized, "SIGTERM.*--recover.*rebuild"):
+            dev.require_materialized_operation_view({"operation_storage_version": 1, "revision": 7})
+        dev.require_materialized_operation_view({"operation_storage_version": 0})
+        dev.require_materialized_operation_view({"operation_storage_version": 1, "revision": 7,
+                                                 "operations_checkpoint": 7})
+
     def test_bootstrap_credential_can_be_reused_only_when_explicitly_injected(self):
         from unittest.mock import patch
         with patch.dict(os.environ, {"PERI_BOOTSTRAP_KEY": "x" * 64}):

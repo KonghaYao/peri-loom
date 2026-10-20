@@ -34,6 +34,7 @@ ORCHESTRATION_GRACE_SECONDS = SHUTDOWN_BUDGET_SECONDS + SHUTDOWN_FINALIZE_SECOND
 # and the launcher declares the platform's cap and this grace to the platform
 # child, which refuses a cap that reaches the grace.
 SHUTDOWN_STAGE_CAPS = {"platform": 15, "workers": 13, "authority": 12}
+SPAWN_STOP_FINALIZE_SECONDS = 5
 # Once /v1/reconcile starts, the platform may have changed controller placement or
 # grants, authority leases/backend state, and its operations sidecar. None of those
 # are covered by the canonical terminal hashes, so a failure from here on must not
@@ -46,6 +47,21 @@ LOCAL_ENVELOPE_LIMIT_BYTES = 1024 * 1024
 LOCAL_CHECKSUM_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
+def decode_seal_record(payload):
+    """Return a structurally valid seal record, regardless of its clean flag."""
+    try:
+        record = json.loads(payload, object_pairs_hook=unique_object)
+    except (ValueError, TypeError, UnicodeError, RuntimeError):
+        return None
+    if not isinstance(record, dict) or set(record) != LOCAL_SEAL_FIELDS:
+        return None
+    if record.get("version") != 1 or type(record.get("version")) is not int or type(record.get("clean")) is not bool:
+        return None
+    if not isinstance(record.get("owner"), str) or not record["owner"]:
+        return None
+    return record
+
+
 def validate_local_seal_payload(payload):
     """Return the decoded seal record when it is reusable, otherwise None.
 
@@ -53,15 +69,8 @@ def validate_local_seal_payload(payload):
     clean=true before it will take over a backend. A checksum-valid envelope
     around any other record must not be promoted to canonical clean evidence.
     """
-    try:
-        record = json.loads(payload, object_pairs_hook=unique_object)
-    except (ValueError, TypeError, UnicodeError, RuntimeError):
-        return None
-    if not isinstance(record, dict) or set(record) != LOCAL_SEAL_FIELDS:
-        return None
-    if record.get("version") != 1 or type(record.get("version")) is not int or record.get("clean") is not True:
-        return None
-    if not isinstance(record.get("owner"), str) or not record["owner"]:
+    record = decode_seal_record(payload)
+    if record is None or record.get("clean") is not True:
         return None
     return record
 
@@ -146,9 +155,72 @@ def local_object_path(backend_directory, key):
     return None, reliable
 
 
+def local_object_any(backend_directory, key):
+    """Return (path, payload, reliable) without requiring a clean seal record.
+
+    Proof recovery must hash the dirty seal this startup attempt wrote, so it
+    cannot use local_object_path, which deliberately rejects dirty records.
+    """
+    try:
+        import blake3
+    except ImportError:
+        blake3 = None
+    if blake3 is None:
+        matches = []
+        for candidate in sorted(backend_directory.glob("*.obj")):
+            try:
+                envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
+            except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
+                continue
+            if not isinstance(envelope, dict) or envelope.get("key") != key:
+                continue
+            payload = decode_local_envelope(envelope, key)
+            if payload is not None:
+                matches.append((candidate, payload))
+        if len(matches) == 1:
+            return matches[0][0], matches[0][1], False
+        return None, None, False
+    candidate = backend_directory / (blake3.blake3(key.encode()).hexdigest() + ".obj")
+    if not candidate.is_file():
+        return None, None, True
+    try:
+        if candidate.stat().st_size > LOCAL_ENVELOPE_LIMIT_BYTES:
+            return None, None, False
+        envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
+    except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
+        return None, None, False
+    payload = decode_local_envelope(envelope, key)
+    if payload is None or envelope["checksum"] != blake3.blake3(payload).hexdigest():
+        return None, None, False
+    return candidate, payload, True
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, destination):
         return None
+
+
+def normalize_launch(value):
+    # 只在内存中补齐历史默认值；改写原文件会使已有 terminal 哈希失效。
+    if not isinstance(value, dict):
+        raise RuntimeError("launch configuration must be an object")
+    defaults = {"writer_admission": False, "worker_max_request_bytes": 512 * 1024,
+                "dev_sql_timeout_seconds": 30, "sql_max_duration_ms": 5000,
+                "wal_replay_bytes": 0, "sql_open_observer": False}
+    normalized = {**defaults, **value}
+    for name, default in defaults.items():
+        if type(normalized[name]) is not type(default):
+            raise RuntimeError("invalid launch configuration field: " + name)
+    for name in ("backend", "listen", "tls", "authority", "workers"):
+        if name not in normalized:
+            raise RuntimeError("required launch identity missing: " + name)
+    if not isinstance(normalized["workers"], dict) or set(normalized["workers"]) != {"worker-a", "worker-b"}:
+        raise RuntimeError("launch worker identity set invalid")
+    for worker in normalized["workers"].values():
+        for name in ("address", "cache", "authority_token", "control_token", "sql_token", "key_token"):
+            if not isinstance(worker, dict) or not isinstance(worker.get(name), str) or not worker[name]:
+                raise RuntimeError("required launch worker field missing or invalid: " + name)
+    return normalized
 
 
 def storage_identity(backend):
@@ -207,6 +279,141 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def file_sha256_or_none(path):
+    return file_sha256(path) if path.is_file() else None
+
+
+def atomic_private_bytes(destination, value):
+    temporary = destination.with_name(destination.name + "." + secrets.token_hex(16))
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(value)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, destination)
+    fsync_directory(destination.parent)
+
+
+def backend_manifest(directory, exclude=()):
+    """文件清单只用于证明启动尝试未写 backend；seal/root 由单独快照校验。"""
+    excluded = {exclude} if isinstance(exclude, str) else set(exclude)
+    entries = []
+    if directory.is_dir():
+        for path in sorted(directory.rglob("*")):
+            if path.is_symlink():
+                raise RuntimeError("authority backend must not contain symlinks")
+            if path.is_file() and path.name not in excluded:
+                info = path.stat()
+                entries.append([str(path.relative_to(directory)), info.st_size, info.st_mtime_ns])
+    return hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()
+
+
+def authority_root_records(state_payload, backend_directory):
+    """Snapshot mutable authority root metadata so startup leases can be rolled back."""
+    records, seen = [], set()
+    databases = state_payload.get("databases", {})
+    if not isinstance(databases, dict):
+        raise RuntimeError("platform database view is invalid")
+    for record in databases.values():
+        try:
+            namespace = record["id"]["namespace"]
+            key = str(namespace["tenant"]) + "/" + str(namespace["database"]) + "/authority/root"
+        except (KeyError, TypeError) as error:
+            raise RuntimeError("platform database identity is invalid") from error
+        if key in seen:
+            continue
+        seen.add(key)
+        path, payload, reliable = local_object_any(backend_directory, key)
+        if path is None:
+            continue
+        try:
+            root = json.loads(payload, object_pairs_hook=unique_object)
+        except (ValueError, TypeError, UnicodeError, RuntimeError) as error:
+            raise RuntimeError("authority root is invalid: " + key) from error
+        if not isinstance(root, dict) or not isinstance(root.get("root"), dict):
+            raise RuntimeError("authority root is invalid: " + key)
+        records.append({"key": key, "name": path.name, "sha256": file_sha256(path), "reliable": reliable})
+    return records
+
+
+def process_is_running(pid):
+    if type(pid) is not int or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False).stdout.strip()
+    except OSError:
+        return True
+    return not status.startswith("Z")
+
+
+def parse_process_table(text):
+    entries = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, separator, command = stripped.partition(" ")
+        if not separator:
+            continue
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        command = command.lstrip()
+        if command:
+            entries.append((pid, command))
+    return entries
+
+
+def recorded_argv(attempt, name):
+    commands = attempt.get("commands")
+    if not isinstance(commands, dict):
+        raise RuntimeError("recorded startup argv is missing; stop residual services with the operator")
+    argv = commands.get(name)
+    if (not isinstance(argv, list) or not argv
+            or not all(isinstance(part, str) and part for part in argv)):
+        raise RuntimeError("recorded startup argv is missing or invalid for " + name)
+    return argv
+
+
+def match_recorded_argv(entries, argv):
+    if (not isinstance(argv, list) or not argv
+            or not all(isinstance(part, str) and part for part in argv)):
+        raise RuntimeError("recorded startup argv is missing or invalid")
+    target = " ".join(argv)
+    return {pid for pid, command in entries if command == target}
+
+
+def pid_matches_recorded_argv(entries, pid, argv):
+    target = " ".join(argv)
+    return any(entry_pid == pid and command == target for entry_pid, command in entries)
+
+
+def verify_addresses_available(addresses):
+    probes = []
+    try:
+        for address in addresses:
+            host, port = address.rsplit(":", 1)
+            host = host.strip("[]")
+            family = socket.AF_INET6 if ":" in host else socket.AF_INET
+            probe = socket.socket(family, socket.SOCK_STREAM)
+            probes.append(probe)
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, int(port)))
+            probe.listen(1)
+    except OSError as error:
+        raise RuntimeError("listener unavailable before startup; release the occupied port and retry the original configuration") from error
+    finally:
+        for probe in probes:
+            probe.close()
+
+
 def private_copy(source, destination):
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with source.open("rb") as input_file, os.fdopen(descriptor, "wb") as output:
@@ -221,13 +428,15 @@ def signed_owned_identity(configuration, identity):
     return {"payload": payload, "mac": hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()}
 
 
-def terminal_record(run_directory, configuration):
+def terminal_record(run_directory, configuration, proof_directory=None, state_directory=None):
+    proof_directory = proof_directory or run_directory / "owned-proof"
+    state_directory = state_directory or run_directory / "platform"
     return {"version": 1, "generation": configuration["generation"],
             "launch_sha256": hashlib.sha256((run_directory / "launch.json").read_bytes()).hexdigest(),
             "platform_sha256": hashlib.sha256((run_directory / "platform.json").read_bytes()).hexdigest(),
-            "state_sha256": hashlib.sha256((run_directory / "platform/state.json").read_bytes()).hexdigest(),
-            "state_floor_sha256": hashlib.sha256((run_directory / "platform/state.json.floor").read_bytes()).hexdigest(),
-            "proof_sha256": {f"{worker}.{kind}.json": hashlib.sha256((run_directory / "owned-proof" / f"{worker}.{kind}.json").read_bytes()).hexdigest()
+            "state_sha256": hashlib.sha256((state_directory / "state.json").read_bytes()).hexdigest(),
+            "state_floor_sha256": hashlib.sha256((state_directory / "state.json.floor").read_bytes()).hexdigest(),
+            "proof_sha256": {f"{worker}.{kind}.json": hashlib.sha256((proof_directory / f"{worker}.{kind}.json").read_bytes()).hexdigest()
                              for worker in configuration["workers"] for kind in ("identity", "stop")}}
 
 
@@ -257,6 +466,53 @@ class OperationViewNotMaterialized(RuntimeError):
     """The payload is not the final operation view a shutdown checkpoint wrote."""
 
 
+def read_signed_private_at(path, configuration, label):
+    if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 64 * 1024:
+        raise RuntimeError(label + " missing or invalid")
+    try:
+        signed = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
+        if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
+            raise ValueError("invalid envelope")
+        key = pathlib.Path(configuration["key_file"]).read_bytes()
+        if not hmac.compare_digest(signed["mac"], hmac.new(key, signed["payload"].encode(), hashlib.sha256).hexdigest()):
+            raise ValueError("signature mismatch")
+        record = json.loads(signed["payload"], object_pairs_hook=unique_object)
+        if not isinstance(record, dict):
+            raise ValueError("invalid record")
+    except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as error:
+        raise RuntimeError(label + " missing or invalid") from error
+    return record
+
+
+def verify_snapshot_terminal(staging, run_directory, configuration):
+    marker = staging / "launcher-terminal.json"
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_mode & 0o077 or marker.stat().st_size > 4096:
+        raise RuntimeError("preserved terminal proof missing or invalid")
+    try:
+        signed = json.loads(marker.read_bytes(), object_pairs_hook=unique_object)
+        if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
+            raise ValueError("invalid terminal proof envelope")
+        expected = terminal_record(run_directory, configuration, staging / "owned-proof", staging / "platform")
+        payload = json.loads(signed["payload"], object_pairs_hook=unique_object)
+        if payload != expected or type(payload["version"]) is not int:
+            raise ValueError("preserved terminal does not match its snapshot")
+        key = pathlib.Path(configuration["key_file"]).read_bytes()
+        if not hmac.compare_digest(signed["mac"], hmac.new(key, signed["payload"].encode(), hashlib.sha256).hexdigest()):
+            raise ValueError("preserved terminal signature mismatch")
+    except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as error:
+        raise RuntimeError("preserved clean launcher terminal proof invalid") from error
+    return payload
+
+
+def verify_snapshot_stop(staging, configuration):
+    record = read_signed_private_at(staging / "launcher-stop.json", configuration, "preserved launcher stop record")
+    if (type(record.get("version")) is not int or record.get("version") != 1
+            or record.get("generation") != configuration["generation"]
+            or record.get("outcome") != "clean"):
+        raise RuntimeError("preserved launcher stop outcome is not clean")
+    return record
+
+
 def require_materialized_operation_view(state):
     """Mirror operationsCheckpointMaterialized: operation records commit to a sidecar that
     dev.py does not read, so a payload whose checkpoint trails its revision may hide
@@ -270,7 +526,7 @@ def require_materialized_operation_view(state):
     checkpoint = state.get("operations_checkpoint")
     revision = state.get("revision")
     if type(checkpoint) is not int or checkpoint <= 0 or type(revision) is not int or checkpoint != revision:
-        raise OperationViewNotMaterialized("platform operation view was not materialized at shutdown")
+        raise OperationViewNotMaterialized("platform operation view was not materialized at shutdown; if a surviving platform or authority process remains, send SIGTERM and wait for its joined exit so the shutdown checkpoint materializes the operation view, then rerun the original configuration with --recover; rebuild the volume only if the checkpoint is still absent after the joined stop; never clear markers or proofs to force startup")
 
 
 def released_isolation(record):
@@ -292,8 +548,8 @@ def released_isolation(record):
             and record.get("release_epoch") >= 0)
 
 
-def verify_no_unresolved_operations(run_directory, configuration):
-    path = run_directory / "platform/state.json"
+def verify_no_unresolved_operations(run_directory, configuration, state_path=None):
+    path = state_path or run_directory / "platform/state.json"
     if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 32 * 1024 * 1024:
         raise RuntimeError("private platform state unavailable for clean restart")
     try:
@@ -326,17 +582,20 @@ def verify_no_unresolved_operations(run_directory, configuration):
         raise RuntimeError("unresolved platform operation prevents clean restart") from error
 
 
-def verify_owned_stop_proofs(run_directory, configuration, workers):
+def verify_owned_stop_proofs(run_directory, configuration, workers, proof_directory=None):
     """Verify both worker incarnations were joined before a clean restart."""
-    proof_directory = run_directory / "owned-proof"
+    canonical_directory = run_directory / "owned-proof"
     key_file = run_directory / "keys/owned-proof.key"
-    if (configuration.get("directory") != str(proof_directory)
-            or configuration.get("key_file") != str(key_file)
+    if (configuration.get("key_file") != str(key_file)
             or set(configuration.get("workers", {})) != set(workers)
             or not isinstance(configuration.get("generation"), str)):
         raise RuntimeError("owned stop proof configuration mismatch")
-    if not proof_directory.is_dir():
-        raise RuntimeError("owned stop proof directory missing")
+    if proof_directory is None:
+        proof_directory = canonical_directory
+        if configuration.get("directory") != str(canonical_directory):
+            raise RuntimeError("owned stop proof configuration mismatch")
+    else:
+        proof_directory = pathlib.Path(proof_directory)
     private_directory(proof_directory)
     if key_file.is_symlink() or not stat.S_ISREG(key_file.stat().st_mode) or key_file.stat().st_mode & 0o077:
         raise RuntimeError("owned stop proof key is not private")
@@ -518,6 +777,8 @@ class Project:
         # the operator gate. The record is authoritative even when it is legacy,
         # unsigned or asks for reuse: it must not be replaced by this attempt.
         self.restart_failure_gate_rejected = False
+        self.recovered_interrupted_startup = False
+        self.verified_reuse_terminal = None
         self.ready_services = set()
         self.clean_evidence = None
         self.restart_failure = None
@@ -634,29 +895,303 @@ class Project:
                 or record.get("outcome") != "clean"):
             raise RuntimeError("launcher stop outcome is not clean; operator recovery required")
 
-    def prepare_recovery(self, configuration):
-        """Admit an unclean run only for the isolation-release path.
+    def recover_interrupted_startup(self, configuration):
+        """证明式回滚一次未 ready 的启动尝试；只用于显式 --recover。
 
-        The normal clean-restart gate stays exactly as it is: this mode is not a
-        substitute for a clean stop and takes no clean evidence. What it does
-        require is every proof that still applies to a stopped run — the owned
-        worker joins (their stop proofs are the release's evidence) and the
-        authority's own clean startup marker. A dirty authority needs its remote
-        terminal proven first; starting it here would be the takeover the
-        authority refuses.
+        不信任 live 的残缺 proof/incarnation：以签名 intent 指向的 preserved
+        terminal/stop/proof/state/floor/seal 为准，并要求 live state、operation
+        sidecar 和本地 backend 清单都证明这次尝试没有持久化写入。
         """
-        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
-        authority = self.directory / "authority/authority.lock"
-        if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
-            raise RuntimeError("recovery requires a clean authority startup marker")
+        path = self.directory / "launcher-startup-attempt.json"
+        if not path.exists():
+            return False
+        attempt = self.read_signed_private(path, configuration, "startup attempt intent")
+        if (attempt.get("version") != 1 or attempt.get("generation") != configuration["generation"]
+                or attempt.get("kind") != "launcher_startup_attempt"):
+            raise RuntimeError("startup attempt identity invalid")
+        services = attempt.get("services_started")
+        starting = attempt.get("starting")
+        order = ["authority", "platform", "worker-a", "worker-b"]
+        if not isinstance(services, list) or starting not in (None, *order):
+            raise RuntimeError("startup intent service identity is invalid")
+        if not services and starting is None:
+            return False
+        if services:
+            if services[0] != "authority" or services != order[:len(services)]:
+                raise RuntimeError("startup service order is not recognized")
+        elif starting != "authority":
+            raise RuntimeError("startup intent has no recoverable service")
+        failure_path = self.directory / "launcher-restart-failure.json"
+        if failure_path.exists():
+            try:
+                failure = self.read_signed_private(failure_path, configuration, "launcher restart failure record")
+                failed_at = datetime.datetime.fromisoformat(failure.get("failed_at", ""))
+                created_at = datetime.datetime.fromisoformat(attempt.get("created_at", ""))
+            except (RuntimeError, ValueError, TypeError) as error:
+                raise RuntimeError("startup intent and failure record cannot be reconciled") from error
+            if (failure.get("teardown_completed") is True
+                    and failure.get("services_started") == services
+                    and failed_at >= created_at):
+                # 同一进程已经处理过这次失败：走既有 recovery 路径，不回滚。
+                return False
+        if attempt.get("ready") is not False:
+            raise RuntimeError("readiness was announced; use normal unclean-stop recovery, not startup rollback")
+        staging_text = attempt.get("staging")
+        staging_root = (self.directory / "launcher-restart-staging").resolve()
+        if not isinstance(staging_text, str) or not staging_text:
+            raise RuntimeError("preserved startup snapshot is not recorded")
+        staging_candidate = self.directory / staging_text
+        staging = staging_candidate.resolve()
+        if (staging_candidate.is_symlink() or staging == staging_root
+                or staging_root not in staging.parents or not staging.is_dir()):
+            raise RuntimeError("preserved startup snapshot path is invalid")
+        evidence = attempt.get("evidence")
+        if not isinstance(evidence, dict):
+            raise RuntimeError("preserved startup evidence is missing")
+        terminal_hash = attempt.get("terminal_sha256")
+        if (not isinstance(terminal_hash, str)
+                or file_sha256_or_none(self.directory / "launcher-terminal.json") != terminal_hash
+                or file_sha256_or_none(staging / "launcher-terminal.json") != terminal_hash):
+            raise RuntimeError("canonical terminal changed after the interrupted startup")
+        if file_sha256_or_none(staging / "launcher-stop.json") != evidence.get("stop_sha256"):
+            raise RuntimeError("preserved stop record changed")
+        if file_sha256_or_none(self.directory / "launcher-stop.json") != evidence.get("stop_sha256"):
+            raise RuntimeError("live stop record changed after the interrupted startup")
+        payload = verify_snapshot_terminal(staging, self.directory, configuration)
+        for name in ("state_sha256", "state_floor_sha256"):
+            if payload.get(name) != evidence.get(name):
+                raise RuntimeError("preserved terminal does not bind the preserved snapshot")
+        verify_snapshot_stop(staging, configuration)
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"],
+                                 proof_directory=staging / "owned-proof")
+        verify_no_unresolved_operations(self.directory, configuration,
+                                        state_path=staging / "platform/state.json")
+        if starting == "authority":
+            # The spawn window has no persisted PID. Stop only exact recorded
+            # argv matches before judging live state; a lookalike decoy is not
+            # touched and an unreadable process table fails closed.
+            self.stop_spawn_window_processes(attempt)
+        elif starting is not None:
+            # platform/worker shutdown may materialize the operation view. Do not
+            # SIGKILL them here; the operator must stop them gracefully first.
+            names = sorted(set([*(services or []), starting]))
+            table = self.process_table()
+            survivors = [name for name in names if match_recorded_argv(table, recorded_argv(attempt, name))]
+            if survivors:
+                raise RuntimeError("platform/worker spawn window still has surviving "
+                                   + ", ".join(survivors)
+                                   + "; send SIGTERM to the surviving platform and authority, wait for their joined exit so the shutdown checkpoint materializes the operation view, then rerun the original configuration with --recover; rebuild only if the checkpoint is still absent after the joined stop; never clear markers or proofs")
+        state_unchanged = True
+        for relative, digest in (("platform/state.json", evidence.get("state_sha256")),
+                                 ("platform/state.json.floor", evidence.get("state_floor_sha256"))):
+            if not isinstance(digest, str) or file_sha256_or_none(staging / relative) != digest:
+                raise RuntimeError("preserved platform snapshot is incomplete: " + relative)
+            if file_sha256_or_none(self.directory / relative) != digest:
+                state_unchanged = False
+        if state_unchanged:
+            if file_sha256_or_none(self.directory / "platform/state.json.floor") != evidence.get("state_floor_sha256"):
+                raise RuntimeError("platform state floor changed after the interrupted startup")
+        else:
+            # 未 ready 前平台可能写入 worker 注册等控制面状态；只有 state/floor
+            # 一致、checkpoint 已物化且没有任何未决操作时才接受这类前进。
+            verify_no_unresolved_operations(self.directory, configuration)
+            try:
+                state = json.loads((self.directory / "platform/state.json").read_bytes(), object_pairs_hook=unique_object)["payload"]
+                floor = json.loads((self.directory / "platform/state.json.floor").read_bytes(), object_pairs_hook=unique_object)
+                if floor.get("version") != 1 or floor.get("revision") != state.get("revision"):
+                    raise ValueError("state and floor revisions differ")
+            except (OSError, ValueError, TypeError, UnicodeError, KeyError) as error:
+                raise RuntimeError("advanced platform state is not durable") from error
+        journal = self.directory / "platform/operations/journal"
+        if file_sha256_or_none(journal) != evidence.get("journal_sha256"):
+            raise RuntimeError("platform operation sidecar changed after the interrupted startup")
+        if self.launch["backend"] != "local":
+            raise RuntimeError("proof-based startup recovery is limited to the local backend; keep the run isolated and inspect the S3 authority seal")
+        seal_name = evidence.get("seal_name")
+        if not isinstance(seal_name, str) or not seal_name:
+            raise RuntimeError("preserved authority seal is missing")
+        root_records = evidence.get("authority_roots")
+        if not isinstance(root_records, list):
+            raise RuntimeError("preserved authority root snapshot is missing")
+        root_names = []
+        for record in root_records:
+            if (not isinstance(record, dict) or not all(isinstance(record.get(name), str) for name in ("key", "name", "sha256"))
+                    or record.get("reliable") is not True
+                    or not record["key"].endswith("/authority/root")):
+                raise RuntimeError("preserved authority root snapshot is invalid")
+            root_names.append(record["name"])
+        if len(set(root_names)) != len(root_names):
+            raise RuntimeError("preserved authority root snapshot is duplicated")
+        if backend_manifest(self.directory / "backend", [seal_name, *root_names]) != evidence.get("backend_manifest_sha256"):
+            raise RuntimeError("authority backend changed after the interrupted startup")
+        for record in root_records:
+            staged_root, staged_payload, staged_reliable = local_object_any(staging / "authority-roots", record["key"])
+            if (not staged_reliable or staged_root is None or staged_root.name != record["name"]
+                    or file_sha256(staged_root) != record["sha256"]):
+                raise RuntimeError("preserved authority root changed")
+            live_root, live_payload, live_reliable = local_object_any(self.directory / "backend", record["key"])
+            if not live_reliable or live_root is None or live_root.name != record["name"]:
+                raise RuntimeError("live authority root changed after the interrupted startup")
+            try:
+                staged_value = json.loads(staged_payload, object_pairs_hook=unique_object)["root"]
+                live_value = json.loads(live_payload, object_pairs_hook=unique_object)["root"]
+            except (ValueError, TypeError, UnicodeError, KeyError, RuntimeError) as error:
+                raise RuntimeError("authority root payload is invalid") from error
+            # ownership/revision 和 lease pin/receipt 是未 ready 启动的控制面
+            # 写入；数据引用 blobs/objects/branches 等任何未知字段都不允许变化。
+            mutable = {"ownership", "revision", "pins", "pin_entries", "receipts"}
+            stable = lambda value: {key: item for key, item in value.items() if key not in mutable}
+            if stable(staged_value) != stable(live_value):
+                raise RuntimeError("authority data changed after the interrupted startup: " + record["key"])
+        staged_seal, staged_payload, staged_reliable = local_object_any(staging / "backend", LOCAL_SEAL_KEY)
+        if (not staged_reliable or staged_seal is None or validate_local_seal_payload(staged_payload) is None
+                or file_sha256(staged_seal) != evidence.get("seal_sha256")):
+            raise RuntimeError("preserved authority seal could not be verified")
+        live_seal, live_payload, live_reliable = local_object_any(self.directory / "backend", LOCAL_SEAL_KEY)
+        if not live_reliable or live_seal is None:
+            raise RuntimeError("live authority seal could not be verified")
+        live_seal_hash = file_sha256(live_seal)
+        preserved_seal_hash = evidence.get("seal_sha256")
+        attempt_seal_hash = attempt.get("authority_seal_sha256")
+        authority_involved = "authority" in services or starting == "authority"
+        allowed_seal = {preserved_seal_hash}
+        if attempt_seal_hash is not None:
+            allowed_seal.add(attempt_seal_hash)
+        if live_seal_hash not in allowed_seal:
+            if (not authority_involved or attempt_seal_hash is not None
+                    or attempt.get("seal_before_spawn_sha256") != preserved_seal_hash):
+                raise RuntimeError("authority seal changed beyond this interrupted startup")
+            preserved_seal = decode_seal_record(staged_payload)
+            live_seal_record = decode_seal_record(live_payload)
+            if (preserved_seal is None or preserved_seal.get("clean") is not True
+                    or live_seal_record is None
+                    or live_seal_record["owner"] == preserved_seal["owner"]):
+                raise RuntimeError("authority seal changed beyond this interrupted startup")
+        marker = self.directory / "authority/authority.lock"
+        if marker.is_symlink() or not marker.is_file():
+            raise RuntimeError("authority startup marker is missing")
+        marker_value = marker.read_bytes()
+        if marker_value == b"clean\n":
+            # A clean marker is accepted only when it is the preserved state
+            # untouched, or when the changed seal proves this attempt reached a
+            # clean/graceless stop. The proof below still restores the preserved
+            # marker together with the seal/root/proof snapshot.
+            expected = {f"{worker}.{kind}.json" for worker in self.launch["workers"] for kind in ("identity", "stop")}
+            proofs_match = all(
+                file_sha256_or_none(self.directory / "owned-proof" / name)
+                == file_sha256_or_none(staging / "owned-proof" / name) for name in expected)
+            roots_match = all(
+                file_sha256_or_none(self.directory / "backend" / record["name"]) == record["sha256"]
+                for record in root_records)
+            if not authority_involved or not (
+                    live_seal_hash != preserved_seal_hash or proofs_match and roots_match):
+                raise RuntimeError("authority marker is clean but live evidence does not match the preserved snapshot")
+        elif marker_value != b"dirty\n":
+            raise RuntimeError("authority startup marker is neither clean nor the expected dirty marker")
+        staged_marker = staging / "authority/authority.lock"
+        if (file_sha256_or_none(staged_marker) != evidence.get("authority_lock_sha256")
+                or staged_marker.read_bytes() != b"clean\n"):
+            raise RuntimeError("preserved authority startup marker is not the verified clean marker")
+        survivors = self.surviving_recorded_services(attempt)
+        if survivors:
+            raise RuntimeError("services from the interrupted startup are still running ("
+                               + ", ".join(sorted(survivors))
+                               + "); stop and join them with the operator path first")
+        verify_addresses_available([self.launch["listen"], self.launch["authority"], self.config["broker_listen"]]
+                                   + [worker["address"] for worker in self.launch["workers"].values()])
+        return self.restore_startup_snapshot(configuration, path, attempt, staging, evidence, live_seal, staged_seal, state_unchanged, root_records)
+
+    def restore_startup_snapshot(self, configuration, intent_path, attempt, staging, evidence, live_seal, staged_seal, state_unchanged, root_records):
+        created = datetime.datetime.now(datetime.timezone.utc)
+        root = self.directory / "launcher-startup-recovery"
+        private_directory(root)
+        destination = root / (created.strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(8))
+        private_directory(destination)
+        intent_bytes = intent_path.read_bytes()
+        intent_hash = hashlib.sha256(intent_bytes).hexdigest()
+        private_copy(intent_path, destination / "launcher-startup-attempt.json")
+        canonical_proof = self.directory / "owned-proof"
+        private_directory(canonical_proof)
+        expected = {f"{worker}.{kind}.json" for worker in self.launch["workers"] for kind in ("identity", "stop")}
+        live_proofs = {entry.name for entry in canonical_proof.iterdir()}
+        if live_proofs - expected:
+            raise RuntimeError("live owned proof set has unexpected entries; operator review required")
+        private_directory(destination / "attempt-owned-proof")
+        for name in sorted(live_proofs):
+            private_copy(canonical_proof / name, destination / "attempt-owned-proof" / name)
+        for name in sorted(expected):
+            atomic_private_bytes(canonical_proof / name, (staging / "owned-proof" / name).read_bytes())
+        for record in root_records:
+            live_root, _, _ = local_object_any(self.directory / "backend", record["key"])
+            atomic_private_bytes(live_root, (staging / "authority-roots" / record["name"]).read_bytes())
+        atomic_private_bytes(live_seal, staged_seal.read_bytes())
+        atomic_private_bytes(self.directory / "authority/authority.lock", b"clean\n")
+        receipt = {"version": 1, "kind": "launcher_startup_recovery",
+                   "run_dir": str(self.directory), "generation": configuration["generation"],
+                   "created_at": created.isoformat(), "intent_sha256": intent_hash,
+                   "staging": str(staging), "services_started": attempt["services_started"],
+                   "restored": ["owned-proof", "authority backend seal", "authority roots", "authority clean startup marker"],
+                   "terminal_sha256": evidence["terminal_sha256"],
+                   "state_sha256": evidence["state_sha256"],
+                   "state_floor_sha256": evidence["state_floor_sha256"],
+                   "seal_sha256": evidence["seal_sha256"],
+                   "backend_manifest_sha256": evidence["backend_manifest_sha256"],
+                   "journal_sha256": evidence["journal_sha256"],
+                   "state_advanced": not state_unchanged,
+                   "live_state_sha256": file_sha256(self.directory / "platform/state.json")}
+        atomic_private_json(destination / "receipt.json", signed_owned_identity(configuration, receipt))
+        fsync_directory(destination / "attempt-owned-proof")
+        fsync_directory(destination)
+        fsync_directory(root)
+        fsync_directory(self.directory)
+        self.startup_intent = {"version": 1, "kind": "launcher_startup_attempt",
+                               "generation": configuration["generation"], "ready": False,
+                               "services_started": [], "pids": {}, "starting": None, "commands": {},
+                               "staging": str(staging.relative_to(self.directory)),
+                               "terminal_sha256": evidence["terminal_sha256"],
+                               "evidence": evidence, "state_hashes": self.startup_state_hashes(),
+                               "recovered_from_sha256": intent_hash,
+                               "recovery_directory": str(destination),
+                               "state_advanced": not state_unchanged,
+                               "created_at": created.isoformat()}
+        self.write_startup_intent(configuration)
+        if state_unchanged:
+            self.verify_clean_evidence()
+            self.verify_clean_stop_record(configuration)
+            self.verify_startup_attempt(configuration)
+        self.recovered_interrupted_startup = True
+        return True
+
+    def prepare_recovery(self, configuration):
+        """Admit an unclean run for isolation release or a proven startup rollback.
+
+        The normal clean-restart gate stays exactly as it is. A signed startup
+        intent plus a complete preserved snapshot may be rolled back to the last
+        clean point; if that proof is absent or fails, the isolation-release path
+        still requires the owned worker joins and the authority's clean marker.
+        A dirty authority without such proof needs its remote terminal proven
+        first; starting it here would be the takeover the authority refuses.
+        """
+        try:
+            recovered = self.recover_interrupted_startup(configuration)
+        except Exception as error:
+            raise RuntimeError("interrupted startup proof recovery refused: " + str(error)
+                               + "; operator: send SIGTERM to any surviving platform and authority, wait for their joined exit so the shutdown checkpoint materializes the operation view, retain all markers, proofs and launcher-restart-staging, then rerun the original configuration with --recover; do not delete or rewrite markers, and keep the volume isolated if the preserved proof no longer matches") from error
+        if not recovered:
+            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            authority = self.directory / "authority/authority.lock"
+            if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
+                raise RuntimeError("recovery requires a clean authority startup marker; if a signed startup intent and complete preserved proof exist, use --recover to run proof recovery; otherwise retain isolation and inspect the authority")
         try:
             verify_clean_terminal(self.directory, configuration)
             verify_no_unresolved_operations(self.directory, configuration)
             self.verify_clean_stop_record(configuration)
+            self.verify_startup_attempt(configuration)
         except Exception:
             pass
         else:
-            raise RuntimeError("run already passes the clean restart gate; start without --recover")
+            if not self.restart_failure_gate_rejected and not self.recovered_interrupted_startup:
+                raise RuntimeError("run already passes the clean restart gate; start without --recover")
         self.preserve_previous_stop_record(configuration)
 
     def preserve_previous_stop_record(self, configuration):
@@ -677,26 +1212,9 @@ class Project:
         atomic_private_json(archive, json.loads(path.read_bytes(), object_pairs_hook=unique_object))
 
     def begin_restart_failure(self, error):
-        existing = self.directory / "launcher-restart-failure.json"
-        if not self.processes and self.clean_evidence is None and existing.exists():
-            # prepare() refused before staging anything. Keep an existing
-            # operator-required record: it is the only account of the original
-            # failure, and a repeated refusal must not overwrite it. The gate
-            # rejection flag covers legacy/unsigned records and violations that
-            # are not expressed by requires_operator alone. A record that still
-            # passes the gate does not describe this refusal, so the new failure
-            # is written below.
-            if self.restart_failure_gate_rejected:
-                return
-            configuration = getattr(self, "config", {}).get("owned_stop_proof")
-            if configuration:
-                try:
-                    previous = self.read_signed_private(existing, configuration,
-                                                        "launcher restart failure record")
-                except RuntimeError:
-                    previous = None
-                if isinstance(previous, dict) and previous.get("requires_operator") is True:
-                    return
+        if not self.processes and self.clean_evidence is None:
+            # 配置拒绝没有运行副作用，不应制造下次启动无法消除的故障门禁。
+            return
         configuration = getattr(self, "config", {}).get("owned_stop_proof")
         reconciling = self.phase != "startup"
         self.restart_failure = {
@@ -706,7 +1224,7 @@ class Project:
             "generation": configuration["generation"] if configuration else None,
             "phase": self.phase,
             "readiness": "announced" if self.phase == "running" else "not_announced",
-            "requires_operator": reconciling,
+            "requires_operator": reconciling or bool(self.processes),
             "not_rolled_back": {},
             "error_type": type(error).__name__,
             "error": str(error)[:4096],
@@ -733,15 +1251,89 @@ class Project:
                  "state_sha256", "state_floor_sha256", "authority_lock_sha256",
                  "seal_name", "seal_sha256", "seal_lookup_reliable")}
 
-    def stage_clean_evidence(self, configuration):
-        """Keep the verified clean chain restorable until readiness is announced.
+    def startup_state_hashes(self):
+        hashes = {}
+        for directory in ("authority", "controller", "platform", "owned-proof"):
+            root = self.directory / directory
+            if root.exists():
+                for path in sorted(root.rglob("*")):
+                    if path.is_symlink():
+                        raise RuntimeError("startup evidence must not contain symlinks")
+                    if path.is_file():
+                        hashes[str(path.relative_to(self.directory))] = file_sha256(path)
+        if self.launch["backend"] == "local":
+            seal, reliable = local_object_path(self.directory / "backend", LOCAL_SEAL_KEY)
+            hashes["authority_seal"] = file_sha256(seal) if seal else None
+            hashes["authority_seal_reliable"] = reliable
+        for name in ("launch.json", "platform.json", "launcher-terminal.json", "launcher-stop.json"):
+            hashes[name] = file_sha256(self.directory / name)
+        return hashlib.sha256(json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-        This is a same-process recovery boundary only. A hard kill or crash never
-        restores it automatically: the canonical terminal stays absent and the next
-        prepare refuses reuse. Recovery additionally requires every started process
-        to be confirmed exited; an unknown state preserves the evidence for an
-        operator instead.
-        """
+    def write_startup_intent(self, configuration, **changes):
+        self.startup_intent.update(changes)
+        atomic_private_json(self.directory / "launcher-startup-attempt.json",
+                            signed_owned_identity(configuration, self.startup_intent))
+
+    def verify_startup_attempt(self, configuration):
+        path = self.directory / "launcher-startup-attempt.json"
+        if not path.exists():
+            return
+        attempt = self.read_signed_private(path, configuration, "startup attempt intent")
+        if (attempt.get("version") != 1 or attempt.get("generation") != configuration["generation"]
+                or attempt.get("kind") != "launcher_startup_attempt"):
+            raise RuntimeError("startup attempt identity invalid; operator recovery required")
+        # 新 terminal 是正常停机或显式 recovery 的证明，不受旧 attempt 的约束。
+        if ((self.directory / "launcher-terminal.json").is_file()
+                and file_sha256(self.directory / "launcher-terminal.json") != attempt.get("terminal_sha256")):
+            self.verify_clean_evidence()
+            self.verify_clean_stop_record(configuration)
+            return
+        if attempt.get("ready") is not False or attempt.get("services_started") != []:
+            raise RuntimeError("interrupted startup may have changed state; operator recovery required: stop and join surviving services, retain all markers, then run --recover for evidence-proven startup rollback if launcher-startup-attempt.json and its preserved snapshot exist; see README release-volume compatibility")
+        if attempt.get("state_hashes") != self.startup_state_hashes():
+            raise RuntimeError("interrupted startup state changed; operator recovery required; retain markers and startup evidence, stop and join every service, and run --recover only after the preserved snapshot matches")
+        self.verify_clean_evidence()
+        self.verify_clean_stop_record(configuration)
+
+    def supersede_restart_failure(self, terminal_sha256):
+        path = self.directory / "launcher-restart-failure.json"
+        if not path.exists():
+            return
+        if (self.directory / "launcher-restart-failure-unavailable.json").exists():
+            raise RuntimeError("restart failure record unavailable; operator recovery required")
+        configuration = self.config["owned_stop_proof"]
+        previous = self.read_signed_private(path, configuration, "launcher restart failure record")
+        if previous.get("requires_operator") is False:
+            # 已取代的记录保持字节不变；否则每次正常重启都会重写并新增历史。
+            return
+        if previous.get("requires_operator") is not True:
+            raise RuntimeError("unrecognized restart failure record cannot be superseded")
+        history = self.directory / "launcher-restart-failure-history"
+        private_directory(history)
+        digest = file_sha256(path)
+        archive = history / (digest + ".json")
+        if not archive.exists():
+            private_copy(path, archive)
+        fsync_directory(history)
+        record = {**previous, "version": 1, "kind": "launcher_restart_failure",
+                  "generation": configuration["generation"], "requires_operator": False,
+                  "teardown_completed": True, "all_processes_stopped": True,
+                  "supersedes_sha256": digest, "superseded_by_terminal_sha256": terminal_sha256,
+                  "superseded_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        atomic_private_json(path, signed_owned_identity(configuration, record))
+        self.prune_failure_history(history)
+
+    def prune_failure_history(self, history):
+        limit = 32
+        entries = [entry for entry in history.iterdir() if entry.is_file() and not entry.is_symlink()]
+        if len(entries) <= limit:
+            return
+        for entry in sorted(entries, key=lambda value: (value.stat().st_mtime_ns, value.name))[:-limit]:
+            entry.unlink()
+        fsync_directory(history)
+
+    def stage_clean_evidence(self, configuration):
+        """复制旧证明；ready 前不移动唯一 canonical 证据。"""
         terminal = self.directory / "launcher-terminal.json"
         stop = self.directory / "launcher-stop.json"
         state = self.directory / "platform/state.json"
@@ -753,6 +1345,7 @@ class Project:
         private_directory(staging)
         private_directory(staging / "platform")
         private_directory(staging / "authority")
+        private_directory(staging / "owned-proof")
         for source, name in ((state, "platform/state.json"), (floor, "platform/state.json.floor")):
             try:
                 # The platform commits by rename, so a hard link is a zero-copy
@@ -763,12 +1356,26 @@ class Project:
         for source, name in ((stop, "launcher-stop.json"), (authority_lock, "authority/authority.lock")):
             if source.is_file():
                 private_copy(source, staging / name)
+        for proof in (self.directory / "owned-proof").iterdir():
+            private_copy(proof, staging / "owned-proof" / proof.name)
         seal_path, seal_reliable = None, True
         if self.launch["backend"] == "local":
             seal_path, seal_reliable = local_object_path(self.directory / "backend", LOCAL_SEAL_KEY)
             if seal_path is not None:
                 private_directory(staging / "backend")
                 private_copy(seal_path, staging / "backend" / seal_path.name)
+        root_records = []
+        if self.launch["backend"] == "local":
+            state_payload = json.loads(state.read_bytes(), object_pairs_hook=unique_object)["payload"]
+            root_records = authority_root_records(state_payload, self.directory / "backend")
+            if root_records:
+                private_directory(staging / "authority-roots")
+                for record in root_records:
+                    private_copy(self.directory / "backend" / record["name"], staging / "authority-roots" / record["name"])
+        journal = self.directory / "platform/operations/journal"
+        manifest = backend_manifest(self.directory / "backend",
+                                    ([seal_path.name] if seal_path is not None else [])
+                                    + [record["name"] for record in root_records]) if self.launch["backend"] == "local" else None
         evidence = {
             "generation": configuration["generation"],
             "staging": str(staging),
@@ -781,13 +1388,19 @@ class Project:
             "seal_name": seal_path.name if seal_path is not None else None,
             "seal_sha256": file_sha256(seal_path) if seal_path is not None else None,
             "seal_lookup_reliable": seal_reliable,
+            "journal_sha256": file_sha256_or_none(journal),
+            "backend_manifest_sha256": manifest,
+            "authority_roots": root_records,
         }
         self.clean_evidence = evidence
-        os.replace(terminal, staging / "launcher-terminal.json")
+        private_copy(terminal, staging / "launcher-terminal.json")
         fsync_directory(staging / "platform")
         fsync_directory(staging / "authority")
+        fsync_directory(staging / "owned-proof")
         if seal_path is not None:
             fsync_directory(staging / "backend")
+        if root_records:
+            fsync_directory(staging / "authority-roots")
         fsync_directory(staging)
         fsync_directory(staging_root)
         fsync_directory(self.directory)
@@ -796,23 +1409,37 @@ class Project:
         archive = history / (configuration["generation"] + "-" + secrets.token_hex(8))
         if archive.exists():
             raise RuntimeError("owned stop proof generation already archived")
-        (self.directory / "owned-proof").rename(archive)
-        private_directory(self.directory / "owned-proof")
+        private_directory(archive)
+        for proof in (self.directory / "owned-proof").iterdir():
+            private_copy(proof, archive / proof.name)
+        fsync_directory(archive)
         evidence["archive"] = str(archive)
         fsync_directory(history)
         fsync_directory(self.directory)
+        self.startup_intent = {"version": 1, "kind": "launcher_startup_attempt",
+                               "generation": configuration["generation"], "ready": False,
+                               "services_started": [], "pids": {}, "commands": {},
+                               "staging": str(staging.relative_to(self.directory)),
+                               "terminal_sha256": evidence["terminal_sha256"],
+                               "evidence": {name: evidence[name] for name in
+                                            ("terminal_sha256", "stop_sha256", "state_sha256", "state_floor_sha256",
+                                             "authority_lock_sha256", "seal_name", "seal_sha256",
+                                             "journal_sha256", "backend_manifest_sha256", "authority_roots")},
+                               "state_hashes": self.startup_state_hashes(),
+                               "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        self.write_startup_intent(configuration)
 
     def discard_clean_evidence(self):
         evidence = self.clean_evidence
         if evidence is None:
             return
-        # Readiness makes the snapshot unusable: later writes are allowed, so a
-        # leftover directory is harmless and must not fail a running launcher.
-        try:
-            shutil.rmtree(evidence["staging"])
-            pathlib.Path(evidence["staging"]).parent.rmdir()
-        except OSError:
-            pass
+        # ready 后只归档，不销毁旧 terminal；它不能再作为当前运行的证明。
+        terminal = self.directory / "launcher-terminal.json"
+        if terminal.exists():
+            os.replace(terminal, pathlib.Path(evidence["staging"]) / "launcher-terminal.json")
+        if hasattr(self, "startup_intent"):
+            self.write_startup_intent(self.config["owned_stop_proof"], ready=True)
+        fsync_directory(self.directory)
         self.clean_evidence = None
 
     def verify_clean_evidence(self):
@@ -935,6 +1562,8 @@ class Project:
             current = self.directory / name
             if current.is_file() and file_sha256(current) == digest:
                 continue
+            if name == "authority/authority.lock":
+                raise RuntimeError("authority marker changed; retain isolation without restoring markers")
             staged = staging / name
             if not staged.is_file():
                 raise RuntimeError("clean evidence snapshot incomplete")
@@ -1271,7 +1900,7 @@ class Project:
             raise RuntimeError("recovery requires an existing run directory")
         if launch_path.exists():
             self.restart_attempt = True
-            self.launch = json.loads(launch_path.read_text())
+            self.launch = normalize_launch(json.loads(launch_path.read_text(), object_pairs_hook=unique_object))
             if self.launch.get("sql_open_observer", False) != observer:
                 raise RuntimeError("SQL open observer profile cannot be silently rebound")
             if self.launch["backend"] != self.arguments.backend or self.launch["listen"] != self.arguments.listen or self.launch["tls"] != self.arguments.tls:
@@ -1298,7 +1927,7 @@ class Project:
                 # Recovery is never a way to skip the normal gate when the gate
                 # already passes. An operator-required restart-failure record is
                 # tolerated here because ending the isolation is the operator
-                # action it asks for, but the record itself is never replaced.
+                # action it asks for. Only a later verified clean shutdown may supersede it.
                 try:
                     self.verify_restart_failure_gate(configuration)
                 except Exception:
@@ -1310,11 +1939,14 @@ class Project:
             except Exception:
                 self.restart_failure_gate_rejected = True
                 raise
+            self.verify_startup_attempt(configuration)
             verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
             verify_clean_terminal(self.directory, configuration)
             # 复用的 clean 语义必须与停机时一致：历史 terminal proof 也是在一个可能滞后于侧车的 payload 上做出的判定。
             verify_no_unresolved_operations(self.directory, configuration)
-            self.verify_clean_stop_record(configuration)
+            self.verify_clean_reuse_gate()
+            self.verified_reuse_terminal = file_sha256(self.directory / "launcher-terminal.json")
+            self.verify_listener_availability()
             self.stage_clean_evidence(configuration)
             return
         if (self.directory / "launcher-terminal.json").exists():
@@ -1341,6 +1973,9 @@ class Project:
             sql_tokens[identity] = credentials["sql_token"]
             key_tokens[identity] = credentials["key_token"]
             worker_config.append({"worker": {"id": identity, "address": "http://" + credentials["address"], "region": "local", "capacity": 32, "load": 0, "healthy": False, "last_heartbeat_ms": 0, "draining": False}, "control_token": credentials["control_token"]})
+        # 新卷同样要在写密钥/身份文件前探明监听地址；失败后目录仍可按新卷重试。
+        verify_addresses_available([self.arguments.listen, authority, broker]
+                                   + [worker["address"] for worker in self.launch["workers"].values()])
         signing = self.directory / "keys/signing.key"
         descriptor = os.open(signing, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as output:
@@ -1394,6 +2029,65 @@ class Project:
         private_json(self.directory / "platform.json", self.config)
         private_json(launch_path, self.launch)
 
+    def verify_listener_availability(self):
+        # 常见端口冲突在 Authority 改变持久状态前拒绝；bind 的竞态仍由启动失败门禁兜底。
+        verify_addresses_available([self.launch["listen"], self.launch["authority"], self.config["broker_listen"]]
+                                   + [worker["address"] for worker in self.launch["workers"].values()])
+
+    def process_table(self):
+        try:
+            listing = subprocess.run(["ps", "-ax", "-ww", "-o", "pid=,command="],
+                                     capture_output=True, text=True, check=False)
+        except OSError as error:
+            raise RuntimeError("process table unavailable; stop residual services with the operator") from error
+        if listing.returncode != 0:
+            raise RuntimeError("process table unavailable; stop residual services with the operator")
+        return parse_process_table(listing.stdout)
+
+    def stop_spawn_window_processes(self, attempt):
+        """Boundedly stop only exact recorded argv matches for the Authority spawn window.
+
+        A PID written before SIGKILL is authoritative only when its current
+        command is byte-equal to the argv recorded in the signed intent. PID
+        reuse or a lookalike decoy cannot make us kill an unrelated process.
+        """
+        names = list(attempt.get("services_started") or [])
+        starting = attempt.get("starting")
+        if starting is not None:
+            names.append(starting)
+        names = sorted(set(names))
+        if not names:
+            return
+        pids = set()
+        for name in names:
+            pids |= match_recorded_argv(self.process_table(), recorded_argv(attempt, name))
+        for pid in sorted(pids):
+            try:
+                # These processes belong to an unready attempt whose durable state
+                # is not trusted; a graceful shutdown could write new checkpoints.
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + SPAWN_STOP_FINALIZE_SECONDS
+        alive = {pid for pid in pids if process_is_running(pid)}
+        while alive and time.monotonic() < deadline:
+            time.sleep(0.05)
+            alive = {pid for pid in alive if process_is_running(pid)}
+        if alive:
+            raise RuntimeError("residual startup services could not be joined: " + ", ".join(str(pid) for pid in sorted(alive)))
+        remaining = self.process_table()
+        for name in names:
+            if match_recorded_argv(remaining, recorded_argv(attempt, name)):
+                raise RuntimeError("residual " + name + " process survived bounded stop")
+
+    def surviving_recorded_services(self, attempt):
+        table = self.process_table()
+        surviving = set()
+        for name, pid in (attempt.get("pids") or {}).items():
+            if pid_matches_recorded_argv(table, pid, recorded_argv(attempt, name)):
+                surviving.add(name)
+        return surviving
+
     def start(self, name, command, environment):
         if name in self.owned_identities:
             raise RuntimeError("owned worker incarnation cannot be reused")
@@ -1401,8 +2095,21 @@ class Project:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         log = os.fdopen(descriptor, "w")
         self.logs.append(log)
+        if hasattr(self, "startup_intent"):
+            nonce = secrets.token_hex(16)
+            commands = {**self.startup_intent.get("commands", {}), name: list(command)}
+            changes = {"starting": name, "start_nonce": nonce, "commands": commands}
+            if name == "authority" and self.launch["backend"] == "local":
+                seal, _, reliable = local_object_any(self.directory / "backend", LOCAL_SEAL_KEY)
+                changes["seal_before_spawn_sha256"] = file_sha256(seal) if reliable and seal is not None else None
+            self.write_startup_intent(self.config["owned_stop_proof"], **changes)
         process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True)
         self.processes[name] = process
+        if hasattr(self, "startup_intent"):
+            pids = {**self.startup_intent.get("pids", {}), name: process.pid}
+            self.write_startup_intent(self.config["owned_stop_proof"],
+                                      services_started=[*self.startup_intent["services_started"], name],
+                                      pids=pids, starting=None)
         configuration = self.config.get("owned_stop_proof")
         if configuration and name in configuration["workers"]:
             identity = {"version": 1, "generation": configuration["generation"], "worker_id": name, "nonce": configuration["workers"][name], "pid": process.pid, "started": secrets.token_hex(32), "waited": False, "exit_code": 0}
@@ -1421,6 +2128,12 @@ class Project:
         if not event.get("ready"):
             raise RuntimeError(name + " readiness rejected")
         self.ready_services.add(name)
+        if hasattr(self, "startup_intent") and name == "authority":
+            seal, _, reliable = (local_object_any(self.directory / "backend", LOCAL_SEAL_KEY)
+                                 if self.launch["backend"] == "local" else (None, None, False))
+            self.write_startup_intent(self.config["owned_stop_proof"],
+                                      authority_seal_sha256=file_sha256(seal) if reliable and seal is not None else None,
+                                      authority_seal_reliable=reliable)
         return event
 
     def stop_worker(self, worker):
@@ -1465,6 +2178,13 @@ class Project:
         atomic_private_json(pathlib.Path(configuration["directory"]) / (worker + ".stop.json"), signed_owned_identity(configuration, proof))
 
     def start_maintenance(self):
+        # The exclusive launcher lock proves no live launcher owns a leftover
+        # socket from a killed attempt; never remove a regular file here.
+        path = self.directory / "owned-stop.sock"
+        if path.is_socket():
+            path.unlink()
+        elif path.exists():
+            raise RuntimeError("owned stop socket path is not a socket")
         listener = socket.socket(socket.AF_UNIX)
         listener.bind(str(self.directory / "owned-stop.sock"))
         os.chmod(self.directory / "owned-stop.sock", 0o600)
@@ -1614,9 +2334,12 @@ class Project:
         # Readiness is the point where client work can begin. Until it is announced a
         # failure is a startup failure and the last clean proof stays restorable; after
         # it, any failure must keep ordinary unclean-stop semantics.
+        terminal_sha256 = self.verified_reuse_terminal
         self.phase = "running"
-        self.discard_clean_evidence()
         print(json.dumps({"ready": True, "service": "local-project", "address": endpoint, "connection_file": str(connection_path), "topology_file": str(topology_path)}), flush=True)
+        if terminal_sha256 is not None:
+            self.supersede_restart_failure(terminal_sha256)
+        self.discard_clean_evidence()
         reported = set()
         while not self.stop.wait(0.2):
             if any(self.processes[name].poll() is not None for name in ("platform", "authority")):
@@ -1784,6 +2507,10 @@ class Project:
                 raise RuntimeError("shutdown deadline expired; no clean proof")
             atomic_private_json(self.directory / "launcher-terminal.json", terminal)
             self.write_stop_record("clean", "terminal_proof_written")
+            if self.recovery and self.phase == "recovery":
+                self.verify_clean_evidence()
+                self.verify_clean_stop_record(configuration)
+                self.supersede_restart_failure(file_sha256(self.directory / "launcher-terminal.json"))
         except Exception as error:
             # 诊断要能区分“未物化”和“未解析”，否则 launcher-stop.json 只留下同一句话。
             self.write_stop_record("unclean", ("terminal_proof_unavailable: " + str(error))[:512])
