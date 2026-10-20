@@ -272,6 +272,39 @@ checkpoint is only half of a reuse judgment: it proves the sidecar view reached
 the payload, never that the stop itself was clean, and a checkpoint step the
 deadline abandoned can still commit after the stop was reported unclean.
 
+v1.1.7 fixes how an ambiguous SQL outcome is reported and recovered. A Hrana
+HTTP or WebSocket request that ended with an unknown outcome now returns the
+platform failure as structured fields (`operation_id`, `possible_commit`,
+`retry_allowed`, `execution_proven`) instead of a plain-text error, including
+the autocommit probe on a session already poisoned by an unknown write. A
+request counts as dispatched only once its body was written; a connection that
+was opened but never carried a written request is not ambiguous. Write cursors
+without `RETURNING` now report `affected_row_count` and `last_insert_rowid`
+with no rows, so the JavaScript SDK's `run()` no longer fails on ordinary
+writes. The Authority staging path also stops cloning every body payload while
+encoding and caps staging threads at 4; this is an internal performance change
+and does not alter the `put`/`put_group` durability contract.
+
+Recovery from a quarantined database is now reachable without weakening the
+restart gate. `isolation/release` is exposed through the management API, the Go
+and TypeScript SDK path allowlists and the `peri` CLI; an operation record that
+is still quarantined without a release reports
+`isolation_release_or_new_database_required`, and management calls outside the
+recovery surface answer 409 `recovery_restricted` when the platform runs with
+`PERI_RECOVERY_ONLY=1`. `dev.py --recover` starts only the Authority and a
+SQL-disabled platform against an existing run directory, requires a clean
+Authority startup marker and owned stop proofs, and refuses when the run already
+passes the clean restart gate. The normal gate, stop proofs and ownership dirty
+marker are unchanged; a released quarantine counts as resolved history but is
+never permission to clear the marker.
+
+This release also makes the P0 test set a publish gate. `.github/workflows/p0-gate.yml`
+runs `scripts/p0-gate.sh` on every push and pull request and before any tagged
+image build. The script verifies the pinned Turso gitlink, runs every
+`prototypes/p0` test, and runs the pinned Turso SQL smoke with the fixed 64 MiB
+hash budget; a failure blocks the image build, the manifest list and the GitHub
+Release.
+
 v1.1.6 changes how the Authority RPC carries object bytes: `Put` bodies,
 `UploadSegments` batches and `Get` replies use base64 strings instead of JSON
 integer arrays, and a new `put_group` session operation makes a group of
