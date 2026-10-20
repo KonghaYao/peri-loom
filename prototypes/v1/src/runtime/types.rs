@@ -87,6 +87,50 @@ pub enum DatabaseLifecycle {
     Draining,
 }
 
+/// Where a cold activation is spending its time. The phases are boundary markers, not
+/// progress inside a native call: a WAL replay keeps the activation in `opening_database`
+/// until it returns, because it cannot be interrupted.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationPhase {
+    OpeningStore,
+    ResolvingKey,
+    OpeningDatabase,
+    Ready,
+    Failed,
+    Draining,
+}
+
+/// Queryable state of one cold load. The load has its own budget; a caller that waits on
+/// it is not part of this snapshot's deadline.
+#[derive(Clone, Debug, Serialize)]
+pub struct ActivationStatus {
+    pub epoch: u64,
+    pub phase: ActivationPhase,
+    pub elapsed_ms: u64,
+    /// Callers currently parked on this shared load. A caller that times out leaves the
+    /// queue without touching the load.
+    pub waiters: usize,
+    /// WAL bytes the open replayed, once `RemoteDatabase::open` returned. Not a live
+    /// progress counter: the replay itself is a single native call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replayed_bytes: Option<u64>,
+}
+
+/// The residency sample a worker reports for one database.
+///
+/// Activation state travels inside `resources` rather than as a sibling field because the
+/// controller decodes `get_worker_state` strictly while treating `resources` as opaque:
+/// a new sibling field would break every heartbeat. Flattening keeps the existing resource
+/// keys where they were and only adds `activation` when one exists.
+#[derive(Clone, Debug, Serialize)]
+pub struct DatabaseResources {
+    #[serde(flatten)]
+    pub usage: Option<ResourceUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationStatus>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DatabaseStatus {
     pub identifier: DatabaseId,
@@ -94,7 +138,7 @@ pub struct DatabaseStatus {
     pub lifecycle: DatabaseLifecycle,
     pub active_sessions: usize,
     pub idle_ms: Option<u64>,
-    pub resources: Option<ResourceUsage>,
+    pub resources: Option<DatabaseResources>,
     pub resource_error: Option<String>,
 }
 

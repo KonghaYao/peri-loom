@@ -187,7 +187,15 @@ fn loading_reservation_enforces_database_and_global_session_capacity() -> Result
         let status = runtime.status()?;
         assert_eq!(status.loading_databases, 1);
         assert_eq!(status.active_sessions, 1);
-        assert!(status.databases[0].resources.is_none());
+        let resources = status.databases[0]
+            .resources
+            .as_ref()
+            .expect("a loading entry reports its activation");
+        assert!(
+            resources.usage.is_none(),
+            "a loading entry has no native database to sample"
+        );
+        assert!(resources.activation.is_some());
         assert!(runtime.open(identifier("other"), 1).is_err());
         gate.release();
         task.join().unwrap();
@@ -327,6 +335,9 @@ fn resource_accounting_is_bounded_and_absent_after_unload() -> Result<()> {
     assert_eq!(
         status.databases[0]
             .resources
+            .as_ref()
+            .unwrap()
+            .usage
             .as_ref()
             .unwrap()
             .segment_loads,
