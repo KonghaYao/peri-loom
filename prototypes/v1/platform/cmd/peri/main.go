@@ -16,14 +16,20 @@ import (
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil {
-		var failure *sdk.Error
-		if errors.As(err, &failure) {
-			fmt.Fprintln(os.Stderr, failure)
-		} else {
-			fmt.Fprintln(os.Stderr, "peri: invalid command, configuration, or unavailable service")
-		}
+		reportFailure(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func reportFailure(writer io.Writer, err error) {
+	var failure *sdk.Error
+	if errors.As(err, &failure) {
+		// Print the returned error, not only its typed cause: a failed session
+		// cleanup is appended as context while the original failure stays wrapped.
+		fmt.Fprintln(writer, err)
+		return
+	}
+	fmt.Fprintln(writer, "peri: invalid command, configuration, or unavailable service")
 }
 
 func run(arguments []string, input io.Reader, output io.Writer) error {
@@ -97,19 +103,19 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 		}
 		if *execute != "" {
 			if err := session.Execute(ctx, *execute, *identifier); err != nil {
-				return err
+				return cleanupAfterFailure(session, err)
 			}
 			if err := json.NewEncoder(output).Encode(map[string]bool{"executed": true}); err != nil {
-				return err
+				return cleanupAfterFailure(session, err)
 			}
 			return closeSession(session)
 		}
 		rows, err := session.Query(ctx, *query, *identifier)
 		if err != nil {
-			return err
+			return cleanupAfterFailure(session, err)
 		}
 		if err := json.NewEncoder(output).Encode(rows); err != nil {
-			return err
+			return cleanupAfterFailure(session, err)
 		}
 		return closeSession(session)
 	}
@@ -134,6 +140,22 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 		return err
 	}
 	return json.NewEncoder(output).Encode(result)
+}
+
+// cleanupAfterFailure releases a session whose outcome is settled. An unknown
+// outcome or a moved session stays untouched: reconnecting is explicit, and a
+// cleanup request must never be mistaken for evidence that resolves the SQL.
+// The original failure remains the command result; a failed close is appended
+// as context instead of replacing it.
+func cleanupAfterFailure(session *sdk.Session, failure error) error {
+	var typed *sdk.Error
+	if errors.As(failure, &typed) && typed != nil && (typed.OutcomeUnknown || typed.Code == "session_moved") {
+		return failure
+	}
+	if closeErr := closeSession(session); closeErr != nil {
+		return fmt.Errorf("%w (session cleanup failed: %v)", failure, closeErr)
+	}
+	return failure
 }
 
 func closeSession(session *sdk.Session) error {

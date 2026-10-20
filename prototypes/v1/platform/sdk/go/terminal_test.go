@@ -89,7 +89,7 @@ func TestTerminalSQLFailureClassesStayDistinguishable(test *testing.T) {
 		{"settled compute budget", map[string]any{"code": "sql_budget_exceeded", "message": "step budget", "execution_completed": true, "may_have_committed": true}, "sql_budget_exceeded", "step budget", false, true, true},
 		{"rejected statement", map[string]any{"code": "sql_error", "message": "could not be prepared", "execution_completed": false, "may_have_committed": false}, "sql_error", "could not be prepared", false, false, false},
 		{"admission refusal", map[string]any{"code": "sql_unavailable", "message": "queue full", "execution_completed": false, "may_have_committed": false}, "sql_unavailable", "queue full", false, false, false},
-		{"missing evidence", map[string]any{"code": "sql_timeout", "message": "deadline budget"}, "outcome_unknown", "", true, false, false},
+		{"missing evidence", map[string]any{"code": "sql_timeout", "message": "deadline budget"}, "outcome_unknown", "deadline budget", true, false, false},
 		{"settled without commit risk", map[string]any{"code": "sql_error", "execution_completed": true, "may_have_committed": false}, "sql_error", "", false, true, false},
 		// The platform never publishes this pairing, so it proves nothing about
 		// execution; the commit warning it did publish still reaches the caller.

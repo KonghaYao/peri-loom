@@ -68,7 +68,7 @@ func shell(client *sdk.Client, database sdk.DatabaseID, input io.Reader, output 
 			if err == nil {
 				if err := json.NewEncoder(output).Encode(map[string]bool{"executed": true}); err != nil {
 					cancel()
-					return err
+					return cleanupAfterFailure(session, err)
 				}
 			}
 		} else {
@@ -77,14 +77,14 @@ func shell(client *sdk.Client, database sdk.DatabaseID, input io.Reader, output 
 			if err == nil {
 				if err := json.NewEncoder(output).Encode(rows); err != nil {
 					cancel()
-					return err
+					return cleanupAfterFailure(session, err)
 				}
 			}
 		}
 		cancel()
 		if err != nil {
 			if !knownSessionMoved(err) {
-				return err
+				return cleanupAfterFailure(session, err)
 			}
 			knownMoved = true
 			fmt.Fprintln(output, err)
@@ -92,7 +92,11 @@ func shell(client *sdk.Client, database sdk.DatabaseID, input io.Reader, output 
 		}
 	}
 	if scanner.Err() != nil {
-		return errors.New("shell input limit or read failure")
+		inputErr := errors.New("shell input limit or read failure")
+		if knownMoved {
+			return inputErr
+		}
+		return cleanupAfterFailure(session, inputErr)
 	}
 	if knownMoved {
 		return nil

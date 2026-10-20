@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"peri-loom/platform/sqlcontract"
@@ -64,10 +66,41 @@ type Error struct {
 	Ambiguous          bool
 	Rejected           bool
 	RetryAllowed       bool
+
+	// Presence is tracked separately from the bool value: an error synthesized
+	// locally (lost transport, bad envelope) has no server evidence, and Error()
+	// must not render its zero value as a published false.
+	mayHaveCommittedKnown bool
+	executionProvenKnown  bool
 }
 
+// Error renders only what the platform published. Message is the gateway's
+// sanitized text, never the worker's; outcome_unknown carries the correlation
+// and evidence fields a caller needs to resolve the operation out of band.
 func (failure *Error) Error() string {
-	return "peri: " + failure.Code + " (request " + failure.RequestID + ")"
+	text := "peri: " + failure.Code
+	if failure.Message != "" {
+		text += ": " + failure.Message
+	}
+	var details []string
+	if failure.RequestID != "" {
+		details = append(details, "request "+failure.RequestID)
+	}
+	if failure.OutcomeUnknown {
+		if failure.OperationID != "" {
+			details = append(details, "operation_id="+failure.OperationID)
+		}
+		if failure.mayHaveCommittedKnown || failure.MayHaveCommitted {
+			details = append(details, "may_have_committed="+strconv.FormatBool(failure.MayHaveCommitted))
+		}
+		if failure.executionProvenKnown || failure.ExecutionProven {
+			details = append(details, "execution_proven="+strconv.FormatBool(failure.ExecutionProven))
+		}
+	}
+	if len(details) != 0 {
+		text += " (" + strings.Join(details, "; ") + ")"
+	}
+	return text
 }
 
 func RandomID() (string, error) {
@@ -101,11 +134,19 @@ type ManagementRequest struct {
 }
 
 type envelope struct {
-	Version   int                  `json:"version"`
-	RequestID string               `json:"request_id"`
-	OK        *bool                `json:"ok"`
-	Result    json.RawMessage      `json:"result"`
-	Error     *sqlcontract.Failure `json:"error"`
+	Version   int             `json:"version"`
+	RequestID string          `json:"request_id"`
+	OK        *bool           `json:"ok"`
+	Result    json.RawMessage `json:"result"`
+	Error     json.RawMessage `json:"error"`
+}
+
+// failureEvidence records which optional fields the platform actually
+// published. The decoded sqlcontract.Failure deliberately hides that
+// distinction, so the wire object is inspected once here for rendering only.
+type failureEvidence struct {
+	MayHaveCommitted *bool `json:"may_have_committed"`
+	ExecutionProven  *bool `json:"execution_proven"`
 }
 
 // safeCode keeps the published vocabulary from reaching a client as free text:

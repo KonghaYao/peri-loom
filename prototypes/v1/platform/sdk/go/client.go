@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"peri-loom/platform/sqlcontract"
 )
 
 type Client struct {
@@ -107,15 +109,19 @@ func (client *Client) call(ctx context.Context, path, identifier string, input a
 		return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
 	}
 	if !*reply.OK {
-		if reply.Error == nil || len(reply.Result) == 0 || string(reply.Result) != "null" {
+		failure, evidence, decodeErr := decodeFailure(reply.Error)
+		if decodeErr != nil || failure == nil || len(reply.Result) == 0 || string(reply.Result) != "null" {
 			return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
 		}
-		failure := reply.Error
 		// sqlcontract decides whether the reply leaves the statement's fate open.
 		// A reply the platform proved — including one that settled without being
 		// able to commit — is a definite answer with its code preserved.
 		if failure.Unknown(response.StatusCode) {
-			return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: true, ExecutionCompleted: failure.Executed(), MayHaveCommitted: failure.MayHaveCommitted(), OperationID: failure.OperationID(), Stage: failure.Stage(), BusinessOutcome: failure.BusinessOutcome(), CleanupOutcome: failure.CleanupOutcome(), RetryAllowed: failure.RetryAllowed()}
+			return &Error{Code: "outcome_unknown", Message: failure.Message(), RequestID: identifier, OutcomeUnknown: true,
+				ExecutionCompleted: failure.Executed(), MayHaveCommitted: failure.MayHaveCommitted(), OperationID: failure.OperationID(),
+				Stage: failure.Stage(), BusinessOutcome: failure.BusinessOutcome(), CleanupOutcome: failure.CleanupOutcome(),
+				ExecutionProven: failure.ExecutionProven(), RetryAllowed: failure.RetryAllowed(),
+				mayHaveCommittedKnown: evidence.MayHaveCommitted != nil, executionProvenKnown: evidence.ExecutionProven != nil}
 		}
 		code := safeCode(*failure)
 		executed, rejected, ambiguous := failure.Executed(), failure.Rejected(), failure.Ambiguous()
@@ -127,13 +133,36 @@ func (client *Client) call(ctx context.Context, path, identifier string, input a
 			BusinessOutcome: failure.BusinessOutcome(), CleanupOutcome: failure.CleanupOutcome(), ExecutionProven: failure.ExecutionProven(),
 			Ambiguous: ambiguous, Rejected: rejected, RetryAllowed: failure.RetryAllowed()}
 	}
-	if reply.Error != nil || response.StatusCode < 200 || response.StatusCode >= 300 || len(reply.Result) == 0 {
+	if replyHasError(reply.Error) || response.StatusCode < 200 || response.StatusCode >= 300 || len(reply.Result) == 0 {
 		return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
 	}
 	if output != nil && decode(reply.Result, output) != nil {
 		return &Error{Code: "outcome_unknown", RequestID: identifier, OutcomeUnknown: mayMutate}
 	}
 	return nil
+}
+
+func replyHasError(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) != 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
+// decodeFailure validates the failure object exactly as sqlcontract defines it
+// and additionally keeps the optional-field presence Error() needs. A malformed
+// object is an unknown outcome, never a partial answer.
+func decodeFailure(raw json.RawMessage) (*sqlcontract.Failure, failureEvidence, error) {
+	var evidence failureEvidence
+	if !replyHasError(raw) {
+		return nil, evidence, nil
+	}
+	var failure sqlcontract.Failure
+	if err := json.Unmarshal(raw, &failure); err != nil {
+		return nil, evidence, err
+	}
+	if err := json.Unmarshal(raw, &evidence); err != nil {
+		return nil, evidence, err
+	}
+	return &failure, evidence, nil
 }
 
 func decode(payload []byte, output any) error {

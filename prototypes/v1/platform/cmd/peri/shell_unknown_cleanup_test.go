@@ -53,13 +53,15 @@ func TestShellOnlyClosesAcknowledgedHealthySession(test *testing.T) {
 		expectedCode    string
 		expectedUnknown bool
 		errorOrigin     string
+		cleanupFailure  bool
 	}{
 		{name: "query_unknown", input: query + laterInput, operationReply: "outcome_unknown", paths: []string{openPath, queryPath}, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "operation"},
 		{name: "query_bad_ack", input: query + laterInput, operationReply: "bad_response", paths: []string{openPath, queryPath}, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "operation"},
 		{name: "query_missing_rows_ack", input: query + laterInput, operationReply: "missing_query_ack", paths: []string{openPath, queryPath}, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "operation"},
 		{name: "transport_lost_ack", input: query + laterInput, operationReply: "transport", paths: []string{openPath, queryPath}, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "operation"},
 		{name: "execute_unknown", input: ":execute INSERT INTO items VALUES(1)\n" + laterInput, operationReply: "outcome_unknown", paths: []string{openPath, executePath}, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "operation"},
-		{name: "known_sql_error", input: query + laterInput, operationReply: "sql_error", paths: []string{openPath, queryPath}, expectedCode: "sql_error", errorOrigin: "operation"},
+		{name: "known_sql_error", input: query + laterInput, operationReply: "sql_error", paths: []string{openPath, queryPath, closePath}, expectedCode: "sql_error", errorOrigin: "operation"},
+		{name: "known_sql_error_close_error", input: query + laterInput, operationReply: "sql_error", closeReply: "operation_incomplete", paths: []string{openPath, queryPath, closePath}, expectedCode: "sql_error", errorOrigin: "operation", cleanupFailure: true},
 		{name: "moved_quit", input: query + ":execute COMMIT\n:quit\n", operationReply: "session_moved", paths: []string{openPath, queryPath}},
 		{name: "moved_eof", input: query + ":query SELECT 2\n", operationReply: "session_moved", paths: []string{openPath, queryPath}},
 		{name: "moved_explicit_reconnect", input: query + ":execute COMMIT\n:query SELECT 2\n:reconnect\n" + query + ":quit\n", operationReply: "session_moved", paths: []string{openPath, queryPath, openPath, queryPath, closePath}},
@@ -72,7 +74,7 @@ func TestShellOnlyClosesAcknowledgedHealthySession(test *testing.T) {
 		{name: "healthy_reconnect", input: query + ":reconnect\n" + query + ":quit\n", paths: []string{openPath, queryPath, closePath, openPath, queryPath, closePath}},
 		{name: "reconnect_close_error", input: query + ":reconnect\n" + query, closeReply: "operation_incomplete", paths: []string{openPath, queryPath, closePath}, expectedCode: "operation_incomplete", errorOrigin: "close"},
 		{name: "reconnect_open_error", input: query + ":reconnect\n" + query, reopenFailure: true, paths: []string{openPath, queryPath, closePath, openPath}, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "open"},
-		{name: "output_error", input: query + laterInput, outputFailure: true, paths: []string{openPath, queryPath}},
+		{name: "output_error", input: query + laterInput, outputFailure: true, paths: []string{openPath, queryPath, closePath}},
 	} {
 		test.Run(sample.name, func(test *testing.T) {
 			test.Setenv("PERI_API_KEY", commandCredential)
@@ -97,7 +99,11 @@ func TestShellOnlyClosesAcknowledgedHealthySession(test *testing.T) {
 				}
 				failureReply := func(code string) {
 					writer.WriteHeader(http.StatusConflict)
-					json.NewEncoder(writer).Encode(map[string]any{"version": 1, "request_id": requestID, "ok": false, "result": nil, "error": map[string]any{"code": code, "execution_completed": code == "sql_error", "may_have_committed": code == "sql_error"}})
+					message := "safe failure text"
+					if code == "sql_error" {
+						message = "statement violated a SQL constraint"
+					}
+					json.NewEncoder(writer).Encode(map[string]any{"version": 1, "request_id": requestID, "ok": false, "result": nil, "error": map[string]any{"code": code, "message": message, "execution_completed": code == "sql_error", "may_have_committed": code == "sql_error"}})
 				}
 				switch request.URL.Path {
 				case openPath:
@@ -171,8 +177,16 @@ func TestShellOnlyClosesAcknowledgedHealthySession(test *testing.T) {
 				if failure.RequestID != expectedID {
 					test.Fatal("original error request identity replaced")
 				}
-				if sample.expectedCode == "sql_error" && (!failure.ExecutionCompleted || !failure.MayHaveCommitted) {
-					test.Fatal("original terminal error metadata replaced")
+				if sample.expectedCode == "sql_error" {
+					if !failure.ExecutionCompleted || !failure.MayHaveCommitted {
+						test.Fatal("original terminal error metadata replaced")
+					}
+					if failure.Message != "statement violated a SQL constraint" || !strings.Contains(err.Error(), failure.Message) {
+						test.Fatal("sanitized failure message lost")
+					}
+				}
+				if sample.cleanupFailure && !strings.Contains(err.Error(), "session cleanup failed") {
+					test.Fatal("cleanup failure context lost")
 				}
 			} else if err != nil {
 				test.Fatal("healthy shell rejected")

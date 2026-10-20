@@ -32,14 +32,17 @@ func TestSQLCleanupRequiresSuccessfulOperationAndCloseACK(test *testing.T) {
 			expectedCloses  int
 			expectedCode    string
 			expectedUnknown bool
+			errorOrigin     string
+			cleanupFailure  bool
 		}{
 			{name: "success", expectedCloses: 1},
 			{name: "unknown", operationReply: "outcome_unknown", expectedCode: "outcome_unknown", expectedUnknown: true},
 			{name: "bad_response", operationReply: "bad_response", expectedCode: "outcome_unknown", expectedUnknown: true},
-			{name: "sql_error", operationReply: "sql_error", expectedCode: "sql_error"},
-			{name: "close_missing_ack", closeReply: "missing_ack", expectedCloses: 1, expectedCode: "outcome_unknown", expectedUnknown: true},
-			{name: "close_error", closeReply: "operation_incomplete", expectedCloses: 1, expectedCode: "operation_incomplete"},
-			{name: "output_error", outputFailure: true},
+			{name: "sql_error", operationReply: "sql_error", expectedCloses: 1, expectedCode: "sql_error", errorOrigin: "operation"},
+			{name: "sql_error_close_error", operationReply: "sql_error", closeReply: "operation_incomplete", expectedCloses: 1, expectedCode: "sql_error", errorOrigin: "operation", cleanupFailure: true},
+			{name: "close_missing_ack", closeReply: "missing_ack", expectedCloses: 1, expectedCode: "outcome_unknown", expectedUnknown: true, errorOrigin: "close"},
+			{name: "close_error", closeReply: "operation_incomplete", expectedCloses: 1, expectedCode: "operation_incomplete", errorOrigin: "close"},
+			{name: "output_error", outputFailure: true, expectedCloses: 1},
 		} {
 			test.Run(action+"/"+sample.name, func(test *testing.T) {
 				test.Setenv("PERI_API_KEY", commandCredential)
@@ -62,7 +65,11 @@ func TestSQLCleanupRequiresSuccessfulOperationAndCloseACK(test *testing.T) {
 					}
 					failureReply := func(code string) {
 						writer.WriteHeader(http.StatusConflict)
-						json.NewEncoder(writer).Encode(map[string]any{"version": 1, "request_id": requestID, "ok": false, "result": nil, "error": map[string]any{"code": code, "execution_completed": code == "sql_error", "may_have_committed": code == "sql_error"}})
+						message := "safe failure text"
+						if code == "sql_error" {
+							message = "statement violated a SQL constraint"
+						}
+						json.NewEncoder(writer).Encode(map[string]any{"version": 1, "request_id": requestID, "ok": false, "result": nil, "error": map[string]any{"code": code, "message": message, "execution_completed": code == "sql_error", "may_have_committed": code == "sql_error"}})
 					}
 					switch request.URL.Path {
 					case "/v1/sql/open":
@@ -111,14 +118,22 @@ func TestSQLCleanupRequiresSuccessfulOperationAndCloseACK(test *testing.T) {
 						test.Fatal("original operation or close error not preserved")
 					}
 					expectedID := "operation-proof"
-					if sample.expectedCloses == 1 {
+					if sample.errorOrigin == "close" {
 						expectedID = closeID
 					}
 					if failure.RequestID != expectedID {
 						test.Fatal("original error request identity replaced")
 					}
-					if sample.expectedCode == "sql_error" && (!failure.ExecutionCompleted || !failure.MayHaveCommitted) {
-						test.Fatal("original terminal error metadata replaced")
+					if sample.expectedCode == "sql_error" {
+						if !failure.ExecutionCompleted || !failure.MayHaveCommitted {
+							test.Fatal("original terminal error metadata replaced")
+						}
+						if failure.Message != "statement violated a SQL constraint" || !strings.Contains(err.Error(), failure.Message) {
+							test.Fatal("sanitized failure message lost")
+						}
+					}
+					if sample.cleanupFailure && !strings.Contains(err.Error(), "session cleanup failed") {
+						test.Fatal("cleanup failure context lost")
 					}
 				} else if err != nil {
 					test.Fatal("successful acknowledged operation rejected")
