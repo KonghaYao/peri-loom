@@ -164,9 +164,13 @@ fn local_corruption_is_rejected() -> Result<()> {
     std::fs::write(&path, serde_json::to_vec(&envelope)?)?;
     assert!(store.get("db/HEAD").is_err());
     assert!(store.list("db/").is_err());
-    assert!(store
-        .put("db/HEAD", b"overwrite", PutCondition::Any)
-        .is_err());
+    // `Any` skips the precondition read, so the corrupt object may be replaced; the
+    // replacement must leave only the new, checksum-valid content behind.
+    let etag = store.put("db/HEAD", b"overwrite", PutCondition::Any)?;
+    let object = store.get("db/HEAD")?.unwrap();
+    assert_eq!(object.bytes, b"overwrite");
+    assert_eq!(object.etag, etag);
+    assert_eq!(store.list("db/")?, vec!["db/HEAD"]);
     Ok(())
 }
 
@@ -181,10 +185,16 @@ fn local_symlink_escape_is_rejected() -> Result<()> {
     let path = directory
         .path()
         .join(format!("{}.obj", blake3::hash(b"db/HEAD").to_hex()));
-    std::os::unix::fs::symlink(&target, path)?;
+    std::os::unix::fs::symlink(&target, &path)?;
     assert!(store.get("db/HEAD").is_err());
-    assert!(store.put("db/HEAD", b"bad", PutCondition::Any).is_err());
+    // `Any` publishes by renaming over the link itself, so the escape target must stay
+    // untouched while the key resolves to the new in-store object.
+    let etag = store.put("db/HEAD", b"bad", PutCondition::Any)?;
     assert_eq!(std::fs::read(&target)?, b"untouched");
+    assert!(!std::fs::symlink_metadata(&path)?.file_type().is_symlink());
+    let object = store.get("db/HEAD")?.unwrap();
+    assert_eq!(object.bytes, b"bad");
+    assert_eq!(object.etag, etag);
     let link = outside.path().join("root");
     std::os::unix::fs::symlink(directory.path(), &link)?;
     assert!(LocalObjectStore::open(link).is_err());

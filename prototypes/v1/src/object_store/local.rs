@@ -28,8 +28,7 @@ struct StagedBody {
     target: PathBuf,
     file: Option<File>,
     etag: String,
-    write_ns: u64,
-    fsync_ns: u64,
+    timing: StageTiming,
 }
 
 /// What publishing a staged body must do once every condition has been rechecked.
@@ -44,6 +43,33 @@ const GROUP_PHASE_ENV: &str = "PERI_DIAG_GROUP_PHASE";
 fn group_phase_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var(GROUP_PHASE_ENV).as_deref() == Ok("1"))
+}
+
+/// Bounded staging width. Local A/B measured the 540-body roll at 4 workers
+/// faster than at 2 or 8; create/fsync contend on the shared directory, so the
+/// upper bound stays at 4. The diagnostic override exists only to re-run that
+/// attribution; production never reads the variable.
+fn stage_worker_count(writes: usize) -> usize {
+    let default = if writes < 8 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map(|parallel| parallel.get())
+            .unwrap_or(4)
+            .clamp(2, 4)
+    };
+    if !group_phase_enabled() {
+        return default;
+    }
+    static OVERRIDE: OnceLock<Option<usize>> = OnceLock::new();
+    OVERRIDE
+        .get_or_init(|| {
+            std::env::var("PERI_DIAG_STAGE_WORKERS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(|workers: usize| workers.clamp(1, 32))
+        })
+        .unwrap_or(default)
 }
 
 /// Only the first relative component is inspected; the key itself is never emitted.
@@ -75,6 +101,13 @@ struct GroupPhase {
     reused: u64,
     stage_ns: u64,
     stage_max_ns: u64,
+    prep_ns: u64,
+    hash_ns: u64,
+    encode_ns: u64,
+    open_ns: u64,
+    spawn_ns: u64,
+    workers: usize,
+    body_total_max_ns: u64,
     body_write_ns: u64,
     body_fsync_ns: u64,
     body_fsync_max_ns: u64,
@@ -102,11 +135,16 @@ impl GroupPhase {
         phase
     }
 
-    fn record_staged_body(&mut self, write_ns: u64, fsync_ns: u64) {
-        self.body_write_ns += write_ns;
-        self.body_fsync_ns += fsync_ns;
-        self.body_fsync_max_ns = self.body_fsync_max_ns.max(fsync_ns);
-        self.stage_max_ns = self.stage_max_ns.max(write_ns + fsync_ns);
+    fn record_staged_body(&mut self, timing: &StageTiming) {
+        self.prep_ns += timing.prep_ns;
+        self.hash_ns += timing.hash_ns;
+        self.encode_ns += timing.encode_ns;
+        self.open_ns += timing.open_ns;
+        self.body_write_ns += timing.write_ns;
+        self.body_fsync_ns += timing.fsync_ns;
+        self.body_fsync_max_ns = self.body_fsync_max_ns.max(timing.fsync_ns);
+        self.stage_max_ns = self.stage_max_ns.max(timing.write_ns + timing.fsync_ns);
+        self.body_total_max_ns = self.body_total_max_ns.max(timing.total_ns());
     }
 
     fn emit(&self) {
@@ -119,7 +157,8 @@ impl GroupPhase {
                 "GROUP_PHASE pid={} writes={} bytes={} unique={} reused={} class={} ",
                 "stage_ns={} stage_max_ns={} body_write_ns={} body_fsync_ns={} ",
                 "body_fsync_max_ns={} lock_wait_ns={} recheck_ns={} rename_ns={} ",
-                "dir_flush_ns={} barrier_ns={} total_ns={}"
+                "dir_flush_ns={} barrier_ns={} total_ns={} prep_ns={} hash_ns={} ",
+                "encode_ns={} open_ns={} spawn_ns={} workers={} body_total_max_ns={}"
             ),
             std::process::id(),
             self.writes,
@@ -138,6 +177,13 @@ impl GroupPhase {
             self.dir_flush_ns,
             self.barrier_ns,
             elapsed_ns(self.total_started),
+            self.prep_ns,
+            self.hash_ns,
+            self.encode_ns,
+            self.open_ns,
+            self.spawn_ns,
+            self.workers,
+            self.body_total_max_ns,
         );
     }
 }
@@ -149,6 +195,46 @@ struct Envelope {
     bytes: Vec<u8>,
     etag: String,
     checksum: String,
+}
+
+/// Borrowing form of [`Envelope`] used on the staging path. The payload clone is
+/// the only field that scales with the body, and the encoded bytes are consumed
+/// immediately, so staging can serialize the caller's body in place. Field order
+/// and encoding stay identical to `Envelope`; the stored format is unchanged.
+#[derive(Serialize)]
+struct EnvelopeRef<'a> {
+    key: &'a str,
+    #[serde(with = "super::payload")]
+    bytes: &'a [u8],
+    etag: &'a str,
+    checksum: &'a str,
+}
+
+#[derive(Default)]
+struct StageTiming {
+    prep_ns: u64,
+    hash_ns: u64,
+    encode_ns: u64,
+    open_ns: u64,
+    write_ns: u64,
+    fsync_ns: u64,
+}
+
+impl StageTiming {
+    fn total_ns(&self) -> u64 {
+        self.prep_ns + self.hash_ns + self.encode_ns + self.open_ns + self.write_ns + self.fsync_ns
+    }
+}
+
+/// `serde_json::to_vec` starts from a small buffer and grows; this upper-bound
+/// estimate of the base64 payload and the fixed fields removes the common
+/// reallocation chain for ordinary bodies without changing the encoded bytes.
+/// It is an estimate for the common path, not a strict capacity guarantee.
+fn encode_envelope(envelope: &EnvelopeRef<'_>, payload_len: usize) -> Result<Vec<u8>> {
+    let overhead = envelope.key.len() + envelope.etag.len() + envelope.checksum.len() + 64;
+    let mut encoded = Vec::with_capacity(payload_len.saturating_mul(4).div_ceil(3) + overhead);
+    serde_json::to_writer(&mut encoded, envelope)?;
+    Ok(encoded)
 }
 
 impl LocalObjectStore {
@@ -189,9 +275,10 @@ impl LocalObjectStore {
     fn stage_body_timed(
         &self,
         write: &super::GroupWrite,
-        etag: String,
+        etag_override: Option<String>,
         diagnostics: bool,
     ) -> Result<StagedBody> {
+        let prep_started = diagnostics.then(Instant::now);
         let target = self.path(&write.key);
         if matches!(write.condition, PutCondition::Any) {
             match self.read(&write.key) {
@@ -204,8 +291,10 @@ impl LocalObjectStore {
                         target,
                         file: None,
                         etag: existing.etag,
-                        write_ns: 0,
-                        fsync_ns: 0,
+                        timing: StageTiming {
+                            prep_ns: elapsed_ns(prep_started),
+                            ..StageTiming::default()
+                        },
                     });
                 }
                 Ok(Some(_)) => {
@@ -217,18 +306,30 @@ impl LocalObjectStore {
                 Err(_) => {}
             }
         }
-        let envelope = Envelope {
-            key: write.key.clone(),
-            bytes: write.bytes.clone(),
-            etag: etag.clone(),
-            checksum: blake3::hash(&write.bytes).to_hex().to_string(),
+        let prep_ns = elapsed_ns(prep_started);
+        let hash_started = diagnostics.then(Instant::now);
+        let checksum = blake3::hash(&write.bytes).to_hex();
+        // The etag is derived from the body and process-local ordering; computing it
+        // here rather than in a serial pre-pass keeps the hash work inside the
+        // per-body workers, where large receipt rolls already run in parallel.
+        let etag = etag_override.unwrap_or_else(|| fresh_etag(&write.bytes));
+        let hash_ns = elapsed_ns(hash_started);
+        let encode_started = diagnostics.then(Instant::now);
+        let envelope = EnvelopeRef {
+            key: &write.key,
+            bytes: &write.bytes,
+            etag: &etag,
+            checksum: checksum.as_str(),
         };
-        let bytes = serde_json::to_vec(&envelope)?;
+        let bytes = encode_envelope(&envelope, write.bytes.len())?;
+        let encode_ns = elapsed_ns(encode_started);
+        let open_started = diagnostics.then(Instant::now);
         let temporary = self.temporary_path(&etag);
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)?;
+        let open_ns = elapsed_ns(open_started);
         let write_started = diagnostics.then(Instant::now);
         let write_result = file.write_all(&bytes);
         let write_ns = elapsed_ns(write_started);
@@ -250,14 +351,20 @@ impl LocalObjectStore {
             target,
             file: Some(file),
             etag,
-            write_ns,
-            fsync_ns,
+            timing: StageTiming {
+                prep_ns,
+                hash_ns,
+                encode_ns,
+                open_ns,
+                write_ns,
+                fsync_ns,
+            },
         })
     }
 
     #[cfg(test)]
     fn stage_body(&self, write: &super::GroupWrite, etag: String) -> Result<StagedBody> {
-        self.stage_body_timed(write, etag, false)
+        self.stage_body_timed(write, Some(etag), false)
     }
 
     /// Stage every body outside the group lock. Non-`Any` conditions are checked once
@@ -274,53 +381,37 @@ impl LocalObjectStore {
                 check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
             }
         }
-        let etags: Vec<String> = writes
-            .iter()
-            .map(|write| fresh_etag(&write.bytes))
-            .collect();
         // A publication is 25-30 bodies on the steady path and several hundred when a
-        // receipt roll lands. The per-body cost is mostly encoding: serde, base64 and
-        // blake3 run on one core while the drive sits idle. The bodies are independent
-        // and content addressed, so they are staged on a bounded set of threads; the
+        // receipt roll lands. Attribution on 2 KiB bodies shows create/fsync dominating
+        // the per-body work while encoding stays in the low single-digit percent, so
+        // the bodies are staged on a bounded set of threads to overlap that I/O; the
         // renames, the one directory flush and the one media barrier still happen in
         // publication order on this thread, after every body is durable.
-        let workers = if writes.len() < 8 {
-            1
-        } else {
-            std::thread::available_parallelism()
-                .map(|parallel| parallel.get())
-                .unwrap_or(4)
-                .clamp(2, 8)
-        };
+        let workers = stage_worker_count(writes.len());
         let diagnostics = phase.enabled;
+        let mut spawn_ns = 0;
         let staged: Vec<Result<StagedBody>> = if workers == 1 {
             writes
                 .iter()
-                .enumerate()
-                .map(|(index, write)| {
-                    self.stage_body_timed(write, etags[index].clone(), diagnostics)
-                })
+                .map(|write| self.stage_body_timed(write, None, diagnostics))
                 .collect()
         } else {
             std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(workers);
                 for offset in 0..workers {
-                    let etags = &etags;
+                    let spawn_started = diagnostics.then(Instant::now);
                     handles.push(scope.spawn(move || {
                         (offset..writes.len())
                             .step_by(workers)
                             .map(|index| {
                                 (
                                     index,
-                                    self.stage_body_timed(
-                                        &writes[index],
-                                        etags[index].clone(),
-                                        diagnostics,
-                                    ),
+                                    self.stage_body_timed(&writes[index], None, diagnostics),
                                 )
                             })
                             .collect::<Vec<_>>()
                     }));
+                    spawn_ns += elapsed_ns(spawn_started);
                 }
                 let mut staged: Vec<(usize, Result<StagedBody>)> = handles
                     .into_iter()
@@ -330,13 +421,17 @@ impl LocalObjectStore {
                 staged.into_iter().map(|(_, result)| result).collect()
             })
         };
+        if phase.enabled {
+            phase.workers = workers;
+            phase.spawn_ns = spawn_ns;
+        }
         let mut bodies = Vec::with_capacity(staged.len());
         let mut failure = None;
         for result in staged {
             match result {
                 Ok(body) => {
                     if phase.enabled {
-                        phase.record_staged_body(body.write_ns, body.fsync_ns);
+                        phase.record_staged_body(&body.timing);
                     }
                     bodies.push(body);
                 }
@@ -728,11 +823,12 @@ impl ObjectStore for LocalObjectStore {
             check_condition(self.read(key)?.as_ref(), &condition)?;
         }
         let etag = fresh_etag(bytes);
-        let envelope = Envelope {
-            key: key.to_owned(),
-            bytes: bytes.to_vec(),
-            etag: etag.clone(),
-            checksum: blake3::hash(bytes).to_hex().to_string(),
+        let checksum = blake3::hash(bytes).to_hex();
+        let envelope = EnvelopeRef {
+            key,
+            bytes,
+            etag: &etag,
+            checksum: checksum.as_str(),
         };
         let temporary = self.temporary_path(&etag);
         let result = (|| -> Result<()> {
@@ -868,12 +964,31 @@ mod group_tests {
     #[test]
     fn group_phase_helpers_aggregate_without_environment() {
         let mut phase = GroupPhase::default();
-        phase.record_staged_body(10, 20);
-        phase.record_staged_body(5, 50);
+        phase.record_staged_body(&StageTiming {
+            prep_ns: 1,
+            hash_ns: 2,
+            encode_ns: 3,
+            open_ns: 4,
+            write_ns: 10,
+            fsync_ns: 20,
+        });
+        phase.record_staged_body(&StageTiming {
+            prep_ns: 5,
+            hash_ns: 6,
+            encode_ns: 7,
+            open_ns: 8,
+            write_ns: 5,
+            fsync_ns: 50,
+        });
+        assert_eq!(phase.prep_ns, 6);
+        assert_eq!(phase.hash_ns, 8);
+        assert_eq!(phase.encode_ns, 10);
+        assert_eq!(phase.open_ns, 12);
         assert_eq!(phase.body_write_ns, 15);
         assert_eq!(phase.body_fsync_ns, 70);
         assert_eq!(phase.body_fsync_max_ns, 50);
         assert_eq!(phase.stage_max_ns, 55);
+        assert_eq!(phase.body_total_max_ns, 81);
 
         let class = |key: &str| group_class(&[GroupWrite::absent(key, Vec::new())]);
         assert_eq!(class("tenant/db/wal/index"), "wal");
@@ -881,6 +996,38 @@ mod group_tests {
         assert_eq!(class("tenant/db/authority/root"), "authority");
         assert_eq!(class("tenant/db/receipt/pages/x"), "receipt");
         assert_eq!(class("tenant/db/segments/x"), "other");
+    }
+
+    #[test]
+    fn borrowed_envelope_encodes_exactly_like_the_stored_form() {
+        let key = "tenant/db/pages/a";
+        let bytes = vec![0u8, 1, 2, 255];
+        let etag = "opaque-etag";
+        let checksum = blake3::hash(&bytes).to_hex().to_string();
+        let owned = Envelope {
+            key: key.to_owned(),
+            bytes: bytes.clone(),
+            etag: etag.to_owned(),
+            checksum: checksum.clone(),
+        };
+        let borrowed = EnvelopeRef {
+            key,
+            bytes: &bytes,
+            etag,
+            checksum: &checksum,
+        };
+        let owned = serde_json::to_vec(&owned).unwrap();
+        let borrowed = serde_json::to_vec(&borrowed).unwrap();
+        assert_eq!(
+            owned, borrowed,
+            "the borrowed form must not change the format"
+        );
+
+        let decoded: Envelope = serde_json::from_slice(&borrowed).unwrap();
+        assert_eq!(decoded.key, key);
+        assert_eq!(decoded.bytes, bytes);
+        assert_eq!(decoded.etag, etag);
+        assert_eq!(decoded.checksum, checksum);
     }
 
     #[test]
@@ -1344,5 +1491,38 @@ mod group_latency_tests {
             renamed[0],
             median(&renamed) as i128 - median(&direct) as i128,
         );
+    }
+
+    /// T04 attribution sample: the steady 21-write group and a receipt-roll-sized
+    /// 540-write group, with 2 KiB bodies like the diagnostic campaign. Run
+    /// explicitly with `PERI_DIAG_GROUP_PHASE=1` to read the stage split.
+    #[test]
+    #[ignore = "manual T04 staging attribution sample"]
+    fn stage_breakdown_sample() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+        for (writes_per_group, rounds) in [(21usize, 20usize), (540, 3)] {
+            let mut totals = Vec::new();
+            for round in 0..rounds {
+                let batch: Vec<GroupWrite> = (0..writes_per_group)
+                    .map(|index| {
+                        GroupWrite::new(
+                            format!("s{writes_per_group}/{round}/{index:04}"),
+                            vec![(round + index) as u8; 2048],
+                            PutCondition::Any,
+                        )
+                    })
+                    .collect();
+                let started = Instant::now();
+                store.put_group(&batch).unwrap();
+                totals.push(started.elapsed().as_micros());
+            }
+            totals.sort_unstable();
+            println!(
+                "STAGE_BREAKDOWN writes={writes_per_group} rounds={rounds} total_us_median={} total_us_min={}",
+                totals[totals.len() / 2],
+                totals[0],
+            );
+        }
     }
 }
