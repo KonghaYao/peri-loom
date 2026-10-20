@@ -9,9 +9,10 @@ permissions:
   contents: read
 
 jobs:
-  # 上线门禁：P0 测试集未通过时 build（以及其后的 publish 与 release）不会运行。
-  p0:
-    uses: ./.github/workflows/p0-gate.yml
+  # 上线门禁：v1-baseline 同时包含 P0 与官方 SDK 矩阵。矩阵 declared 27 个脚本，
+  # 默认每轮只执行 26 个（E1 known-gap 跳过），不是 27/27 执行，也不是 full Hrana 兼容声明。
+  baseline:
+    uses: ./.github/workflows/v1-baseline.yml
 
   check:
     runs-on: ubuntu-24.04
@@ -51,7 +52,7 @@ jobs:
   # CGO Go build are compiled on the machine that will run them. Each runner
   # verifies the image it built, on its own architecture, before publishing.
   build:
-    needs: [check, p0]
+    needs: [check, baseline]
     strategy:
       fail-fast: false
       matrix:
@@ -131,7 +132,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$RELEASE_TAG"
-          printf 'Verified Linux service images: `%s`\n\nThe P0 release gate (`scripts/p0-gate.sh`) passed before either image was built: every `prototypes/p0` test and the pinned Turso SQL smoke. The released tag is a multi-architecture manifest list whose `linux/amd64` and `linux/arm64` members were each built and verified natively; `%s-amd64` and `%s-arm64` pin one platform each. Apple Silicon no longer has to run the amd64 image under emulation.\n\nThis is a preview: clean restart and acknowledged SQL recovery are tested with a persistent local volume. Dirty restart remains denied; disaster recovery, live external S3 and HA are not certified by this workflow. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" "$image" "$image" > "$RUNNER_TEMP/notes.md"
+          printf 'Verified Linux service images: `%s`\n\nThe blocking release gate passed before either image was built: every `prototypes/p0` test and the pinned Turso SQL smoke (`scripts/p0-gate.sh`), plus the official JS SDK matrix. That matrix declares 27 scripts but default-executes 26 per round for 2 rounds (52 passed runs), recording 2 skips for the explicit E1 known gap (`http-abort-write-cursor-live.mjs`: HTTP v3 write-cursor abort has no acknowledged rollback proof). This is not a full Hrana compatibility claim. The released tag is a multi-architecture manifest list whose `linux/amd64` and `linux/arm64` members were each built and verified natively; `%s-amd64` and `%s-arm64` pin one platform each. Apple Silicon no longer has to run the amd64 image under emulation.\n\nThis is a preview: clean restart and acknowledged SQL recovery are tested with a persistent local volume. Dirty restart remains denied; disaster recovery, live external S3 and HA are not certified by this workflow. Do not use as a production release.\n\nFor local testing, follow `prototypes/v1/deploy/README.md` and set `PERI_IMAGE=%s` and prepare `deploy/dev-tls` before running Compose.\n' "$image" "$image" "$image" "$image" > "$RUNNER_TEMP/notes.md"
           # This job deliberately skips actions/checkout (it only talks to the registry), so `gh`
           # has no local repository to infer the target from: name it explicitly.
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.md"

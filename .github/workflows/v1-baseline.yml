@@ -1,17 +1,33 @@
 name: v1 SQL and SDK baseline
 
+# Release tags (`v*`) are handled exactly once by v1-image's workflow_call, so the
+# standalone workflow excludes them to avoid a duplicate gate. Other tags still run
+# standalone, preserving the previous p0 coverage for every non-release ref.
+# `workflow_dispatch` remains for rerunning the gate by hand.
 on:
   push:
+    branches:
+      - '**'
+    tags-ignore:
+      - 'v*'
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
+env:
+  # Single knob for the matrix round count: the coverage guard and the matrix script
+  # both read it. The blocking matrix declares 27 scripts but default-executes 26/27 per
+  # round because E1 is an explicit known-gap; it is not a full compatibility pass.
+  # Per-run contexts are unavailable at workflow-level; evidence paths are step-level.
+  PERI_HRANA_TEST_ROUNDS: '2'
+
 jobs:
   baseline:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,38 +81,54 @@ jobs:
           set -euo pipefail
           cargo build --manifest-path prototypes/v1/Cargo.toml --locked
           (cd prototypes/v1/platform/tests/hrana-sdk && npm ci)
-      - name: Official JS SDK loopback smoke
+      # Declared coverage is 27 scripts. Default execution is 26/27 per round because
+      # E1 (http-abort-write-cursor-live.mjs) is an explicit known gap: HTTP v3
+      # write-cursor abort has no acknowledged rollback proof. The blocking gate must
+      # not claim 27/27 execution or full Hrana compatibility.
+      - name: Self-test SDK matrix evidence redaction
         shell: bash
+        run: bash scripts/redact-matrix-evidence.sh --self-test
+      - name: Verify official SDK matrix coverage
+        shell: bash
+        env:
+          PERI_SDK_MATRIX_EVIDENCE: ${{ runner.temp }}/v1-sdk-matrix
+        run: |
+          set -euo pipefail
+          mkdir -p "$PERI_SDK_MATRIX_EVIDENCE"
+          bash scripts/verify-sdk-matrix.sh | tee "$PERI_SDK_MATRIX_EVIDENCE/coverage.txt"
+      - name: Official JS SDK matrix (declared 27/27; default executed 26/27 per round; E1 known-gap skipped)
+        shell: bash
+        timeout-minutes: 20
         env:
           PERI_HRANA_EXPERIMENTAL: '1'
           PERI_PLATFORM_BINARY: ${{ github.workspace }}/peri-platform
           PERI_RUST_BINARY: ${{ github.workspace }}/prototypes/v1/target/debug/peri-loom-v1
+          PERI_SDK_MATRIX_EVIDENCE: ${{ runner.temp }}/v1-sdk-matrix
         run: |
           set -euo pipefail
-          fixture="$(mktemp -d)"
-          port="$(python3 - <<'PY'
-          import socket
-          with socket.socket() as listener:
-              listener.bind(('127.0.0.1', 0))
-              print(listener.getsockname()[1])
-          PY
-          )"
-          python3 prototypes/v1/platform/dev.py --tls --no-build \
-            --listen "127.0.0.1:$port" --run-dir "$fixture" > "$fixture/launcher.log" 2>&1 &
-          launcher=$!
-          trap 'kill "$launcher" 2>/dev/null || true; wait "$launcher" 2>/dev/null || true; rm -rf "$fixture"' EXIT
-          for attempt in {1..120}; do
-            if test -f "$fixture/connection.json"; then break; fi
-            if ! kill -0 "$launcher" 2>/dev/null; then
-              echo 'Local launcher stopped before readiness' >&2
-              exit 1
-            fi
-            sleep 0.25
-          done
-          test -f "$fixture/connection.json" || { echo 'Local launcher readiness timed out' >&2; exit 1; }
-          export NODE_EXTRA_CA_CERTS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ca_file"])' "$fixture/connection.json")"
-          node prototypes/v1/platform/tests/hrana-sdk/read-only-live.mjs "$fixture/connection.json"
-          node prototypes/v1/platform/tests/hrana-sdk/live.mjs "$fixture/connection.json"
+          mkdir -p "$PERI_SDK_MATRIX_EVIDENCE"
+          # run-matrix-live.sh owns the launcher, readiness, TLS CA, known-gap skip,
+          # and failure semantics; TMPDIR only relocates its fixture logs.
+          TMPDIR="$PERI_SDK_MATRIX_EVIDENCE" \
+            bash prototypes/v1/platform/tests/hrana-sdk/run-matrix-live.sh
+      # These steps must run after a failed or timed-out matrix step so failures are
+      # still downloadable; neither step may mask the matrix exit status.
+      - name: Redact credentials from SDK matrix evidence
+        id: redact
+        if: always()
+        shell: bash
+        run: bash scripts/redact-matrix-evidence.sh "${{ runner.temp }}/v1-sdk-matrix"
+      - name: Upload SDK matrix evidence
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1-sdk-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/v1-sdk-matrix/coverage.txt
+            ${{ runner.temp }}/v1-sdk-matrix/*/matrix.log
+            ${{ runner.temp }}/v1-sdk-matrix/*/launcher.log
+          if-no-files-found: warn
+          retention-days: 14
 
   # 发布门禁：与 baseline 并行执行；命令单一维护在 scripts/p0-gate.sh，
   # 与 tag 发布工作流调用同一个可复用工作流。
