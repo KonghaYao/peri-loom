@@ -69,13 +69,13 @@ func TestHranaHighLevelExecutePagesOnlyProvenReadonlyResult(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()
 			newHranaHTTP(fixture.gateway).ServeHTTP(response, request)
-			// A read statement is classified twice: the gateway classifies the statement
-			// it is about to dispatch, and the pipeline classifies the same statement
-			// again to decide that it may be paged by a read cursor. A write statement
-			// is only preflighted by the pipeline, which then opens a write cursor.
+			// A read statement is classified once: the gateway's guarded statement carries
+			// the classify-and-execute attempt, and the pipeline only re-describes a write
+			// before opening its write cursor. A second describe here would mean the
+			// guarded path was bypassed and the statement was classified twice.
 			describes := fixture.upstream.count("describe")
 			if scenario.readonly {
-				if fixture.upstream.count("statement") != 1 || describes != 2 {
+				if fixture.upstream.count("statement") != 1 || describes != 1 {
 					t.Fatalf("failed SQL execution replayed or not classified: %d %s", response.Code, response.Body.String())
 				}
 			} else if fixture.upstream.count("statement") != 0 || describes != 1 {

@@ -10,6 +10,14 @@ import (
 const operationCapacity = 4096
 const operationKnownRetention = 256
 
+// Cursor lifecycle outcomes. Only a native reply or the gateway's own delivered
+// page may produce rolled_back/committed; a missing reply is unknown.
+const (
+	cursorOutcomeRolledBack = "rolled_back"
+	cursorOutcomeCommitted  = "committed"
+	cursorOutcomeUnknown    = "unknown"
+)
+
 var ErrDatabaseQuarantined = errors.New("database isolated; new database or fixture required")
 var ErrOperationExists = errors.New("operation already recorded; replay forbidden")
 var ErrOperationCapacity = errors.New("durable operation capacity exhausted")
@@ -44,6 +52,15 @@ type OperationStatus struct {
 	ReleaseRequestID     string `json:"release_request_id,omitempty"`
 	ReleaseAuthorityMode string `json:"release_authority_mode,omitempty"`
 	ReleaseEpoch         uint64 `json:"release_epoch,omitempty"`
+	// CursorClientStopped and CursorDispatchStopped are the Hrana adapter's own
+	// report that it stopped reading and stopped dispatching fetches. They are
+	// descriptive, never proof of a write outcome. CursorNativeOutcome is the
+	// proven fate of a write cursor: rolled_back only when the worker
+	// acknowledged an abort, committed only when the gateway delivered a done
+	// page, unknown when neither fact was established.
+	CursorClientStopped   bool   `json:"cursor_client_stopped,omitempty"`
+	CursorDispatchStopped bool   `json:"cursor_dispatch_stopped,omitempty"`
+	CursorNativeOutcome   string `json:"cursor_native_outcome,omitempty"`
 }
 
 type OperationRecord struct {
@@ -222,12 +239,12 @@ func nonCommittingOperation(action string, writeCursor bool) bool {
 	return false
 }
 
-// readonlyStatementAction reports whether an action sends a statement a worker
-// describe could classify. An action already in nonCommittingOperation needs no
-// classification, and one that carries no statement has nothing to classify.
+// readonlyStatementAction reports whether an action still sends a statement a
+// worker describe could classify. A statement action is classified and executed
+// by the guarded read-only RPC, so only the older execute/query paths ask.
 func readonlyStatementAction(action string) bool {
 	switch action {
-	case "execute", "query", "statement":
+	case "execute", "query":
 		return true
 	}
 	return false
@@ -411,7 +428,14 @@ func validateOperationRecord(record OperationRecord, key string, databases map[s
 	validAction := record.Source == "management" && nativeDiagnosticAction("/v1/databases/"+record.Action) != "" || record.Source == "gateway" && (record.Action == "open" || record.Action == "execute" || record.Action == "query" || record.Action == "statement" || record.Action == "describe" || record.Action == "session_state" || record.Action == "cursor_open" || record.Action == "cursor_fetch" || record.Action == "cursor_close" || record.Action == "close")
 	validBusiness := record.BusinessOutcome == "not_proven" || record.BusinessOutcome == "unknown" || record.BusinessOutcome == "completed" || record.BusinessOutcome == "not_executed" || record.BusinessOutcome == "not_applicable"
 	validCleanup := record.CleanupOutcome == "not_applicable" || record.CleanupOutcome == "pending" || record.CleanupOutcome == "unknown" || record.CleanupOutcome == "completed"
-	if !validStage || !validAction || !validBusiness || !validCleanup || !identifierPattern.MatchString(record.Worker) || record.Session != "" && !upstreamSessionID(record.Session) {
+	cursorAction := record.Source == "gateway" && (record.Action == "cursor_fetch" || record.Action == "cursor_close")
+	validCursorOutcome := record.CursorNativeOutcome == "" || record.CursorNativeOutcome == cursorOutcomeRolledBack || record.CursorNativeOutcome == cursorOutcomeCommitted || record.CursorNativeOutcome == cursorOutcomeUnknown
+	validCursorStop := !record.CursorClientStopped && !record.CursorDispatchStopped || record.Source == "gateway" && record.Action == "cursor_close" && (!record.CursorClientStopped || record.CursorDispatchStopped)
+	validCursorState := record.CursorNativeOutcome != cursorOutcomeUnknown || record.State == "quarantined"
+	if record.CursorNativeOutcome == cursorOutcomeRolledBack || record.CursorNativeOutcome == cursorOutcomeCommitted {
+		validCursorState = validCursorState && record.State == "terminal"
+	}
+	if !validStage || !validAction || !validBusiness || !validCleanup || !validCursorOutcome || !validCursorStop || !validCursorState || record.CursorNativeOutcome != "" && !cursorAction || !identifierPattern.MatchString(record.Worker) || record.Session != "" && !upstreamSessionID(record.Session) {
 		return errors.New("invalid operation observation")
 	}
 	database, exists := databases[record.Database.Key()]

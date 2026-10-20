@@ -12,7 +12,7 @@ use crate::ownership::types::{validate_label, OwnershipMode};
 use crate::ownership::OwnershipRuntime;
 use crate::session::{AdmissionError, Budget};
 
-use super::admission::{Admission, Lane};
+use super::admission::{Admission, Lane, OwnerAdmission};
 use super::diagnostics::Diagnostics;
 use super::outcome::failure_response;
 use super::protocol::{WorkerCommand, WorkerRequest, WorkerResponse};
@@ -454,6 +454,7 @@ impl State {
                 | WorkerCommand::Query { .. }
                 | WorkerCommand::Describe { .. }
                 | WorkerCommand::Statement { .. }
+                | WorkerCommand::GuardedReadonlyStatement { .. }
                 | WorkerCommand::SessionAutocommit { .. }
                 | WorkerCommand::OpenReadCursor { .. }
                 | WorkerCommand::FetchReadCursor { .. }
@@ -506,6 +507,7 @@ impl State {
                 | WorkerCommand::Query { session, sql }
                 | WorkerCommand::Describe { session, sql }
                 | WorkerCommand::Statement { session, sql, .. }
+                | WorkerCommand::GuardedReadonlyStatement { session, sql, .. }
                 | WorkerCommand::OpenReadCursor { session, sql, .. }
                 | WorkerCommand::OpenWriteCursor { session, sql, .. } => {
                     ensure!(
@@ -543,16 +545,37 @@ impl State {
         } else {
             Lane::General
         };
-        let lane_ticket = self.admission.try_acquire(lane)?;
-        if lane_ticket.is_none() {
-            let _ = transport::reply(
-                stream,
-                429,
-                &super::protocol::AdmissionRejection::encode("worker execution lane saturated"),
-                false,
-            );
-            return Ok(false);
-        }
+        let lane_ticket = if let Lane::Owner = lane {
+            let Some(call) = call.as_ref() else {
+                return Err(anyhow::anyhow!("owner lane requires a session call"));
+            };
+            match self
+                .admission
+                .acquire_owner(&call.database_key(), deadline)?
+            {
+                OwnerAdmission::Acquired(ticket) => ticket,
+                OwnerAdmission::Rejected(rejection) => {
+                    let _ = transport::reply(
+                        stream,
+                        429,
+                        &super::protocol::AdmissionRejection::encode(rejection.message()),
+                        false,
+                    );
+                    return Ok(false);
+                }
+            }
+        } else {
+            let Some(ticket) = self.admission.try_acquire(lane)? else {
+                let _ = transport::reply(
+                    stream,
+                    429,
+                    &super::protocol::AdmissionRejection::encode("worker execution lane saturated"),
+                    false,
+                );
+                return Ok(false);
+            };
+            ticket
+        };
         let trace_guard = if crate::capacity_trace::enabled() {
             call.as_ref()
                 .and_then(|call| call.handle().lease_binding_snapshot().ok())
@@ -675,12 +698,14 @@ impl State {
         let result = transport::reply(stream, 200, &bytes, keep_alive);
         if result.is_err() && write_cursor_request && response.ok {
             if let Some(call) = call.as_ref() {
-                if response
+                let delivered_done = response
                     .result
                     .as_ref()
-                    .is_some_and(|result| result["done"] == true)
-                    || call.handle().close_write_cursor().is_err()
-                {
+                    .is_some_and(|result| result["done"] == true);
+                // A lost reply is only settled by a delivered done page or by a
+                // close that actually aborted a live cursor. `Ok(false)` means
+                // there was no cursor left to abort, which is not rollback proof.
+                if delivered_done || !matches!(call.handle().close_write_cursor(), Ok(true)) {
                     let _ = call.handle().quarantine_unknown_write_result();
                 }
             }

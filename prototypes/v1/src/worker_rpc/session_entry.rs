@@ -382,6 +382,17 @@ impl SessionCall {
         self.handle.as_deref().unwrap()
     }
 
+    /// The owner pool is shared by the whole worker, so fairness and the
+    /// single-writer rule must key on the database rather than the session.
+    pub fn database_key(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.entry.database.namespace.tenant,
+            self.entry.database.namespace.database,
+            self.entry.database.branch
+        )
+    }
+
     pub fn terminal_state(&self) -> Result<Option<SessionState>> {
         let mut terminal = snapshot(&self.identifier, self.handle())?;
         let mut state = self
