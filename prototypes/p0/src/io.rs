@@ -422,10 +422,25 @@ impl File for WalFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     fn main_file(io: &SegmentedIO) -> Arc<dyn File> {
         io.open_file(&io.database_path(), OpenFlags::Create, false)
             .unwrap()
+    }
+
+    fn open_after_handoff(root: &Path) -> anyhow::Result<Arc<SegmentedIO>> {
+        // 其他测试会并发 fork 子进程；子进程在 exec 关闭 CLoexec 之前会继承锁的
+        // open file description，父进程刚释放句柄时仍可能看到锁。等待这段
+        // fork/exec 窗口，而不是把父进程已不再持有的锁当成泄漏。
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match SegmentedIO::open(root) {
+                Ok(io) => return Ok(io),
+                Err(error) if Instant::now() >= deadline => return Err(error),
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
     }
 
     fn write(file: &dyn File, offset: u64, bytes: &[u8]) -> i32 {
@@ -609,7 +624,7 @@ mod tests {
         file.unlock_file().unwrap();
         assert!(SegmentedIO::open(directory.path()).is_err());
         drop(file);
-        assert!(SegmentedIO::open(directory.path()).is_ok());
+        assert!(open_after_handoff(directory.path()).is_ok());
     }
 
     #[test]
