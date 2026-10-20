@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
+	"strings"
 
 	controller "peri-loom/controller"
 )
@@ -146,6 +147,43 @@ func validateState(state State, previous *State) error {
 				}
 				if old.State == "sealed_unbound" && descriptor.State == "sealed_unbound" && !bytes.Equal(old.Envelope, descriptor.Envelope) {
 					return errors.New("unbound DEK reservation cannot be replaced")
+				}
+			}
+		}
+	}
+	for key, record := range state.Provisionings {
+		if key != record.RequestID || !labelPattern.MatchString(key) || record.Database.Validate() != nil || record.Database.Branch != record.Name || !labelPattern.MatchString(record.Name) || (record.Role != "writer" && record.Role != "read_only") || !validProvisioningStage(record.Stage) || len(record.LastError) > 128 {
+			return errors.New("invalid provisioning record")
+		}
+		project, ok := state.Projects[record.Project]
+		if !ok || project.Tenant != record.Database.Namespace.Tenant {
+			return errors.New("provisioning project/tenant invalid")
+		}
+		switch record.Operation {
+		case "branch":
+			if record.Source == "" || record.Snapshot != "" {
+				return errors.New("invalid provisioning branch payload")
+			}
+		case "clone":
+			if record.Snapshot == "" || record.Source != "" {
+				return errors.New("invalid provisioning clone payload")
+			}
+		default:
+			return errors.New("invalid provisioning operation")
+		}
+		if !strings.HasPrefix(record.Digest, "provisioning_v1:") {
+			return errors.New("invalid provisioning digest")
+		}
+		decoded, err := hex.DecodeString(strings.TrimPrefix(record.Digest, "provisioning_v1:"))
+		if err != nil || len(decoded) != 32 {
+			return errors.New("invalid provisioning digest")
+		}
+		if previous != nil {
+			if old, exists := previous.Provisionings[key]; exists {
+				normalized := record
+				normalized.Stage, normalized.LastError = old.Stage, old.LastError
+				if normalized != old {
+					return errors.New("provisioning identity immutable")
 				}
 			}
 		}

@@ -135,6 +135,15 @@ pub enum AuthorityCommand {
     CloseSession {
         session: String,
     },
+    /// Terminal close used by worker database retirement. It drains in-flight work and
+    /// releases the reader pin even when repeated opens left extra references; a lost
+    /// OPEN response must not pin a namespace until its lease happens to expire.
+    RetireSession {
+        session: String,
+    },
+    SessionState {
+        session: String,
+    },
     Session {
         session: String,
         operation: SessionOperation,

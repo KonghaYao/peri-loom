@@ -271,7 +271,7 @@ impl ObjectStore for RemoteStore {
         }
         let result = (|| {
             let proof = self.client.call_until(
-                AuthorityCommand::CloseSession {
+                AuthorityCommand::RetireSession {
                     session: self.session.clone(),
                 },
                 deadline,

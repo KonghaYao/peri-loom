@@ -62,7 +62,12 @@ func (transport *restartTransport) Authority(ctx context.Context, identifier str
 		if reject {
 			transport.rejects--
 		}
-		actual := transport.actual[fields.Database.Key()]
+		actual, exists := transport.actual[fields.Database.Key()]
+		if !exists {
+			// A branch that the authority does not hold yet still has an identity;
+			// returning the zero value would fail the controller's identity check.
+			actual = controller.Actual{Database: fields.Database, Mode: "detached"}
+		}
 		transport.mu.Unlock()
 		if reject {
 			return &controller.RPCError{Rejected: true, Message: "transient authority rejection", Detail: transport.rejectDetail}

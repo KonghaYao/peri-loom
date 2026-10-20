@@ -37,6 +37,24 @@ func (gateway *Gateway) isolatedSessionFailure(database controller.DatabaseID) g
 	return result
 }
 
+// admissionFailure keeps the refusal code and attaches the isolated operation
+// that refused the request, so a client that later sees 409 database_isolated
+// can name the operation it must inspect instead of guessing.
+func (gateway *Gateway) admissionFailure(database controller.DatabaseID, failure error) gatewayResult {
+	result := operationAdmissionFailure(failure)
+	if result.code != "database_isolated" {
+		return result
+	}
+	state, err := gateway.config.State.Snapshot()
+	if err != nil {
+		return result
+	}
+	if record, found := isolatedOperation(state, database, false); found {
+		result.operationID, result.operationStage, result.operationObservation = record.OperationID, record.Stage, &record
+	}
+	return result
+}
+
 func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewaySession, requestID string, permit *admissionPermit) error {
 	command, err := freezeCommand(map[string]any{"command": "close_session", "session": session.upstream})
 	if err != nil {
@@ -159,6 +177,9 @@ func applyOperationOutcome(record *OperationRecord, result gatewayResult, stage 
 	if result.session != nil {
 		record.Session = result.session.upstream
 	}
+	record.CursorClientStopped = result.cursorClientStopped
+	record.CursorDispatchStopped = result.cursorDispatchStopped
+	record.CursorNativeOutcome = result.cursorNativeOutcome
 	if result.rpc != nil {
 		record.Ambiguous, record.Rejected, record.ExecutionCompleted = result.rpc.Ambiguous, result.rpc.evidence.Rejected(), result.rpc.evidence.Executed()
 	}
@@ -176,6 +197,12 @@ func applyOperationOutcome(record *OperationRecord, result gatewayResult, stage 
 	if sqlExecutedOutcome(result) {
 		record.BusinessOutcome = "completed"
 		record.ExecutionProven = true
+	}
+	// A proven rollback is the one outcome a successful close must not report as
+	// execution: the worker acknowledged that the write never committed, and the
+	// durable record is where that distinction stays queryable.
+	if record.CursorNativeOutcome == cursorOutcomeRolledBack {
+		record.BusinessOutcome, record.ExecutionProven = "not_executed", false
 	}
 	if record.Action == "open" && result.code == "" {
 		record.CleanupOutcome = "pending"

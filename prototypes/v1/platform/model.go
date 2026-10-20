@@ -41,6 +41,28 @@ type Database struct {
 	BranchIncarnation uint64                `json:"branch_incarnation,omitempty"`
 }
 
+// ProvisioningRecord is the durable identity of one fork/clone workflow. The
+// stage advances only after the matching effect is durable, so a retry can tell
+// which effects it still has to perform without replaying a possibly committed
+// authority command. LastError holds a stable classification, never backend
+// error text.
+type ProvisioningRecord struct {
+	RequestID string                `json:"request_id"`
+	Digest    string                `json:"digest"`
+	Operation string                `json:"operation"`
+	Database  controller.DatabaseID `json:"database"`
+	Project   string                `json:"project"`
+	Source    string                `json:"source,omitempty"`
+	Snapshot  string                `json:"snapshot,omitempty"`
+	Name      string                `json:"name"`
+	Role      string                `json:"role"`
+	Stage     string                `json:"stage"`
+	LastError string                `json:"last_error,omitempty"`
+	// Revision is the registry revision at reservation time. It orders failed
+	// records for bounded pruning; all other stages are retained indefinitely.
+	Revision uint64 `json:"revision,omitempty"`
+}
+
 type APIKey struct {
 	ID             string `json:"id"`
 	Subject        string `json:"subject"`
@@ -77,17 +99,18 @@ type KeyDescriptor struct {
 }
 
 type State struct {
-	Version                 uint32                     `json:"version"`
-	Revision                uint64                     `json:"revision"`
-	OperationStorageVersion uint32                     `json:"operation_storage_version,omitempty"`
-	Organizations           map[string]Organization    `json:"organizations"`
-	Projects                map[string]Project         `json:"projects"`
-	Databases               map[string]Database        `json:"databases"`
-	APIKeys                 map[string]APIKey          `json:"api_keys"`
-	Keys                    map[string]KeyDescriptor   `json:"keys"`
-	Operations              map[string]OperationRecord `json:"operations,omitempty"`
-	OperationSequence       uint64                     `json:"operation_sequence,omitempty"`
-	OperationEvictions      uint64                     `json:"operation_evictions,omitempty"`
+	Version                 uint32                        `json:"version"`
+	Revision                uint64                        `json:"revision"`
+	OperationStorageVersion uint32                        `json:"operation_storage_version,omitempty"`
+	Organizations           map[string]Organization       `json:"organizations"`
+	Projects                map[string]Project            `json:"projects"`
+	Databases               map[string]Database           `json:"databases"`
+	APIKeys                 map[string]APIKey             `json:"api_keys"`
+	Keys                    map[string]KeyDescriptor      `json:"keys"`
+	Operations              map[string]OperationRecord    `json:"operations,omitempty"`
+	Provisionings           map[string]ProvisioningRecord `json:"provisionings,omitempty"`
+	OperationSequence       uint64                        `json:"operation_sequence,omitempty"`
+	OperationEvictions      uint64                        `json:"operation_evictions,omitempty"`
 	// OperationsCheckpoint is the revision whose registry commit materialized the
 	// complete operation view into this payload. Only the shutdown checkpoint
 	// writes it, so a payload whose checkpoint equals its revision is a final
@@ -140,6 +163,44 @@ type Audit interface {
 	Close() error
 }
 
+// AuditClass names the admission budget an audit record is charged to. The
+// budgets are separate so an unauthenticated storm cannot consume the capacity
+// a dispatched request needs to settle its own record.
+type AuditClass int
+
+const (
+	// AuditClassRequest is an authenticated request that holds no completion slot.
+	AuditClassRequest AuditClass = iota
+	// AuditClassRejection is traffic refused before dispatch, including requests
+	// that never authenticated.
+	AuditClassRejection
+	// AuditClassCompletion is the record of a request whose capacity was reserved
+	// before dispatch.
+	AuditClassCompletion
+)
+
+// AuditAdmission is the bounded form of Audit. A sink that does not implement it
+// is still recorded through Record; only a sink that does can reserve the
+// capacity that makes a completion record survive queue pressure.
+type AuditAdmission interface {
+	// ReserveCompletion holds capacity for one completion record before SQL is
+	// dispatched. A nil error means the slot is reserved until Record or Release.
+	ReserveCompletion() (AuditReservation, error)
+	// RecordClass records one event charged to the given class. A completion
+	// record must go through its reservation instead.
+	RecordClass(AuditEvent, AuditClass) error
+	// AuditStatus reports queue depth, limits, refusals and fsync cost.
+	AuditStatus() map[string]any
+}
+
+// AuditReservation is one completion slot. Record consumes it and blocks until
+// the record is durable; Release returns it unused. Release after Record is a
+// no-op, so either path may clean up unconditionally.
+type AuditReservation interface {
+	Record(AuditEvent) error
+	Release()
+}
+
 type SQLUpstream interface {
 	Call(context.Context, controller.Worker, string, any, any) error
 }
@@ -166,4 +227,8 @@ type GatewayConfig struct {
 	WriterAdmission bool
 	OpenObserver    *SQLOpenObserver
 	RequestTimeout  time.Duration
+	// WakeWaitBudget bounds how long an open waits for an idle database to
+	// activate before it publishes a structured loading answer. Zero derives
+	// a budget from RequestTimeout.
+	WakeWaitBudget time.Duration
 }

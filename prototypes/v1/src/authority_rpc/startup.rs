@@ -1,15 +1,46 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
 
+use super::recovery::{
+    self, BackendKind, MarkerState, RecoveryAdmission, RecoveryEvidence, RecoveryPlan,
+};
+
+pub struct RecoveryRequest {
+    pub backend: BackendKind,
+    pub evidence: Option<RecoveryEvidence>,
+    pub confirmed_quiescence: bool,
+    /// Optional machine-checkable plan artifact. The pre-seal plan is written
+    /// before the authority decides, and the final plan is rewritten after the
+    /// seal takeover has been verified.
+    pub plan_out: Option<PathBuf>,
+}
+
 pub struct AuthorityStartup {
     file: File,
+    plan: RecoveryPlan,
+    plan_out: Option<PathBuf>,
 }
 
 impl AuthorityStartup {
     pub fn acquire(directory: impl AsRef<Path>, confirmed_quiescence: bool) -> Result<Self> {
+        Self::acquire_with_recovery(
+            directory,
+            RecoveryRequest {
+                backend: BackendKind::Local,
+                evidence: None,
+                confirmed_quiescence,
+                plan_out: None,
+            },
+        )
+    }
+
+    pub fn acquire_with_recovery(
+        directory: impl AsRef<Path>,
+        request: RecoveryRequest,
+    ) -> Result<Self> {
         let directory = directory.as_ref();
         let created = !directory.exists();
         std::fs::create_dir_all(directory)?;
@@ -46,15 +77,49 @@ impl AuthorityStartup {
         );
         let mut marker = String::new();
         file.read_to_string(&mut marker)?;
-        ensure!(
-            matches!(marker.as_str(), "" | "clean\n" | "dirty\n"),
-            "invalid authority startup marker; refusing reset"
+        let marker = match marker.as_str() {
+            "" | "clean\n" => MarkerState::Clean,
+            "dirty\n" => MarkerState::Dirty,
+            _ => anyhow::bail!("invalid authority startup marker; refusing reset"),
+        };
+        let plan = recovery::evaluate(
+            marker,
+            request.backend,
+            request.evidence.as_ref(),
+            request.confirmed_quiescence,
+            true,
         );
-        ensure!(marker != "dirty\n" || confirmed_quiescence, "unclean authority shutdown: confirm old backend operations quiescent before --reconciled restart");
-        let mut startup = Self { file };
+        if let Some(path) = &request.plan_out {
+            write_plan(path, &plan)?;
+        }
+        ensure!(plan.may_start(), "{}", plan.refusal_message());
+        let mut startup = Self {
+            file,
+            plan,
+            plan_out: request.plan_out,
+        };
         startup.write_marker(b"dirty\n")?;
         File::open(directory)?.sync_all()?;
         Ok(startup)
+    }
+
+    pub(crate) fn plan(&self) -> &RecoveryPlan {
+        &self.plan
+    }
+
+    pub(crate) fn admission(&self) -> RecoveryAdmission {
+        self.plan.admission()
+    }
+
+    pub(crate) fn record_seal_verified(&mut self) {
+        self.plan.record_seal_verified();
+    }
+
+    pub(crate) fn write_recovery_plan(&self) -> Result<()> {
+        if let Some(path) = &self.plan_out {
+            write_plan(path, &self.plan)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn mark_clean(&mut self) -> Result<()> {
@@ -75,6 +140,13 @@ impl AuthorityStartup {
         self.file.sync_all()?;
         Ok(())
     }
+}
+
+fn write_plan(path: &Path, plan: &RecoveryPlan) -> Result<()> {
+    let mut json = plan.to_json_pretty()?;
+    json.push('\n');
+    std::fs::write(path, json)
+        .with_context(|| format!("write authority recovery plan {}", path.display()))
 }
 
 impl Drop for AuthorityStartup {

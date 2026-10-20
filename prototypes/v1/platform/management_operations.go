@@ -51,6 +51,25 @@ func (management *Management) operations(principal Principal, input managementRe
 		}
 	}
 	sort.Slice(records, func(first, second int) bool { return records[first].OperationID < records[second].OperationID })
+	// Fork/clone workflows carry their own durable stage so an operator can tell
+	// a definitely-not-executed refusal from an authority call that may have
+	// committed. Released failures no longer have a child descriptor to
+	// authorize against, so their project is the visibility boundary.
+	visibleProject := ""
+	if descriptor, exists := state.Databases[input.Database.Key()]; exists {
+		visibleProject = descriptor.Project
+	}
+	provisionings := []ProvisioningStatus{}
+	for _, record := range state.Provisionings {
+		if record.Database.Namespace != input.Database.Namespace || (input.OperationID != "" && record.RequestID != input.OperationID) {
+			continue
+		}
+		if principal.Project != "*" && record.Project != visibleProject && management.config.Identity.Authorize(principal, record.Database, "manage") != nil {
+			continue
+		}
+		provisionings = append(provisionings, ProvisioningStatus{ProvisioningRecord: record, RetryAllowed: record.Stage != provisioningActive})
+	}
+	sort.Slice(provisionings, func(first, second int) bool { return provisionings[first].RequestID < provisionings[second].RequestID })
 	// recovery names the path the operator still has. A recorded quarantine that
 	// was not released can end through isolation/release once the stop proof and
 	// the authority's fencing attestation exist; only a namespace that cannot
@@ -64,7 +83,7 @@ func (management *Management) operations(principal Principal, input managementRe
 			break
 		}
 	}
-	return map[string]any{"operations": records, "recovery": recovery, "retention": operationRetentionContract()}, nil
+	return map[string]any{"operations": records, "provisionings": provisionings, "recovery": recovery, "retention": operationRetentionContract()}, nil
 }
 
 func managementUnknownReply(response http.ResponseWriter, requestID string, failure error) {
