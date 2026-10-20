@@ -417,6 +417,41 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.9
+
+v1.1.9 makes a local-backend volume created by this release survive normal stop,
+restart and version roll-forward without being locked out by launcher state. The
+launcher normalizes optional `launch.json` fields at one entry point
+(`wal_replay_bytes` defaults to 0 when absent) and no longer writes a sticky
+restart-failure record for configuration, runtime-identity or listener refusals
+that happen before any service starts. A new volume checks every listener before
+writing `launch.json`, `platform.json`, keys or the Authority marker, so releasing
+a busy port and retrying the same run directory succeeds.
+
+An interrupted startup is covered by a signed startup intent persisted before each
+`Popen` (`starting`, a unique nonce and the complete argv), with PIDs written back
+immediately after spawn. Normal start refuses an attempted startup and preserves
+canonical evidence. `--recover` can roll an interrupted local-backend startup back
+to the preserved clean point only when every proof (terminal HMAC, stop record,
+owned proofs, state/floor, journal, backend manifest, Authority root data fields,
+live marker and seal) matches. It writes back only preserved bytes, starts with
+SQL disabled, and otherwise fails closed with an explicit operator instruction.
+Residual processes are matched by exact argv, so a lookalike command line is not
+killed and PID reuse does not authorize a signal.
+
+A platform spawn window with an unmaterialized operation view still fails closed:
+stop the surviving platform and Authority gracefully, let the shutdown checkpoint
+materialize the view, then rerun `--recover`. Rebuild the volume only if the
+checkpoint is still absent after a joined stop.
+
+Volumes created before v1.1.9, including volumes already locked by an older
+launcher, are not migrated and need a rebuild. Interrupted startup on S3, a
+SIGKILL after readiness was announced, and changed data fields remain outside
+startup rollback. The security boundary is unchanged: SQL is never retried
+automatically, a timeout, close or read-back is not cancellation proof, and no
+marker, proof or quarantine record is cleared to force startup. This release
+claims neither a capacity nor a race result.
+
 ## v1.1.8
 
 v1.1.8 fixes failure reporting on the terminal path and makes the full SDK
