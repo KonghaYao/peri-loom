@@ -88,6 +88,15 @@ fence database HEAD publication, and direct object-store credentials are trusted
 P4 must provide one authoritative fencing boundary. Remote calls are synchronous;
 this workspace prioritizes correctness evidence over production performance.
 
+The platform's experimental Hrana HTTP v3 write cursor does not provide an
+automatic rollback proof for a client abort: a client close can race an
+in-flight fetch, so the client's cancellation alone never proves the write did
+not commit. The worker reports whether a close actually aborted a live cursor;
+the platform records `rolled_back` only on that acknowledgement, `committed`
+only on a delivered done page, and otherwise keeps the write `unknown` and the
+namespace isolated. E1 (`http-abort-write-cursor-live.mjs`) remains an explicit
+known gap in the SDK matrix; this is not a full Hrana compatibility claim.
+
 ## P2 storage capabilities
 
 The branch-aware path uses a durable namespace root, unique immutable physical

@@ -730,6 +730,12 @@ func hranaGatewayReply(status int, body []byte, path string) hranaReply {
 		log.Printf("Hrana internal gateway reply invalid: path=%s status=%d", path, status)
 		return hranaReply{status: 502, code: "invalid_gateway_reply", unknown: true}
 	}
+	if status == http.StatusAccepted {
+		// The gateway accepted an open for controller activation. Hrana has no
+		// field for the platform's loading object, but it must not mistake the
+		// body for an opened session either; the client retries the open.
+		return hranaReply{status: http.StatusServiceUnavailable, code: "activation_pending"}
+	}
 	if !envelope.OK {
 		if envelope.Error == nil {
 			log.Printf("Hrana internal gateway failure without a failure object: path=%s status=%d", path, status)

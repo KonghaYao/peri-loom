@@ -130,17 +130,45 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 	active := false
 	activeWrite := false
 	failed := false
+	writeCommitted := false
+	clientStopped := false
 	openedStream := input["baton"] == nil || input["baton"] == ""
 	sentHeader := false
 	defer func() {
+		if request.Context().Err() != nil {
+			clientStopped = true
+		}
+		closedNative := false
 		if active {
 			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			reply := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": stream.session, "write_cursor": activeWrite})
-			if reply.code != "" || reply.status != http.StatusOK {
-				log.Printf("Hrana native cursor cleanup not proven: status=%d code=%s", reply.status, reply.code)
+			cleanupInput := map[string]any{"session": stream.session, "write_cursor": activeWrite}
+			if activeWrite {
+				// The adapter stopped dispatching fetches before this close. It also
+				// stopped reading when the request context ended or a frame write
+				// failed; both facts are descriptive and never a rollback proof.
+				cleanupInput["cursor_dispatch_stopped"] = true
+				if clientStopped {
+					cleanupInput["cursor_client_stopped"] = true
+				}
+			}
+			reply := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", cleanupInput)
+			closedNative = reply.code == "" && reply.status == http.StatusOK
+			if !closedNative {
+				log.Printf("Hrana native cursor cleanup not proven: status=%d code=%s client_stopped=%t dispatch_stopped=true committed=%t", reply.status, reply.code, clientStopped, writeCommitted)
 				failed = true
 			}
+		}
+		if activeWrite && clientStopped {
+			outcome := "unknown"
+			if writeCommitted {
+				outcome = "committed"
+			} else if closedNative {
+				// The close was acknowledged; only the gateway's operation record
+				// knows whether the worker proved an abort.
+				outcome = "close_acknowledged"
+			}
+			log.Printf("Hrana HTTP write cursor abort: native_outcome=%s committed=%t", outcome, writeCommitted)
 		}
 		if failed || request.Context().Err() != nil || openedStream && !sentHeader {
 			handler.expireStreamLocked(baton, stream)
@@ -151,8 +179,13 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 	}()
 	writeFrame := func(payload []byte) error {
 		frame := append(hranaProtoVar(uint64(len(payload))), payload...)
-		_, err := writer.Write(frame)
-		return err
+		if _, err := writer.Write(frame); err != nil {
+			// A failed frame write means the peer stopped reading. It says nothing
+			// about the write cursor's native fate.
+			clientStopped = true
+			return err
+		}
+		return nil
 	}
 	results := make([]any, len(readSteps))
 	failures := make([]any, len(readSteps))
@@ -286,6 +319,11 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		active = true
 		activeWrite = writeCursor
+		if writeCursor {
+			// Each opened cursor carries its own commit proof; a done page from an
+			// earlier step must not describe this one.
+			writeCommitted = false
+		}
 		var metadata struct {
 			Cols []any `json:"cols"`
 		}
@@ -313,11 +351,15 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		for {
 			if request.Context().Err() != nil {
+				clientStopped = true
 				failed = true
 				return true
 			}
 			reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writeCursor})
 			if reply.code != "" || reply.status != http.StatusOK {
+				if request.Context().Err() != nil {
+					clientStopped = true
+				}
 				log.Printf("Hrana native cursor fetch failed: step=%d status=%d code=%s", index, reply.status, reply.code)
 				failed = true
 				return true
@@ -334,6 +376,12 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
 				failed = true
 				return true
+			}
+			if writeCursor && page.Done {
+				// The worker's done page is the commit proof, recorded before any
+				// row frame is written: a disconnect on the final page must not be
+				// reported as an unproven or rolled-back write.
+				writeCommitted = true
 			}
 			for _, row := range page.Rows {
 				var encoded []byte

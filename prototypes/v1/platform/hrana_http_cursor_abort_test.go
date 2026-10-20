@@ -50,11 +50,22 @@ func TestHranaHTTPWriteCursorInFlightAbortKeepsIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, isolated := isolatedOperation(state, fixture.first, true)
-	if !isolated || record.Action != "cursor_fetch" || record.State != "quarantined" || record.BusinessOutcome != "unknown" || !record.MayHaveCommitted {
-		t.Fatalf("在途取消没有保留未决状态: isolated=%t action=%s state=%s outcome=%s possible_commit=%t", isolated, record.Action, record.State, record.BusinessOutcome, record.MayHaveCommitted)
+	if !isolated || record.Action != "cursor_fetch" || record.State != "quarantined" || record.BusinessOutcome != "unknown" || !record.MayHaveCommitted || record.CursorNativeOutcome != cursorOutcomeUnknown {
+		t.Fatalf("在途取消没有保留未决状态: isolated=%t action=%s state=%s outcome=%s possible_commit=%t native=%s", isolated, record.Action, record.State, record.BusinessOutcome, record.MayHaveCommitted, record.CursorNativeOutcome)
+	}
+	if outcomes := fixture.audit.outcomesOf("cursor_fetch"); len(outcomes) != 2 || outcomes[0] != "ok" || outcomes[1] != "outcome_unknown" {
+		t.Fatalf("在途取消的审计不完整: %v", outcomes)
+	}
+	if len(handler.streams) != 0 {
+		t.Fatal("未决写入留下了可复用 baton")
 	}
 	probe := hranaV3JSONCall(handler, fixture.tokenA, hranaV3JSONPath+"/pipeline", "application/json", `{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}},{"type":"close"}]}`)
-	if probe.Code != 409 || hranaV3JSONDocument(t, probe)["error"].(map[string]any)["code"] != "database_isolated" || fetches != 2 {
+	document := hranaV3JSONDocument(t, probe)
+	if probe.Code != 409 || document["error"].(map[string]any)["code"] != "database_isolated" || fetches != 2 {
 		t.Fatalf("隔离证据被覆盖或 SQL 被重试: %d %s", probe.Code, probe.Body.String())
+	}
+	evidence := document["error"].(map[string]any)
+	if evidence["operation_id"] != record.OperationID || evidence["possible_commit"] != true || evidence["retry_allowed"] != false {
+		t.Fatalf("隔离响应没有指向未决 operation: %v", evidence)
 	}
 }
