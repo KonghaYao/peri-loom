@@ -31,7 +31,7 @@ func defaultQuotas(quotas Quotas) Quotas {
 		quotas.MaxConcurrent = 4
 	}
 	if quotas.RequestsPerSecond == 0 {
-		quotas.RequestsPerSecond = 100
+		quotas.RequestsPerSecond = 500
 	}
 	if quotas.MaxSQLBytes == 0 {
 		quotas.MaxSQLBytes = 65536
