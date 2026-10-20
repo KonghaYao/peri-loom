@@ -4,7 +4,7 @@ mod publication;
 #[path = "branch_tests.rs"]
 mod tests;
 
-use super::types::pin_entry_key;
+use super::types::{pin_entry_key, pin_entry_parts};
 use super::{
     now_ms, semantic, unique_id, Authority, BranchRef, CatalogRoot, ObjectEntry, PublicationBody,
     RecoveryPoint,
@@ -26,11 +26,129 @@ use std::{
 
 struct View {
     incarnation: u64,
+    /// Snapshot generation this session currently reads. A successful publication that
+    /// changes the branch advances it; entries of older generations stay pinned until the
+    /// last reader holding that generation is gone.
+    generation: u64,
     head: Option<ObjectEntry>,
     wal: Option<ObjectEntry>,
     objects: BTreeMap<String, ObjectEntry>,
     pinned: BTreeSet<String>,
+    /// Blobs owned by each live generation. Generation-qualified pin keys make the sets
+    /// independent: retiring a generation removes exactly its own entries, even when the
+    /// same blob is read again by a newer generation.
+    generations: BTreeMap<u64, BTreeSet<String>>,
+    /// Readers currently holding a generation open. Production reads hold the view lock,
+    /// so this only exceeds zero for an explicit diagnostic guard or a test that keeps an
+    /// old snapshot alive across a refresh.
+    readers: BTreeMap<u64, usize>,
     validated_wal: Option<(ObjectEntry, ValidatedWal)>,
+}
+
+/// The parts of a branch reference a refresh installs. Kept separate from `View` so a
+/// selection cannot accidentally carry generation state from another store.
+struct Selected {
+    incarnation: u64,
+    head: Option<ObjectEntry>,
+    wal: Option<ObjectEntry>,
+}
+
+impl View {
+    fn admit<'a>(&mut self, entries: impl IntoIterator<Item = &'a ObjectEntry>) {
+        let generation = self.generation;
+        let set = self.generations.entry(generation).or_default();
+        for entry in entries {
+            set.insert(entry.blob.clone());
+            self.pinned.insert(entry.blob.clone());
+        }
+    }
+
+    fn admit_map(&mut self, entries: &BTreeMap<String, ObjectEntry>) {
+        self.admit(entries.values());
+    }
+
+    /// Generations that will be dead once `next_generation` becomes current: not current,
+    /// not held by a reader, and owning at least one entry. Their pin prefixes must leave in
+    /// the same publication that advances the generation; a separate transaction would turn
+    /// every commit into two head writes.
+    fn retire_prefixes(&self, pin: &str, next_generation: u64) -> Vec<(u64, String)> {
+        self.generations
+            .iter()
+            .filter(|(generation, _)| {
+                **generation != next_generation
+                    && self.readers.get(generation).copied().unwrap_or(0) == 0
+            })
+            .map(|(generation, _)| (*generation, format!("{pin}/{generation}/")))
+            .collect()
+    }
+
+    fn finish_retirement(&mut self, retired: &[u64]) {
+        for generation in retired {
+            self.generations.remove(generation);
+            self.readers.remove(generation);
+        }
+        self.pinned = self.generations.values().flatten().cloned().collect();
+        self.objects
+            .retain(|_, entry| self.pinned.contains(&entry.blob));
+    }
+}
+
+/// Observation of one branch session's pin without changing its state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(test)]
+pub(crate) struct PinViewObservation {
+    pub generation: u64,
+    pub live_generations: usize,
+    pub held_generations: usize,
+    pub pinned_entries: usize,
+    pub cached_objects: usize,
+}
+
+/// Cost of releasing one pin. Generation batches are durable: the advanced generation and
+/// the release marker are published first, so a crash can resume with the remaining
+/// generations instead of rescanning the whole registry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PinReleaseStats {
+    pub batches: usize,
+    pub generations: usize,
+    pub entries: usize,
+    pub pages: usize,
+    pub scanned: usize,
+}
+
+/// A read that holds one snapshot generation open. While this guard exists, a refresh must
+/// not retire that generation: the reader may still resolve objects the newer snapshot no
+/// longer references. Dropping the guard retires whatever generations are now idle.
+#[cfg(test)]
+pub(crate) struct GenerationRead {
+    store: Arc<BranchStore>,
+    generation: u64,
+}
+
+#[cfg(test)]
+impl Drop for GenerationRead {
+    fn drop(&mut self) {
+        let mut view = match self.store.view.lock() {
+            Ok(view) => view,
+            Err(_) => {
+                report_pin_release_failure(
+                    &self.store.pin,
+                    "generation-guard-poisoned",
+                    &anyhow::anyhow!("branch session lock poisoned"),
+                );
+                return;
+            }
+        };
+        if let Some(count) = view.readers.get_mut(&self.generation) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                view.readers.remove(&self.generation);
+            }
+        }
+        if let Err(error) = self.store.retire_idle(&mut view) {
+            report_pin_release_failure(&self.store.pin, "generation-retire", &error);
+        }
+    }
 }
 
 pub struct BranchStore {
@@ -55,26 +173,34 @@ impl Authority {
             let entries = referenced(self, root, head.as_ref(), wal.as_ref())?;
             let mut pinned = BTreeSet::new();
             root.pins.insert(pin.clone(), Vec::new());
+            root.pin_generations.insert(pin.clone(), 0);
             for entry in entries.values() {
                 if pinned.insert(entry.blob.clone()) {
                     root.pin_entries
-                        .insert(pin_entry_key(&pin, &entry.blob), entry.clone())?;
+                        .insert(pin_entry_key(&pin, 0, &entry.blob), entry.clone())?;
                 }
             }
             selected = Some(View {
                 incarnation,
+                generation: 0,
                 head,
                 wal,
                 objects: entries
                     .into_iter()
                     .filter(|(key, _)| !matches!(key.as_str(), "HEAD" | "wal/index"))
                     .collect(),
+                generations: BTreeMap::from([(0, pinned.clone())]),
                 pinned,
+                readers: BTreeMap::new(),
                 validated_wal: None,
             });
             Ok(())
         })?;
         let view = selected.context("reader pin publication missing")?;
+        self.live_pins
+            .lock()
+            .map_err(|_| anyhow::anyhow!("live pin registry lock poisoned"))?
+            .insert(pin.clone());
         Ok(Arc::new(BranchStore {
             authority: self.clone(),
             branch: branch.to_owned(),
@@ -86,7 +212,7 @@ impl Authority {
     }
 }
 
-fn referenced(
+pub(crate) fn referenced(
     authority: &Authority,
     root: &CatalogRoot,
     head: Option<&ObjectEntry>,
@@ -187,13 +313,58 @@ impl BranchStore {
         self.drop_cleanup.store(false, Ordering::Release);
     }
 
-    pub(crate) fn release_pin(&self, authority: &Authority) -> Result<()> {
-        authority.transact(None, |root| release_pin(root, &self.pin))?;
-        Ok(())
+    pub(crate) fn release_pin(&self, authority: &Authority) -> Result<PinReleaseStats> {
+        let result = release_pin_identity(authority, &self.pin);
+        // The owner is gone regardless of the outcome: a durable leftover is an orphan now,
+        // not a live pin. Keeping it in the live table would make orphan detection lie.
+        if let Ok(mut live) = authority.live_pins.lock() {
+            live.remove(&self.pin);
+        }
+        result
     }
 
     pub(crate) fn pin_identity(&self) -> &str {
         &self.pin
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> Result<u64> {
+        Ok(self
+            .view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?
+            .generation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_pin(&self) -> Result<PinViewObservation> {
+        let view = self
+            .view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
+        Ok(PinViewObservation {
+            generation: view.generation,
+            live_generations: view.generations.len(),
+            held_generations: view.readers.values().filter(|count| **count > 0).count(),
+            pinned_entries: view.pinned.len(),
+            cached_objects: view.objects.len(),
+        })
+    }
+
+    /// Hold the generation this session currently reads. A refresh skips retirement while
+    /// the guard exists; dropping it retires every generation that is now idle.
+    #[cfg(test)]
+    pub(crate) fn hold_generation(self: &Arc<Self>) -> Result<GenerationRead> {
+        let mut view = self
+            .view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
+        let generation = view.generation;
+        *view.readers.entry(generation).or_default() += 1;
+        Ok(GenerationRead {
+            store: self.clone(),
+            generation,
+        })
     }
 
     /// Entries this reader pin currently protects, resolved through the published pin
@@ -201,14 +372,10 @@ impl BranchStore {
     /// reaching into the registry itself.
     pub fn pinned_entries(&self) -> Result<Vec<ObjectEntry>> {
         let root = self.authority.snapshot()?.root;
-        let prefix = format!("{}/", self.pin);
-        Ok(root
+        let (entries, _) = root
             .pin_entries
-            .entries()?
-            .into_iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(_, entry)| entry)
-            .collect())
+            .prefix_entries_counted(&format!("{}/", self.pin))?;
+        Ok(entries.into_values().collect())
     }
     fn relative<'a>(&self, key: &'a str) -> Result<&'a str> {
         let prefix = self.authority.namespace.prefix();
@@ -240,14 +407,19 @@ impl BranchStore {
         &self,
         root: &mut CatalogRoot,
         view: &View,
+        generation: u64,
         entries: BTreeMap<String, ObjectEntry>,
     ) -> Result<BTreeMap<String, ObjectEntry>> {
         ensure!(root.pins.contains_key(&self.pin), "reader pin disappeared");
+        ensure!(
+            root.pin_generations.get(&self.pin) == Some(&generation),
+            "reader pin generation changed under the session"
+        );
         let mut added = BTreeMap::new();
         let mut seen = BTreeSet::new();
         for (key, entry) in entries {
             if !view.pinned.contains(&entry.blob) && seen.insert(entry.blob.clone()) {
-                let pin_key = pin_entry_key(&self.pin, &entry.blob);
+                let pin_key = pin_entry_key(&self.pin, generation, &entry.blob);
                 if let Some(previous) = root.pin_entries.get(&pin_key)? {
                     ensure!(previous == entry, "reader pin entry identity mutation");
                 } else {
@@ -259,32 +431,87 @@ impl BranchStore {
         Ok(added)
     }
 
-    fn selected(root: &CatalogRoot, branch: &str) -> Result<View> {
+    /// Advance the durable generation of this pin and return it. A publication that moves
+    /// the branch starts a new generation; a read that only widens the current one keeps
+    /// the generation and calls `extend_pin` directly.
+    fn advance_generation(&self, root: &mut CatalogRoot, view: &View) -> Result<u64> {
+        let current = *root
+            .pin_generations
+            .get(&self.pin)
+            .context("reader pin generation missing")?;
+        let next = view
+            .generation
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        ensure!(
+            current == view.generation || current == next,
+            "reader pin generation changed under the session"
+        );
+        root.pin_generations.insert(self.pin.clone(), next);
+        Ok(next)
+    }
+
+    fn selected(root: &CatalogRoot, branch: &str) -> Result<Selected> {
         let reference = root.branches.get(branch).context("branch missing")?;
-        Ok(View {
+        Ok(Selected {
             incarnation: reference.incarnation,
             head: reference.head.clone(),
             wal: reference.wal.clone(),
-            objects: BTreeMap::new(),
-            pinned: BTreeSet::new(),
-            validated_wal: None,
         })
     }
 
-    fn refresh(view: &mut View, selected: View, added: BTreeMap<String, ObjectEntry>) {
+    fn refresh(
+        &self,
+        view: &mut View,
+        selected: Selected,
+        added: BTreeMap<String, ObjectEntry>,
+        generation: u64,
+        retired: &[(u64, String)],
+    ) -> Result<()> {
         if view.validated_wal.as_ref().map(|(entry, _)| entry) != selected.wal.as_ref() {
             view.validated_wal = None;
         }
         view.incarnation = selected.incarnation;
+        view.generation = generation;
         view.head = selected.head;
         view.wal = selected.wal;
-        view.pinned
-            .extend(added.values().map(|entry| entry.blob.clone()));
+        view.admit_map(&added);
         view.objects.extend(
             added
                 .into_iter()
                 .filter(|(key, _)| !matches!(key.as_str(), "HEAD" | "wal/index")),
         );
+        view.finish_retirement(
+            &retired
+                .iter()
+                .map(|(generation, _)| *generation)
+                .collect::<Vec<_>>(),
+        );
+        Ok(())
+    }
+
+    /// Retire idle generations outside a publication (a read guard was dropped). The
+    /// commit path never reaches this: it folds the same prefixes into its own transaction
+    /// so one commit still publishes one head.
+    #[cfg(test)]
+    fn retire_idle(&self, view: &mut View) -> Result<()> {
+        let retired = view.retire_prefixes(&self.pin, view.generation);
+        if retired.is_empty() {
+            return Ok(());
+        }
+        self.authority.transact(None, |root| {
+            ensure!(root.pins.contains_key(&self.pin), "reader pin disappeared");
+            for (_, prefix) in &retired {
+                root.pin_entries.remove_prefix(prefix)?;
+            }
+            Ok(())
+        })?;
+        let generations: Vec<u64> = retired
+            .into_iter()
+            .map(|(generation, _)| generation)
+            .collect();
+        view.finish_retirement(&generations);
+        Ok(())
     }
 
     fn get_entry(&self, key: &str, view: &View) -> Option<ObjectEntry> {
@@ -401,7 +628,7 @@ impl BranchStore {
             );
             branch.current_sequence = branch.sequence;
             branch.current_commit_ms = branch.last_commit_ms;
-            branch.history.push(RecoveryPoint {
+            let point = RecoveryPoint {
                 id: entry.etag.clone(),
                 branch: self.branch.clone(),
                 timeline: branch.timeline,
@@ -409,14 +636,12 @@ impl BranchStore {
                 timestamp_ms: branch.last_commit_ms,
                 head: branch.head.clone(),
                 wal: branch.wal.clone(),
-            });
-            // Retire the oldest points instead of letting the window grow with the
-            // session: see `RETAINED_RECOVERY_POINTS` for why the window is bounded.
-            let excess = branch
-                .history
-                .len()
-                .saturating_sub(super::RETAINED_RECOVERY_POINTS);
-            branch.history.drain(..excess);
+            };
+            // The index is the retention authority and the hot window is only its newest
+            // cache. Publishing both in the same transaction is what lets a commit older
+            // than the window stay restorable.
+            self.authority
+                .record_recovery_point(root, &self.branch, &point)?;
         }
         Ok(validated)
     }
@@ -476,6 +701,12 @@ impl BranchStore {
             .collect::<Vec<_>>();
         let mut added = BTreeMap::new();
         let mut selected = None;
+        let mut generation = None;
+        let next_generation = view
+            .generation
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        let retired = view.retire_prefixes(&self.pin, next_generation);
         self.authority.transact_with_bodies(&bodies, |root| {
             self.bound(root)?;
             let mut entries = BTreeMap::new();
@@ -499,15 +730,22 @@ impl BranchStore {
                 root.objects.insert(relative.clone(), entry.clone())?;
                 entries.insert(relative.clone(), entry.clone());
             }
-            added = self.extend_pin(root, &view, entries)?;
+            let next = self.advance_generation(root, &view)?;
+            for (_, prefix) in &retired {
+                root.pin_entries.remove_prefix(prefix)?;
+            }
+            added = self.extend_pin(root, &view, next, entries)?;
+            generation = Some(next);
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
-        Self::refresh(
+        self.refresh(
             &mut view,
             selected.context("branch page publication view missing")?,
             added,
-        );
+            generation.context("branch page publication generation missing")?,
+            &retired,
+        )?;
         Ok(())
     }
 
@@ -553,6 +791,7 @@ impl BranchStore {
         ];
         let mut added = BTreeMap::new();
         let mut validated = None;
+        let mut generation = None;
         let mut attempt = 0;
         // The accepted image moves into the publication that extends it and only comes back
         // when that publication confirms this exact index. A failed or retried attempt drops
@@ -560,6 +799,11 @@ impl BranchStore {
         // landed is worse than a cold replay on the next append, and the ownership move is
         // what makes the failure path impossible to miss.
         let mut previous = view.validated_wal.take();
+        let next_generation = view
+            .generation
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        let retired = view.retire_prefixes(&self.pin, next_generation);
         let published = self.authority.transact_with_bodies(&bodies, |root| {
             attempt += 1;
             Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
@@ -586,14 +830,20 @@ impl BranchStore {
                 None
             };
             validated = Some(self.commit_point(root, &index_bytes, &index, previous, &bodies)?);
+            let next = self.advance_generation(root, &view)?;
+            for (_, prefix) in &retired {
+                root.pin_entries.remove_prefix(prefix)?;
+            }
             added = self.extend_pin(
                 root,
                 &view,
+                next,
                 BTreeMap::from([
                     (chunk_key.clone(), chunk.clone()),
                     ("wal/index".into(), index.clone()),
                 ]),
             )?;
+            generation = Some(next);
             Ok(())
         })?;
         let mut selected = Self::selected(&published.root, &self.branch)?;
@@ -618,7 +868,9 @@ impl BranchStore {
                 // These entries are already durable in this session's pin, even though
                 // the in-memory view has not yet adopted the successful publication.
                 entries.retain(|_, entry| !publication_blobs.contains(&entry.blob));
-                pinned_entries = self.extend_pin(root, &view, entries)?;
+                let next = self.advance_generation(root, &view)?;
+                pinned_entries = self.extend_pin(root, &view, next, entries)?;
+                generation = Some(next);
                 pinned_selected = Some(current);
                 Ok(())
             })?;
@@ -626,7 +878,13 @@ impl BranchStore {
             added.extend(pinned_entries);
         }
         let keeps_image = selected.wal.as_ref() == Some(&index);
-        Self::refresh(&mut view, selected, added);
+        self.refresh(
+            &mut view,
+            selected,
+            added,
+            generation.context("branch refresh generation missing")?,
+            &retired,
+        )?;
         if keeps_image {
             view.validated_wal = Some((index, validated.context("WAL validation missing")?));
         }
@@ -670,12 +928,11 @@ impl ObjectStore for BranchStore {
                 selected = root.objects.get(relative)?;
                 if let Some(entry) = &selected {
                     let entries = accessible(&self.authority, root, relative, entry)?;
-                    added = self.extend_pin(root, &view, entries)?;
+                    added = self.extend_pin(root, &view, view.generation, entries)?;
                 }
                 Ok(())
             })?;
-            view.pinned
-                .extend(added.values().map(|entry| entry.blob.clone()));
+            view.admit_map(&added);
             view.objects.extend(added);
             selected
         };
@@ -718,6 +975,12 @@ impl ObjectStore for BranchStore {
         let entry = self.authority.upload(bytes)?;
         let mut selected = None;
         let mut added = BTreeMap::new();
+        let mut generation = None;
+        let next_generation = view
+            .generation
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        let retired = view.retire_prefixes(&self.pin, next_generation);
         self.authority.transact(None, |root| {
             let branch = self.bound(root)?;
             let owned;
@@ -746,15 +1009,22 @@ impl ObjectStore for BranchStore {
                 }
             }
             let entries = accessible(&self.authority, root, relative, &entry)?;
-            added = self.extend_pin(root, &view, entries)?;
+            let next = self.advance_generation(root, &view)?;
+            for (_, prefix) in &retired {
+                root.pin_entries.remove_prefix(prefix)?;
+            }
+            added = self.extend_pin(root, &view, next, entries)?;
+            generation = Some(next);
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
-        Self::refresh(
+        self.refresh(
             &mut view,
             selected.context("branch publication view missing")?,
             added,
-        );
+            generation.context("branch publication generation missing")?,
+            &retired,
+        )?;
         Ok(entry.etag)
     }
 
@@ -797,6 +1067,12 @@ impl ObjectStore for BranchStore {
             .collect::<Vec<_>>();
         let mut added = BTreeMap::new();
         let mut selected = None;
+        let mut generation = None;
+        let next_generation = view
+            .generation
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        let retired = view.retire_prefixes(&self.pin, next_generation);
         self.authority.transact_with_bodies(&bodies, |root| {
             self.bound(root)?;
             let mut entries = BTreeMap::new();
@@ -813,15 +1089,22 @@ impl ObjectStore for BranchStore {
                 root.objects.insert(relative.clone(), entry.clone())?;
                 entries.insert(relative.clone(), entry.clone());
             }
-            added = self.extend_pin(root, &view, entries)?;
+            let next = self.advance_generation(root, &view)?;
+            for (_, prefix) in &retired {
+                root.pin_entries.remove_prefix(prefix)?;
+            }
+            added = self.extend_pin(root, &view, next, entries)?;
+            generation = Some(next);
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
-        Self::refresh(
+        self.refresh(
             &mut view,
             selected.context("branch group publication view missing")?,
             added,
-        );
+            generation.context("branch group publication generation missing")?,
+            &retired,
+        )?;
         Ok(staged.into_iter().map(|(_, entry, _)| entry.etag).collect())
     }
 
@@ -832,6 +1115,12 @@ impl ObjectStore for BranchStore {
             .lock()
             .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
         let mut selected = None;
+        let mut generation = None;
+        let next_generation = view
+            .generation
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        let retired = view.retire_prefixes(&self.pin, next_generation);
         self.authority.transact(None, |root| {
             let branch = self.bound(root)?;
             let owned;
@@ -863,14 +1152,20 @@ impl ObjectStore for BranchStore {
                     root.objects.remove(relative)?;
                 }
             }
+            generation = Some(self.advance_generation(root, &view)?);
+            for (_, prefix) in &retired {
+                root.pin_entries.remove_prefix(prefix)?;
+            }
             selected = Some(Self::selected(root, &self.branch)?);
             Ok(())
         })?;
-        Self::refresh(
+        self.refresh(
             &mut view,
             selected.context("branch deletion view missing")?,
             BTreeMap::new(),
-        );
+            generation.context("branch deletion generation missing")?,
+            &retired,
+        )?;
         Ok(())
     }
 
@@ -909,11 +1204,10 @@ impl ObjectStore for BranchStore {
                         candidates.extend(accessible(&self.authority, root, key, entry)?);
                     }
                 }
-                added = self.extend_pin(root, &view, candidates)?;
+                added = self.extend_pin(root, &view, view.generation, candidates)?;
                 Ok(())
             })?;
-            view.pinned
-                .extend(added.values().map(|entry| entry.blob.clone()));
+            view.admit_map(&added);
             view.objects.extend(added);
         }
         let mut keys: Vec<String> = view
@@ -938,10 +1232,7 @@ impl Drop for BranchStore {
         if !self.drop_cleanup.load(Ordering::Acquire) {
             return;
         }
-        if let Err(error) = self
-            .authority
-            .transact(None, |root| release_pin(root, &self.pin))
-        {
+        if let Err(error) = self.release_pin(&self.authority) {
             report_pin_release_failure(&self.pin, "branch-drop", &error);
         }
     }
@@ -954,17 +1245,88 @@ pub(super) fn report_pin_release_failure(pin: &str, stage: &str, error: &anyhow:
     );
 }
 
-fn release_pin(root: &mut CatalogRoot, pin: &str) -> Result<()> {
-    let prefix = format!("{pin}/");
-    let keys: Vec<String> = root
-        .pin_entries
-        .entries()?
-        .into_keys()
-        .filter(|key| key.starts_with(&prefix))
-        .collect();
-    for key in keys {
-        root.pin_entries.remove(&key)?;
+/// Release every generation of one pin. The first publication is the durable work item:
+/// it advances `pin_generations` past every entry the pin currently owns and records the
+/// release marker. Each generation then leaves in its own publication, so a large release
+/// resumes from the marker instead of keeping one transaction open for the whole set.
+pub(super) fn release_pin_identity(authority: &Authority, pin: &str) -> Result<PinReleaseStats> {
+    let mut stats = PinReleaseStats::default();
+    let snapshot = authority.snapshot()?;
+    if !snapshot.root.pins.contains_key(pin) {
+        return Ok(stats);
     }
-    root.pins.remove(pin);
-    Ok(())
+    authority.transact(None, |root| {
+        if !root.pins.contains_key(pin) {
+            return Ok(());
+        }
+        let current = root
+            .pin_generations
+            .get(pin)
+            .copied()
+            .context("reader pin generation missing")?;
+        let next = current
+            .checked_add(1)
+            .context("reader pin generation exhausted")?;
+        root.pin_generations.insert(pin.to_owned(), next);
+        root.pin_releases.insert(pin.to_owned());
+        Ok(())
+    })?;
+    stats.batches = 1;
+
+    let snapshot = authority.snapshot()?;
+    if !snapshot.root.pins.contains_key(pin) {
+        return Ok(stats);
+    }
+    let (entries, scan) = snapshot
+        .root
+        .pin_entries
+        .prefix_entries_counted(&format!("{pin}/"))?;
+    stats.pages = stats.pages.saturating_add(scan.pages);
+    stats.scanned = stats.scanned.saturating_add(scan.scanned);
+    let generations: BTreeSet<u64> = entries
+        .keys()
+        .filter_map(|key| pin_entry_parts(key).map(|parts| parts.generation))
+        .collect();
+    stats.generations = generations.len();
+    for generation in generations {
+        let prefix = format!("{pin}/{generation}/");
+        let mut removed = None;
+        authority.transact(None, |root| {
+            if !root.pins.contains_key(pin) {
+                return Ok(());
+            }
+            let current = root
+                .pin_generations
+                .get(pin)
+                .copied()
+                .context("reader pin generation missing")?;
+            ensure!(
+                generation < current,
+                "current reader pin generation cannot be released"
+            );
+            removed = Some(root.pin_entries.remove_prefix(&prefix)?);
+            Ok(())
+        })?;
+        if let Some(batch) = removed {
+            stats.pages = stats.pages.saturating_add(batch.pages);
+            stats.scanned = stats.scanned.saturating_add(batch.scanned);
+            stats.entries = stats.entries.saturating_add(batch.removed);
+            stats.batches = stats.batches.saturating_add(1);
+        }
+    }
+    authority.transact(None, |root| {
+        if !root.pins.contains_key(pin) {
+            return Ok(());
+        }
+        let (remaining, _) = root
+            .pin_entries
+            .prefix_entries_counted(&format!("{pin}/"))?;
+        ensure!(remaining.is_empty(), "reader pin release left entries");
+        root.pins.remove(pin);
+        root.pin_generations.remove(pin);
+        root.pin_releases.remove(pin);
+        Ok(())
+    })?;
+    stats.batches = stats.batches.saturating_add(1);
+    Ok(stats)
 }

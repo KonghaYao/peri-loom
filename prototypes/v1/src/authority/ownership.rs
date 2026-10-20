@@ -60,6 +60,19 @@ struct LiveLease {
     deadline: u64,
 }
 
+/// Cheap lease state for background session reaping. Unlike [`OwnershipAuthority::validate_lease`]
+/// this never reads the published root, so a reaper can poll thousands of remote sessions
+/// without turning orphan detection into object-store load. Dispatch still validates the full
+/// binding; this only decides when to stop admitting new work and start draining.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeaseValidity {
+    Live,
+    Expired,
+    Fenced,
+    AuthorityTermChanged,
+    Unavailable,
+}
+
 struct Nonce {
     digest: String,
     expires: u64,
@@ -297,6 +310,31 @@ impl OwnershipAuthority {
         })
     }
 
+    /// Lease state without the ownership-root read. A missing or replaced lease in this
+    /// process is reported as fenced: the binding can no longer dispatch anything that
+    /// matters, and the session is safe to drain.
+    pub(crate) fn session_lease_validity(&self, binding: &LeaseBinding) -> LeaseValidity {
+        match self.session_service(&binding.database) {
+            Ok(service) => service.lease_validity(binding),
+            Err(_) => LeaseValidity::Unavailable,
+        }
+    }
+
+    /// Whether a session's store can release its reader pin. Releasing while the namespace
+    /// is blocked would drop the only handle before the pin transaction is committed, so the
+    /// reaper keeps the session until isolation is lifted and retries.
+    pub(crate) fn session_release_allowed(&self, database: &DatabaseId) -> bool {
+        let Ok(service) = self.session_service(database) else {
+            return false;
+        };
+        service.backend.available().is_ok()
+            && service
+                .memory
+                .lock()
+                .map(|memory| !memory.blocked)
+                .unwrap_or(false)
+    }
+
     pub fn quiescent(&self) -> bool {
         let Ok(namespaces) = self.namespaces.lock() else {
             return false;
@@ -370,6 +408,40 @@ impl Service {
         }
         memory.last_clock = Some(now);
         Ok(now)
+    }
+
+    fn lease_validity(&self, binding: &LeaseBinding) -> LeaseValidity {
+        if self.authority_term != binding.authority_term {
+            return LeaseValidity::AuthorityTermChanged;
+        }
+        if self.backend.available().is_err() {
+            return LeaseValidity::Unavailable;
+        }
+        // The reaper is a read-only observer. It deliberately does not advance
+        // `last_clock`; a regression must still be reported by a request that actually
+        // fences work, not silently consumed by background polling.
+        let now = match self.clock.now_ms() {
+            Ok(now) => now,
+            Err(_) => return LeaseValidity::Unavailable,
+        };
+        let memory = match self.memory.lock() {
+            Ok(memory) => memory,
+            Err(_) => return LeaseValidity::Unavailable,
+        };
+        if memory.blocked {
+            return LeaseValidity::Unavailable;
+        }
+        let Some(live) = memory.leases.get(&binding.database.branch) else {
+            return LeaseValidity::Fenced;
+        };
+        if !same_lease(&live.binding, binding) {
+            return LeaseValidity::Fenced;
+        }
+        if now < live.deadline {
+            LeaseValidity::Live
+        } else {
+            LeaseValidity::Expired
+        }
     }
 
     fn live(&self, binding: &LeaseBinding) -> Result<LiveLease> {

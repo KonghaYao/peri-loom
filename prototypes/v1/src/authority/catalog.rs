@@ -11,17 +11,22 @@ impl Authority {
         &self,
         previous: &CatalogRoot,
         next: &mut CatalogRoot,
-        deletion: Option<&str>,
+        deletions: &BTreeSet<String>,
         bodies: &[super::PublicationBody<'_>],
     ) -> Result<()> {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("prepare", 0);
+        // Schema 1 is upgraded once, when the authority opens. The upgrade replaces the
+        // pin registry base (a hash-ordered tree becomes a raw-ordered one), which no
+        // ordinary statement may do; every other publication must keep the same base.
+        let pin_upgrade = previous.pin_schema != Some(super::types::PIN_SCHEMA_VERSION)
+            && next.pin_schema == Some(super::types::PIN_SCHEMA_VERSION);
         ensure!(
             next.version == previous.version
                 && next.namespace == previous.namespace
                 && next.incarnation == previous.incarnation
                 && next.revision == previous.revision
-                && next.pin_schema == previous.pin_schema,
+                && (next.pin_schema == previous.pin_schema || pin_upgrade),
             "authority root identity or revision mutation forbidden"
         );
         ensure!(
@@ -32,15 +37,52 @@ impl Authority {
             next.receipt_index == previous.receipt_index,
             "authority receipt index cannot be mutated"
         );
+        // Collection progress is durable state: a publication may advance it, but it may not
+        // rewind a frontier or forget that a cycle is in flight. Without this check a
+        // transaction could make the next tick rescan (or skip) arbitrary keys.
+        ensure!(
+            !(previous.gc.is_some() && next.gc.is_none()),
+            "GC cursor removal forbidden"
+        );
+        if let Some(cursor) = &next.gc {
+            ensure!(
+                cursor.follows(previous.gc.as_ref()),
+                "GC cursor cannot rewind"
+            );
+        }
         // A surviving pin's registry base is part of the admission state. Replacing the
         // whole registry (empty, an old snapshot, or a smaller page tree) would carry an
         // empty change set and hide a removal from change-scoped validation. Additions stay
         // legal because `extend_pin` grows a live pin; removals and replacements are handled
         // by the change-scoped checks below.
         ensure!(
-            next.pin_entries.same_base(&previous.pin_entries),
+            next.pin_entries.same_base(&previous.pin_entries) || pin_upgrade,
             "reader pin registry replacement forbidden"
         );
+        for (pin, generation) in &next.pin_generations {
+            ensure!(
+                next.pins.contains_key(pin),
+                "reader pin generation without pin"
+            );
+            if let Some(admitted) = previous.pin_generations.get(pin) {
+                ensure!(
+                    generation >= admitted,
+                    "reader pin generation cannot rewind"
+                );
+            }
+        }
+        for pin in &next.pin_releases {
+            ensure!(
+                next.pins.contains_key(pin) && next.pin_generations.contains_key(pin),
+                "reader pin release without pin"
+            );
+        }
+        for pin in &previous.pin_releases {
+            ensure!(
+                next.pin_releases.contains(pin) || !next.pins.contains_key(pin),
+                "reader pin release marker cannot be dropped while the pin survives"
+            );
+        }
         super::ownership::catalog_rules::prepare(self, previous, next)?;
         for (name, branch) in &mut next.branches {
             if let Some(old) = previous.branches.get(name) {
@@ -60,9 +102,9 @@ impl Authority {
         }
 
         let published = self.published_blobs(previous, next)?;
-        self.prepare_blobs(previous, next, deletion)?;
+        self.prepare_blobs(previous, next, deletions)?;
         self.prepare_objects(previous, next)?;
-        self.prepare_tombstones(previous, next, deletion)?;
+        self.prepare_tombstones(previous, next, deletions)?;
         self.prepare_uploads(previous, next, &published)?;
         self.prepare_pin_removals(previous, next)?;
         self.validate_changed_references(previous, next, bodies)?;
@@ -126,7 +168,7 @@ impl Authority {
         &self,
         previous: &CatalogRoot,
         next: &mut CatalogRoot,
-        deletion: Option<&str>,
+        deletions: &BTreeSet<String>,
     ) -> Result<()> {
         let changes: Vec<(String, Change<ObjectEntry>)> = next
             .blobs
@@ -151,7 +193,7 @@ impl Authority {
                 }
                 Change::Removed => {
                     ensure!(
-                        deletion == Some(blob.as_str())
+                        deletions.contains(&blob)
                             && previous.tombstones.get(&blob)?.is_some()
                             && next
                                 .tombstones
@@ -191,7 +233,7 @@ impl Authority {
         &self,
         previous: &CatalogRoot,
         next: &mut CatalogRoot,
-        deletion: Option<&str>,
+        deletions: &BTreeSet<String>,
     ) -> Result<()> {
         let changes: Vec<(String, Change<super::Tombstone>)> = next
             .tombstones
@@ -215,7 +257,7 @@ impl Authority {
                     );
                     if !previous_tombstone.deleted && next_tombstone.deleted {
                         ensure!(
-                            deletion == Some(blob.as_str()),
+                            deletions.contains(&blob),
                             "tombstone completion requires narrow deletion API"
                         );
                     }
@@ -249,12 +291,20 @@ impl Authority {
         if removed.is_empty() {
             return Ok(());
         }
-        let entries = next.pin_entries.entries()?;
         for pin in removed {
-            let prefix = format!("{pin}/");
+            // A release only looks at this pin's own page range. A hashed legacy tree has no
+            // usable range and falls back to the full walk inside the registry.
+            let (entries, _) = next
+                .pin_entries
+                .prefix_entries_counted(&format!("{pin}/"))?;
+            ensure!(entries.is_empty(), "reader pin removal left entries");
             ensure!(
-                !entries.keys().any(|key| key.starts_with(&prefix)),
-                "reader pin removal left entries"
+                !next.pin_generations.contains_key(pin),
+                "reader pin removal left its generation"
+            );
+            ensure!(
+                !next.pin_releases.contains(pin),
+                "reader pin removal left a release marker"
             );
         }
         Ok(())

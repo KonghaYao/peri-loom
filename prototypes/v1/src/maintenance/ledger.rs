@@ -78,6 +78,10 @@ struct LaneState {
     failed: u64,
     last_due: Option<Instant>,
     next_allowed: Option<Instant>,
+    /// First instant this lane was refused because the quiet window never arrived. Cleared
+    /// when the lane is no longer busy or is picked, so the starvation bound measures one
+    /// uninterrupted busy period rather than the lifetime of the database.
+    busy_since: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -159,6 +163,42 @@ impl MaintenanceLedger {
         self.lock().lanes[lane.index()].next_allowed
     }
 
+    /// When the lane first became ineligible because the database was never quiet. A lane
+    /// that stays busy past the policy's starvation bound is admitted once with its bounded
+    /// per-unit budget; without this timestamp an always-busy database would never run one.
+    pub(crate) fn busy_since(&self, lane: MaintenanceLane) -> Option<Instant> {
+        self.lock().lanes[lane.index()].busy_since
+    }
+
+    pub(crate) fn mark_busy(&self, lane: MaintenanceLane, now: Instant) {
+        let mut state = self.lock();
+        let entry = &mut state.lanes[lane.index()];
+        if entry.busy_since.is_none() {
+            entry.busy_since = Some(now);
+        }
+    }
+
+    pub(crate) fn clear_busy(&self, lane: MaintenanceLane) {
+        self.lock().lanes[lane.index()].busy_since = None;
+    }
+
+    /// A snapshot of the block counts, used by the scheduler to tell a blocked unit from an
+    /// ordinary failure without changing the error type the call sites already return.
+    pub(crate) fn block_counts(&self) -> [u64; BlockReason::ALL.len()] {
+        let state = self.lock();
+        BlockReason::ALL.map(|reason| state.blocks.get(&reason).copied().unwrap_or(0))
+    }
+
+    /// Extends every lane's eligibility by `until`. The reason was recorded by the unit that
+    /// observed the block; this only applies the scheduler's cooldown, so it is combined with
+    /// the existing deadline instead of replacing it.
+    pub(crate) fn back_off(&self, until: Instant) {
+        let mut state = self.lock();
+        for entry in &mut state.lanes {
+            entry.next_allowed = Some(entry.next_allowed.map_or(until, |held| held.max(until)));
+        }
+    }
+
     /// Records that a lane is about to run, and closes its cooldown window immediately: a
     /// unit that takes longer than the cooldown must not be picked a second time while the
     /// first one is still in flight.
@@ -168,6 +208,7 @@ impl MaintenanceLedger {
         entry.attempts += 1;
         entry.last_due = Some(now);
         entry.next_allowed = Some(now + cooldown);
+        entry.busy_since = None;
     }
 
     pub(crate) fn record_completion(&self, lane: MaintenanceLane) {

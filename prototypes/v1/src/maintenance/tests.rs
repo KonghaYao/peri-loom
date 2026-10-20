@@ -12,11 +12,13 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use super::budget::{BudgetDenied, MaintenanceBudget};
-use super::policy::{MaintenanceDecision, MaintenancePolicy, MaintenanceSkip, Watermark};
+use super::policy::{
+    MaintenanceDecision, MaintenancePolicy, MaintenanceSkip, UnitBudget, Watermark,
+};
 use super::{
     retiring_maintenance_authorized, BlockReason, MaintenanceLane, MaintenanceLedger,
-    MaintenanceScheduler, MaintenanceSignals, MaintenanceTarget, PreSuspendOutcome,
-    PreSuspendReason, RetiringMaintenanceAuthorization,
+    MaintenanceScheduler, MaintenanceSignals, MaintenanceTarget, MaintenanceUnitReport,
+    PreSuspendOutcome, PreSuspendReason, RetiringMaintenanceAuthorization,
 };
 
 /// A target that records what it was asked to run and does nothing else. `signals` returns the
@@ -98,7 +100,11 @@ impl MaintenanceTarget for FakeTarget {
             .unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
-    fn run_maintenance(&self, lane: MaintenanceLane) -> Result<()> {
+    fn run_maintenance(
+        &self,
+        lane: MaintenanceLane,
+        _budget: UnitBudget,
+    ) -> Result<MaintenanceUnitReport> {
         // The real entry points record execution before doing any work; mirroring that here
         // is what makes "started but unconfirmed" observable in the scheduler tests.
         self.ledger.record_execution(lane);
@@ -107,7 +113,12 @@ impl MaintenanceTarget for FakeTarget {
             std::thread::sleep(self.delay);
         }
         match self.failure {
-            FakeFailure::None => Ok(()),
+            FakeFailure::None => Ok(MaintenanceUnitReport {
+                scanned_pages: 1,
+                backfilled_bytes: 4096,
+                truncated: false,
+                complete: true,
+            }),
             FakeFailure::Message => anyhow::bail!("synthetic maintenance failure"),
             FakeFailure::Deadline => Err(crate::session::AdmissionError::Deadline.into()),
         }
@@ -460,6 +471,81 @@ fn neither_unit_starts_inside_the_quiet_window() {
             .decide(lane, &busy, &ledger, armed_now(&ledger))
             .is_due());
     }
+}
+
+#[test]
+fn continuous_load_is_admitted_once_after_the_starvation_bound() {
+    let policy = policy(true)
+        .with_quiet_gate(Duration::from_secs(2), u64::MAX)
+        .with_starvation(Duration::from_secs(30));
+    let scheduler = scheduler(policy, budget(1, 1, 100, u64::MAX));
+    let target = FakeTarget::new("starved", 4096);
+    target
+        .signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .quiet_for_ms = 0;
+    let now = armed_now(&target.ledger);
+
+    observe(&scheduler, &target, now);
+    assert_eq!(
+        target.ledger.counters().attempts,
+        0,
+        "a busy database must not run a unit inside the quiet gate"
+    );
+    assert_eq!(
+        target.ledger.busy_since(MaintenanceLane::Checkpoint),
+        Some(now),
+        "the first busy refusal starts the starvation period"
+    );
+
+    // Continuous foreground work keeps the lane out until the bound, not forever.
+    observe(&scheduler, &target, now + Duration::from_secs(29));
+    assert_eq!(target.ledger.counters().attempts, 0);
+
+    let at = now + Duration::from_secs(30);
+    observe(&scheduler, &target, at);
+    assert_eq!(
+        target.ledger.counters().attempts,
+        2,
+        "both armed lanes are admitted once the starvation bound expires"
+    );
+    assert_eq!(scheduler.drain(2, at).completed, 2);
+
+    // The pick clears the busy period: the waiver is one bounded unit, not a permanent
+    // exemption from the quiet gate.
+    observe(&scheduler, &target, at + Duration::from_secs(1));
+    assert_eq!(target.ledger.counters().attempts, 2);
+}
+
+#[test]
+fn a_unit_is_charged_for_its_plan_not_the_whole_backlog() {
+    // The window is exactly one unit's byte budget. A scheduler that charged the 1 GiB WAL
+    // would refuse every unit; the queued plan is what the shared window must account for.
+    let unit = UnitBudget {
+        max_pages: 1,
+        max_bytes: 4096,
+        max_time: Duration::from_secs(1),
+    };
+    let scheduler = scheduler(
+        policy(true).with_unit_budgets(unit, unit),
+        MaintenanceBudget::new(1, 1, 100, 4096, Duration::from_secs(60)),
+    );
+    let target = FakeTarget::new("plan_charge", 1 << 30);
+    let now = armed_now(&target.ledger);
+
+    observe(&scheduler, &target, now);
+    let drained = scheduler.drain(2, now);
+    assert_eq!(drained.completed, 1);
+    assert_eq!(
+        drained.refused, 1,
+        "the second unit must be refused by the same shared window"
+    );
+    assert_eq!(
+        target.ledger.counters().blocks.get("budget"),
+        Some(&1),
+        "a refusal is recorded as a budget block"
+    );
 }
 
 #[test]

@@ -210,36 +210,51 @@ impl ObjectStore for FencedStore {
 
 impl Drop for FencedStore {
     fn drop(&mut self) {
-        match self.service.gate.write_wait() {
-            Ok(_barrier) => {
-                match self.service.available() {
-                    Ok(()) => {
-                        let scoped = self.service.scoped(Permission::Pins);
-                        if let Some(inner) = &self.inner {
-                            if let Err(error) = inner.release_pin(&scoped) {
-                                report_pin_release_failure(
-                                    inner.pin_identity(),
-                                    "fenced-release",
-                                    &error,
-                                );
+        // A renew, import, or another pin release can hold the admission gate when
+        // the scope is reaped. `write_wait` reports that as retryable, but this is
+        // the last handle able to release the pin, so wait briefly instead of
+        // dropping the reader identity on a transient transition.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match self.service.gate.write_wait() {
+                Ok(_barrier) => {
+                    match self.service.available() {
+                        Ok(()) => {
+                            let scoped = self.service.scoped(Permission::Pins);
+                            if let Some(inner) = &self.inner {
+                                if let Err(error) = inner.release_pin(&scoped) {
+                                    report_pin_release_failure(
+                                        inner.pin_identity(),
+                                        "fenced-release",
+                                        &error,
+                                    );
+                                }
                             }
                         }
+                        Err(error) => report_pin_release_failure(
+                            pin_identity(self.inner.as_deref()),
+                            "fenced-availability",
+                            &error,
+                        ),
                     }
-                    Err(error) => report_pin_release_failure(
-                        pin_identity(self.inner.as_deref()),
-                        "fenced-availability",
-                        &error,
-                    ),
+                    drop(self.inner.take());
+                    return;
                 }
-                drop(self.inner.take());
-            }
-            Err(error) => {
-                report_pin_release_failure(
-                    pin_identity(self.inner.as_deref()),
-                    "fenced-gate",
-                    &error,
-                );
-                drop(self.inner.take());
+                Err(error)
+                    if error.is::<super::admission_gate::AdmissionBusy>()
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => {
+                    report_pin_release_failure(
+                        pin_identity(self.inner.as_deref()),
+                        "fenced-gate",
+                        &error,
+                    );
+                    drop(self.inner.take());
+                    return;
+                }
             }
         }
     }

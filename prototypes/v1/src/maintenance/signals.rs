@@ -44,6 +44,13 @@ pub(crate) struct MaintenanceSignals {
     /// part of this flag because the truncate checkpoint itself applies the WAL tail and
     /// `allow_reset` re-checks coverage after that backfill.
     pub unconfirmed_wal: bool,
+    /// The configured hard WAL capacity in bytes, or zero when no capacity budget is set.
+    /// This is a real limit: a new write whose accepted image would cross it is refused
+    /// before dispatch. The hysteresis watermarks above are not this value.
+    pub wal_capacity_bytes: u64,
+    /// True when the WAL (including the pending batch) reached the capacity budget's soft
+    /// mark. It arms maintenance early; it never rejects a write by itself.
+    pub wal_pressure: bool,
 }
 
 impl MaintenanceSignals {

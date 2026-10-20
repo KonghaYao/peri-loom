@@ -31,6 +31,16 @@ pub(super) fn encode_with_digest(root: &CatalogRoot) -> Result<(Vec<u8>, String)
         root: RawValue::from_string(serialized)?.as_ref(),
         checksum: checksum.clone(),
     })?;
+    // The inline identity tables have their own ceilings; this one bounds the document that
+    // the CAS actually carries, including the envelope, ownership and receipt state. It runs
+    // before the write, so an oversized candidate is rejected with no published state.
+    ensure!(
+        bytes.len() <= super::types::MAX_ROOT_BYTES,
+        "authority root is {} bytes, above the {}-byte publication ceiling",
+        bytes.len(),
+        super::types::MAX_ROOT_BYTES
+    );
+    crate::work_metrics::observe_root_encoding(bytes.len(), root.identity_counts());
     Ok((bytes, checksum))
 }
 
@@ -84,7 +94,7 @@ fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
         }
         Some(schema) => {
             ensure!(
-                schema == super::types::PIN_SCHEMA_VERSION,
+                matches!(schema, 1 | super::types::PIN_SCHEMA_VERSION),
                 "unsupported reader pin schema"
             );
             ensure!(
@@ -105,5 +115,9 @@ fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
         },
         "authority ownership schema version mismatch"
     );
+    // The decoder is the one path every reader shares, including ownership views that do
+    // not run the publication shape check. Rejecting an over-ceiling head here keeps a
+    // document that predates the ceilings from being treated as current.
+    root.validate_identity_ceilings()?;
     Ok((root, envelope.checksum))
 }

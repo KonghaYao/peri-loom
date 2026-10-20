@@ -9,7 +9,43 @@ use crate::namespace::Namespace;
 use crate::object_store::{ObjectStore, PutCondition};
 
 const PAGE_BYTES: usize = 16 * 1024;
-const HASH_NIBBLES: u8 = 64;
+const HASH_NIBBLES: u16 = 64;
+/// Reader-pin keys are bucketed by a two-byte digest of the pin identity. A prefix scan
+/// visits one bucket and filters its leaves, so its cost follows the entries of that pin
+/// (plus negligible hash collisions), not every pin in the namespace. The bucket prefix is
+/// deliberately short: using the 64-character pin itself as the trie path would create one
+/// branch page per shared character and make both release and the full walk enormous.
+const BUCKET_NIBBLES: u16 = 4;
+
+/// How a page tree derives the nibble path from a registry key.
+///
+/// `Hashed` is the historical layout: keys are scattered by `blake3(key)`, which gives
+/// uniform leaves but makes a key prefix useless for pruning. `Bucketed` is the reader-pin
+/// layout: the first two digest bytes of the pin form a bucket path, and every key in a
+/// bucket is scattered by its own digest. A pin's entries share only the bucket, so a
+/// release reads the bucket pages plus the leaf pages that pin occupies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyOrder {
+    Hashed,
+    Bucketed,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Pages read through any `PagedIndex` on this thread. Tests use it to bound a whole
+    /// release (prefix scan plus publication apply) without measuring wall time.
+    static TEST_PAGE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_page_reads() {
+    TEST_PAGE_READS.with(|reads| reads.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn test_page_reads() -> usize {
+    TEST_PAGE_READS.with(std::cell::Cell::get)
+}
 
 /// Pages a publication rewrites are buffered here instead of being written one by one,
 /// so the whole attempt reaches the store as one durability group: immutable
@@ -40,12 +76,12 @@ impl PendingPages {
 enum Page {
     Leaf {
         version: u8,
-        depth: u8,
+        depth: u16,
         entries: BTreeMap<String, Value>,
     },
     Branch {
         version: u8,
-        depth: u8,
+        depth: u16,
         children: BTreeMap<String, String>,
     },
 }
@@ -54,7 +90,12 @@ pub(crate) struct PagedIndex<'a> {
     store: &'a dyn ObjectStore,
     namespace: &'a Namespace,
     prefix: &'static str,
+    order: KeyOrder,
     pending: Option<&'a std::cell::RefCell<PendingPages>>,
+    /// Pages this handle read. Maintenance reports how much of the tree a bounded tick
+    /// actually touched; the counter lives on the handle because completion paths create
+    /// their own index and would otherwise pollute a process-wide total.
+    reads: std::cell::Cell<usize>,
 }
 
 impl<'a> PagedIndex<'a> {
@@ -70,11 +111,22 @@ impl<'a> PagedIndex<'a> {
         namespace: &'a Namespace,
         prefix: &'static str,
     ) -> Self {
+        Self::with_order(store, namespace, prefix, KeyOrder::Hashed)
+    }
+
+    pub(crate) fn with_order(
+        store: &'a dyn ObjectStore,
+        namespace: &'a Namespace,
+        prefix: &'static str,
+        order: KeyOrder,
+    ) -> Self {
         Self {
             store,
             namespace,
             prefix,
+            order,
             pending: None,
+            reads: std::cell::Cell::new(0),
         }
     }
 
@@ -88,7 +140,27 @@ impl<'a> PagedIndex<'a> {
             store: self.store,
             namespace: self.namespace,
             prefix: self.prefix,
+            order: self.order,
             pending: Some(pending),
+            reads: std::cell::Cell::new(0),
+        }
+    }
+
+    pub(crate) fn pages_read(&self) -> usize {
+        self.reads.get()
+    }
+
+    /// Re-use this handle's store and pending group with another key order. A registry must
+    /// publish its pages in the order it reads them; the transaction-wide handle is hashed
+    /// because that is the layout every other registry uses.
+    pub(crate) fn ordered(&self, order: KeyOrder) -> PagedIndex<'_> {
+        PagedIndex {
+            store: self.store,
+            namespace: self.namespace,
+            prefix: self.prefix,
+            order,
+            pending: self.pending,
+            reads: std::cell::Cell::new(0),
         }
     }
 
@@ -104,16 +176,65 @@ impl<'a> PagedIndex<'a> {
         self.namespace.key(&format!("{}/{hash}", self.prefix))
     }
 
+    fn max_depth(&self) -> u16 {
+        match self.order {
+            KeyOrder::Hashed => HASH_NIBBLES,
+            KeyOrder::Bucketed => BUCKET_NIBBLES + HASH_NIBBLES,
+        }
+    }
+
+    fn nibble(&self, key: &str, depth: u16) -> Result<u16> {
+        ensure!(depth < self.max_depth(), "index path exhausted");
+        let selected = match self.order {
+            KeyOrder::Hashed => {
+                let digest = blake3::hash(key.as_bytes());
+                let byte = digest.as_bytes()[(depth / 2) as usize];
+                if depth.is_multiple_of(2) {
+                    byte >> 4
+                } else {
+                    byte & 15
+                }
+            }
+            KeyOrder::Bucketed => {
+                if depth < BUCKET_NIBBLES {
+                    let (pin, _) = key.split_once('/').context("bucketed key without pin")?;
+                    Self::bucket_nibble(pin, depth)?
+                } else {
+                    let tail = depth - BUCKET_NIBBLES;
+                    let digest = blake3::hash(key.as_bytes());
+                    let byte = digest.as_bytes()[(tail / 2) as usize];
+                    if tail.is_multiple_of(2) {
+                        byte >> 4
+                    } else {
+                        byte & 15
+                    }
+                }
+            }
+        };
+        Ok(u16::from(selected))
+    }
+
+    fn bucket_nibble(pin: &str, depth: u16) -> Result<u8> {
+        ensure!(depth < BUCKET_NIBBLES, "pin bucket path exhausted");
+        let digest = blake3::hash(pin.as_bytes());
+        let byte = digest.as_bytes()[(depth / 2) as usize];
+        Ok(if depth.is_multiple_of(2) {
+            byte >> 4
+        } else {
+            byte & 15
+        })
+    }
+
     pub(crate) fn get(&self, root: Option<&str>, key: &str) -> Result<Option<Value>> {
         validate_key(key)?;
         let mut current = root.map(str::to_owned);
         let mut prefix = Vec::new();
         while let Some(hash) = current {
-            match self.read(&hash, prefix.len() as u8, &prefix)? {
+            match self.read(&hash, prefix.len() as u16, &prefix)? {
                 Page::Leaf { entries, .. } => return Ok(entries.get(key).cloned()),
                 Page::Branch { children, .. } => {
-                    let nibble = nibble(key, prefix.len() as u8)?;
-                    prefix.push(nibble);
+                    let nibble = self.nibble(key, prefix.len() as u16)?;
+                    prefix.push(nibble as u8);
                     current = children.get(&nibble.to_string()).cloned();
                 }
             }
@@ -148,7 +269,7 @@ impl<'a> PagedIndex<'a> {
         &self,
         root: Option<&str>,
         updates: BTreeMap<String, Value>,
-        depth: u8,
+        depth: u16,
         prefix: &[u8],
     ) -> Result<String> {
         match root {
@@ -171,10 +292,10 @@ impl<'a> PagedIndex<'a> {
                     }
                 }
                 Page::Branch { mut children, .. } => {
-                    let mut groups: BTreeMap<u8, BTreeMap<String, Value>> = BTreeMap::new();
+                    let mut groups: BTreeMap<u16, BTreeMap<String, Value>> = BTreeMap::new();
                     for (key, value) in updates {
                         groups
-                            .entry(nibble(&key, depth)?)
+                            .entry(self.nibble(&key, depth)?)
                             .or_default()
                             .insert(key, value);
                     }
@@ -182,7 +303,7 @@ impl<'a> PagedIndex<'a> {
                     for (selected, group) in groups {
                         let slot = selected.to_string();
                         let mut next_prefix = prefix.to_vec();
-                        next_prefix.push(selected);
+                        next_prefix.push(selected as u8);
                         let next = self.insert_many_at(
                             children.get(&slot).map(String::as_str),
                             group,
@@ -225,7 +346,7 @@ impl<'a> PagedIndex<'a> {
         root: Option<&str>,
         inserts: BTreeMap<String, Value>,
         removals: &BTreeSet<String>,
-        depth: u8,
+        depth: u16,
         prefix: &[u8],
     ) -> Result<Option<String>> {
         let Some(hash) = root else {
@@ -260,18 +381,18 @@ impl<'a> PagedIndex<'a> {
                 Ok(Some(self.leaf_or_branch(entries, depth)?))
             }
             Page::Branch { mut children, .. } => {
-                let mut groups: BTreeMap<u8, (BTreeMap<String, Value>, BTreeSet<String>)> =
+                let mut groups: BTreeMap<u16, (BTreeMap<String, Value>, BTreeSet<String>)> =
                     BTreeMap::new();
                 for (key, value) in inserts {
                     groups
-                        .entry(nibble(&key, depth)?)
+                        .entry(self.nibble(&key, depth)?)
                         .or_default()
                         .0
                         .insert(key, value);
                 }
                 for key in removals {
                     groups
-                        .entry(nibble(key, depth)?)
+                        .entry(self.nibble(key, depth)?)
                         .or_default()
                         .1
                         .insert(key.clone());
@@ -280,7 +401,7 @@ impl<'a> PagedIndex<'a> {
                 for (selected, (group_inserts, group_removals)) in groups {
                     let slot = selected.to_string();
                     let mut next_prefix = prefix.to_vec();
-                    next_prefix.push(selected);
+                    next_prefix.push(selected as u8);
                     let next = self.apply_at(
                         children.get(&slot).map(String::as_str),
                         group_inserts,
@@ -322,10 +443,93 @@ impl<'a> PagedIndex<'a> {
         Ok(entries)
     }
 
+    /// Entries whose key starts with `prefix`, using the pin bucket to skip every branch
+    /// that cannot contain the prefix. Returns the matching entries and the number of leaf
+    /// entries the walk actually looked at. Only `KeyOrder::Bucketed` can prune; a hashed
+    /// tree must fall back to a full walk, which the caller decides explicitly.
+    pub(crate) fn entries_with_prefix(
+        &self,
+        root: Option<&str>,
+        prefix: &str,
+    ) -> Result<(BTreeMap<String, Value>, usize)> {
+        ensure!(
+            self.order == KeyOrder::Bucketed,
+            "prefix scan requires a bucketed index"
+        );
+        ensure!(
+            !prefix.is_empty()
+                && prefix.len() <= 1024
+                && prefix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.~/".contains(&byte)),
+            "invalid index prefix"
+        );
+        let mut entries = BTreeMap::new();
+        let mut scanned = 0usize;
+        self.walk_prefix(root, 0, &mut Vec::new(), prefix, &mut entries, &mut scanned)?;
+        Ok((entries, scanned))
+    }
+
+    fn walk_prefix(
+        &self,
+        root: Option<&str>,
+        depth: u16,
+        path: &mut Vec<u8>,
+        target: &str,
+        entries: &mut BTreeMap<String, Value>,
+        scanned: &mut usize,
+    ) -> Result<()> {
+        let Some(location) = root else {
+            return Ok(());
+        };
+        let pin = target
+            .split_once('/')
+            .map(|(pin, _)| pin)
+            .context("index prefix is not a reader pin")?;
+        match self.read(location, depth, path)? {
+            Page::Leaf { entries: page, .. } => {
+                for (key, value) in page {
+                    *scanned += 1;
+                    if key.starts_with(target) {
+                        ensure!(
+                            entries.insert(key, value).is_none(),
+                            "duplicate index key across pages"
+                        );
+                    }
+                }
+            }
+            Page::Branch { children, .. } => {
+                if depth < BUCKET_NIBBLES {
+                    let slot = Self::bucket_nibble(pin, depth)?;
+                    if let Some(child) = children.get(&slot.to_string()) {
+                        path.push(slot);
+                        self.walk_prefix(Some(child), depth + 1, path, target, entries, scanned)?;
+                        path.pop();
+                    }
+                } else {
+                    for (slot, child) in children {
+                        let selected = slot.parse::<u8>()?;
+                        path.push(selected);
+                        self.walk_prefix(
+                            Some(child.as_str()),
+                            depth + 1,
+                            path,
+                            target,
+                            entries,
+                            scanned,
+                        )?;
+                        path.pop();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn walk(
         &self,
         root: Option<&str>,
-        depth: u8,
+        depth: u16,
         prefix: &[u8],
         entries: &mut BTreeMap<String, Value>,
     ) -> Result<()> {
@@ -353,7 +557,7 @@ impl<'a> PagedIndex<'a> {
         Ok(())
     }
 
-    fn leaf_or_branch(&self, entries: BTreeMap<String, Value>, depth: u8) -> Result<String> {
+    fn leaf_or_branch(&self, entries: BTreeMap<String, Value>, depth: u16) -> Result<String> {
         let leaf = Page::Leaf {
             version: 1,
             depth,
@@ -363,8 +567,8 @@ impl<'a> PagedIndex<'a> {
             return self.write(&leaf);
         }
         ensure!(
-            depth < HASH_NIBBLES,
-            "index hash collision exceeds page budget"
+            depth < self.max_depth(),
+            "index path exhausted before the page budget"
         );
         let mut groups: BTreeMap<u8, BTreeMap<String, Value>> = BTreeMap::new();
         let Page::Leaf { entries, .. } = leaf else {
@@ -372,7 +576,7 @@ impl<'a> PagedIndex<'a> {
         };
         for (key, value) in entries {
             groups
-                .entry(nibble(&key, depth)?)
+                .entry(self.nibble(&key, depth)? as u8)
                 .or_default()
                 .insert(key, value);
         }
@@ -387,7 +591,10 @@ impl<'a> PagedIndex<'a> {
         })
     }
 
-    fn read(&self, hash: &str, depth: u8, prefix: &[u8]) -> Result<Page> {
+    fn read(&self, hash: &str, depth: u16, prefix: &[u8]) -> Result<Page> {
+        self.reads.set(self.reads.get() + 1);
+        #[cfg(test)]
+        TEST_PAGE_READS.with(|reads| reads.set(reads.get() + 1));
         let key = self.page_key(hash)?;
         let backend = self.store as *const dyn ObjectStore as *const () as usize;
         let buffered = self.pending.and_then(|pending| pending.borrow().page(hash));
@@ -426,7 +633,8 @@ impl<'a> PagedIndex<'a> {
                     validate_key(key)?;
                     ensure!(
                         prefix.iter().enumerate().all(|(position, expected)| {
-                            nibble(key, position as u8).is_ok_and(|actual| actual == *expected)
+                            self.nibble(key, position as u16)
+                                .is_ok_and(|actual| actual == u16::from(*expected))
                         }),
                         "index leaf outside selected path"
                     );
@@ -440,7 +648,7 @@ impl<'a> PagedIndex<'a> {
                 ensure!(
                     *version == 1
                         && *stored == depth
-                        && depth < HASH_NIBBLES
+                        && depth < self.max_depth()
                         && !children.is_empty()
                         && children.len() <= 16,
                     "invalid index branch"
@@ -522,15 +730,15 @@ fn validate_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 
-fn nibble(key: &str, depth: u8) -> Result<u8> {
+fn nibble(key: &str, depth: u16) -> Result<u16> {
     ensure!(depth < HASH_NIBBLES, "index path exhausted");
     let digest = blake3::hash(key.as_bytes());
     let byte = digest.as_bytes()[(depth / 2) as usize];
-    Ok(if depth.is_multiple_of(2) {
+    Ok(u16::from(if depth.is_multiple_of(2) {
         byte >> 4
     } else {
         byte & 15
-    })
+    }))
 }
 
 /// Walks every page reachable from `root`, validating content addressing and page shape.
@@ -545,7 +753,7 @@ pub(crate) fn walk_tree_with(
 ) -> Result<()> {
     fn walk(
         hash: &str,
-        depth: u8,
+        depth: u16,
         prefix: &[u8],
         read: &mut impl FnMut(&str) -> Result<Vec<u8>>,
         leaf: &mut impl FnMut(&BTreeMap<String, Value>) -> Result<()>,
@@ -570,7 +778,8 @@ pub(crate) fn walk_tree_with(
                     validate_key(key)?;
                     ensure!(
                         prefix.iter().enumerate().all(|(position, expected)| {
-                            nibble(key, position as u8).is_ok_and(|actual| actual == *expected)
+                            nibble(key, position as u16)
+                                .is_ok_and(|actual| actual == u16::from(*expected))
                         }),
                         "index leaf outside selected path"
                     );

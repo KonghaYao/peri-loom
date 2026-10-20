@@ -45,7 +45,7 @@ fn confirmed_owner_close_or_drop_aborts_uncommitted_effects_then_waiter_progress
 }
 
 #[test]
-fn maintenance_rejects_live_writer_and_queue_without_blocking_owner_rollback() -> Result<()> {
+fn passive_checkpoint_runs_beside_live_writer_while_compaction_rejects() -> Result<()> {
     let fixture = Fixture::open()?;
     let holder = fixture.database.session()?;
     let contender = Arc::new(fixture.database.session()?);
@@ -54,10 +54,18 @@ fn maintenance_rejects_live_writer_and_queue_without_blocking_owner_rollback() -
         let writer = contender.clone();
         let waiting = scope.spawn(move || writer.execute(&batch(1601, 12)));
         wait_queue(&fixture.database, &[contender.admission_id()])?;
+        let started = Instant::now();
+        // A passive unit only backfills frames no reader can still need, so it must run
+        // beside a live writer instead of queuing behind the foreground gate.
+        fixture.database.checkpoint()?;
+        ensure!(
+            started.elapsed() < Duration::from_millis(300),
+            "passive checkpoint waited behind owner"
+        );
+        expect_owner(&fixture.database, Some(holder.admission_id()))?;
+        wait_queue(&fixture.database, &[contender.admission_id()])?;
         let physical = fixture.store.physical();
         let started = Instant::now();
-        let error = fixture.database.checkpoint().unwrap_err();
-        expect_admission(&error, AdmissionError::Conflict)?;
         let error = fixture.database.compact_wal().unwrap_err();
         expect_admission(&error, AdmissionError::Conflict)?;
         ensure!(

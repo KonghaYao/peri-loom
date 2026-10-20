@@ -33,7 +33,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use super::budget::{BudgetDenied, MaintenanceBudget};
-use super::policy::{MaintenanceDecision, MaintenanceLane, MaintenancePolicy, MaintenanceSkip};
+use super::policy::{
+    MaintenanceDecision, MaintenanceLane, MaintenancePolicy, MaintenanceSkip, UnitBudget,
+};
 use super::{BlockReason, MaintenanceTarget};
 
 /// How often the driver thread looks at its queue. The queue is only ever filled by `observe`
@@ -56,6 +58,7 @@ const PRE_SUSPEND_BUDGET_ENV: &str = "PERI_MAINTENANCE_SUSPEND_BUDGET_MS";
 pub(crate) struct MaintenanceDrain {
     pub completed: usize,
     pub failed: usize,
+    pub blocked: usize,
     pub refused: usize,
 }
 
@@ -184,9 +187,14 @@ impl Drop for RetiringMaintenanceAuthorization {
 struct Queued {
     lane: MaintenanceLane,
     target: Arc<dyn MaintenanceTarget>,
-    /// The backfill volume the decision was taken on. It is the charge against the byte
-    /// budget, so a unit is never charged for a volume it was not planned around.
+    /// The backfill volume the decision was taken on, clamped to the lane's per-unit byte
+    /// budget. It is the charge against the shared byte window, so a unit is never charged
+    /// for a volume it was not planned around.
     bytes: u64,
+    /// The bounded work this unit was planned for. Carried with the queue entry so a forced
+    /// or queued unit cannot later run with a different policy value.
+    budget: UnitBudget,
+    queued_at: Instant,
 }
 
 pub(crate) struct MaintenanceScheduler {
@@ -411,7 +419,7 @@ impl MaintenanceScheduler {
         let signals = target.signals()?;
         ledger.observe_reader_age(Duration::from_millis(signals.oldest_reader_ms));
         for lane in MaintenanceLane::ALL {
-            if let Some(armed) = self.policy.arming(lane, signals.wal_bytes) {
+            if let Some(armed) = self.policy.arming_with(lane, &signals) {
                 ledger.set_armed(lane, armed);
             }
         }
@@ -422,13 +430,26 @@ impl MaintenanceScheduler {
                     // outlives its cooldown must not be picked twice, and a unit refused by
                     // the budget must not be retried on the next tick.
                     ledger.record_start(lane, now, self.policy.cooldown());
+                    let budget = self.policy.unit_budget(lane);
                     self.lock().push_back(Queued {
                         lane,
                         target: target.clone(),
-                        bytes: signals.backfill_bytes(),
+                        // A huge WAL is exactly the case a bounded unit is for. Charge the
+                        // plan the unit is allowed to do, not the whole backlog, or the
+                        // shared byte window would refuse the only unit that can drain it.
+                        bytes: signals.backfill_bytes().min(budget.max_bytes),
+                        budget,
+                        queued_at: now,
                     });
                 }
                 MaintenanceDecision::Skip(skip) => {
+                    match skip {
+                        // Remember the first busy refusal so a workload that never reaches a
+                        // quiet window still admits one bounded unit after the starvation
+                        // bound. Every other skip clears the period.
+                        MaintenanceSkip::Busy => ledger.mark_busy(lane, now),
+                        _ => ledger.clear_busy(lane),
+                    }
                     if skip == MaintenanceSkip::UnconfirmedWal {
                         ledger.record_block(BlockReason::UnconfirmedWal, None);
                     }
@@ -472,24 +493,61 @@ impl MaintenanceScheduler {
                 }
             };
             let started = Instant::now();
-            match queued.target.run_maintenance(queued.lane) {
+            crate::work_metrics::observe_maintenance_wait(
+                queued.lane,
+                started.saturating_duration_since(queued.queued_at),
+            );
+            let blocks_before = ledger.block_counts();
+            match queued.target.run_maintenance(queued.lane, queued.budget) {
                 // The unit records its own duration through `work_metrics`, so the admin
                 // entry points and the scheduled ones are measured on one caliber and no
                 // unit is counted twice.
-                Ok(()) => {
+                Ok(_) => {
                     ledger.record_completion(queued.lane);
+                    ledger.clear_busy(queued.lane);
                     summary.completed += 1;
                 }
                 Err(error) => {
-                    ledger.record_failure(queued.lane);
-                    summary.failed += 1;
-                    // A blocked unit is not a silent one: the reason is in the ledger and on
-                    // stderr, and the cooldown keeps the next attempt from being immediate.
-                    eprintln!(
-                        "maintenance outcome=blocked lane={} elapsed_ms={} reason={error:#}",
-                        queued.lane.name(),
-                        started.elapsed().as_millis(),
-                    );
+                    // The unit site already recorded the reason and, where it applies, the
+                    // reader age. A block is not an ordinary failure: it is a reason to keep
+                    // the whole database out of eligibility for the blocked backoff. The
+                    // counter delta is used instead of an error type because the entry points
+                    // preserve their pre-existing error values for their callers.
+                    let blocked: Vec<BlockReason> = BlockReason::ALL
+                        .into_iter()
+                        .zip(blocks_before)
+                        .zip(ledger.block_counts())
+                        .filter_map(|((reason, before), after)| (after > before).then_some(reason))
+                        .collect();
+                    if blocked.is_empty() {
+                        ledger.record_failure(queued.lane);
+                        summary.failed += 1;
+                        // A blocked unit is not a silent one: the reason is in the ledger and
+                        // on stderr, and the cooldown keeps the next attempt from being
+                        // immediate.
+                        eprintln!(
+                            "maintenance outcome=failed lane={} elapsed_ms={} reason={error:#}",
+                            queued.lane.name(),
+                            started.elapsed().as_millis(),
+                        );
+                    } else {
+                        ledger.back_off(self.policy.blocked_until(now));
+                        for reason in &blocked {
+                            crate::work_metrics::observe_maintenance_backoff(*reason);
+                        }
+                        summary.blocked += 1;
+                        eprintln!(
+                            "maintenance outcome=blocked lane={} elapsed_ms={} reason={} backoff_ms={} detail={error:#}",
+                            queued.lane.name(),
+                            started.elapsed().as_millis(),
+                            blocked
+                                .iter()
+                                .map(|reason| reason.name())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            self.policy.blocked_until(now).saturating_duration_since(now).as_millis(),
+                        );
+                    }
                 }
             }
             drop(lease);
@@ -600,7 +658,7 @@ impl MaintenanceScheduler {
             // epoch, Writer-role, generation, quarantine and operation-gate checks. The
             // authorization is thread-local and lives only for this call.
             let _retiring = RetiringMaintenanceAuthorization::enter();
-            target.run_maintenance(lane)
+            target.run_maintenance(lane, self.policy.unit_budget(lane))
         };
         let elapsed = started.elapsed();
         let over_budget = elapsed >= timeout;
@@ -610,7 +668,7 @@ impl MaintenanceScheduler {
         let unit_started = ledger.executions(lane) > executions_before;
         drop(lease);
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 ledger.record_completion(lane);
                 PreSuspendOutcome {
                     // A native completion after the budget is still a completion. Reporting

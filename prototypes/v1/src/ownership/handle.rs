@@ -7,7 +7,8 @@ use super::types::LeaseBinding;
 use crate::resources::ResourceUsage;
 use crate::runtime::DatabaseHandle;
 use crate::session::{
-    DescribeResult, SessionWriterState, StatementColumn, StatementResult, WriteCursorPage,
+    DescribeResult, GuardedStatementOutcome, SessionWriterState, StatementColumn, StatementResult,
+    WriteCursorPage,
 };
 
 use super::context::LeaseContext;
@@ -91,7 +92,7 @@ impl OwnedHandle {
         }
         self.handle.as_ref().unwrap().fetch_write_cursor(page_size)
     }
-    pub fn close_write_cursor(&self) -> Result<()> {
+    pub fn close_write_cursor(&self) -> Result<bool> {
         self.handle.as_ref().unwrap().close_write_cursor()
     }
     pub(crate) fn quarantine_unknown_write_result(&self) -> Result<()> {
@@ -115,6 +116,19 @@ impl OwnedHandle {
             .as_ref()
             .unwrap()
             .statement_with_named_args(sql, args, named_args, want_rows)
+    }
+    pub fn guarded_readonly_statement(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        want_rows: bool,
+    ) -> Result<GuardedStatementOutcome> {
+        self.context.check(None)?;
+        self.handle
+            .as_ref()
+            .unwrap()
+            .guarded_readonly_statement(sql, args, named_args, want_rows)
     }
 
     pub fn in_transaction(&self) -> Result<bool> {

@@ -14,6 +14,7 @@ use turso_core::io::{Completion, File, FileId, OpenFlags, PlatformIO, IO};
 use turso_core::{CompletionError, LimboError};
 
 use crate::cache::SegmentCache;
+use crate::maintenance::WalBudget;
 use crate::manifest::WalPosition;
 use crate::metrics::{Metrics, Operation};
 use crate::namespace::Namespace;
@@ -47,6 +48,11 @@ struct Shared {
     /// Readers do not take it: the WAL image stays readable while an append is in
     /// flight, because the frozen batch was removed before the remote call.
     append_gate: Mutex<()>,
+    /// Hard WAL capacity, or `None` when no capacity budget is configured. It is checked
+    /// before a new write joins the pending batch; maintenance watermarks are separate.
+    wal_budget: Option<WalBudget>,
+    /// Latch for the soft-mark metric so one busy database does not emit one event per frame.
+    wal_pressure: crate::maintenance::PressureLatch,
     _directory_lock: DirectoryLock,
 }
 
@@ -99,6 +105,25 @@ impl RemoteIO {
         ram_limit: usize,
         disk_limit: u64,
     ) -> Result<Arc<Self>> {
+        // Validated here, before the database is usable: a misconfigured capacity must not
+        // appear only at the first full WAL. The budget stays off unless explicitly set.
+        let wal_budget = WalBudget::configured()?;
+        Self::open_with_budget(
+            store, namespace, cache_root, epoch, ram_limit, disk_limit, wal_budget,
+        )
+    }
+
+    /// The constructor with the budget injected so tests can exercise the capacity check
+    /// without mutating the process environment, which every other test shares.
+    fn open_with_budget(
+        store: Arc<dyn ObjectStore>,
+        namespace: Namespace,
+        cache_root: impl AsRef<Path>,
+        epoch: u64,
+        ram_limit: usize,
+        disk_limit: u64,
+        wal_budget: Option<WalBudget>,
+    ) -> Result<Arc<Self>> {
         store.validate_session()?;
         std::fs::create_dir_all(cache_root.as_ref())?;
         let root = cache_root.as_ref().canonicalize()?;
@@ -140,6 +165,8 @@ impl RemoteIO {
                 epoch,
                 gate: Mutex::new(state),
                 append_gate: Mutex::new(()),
+                wal_budget,
+                wal_pressure: crate::maintenance::PressureLatch::default(),
                 _directory_lock: directory_lock,
             }),
             path,
@@ -198,6 +225,11 @@ impl RemoteIO {
                     .context("pending WAL payload overflow")
             },
         )?;
+        let materialized = usage.wal_bytes.saturating_add(usage.pending_wal_bytes);
+        if let Some(budget) = self.shared.wal_budget {
+            usage.wal_capacity_bytes = budget.hard_bytes();
+            usage.wal_pressure = budget.pressured(materialized as u64);
+        }
         Ok(usage)
     }
 
@@ -234,6 +266,11 @@ impl RemoteIO {
             },
         )?;
         let wal_bytes = state.image.len() as u64;
+        let materialized = wal_bytes.saturating_add(pending_wal_bytes);
+        let (wal_capacity_bytes, wal_pressure) =
+            self.shared.wal_budget.map_or((0, false), |budget| {
+                (budget.hard_bytes(), budget.pressured(materialized))
+            });
         Ok(crate::maintenance::MaintenanceSignals {
             wal_bytes,
             pending_wal_bytes,
@@ -251,6 +288,8 @@ impl RemoteIO {
                 || state.publication_failed
                 || state.append_in_flight
                 || !state.batch.operations.is_empty(),
+            wal_capacity_bytes,
+            wal_pressure,
         })
     }
 
@@ -397,6 +436,53 @@ impl Shared {
             "WAL reset cannot discard an uncheckpointed durable tail"
         );
         Ok(())
+    }
+
+    /// The WAL length after the pending batch and `batch` are applied. `WalImage::apply`
+    /// grows to the highest write end or truncate size, so the projection has the same rule.
+    fn projected_wal_len(state: &State, batch: &WalBatch) -> Result<u64> {
+        let mut end = state.image.len() as u64;
+        for operation in state.batch.operations.iter().chain(&batch.operations) {
+            match operation {
+                crate::wal::WalOperation::Write { offset, bytes } => {
+                    end = end.max(
+                        offset
+                            .checked_add(bytes.len() as u64)
+                            .context("WAL write offset overflow")?,
+                    );
+                }
+                crate::wal::WalOperation::Truncate { size } => end = end.max(*size),
+            }
+        }
+        Ok(end)
+    }
+
+    /// Refuses a new write before it joins the pending batch, not at append time: a batch
+    /// whose writes were already accepted must still be able to commit and clean up. A WAL
+    /// header write or a restart is a control path and is never refused; the reset is how the
+    /// log shrinks. A main-database write does not call this at all.
+    fn check_wal_budget(&self, state: &State, batch: &WalBatch, control: bool) -> Result<()> {
+        let Some(budget) = self.wal_budget else {
+            return Ok(());
+        };
+        let projected = Self::projected_wal_len(state, batch)?;
+        let current = state.image.len() as u64;
+        if control || !budget.refuses(projected, current) {
+            self.note_wal_budget(budget, projected);
+            return Ok(());
+        }
+        crate::work_metrics::observe_wal_budget_rejection(budget.hard_bytes(), projected);
+        anyhow::bail!(
+            "WAL capacity budget exceeded: current={current} projected={projected} capacity={}",
+            budget.hard_bytes()
+        );
+    }
+
+    fn note_wal_budget(&self, budget: WalBudget, current: u64) {
+        crate::work_metrics::observe_wal_budget_state(budget.hard_bytes(), current);
+        if self.wal_pressure.observe(budget.pressured(current)) {
+            crate::work_metrics::observe_wal_budget_pressure();
+        }
     }
 
     /// Appends the pending batch without holding the state lock across the remote call.

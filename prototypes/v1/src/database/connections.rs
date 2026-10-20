@@ -36,7 +36,8 @@ impl RemoteDatabase {
                 drop(lanes);
                 // Records the age of the reader that is blocking this compaction, so the
                 // block below names both the reason and how long the reader has been there.
-                self.oldest_reader_age(std::time::Instant::now());
+                let age = self.oldest_reader_age(std::time::Instant::now());
+                crate::work_metrics::observe_reader_block(age);
                 self.record_maintenance_block(BlockReason::LongReader);
                 return Err(AdmissionError::Conflict.into());
             }

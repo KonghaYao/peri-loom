@@ -51,6 +51,11 @@ impl RemoteFile {
             }
             operations.push(WalOperation::Write { offset: pos, bytes });
             let batch = WalBatch { operations };
+            // Capacity is checked before the write joins the image or the pending batch.
+            // Header/restart writes and non-WAL files are control paths: they either shrink
+            // the log or do not touch it, and refusing them would block cleanup.
+            self.shared
+                .check_wal_budget(&state, &batch, resetting || pos < 32)?;
             state.image.apply(&batch)?;
             if resetting {
                 state.last_commit = None;

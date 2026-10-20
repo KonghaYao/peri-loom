@@ -271,49 +271,103 @@ impl RemoteStorage {
         if data.is_empty() {
             return Ok(0);
         }
-        let mut state = self.state();
-        // Resolve every fallible base read before changing any dirty buffer. Otherwise a
-        // failed fetch at the end of a spanning write could leave its dirty prefix modified.
-        let mut bases = BTreeMap::new();
-        let mut completed = 0;
-        while completed < data.len() {
-            let position = offset + completed as u64;
+        // Describe the write once. A full-segment window replaces its base; a partial one
+        // needs the base bytes, which are resolved by identity under the lock and fetched
+        // outside it.
+        let mut windows = Vec::new();
+        let mut described = 0;
+        while described < data.len() {
+            let position = offset + described as u64;
             let index = position / SEGMENT_SIZE as u64;
             let within = (position % SEGMENT_SIZE as u64) as usize;
-            let length = (SEGMENT_SIZE - within).min(data.len() - completed);
-            if (within != 0 || length != SEGMENT_SIZE) && !state.dirty.contains_key(&index) {
-                bases.insert(index, self.load(&mut state, index)?);
-            }
-            completed += length;
+            let length = (SEGMENT_SIZE - within).min(data.len() - described);
+            windows.push((index, within, length, within != 0 || length != SEGMENT_SIZE));
+            described += length;
         }
-        let mut completed = 0;
-        while completed < data.len() {
-            let position = offset + completed as u64;
-            let index = position / SEGMENT_SIZE as u64;
-            let within = (position % SEGMENT_SIZE as u64) as usize;
-            let length = (SEGMENT_SIZE - within).min(data.len() - completed);
-            if within == 0 && length == SEGMENT_SIZE {
-                state.dirty.insert(
-                    index,
-                    Arc::new(data[completed..completed + length].to_vec()),
-                );
-            } else {
-                let bytes = state.dirty.entry(index).or_insert_with(|| {
-                    bases
-                        .remove(&index)
-                        .expect("partial write base was resolved")
-                });
-                // Readers retain an immutable Arc outside the lock. Only an overlapping read
-                // or a shared published cache entry requires a copy; subsequent writes to an
-                // exclusively owned dirty segment change just the requested range.
-                Arc::make_mut(bytes)[within..within + length]
-                    .copy_from_slice(&data[completed..completed + length]);
+
+        for _ in 0..READ_ATTEMPTS {
+            // Identity, not bytes: resolve what each partial segment is built from. No remote
+            // fetch happens in this critical section.
+            let mut identities = BTreeMap::new();
+            {
+                let state = self.state();
+                for &(index, _, _, needs_base) in &windows {
+                    if !needs_base {
+                        continue;
+                    }
+                    identities.insert(
+                        index,
+                        match resolve_segment(&state, index) {
+                            SegmentSource::Staged(bytes) => BaseIdentity::Dirty(bytes),
+                            SegmentSource::Published(hash) => BaseIdentity::Published(hash),
+                            SegmentSource::Zeros => BaseIdentity::Zeros,
+                        },
+                    );
+                }
             }
-            completed += length;
+
+            // Bytes outside the lock. A slow or retried segment GET stalls only this writer,
+            // not every reader or the other writers of the same database image.
+            let mut bases = BTreeMap::new();
+            for (&index, identity) in &identities {
+                let bytes = match identity {
+                    BaseIdentity::Dirty(bytes) => bytes.clone(),
+                    BaseIdentity::Published(hash) => self.fetch_segment(hash)?,
+                    BaseIdentity::Zeros => Arc::new(vec![0; SEGMENT_SIZE]),
+                };
+                bases.insert(index, bytes);
+            }
+
+            // Re-validate and apply. A concurrent dirty update is not a conflict: it becomes
+            // the new base, and this write is applied on top of it so neither update is lost.
+            // A published identity that moved or a dirty base that was published is a
+            // conflict, and the whole write retries before anything is modified.
+            let mut state = self.state();
+            let mut conflict = false;
+            for (&index, identity) in &identities {
+                if state.dirty.contains_key(&index) {
+                    continue;
+                }
+                let unchanged = match identity {
+                    BaseIdentity::Dirty(_) => false,
+                    BaseIdentity::Published(hash) => state.segments.get(&index) == Some(hash),
+                    BaseIdentity::Zeros => !state.segments.contains_key(&index),
+                };
+                if !unchanged {
+                    conflict = true;
+                    break;
+                }
+            }
+            if conflict {
+                drop(state);
+                continue;
+            }
+
+            let mut applied = 0;
+            for &(index, within, length, _) in &windows {
+                if within == 0 && length == SEGMENT_SIZE {
+                    state
+                        .dirty
+                        .insert(index, Arc::new(data[applied..applied + length].to_vec()));
+                } else {
+                    let bytes = state.dirty.entry(index).or_insert_with(|| {
+                        bases
+                            .remove(&index)
+                            .expect("partial write base was resolved")
+                    });
+                    // Readers retain an immutable Arc outside the lock. Only an overlapping
+                    // read or a shared published cache entry requires a copy; subsequent
+                    // writes to an exclusively owned dirty segment change just this range.
+                    Arc::make_mut(bytes)[within..within + length]
+                        .copy_from_slice(&data[applied..applied + length]);
+                }
+                applied += length;
+            }
+            state.size = state.size.max(end);
+            state.revision += 1;
+            return Ok(data.len());
         }
-        state.size = state.size.max(end);
-        state.revision += 1;
-        Ok(data.len())
+        bail!("write raced with {READ_ATTEMPTS} consecutive image mutations")
     }
 
     pub fn size(&self) -> u64 {
@@ -562,6 +616,15 @@ impl RemoteStorage {
 /// Writers copy a staged buffer only while such a snapshot is still in use.
 enum SegmentSource {
     Staged(Arc<Vec<u8>>),
+    Published(String),
+    Zeros,
+}
+
+/// What a partial write resolved to before its bytes were fetched. `Dirty` keeps the exact
+/// Arc the identity pass saw, so a concurrent publication that cleared it is detectable
+/// without hashing or re-reading the segment.
+enum BaseIdentity {
+    Dirty(Arc<Vec<u8>>),
     Published(String),
     Zeros,
 }

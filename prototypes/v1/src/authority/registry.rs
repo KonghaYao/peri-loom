@@ -7,7 +7,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::namespace::Namespace;
 use crate::object_store::ObjectStore;
 
-use super::paged_index::PagedIndex;
+use super::paged_index::{KeyOrder, PagedIndex};
 
 /// A registry stays inline in the authority head while it fits this budget and is
 /// spilled into an immutable page tree beyond it. The budget exists because the head
@@ -62,8 +62,22 @@ pub struct Registry<V> {
     store: Option<Arc<dyn ObjectStore>>,
     namespace: Option<Namespace>,
     pointer: Option<String>,
+    order: KeyOrder,
     inline: BTreeMap<String, V>,
     changes: BTreeMap<String, Change<V>>,
+}
+
+/// Result of a prefix-scoped registry read or removal. `pages` is the number of page bodies
+/// the prefix walk read; `scanned` is how many stored entries those pages held (including
+/// entries of other pins that share the leaf); `matched` is the number that belonged to the
+/// prefix. A hashed tree reports a full walk, which is exactly the behaviour the bucketed
+/// pin registry replaces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PrefixStats {
+    pub pages: usize,
+    pub scanned: usize,
+    pub matched: usize,
+    pub removed: usize,
 }
 
 impl<V: std::fmt::Debug> std::fmt::Debug for Registry<V> {
@@ -79,19 +93,33 @@ impl<V: std::fmt::Debug> std::fmt::Debug for Registry<V> {
 
 impl<V> Registry<V> {
     pub(crate) fn inline(inline: BTreeMap<String, V>) -> Self {
+        Self::inline_with_order(inline, KeyOrder::Hashed)
+    }
+
+    pub(crate) fn inline_with_order(inline: BTreeMap<String, V>, order: KeyOrder) -> Self {
         Self {
             store: None,
             namespace: None,
             pointer: None,
+            order,
             inline,
             changes: BTreeMap::new(),
         }
     }
 
     pub(crate) fn paged(pointer: Option<String>, inline: BTreeMap<String, V>) -> Self {
+        Self::paged_with_order(pointer, inline, KeyOrder::Hashed)
+    }
+
+    pub(crate) fn paged_with_order(
+        pointer: Option<String>,
+        inline: BTreeMap<String, V>,
+        order: KeyOrder,
+    ) -> Self {
         Self {
             pointer,
-            ..Self::inline(inline)
+            order,
+            ..Self::inline_with_order(inline, order)
         }
     }
 
@@ -184,7 +212,7 @@ impl<V> Registry<V> {
     }
 
     fn index(&self) -> Result<PagedIndex<'_>> {
-        Ok(PagedIndex::new(
+        Ok(PagedIndex::with_order(
             self.store
                 .as_ref()
                 .context("registry store handle missing")?
@@ -192,6 +220,8 @@ impl<V> Registry<V> {
             self.namespace
                 .as_ref()
                 .context("registry namespace missing")?,
+            "authority/index-pages",
+            self.order,
         ))
     }
 
@@ -208,21 +238,6 @@ impl<V> Registry<V> {
                     .transpose()
             }
             None => Ok(self.inline.get(key).cloned()),
-        }
-    }
-
-    fn published_entries(&self) -> Result<BTreeMap<String, V>>
-    where
-        V: Clone + DeserializeOwned,
-    {
-        match &self.pointer {
-            Some(pointer) => self
-                .index()?
-                .entries(Some(pointer))?
-                .into_iter()
-                .map(|(key, value)| Ok((key, serde_json::from_value(value)?)))
-                .collect(),
-            None => Ok(self.inline.clone()),
         }
     }
 
@@ -243,13 +258,26 @@ impl<V> Registry<V> {
         Ok(self.get(key)?.is_some())
     }
 
-    /// Full content including this transaction's pending changes. Walks every page
-    /// for a paged registry, so maintenance paths only.
-    pub fn entries(&self) -> Result<BTreeMap<String, V>>
+    /// Full content including this transaction's pending changes, plus the number of page
+    /// bodies the walk read. Bounded maintenance uses the count as its page quota
+    /// observation; inline registries return zero.
+    pub(crate) fn entries_counted(&self) -> Result<(BTreeMap<String, V>, usize)>
     where
         V: Clone + DeserializeOwned,
     {
-        let mut entries = self.published_entries()?;
+        let (mut entries, pages) = match &self.pointer {
+            Some(pointer) => {
+                let index = self.index()?;
+                let stored = index.entries(Some(pointer))?;
+                let pages = index.pages_read();
+                let entries = stored
+                    .into_iter()
+                    .map(|(key, value)| Ok((key, serde_json::from_value(value)?)))
+                    .collect::<Result<BTreeMap<String, V>>>()?;
+                (entries, pages)
+            }
+            None => (self.inline.clone(), 0),
+        };
         for (key, change) in &self.changes {
             match change {
                 Change::Added(value) => {
@@ -260,7 +288,124 @@ impl<V> Registry<V> {
                 }
             }
         }
-        Ok(entries)
+        Ok((entries, pages))
+    }
+
+    /// Full content including this transaction's pending changes. Walks every page
+    /// for a paged registry, so maintenance paths only.
+    pub fn entries(&self) -> Result<BTreeMap<String, V>>
+    where
+        V: Clone + DeserializeOwned,
+    {
+        self.entries_counted().map(|(entries, _)| entries)
+    }
+
+    /// Prefix-scoped read. A bucketed page tree reads only the pages on the prefix path;
+    /// a hashed tree falls back to the full walk, which keeps old documents correct while
+    /// the pin registry upgrades to the scoped layout. Inline registries are free.
+    pub(crate) fn prefix_entries_counted(
+        &self,
+        prefix: &str,
+    ) -> Result<(BTreeMap<String, V>, PrefixStats)>
+    where
+        V: Clone + DeserializeOwned,
+    {
+        let (mut entries, mut stats) = match &self.pointer {
+            Some(pointer) if self.order == KeyOrder::Bucketed => {
+                let index = self.index()?;
+                let (stored, scanned) = index.entries_with_prefix(Some(pointer), prefix)?;
+                let pages = index.pages_read();
+                let matched = stored.len();
+                let entries = stored
+                    .into_iter()
+                    .map(|(key, value)| Ok((key, serde_json::from_value(value)?)))
+                    .collect::<Result<BTreeMap<String, V>>>()?;
+                (
+                    entries,
+                    PrefixStats {
+                        pages,
+                        scanned,
+                        matched,
+                        removed: 0,
+                    },
+                )
+            }
+            Some(pointer) => {
+                let index = self.index()?;
+                let stored = index.entries(Some(pointer))?;
+                let pages = index.pages_read();
+                let scanned = stored.len();
+                let entries = stored
+                    .into_iter()
+                    .filter(|(key, _)| key.starts_with(prefix))
+                    .map(|(key, value)| Ok((key, serde_json::from_value(value)?)))
+                    .collect::<Result<BTreeMap<String, V>>>()?;
+                let matched = entries.len();
+                (
+                    entries,
+                    PrefixStats {
+                        pages,
+                        scanned,
+                        matched,
+                        removed: 0,
+                    },
+                )
+            }
+            None => {
+                let entries = self
+                    .inline
+                    .iter()
+                    .filter(|(key, _)| key.starts_with(prefix))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<BTreeMap<_, _>>();
+                let matched = entries.len();
+                (
+                    entries,
+                    PrefixStats {
+                        matched,
+                        ..PrefixStats::default()
+                    },
+                )
+            }
+        };
+        for (key, change) in &self.changes {
+            if !key.starts_with(prefix) {
+                continue;
+            }
+            match change {
+                Change::Added(value) => {
+                    entries.insert(key.clone(), value.clone());
+                }
+                Change::Removed => {
+                    entries.remove(key);
+                }
+            }
+        }
+        stats.matched = entries.len();
+        Ok((entries, stats))
+    }
+
+    /// Record removals for every stored entry under `prefix` without a per-key lookup.
+    /// The keys come from the same prefix walk that reports the cost, so a release pays one
+    /// scan of its own pages rather than one page traversal per entry.
+    pub(crate) fn remove_prefix(&mut self, prefix: &str) -> Result<PrefixStats>
+    where
+        V: PartialEq + Clone + DeserializeOwned,
+    {
+        let (entries, mut stats) = self.prefix_entries_counted(prefix)?;
+        for key in entries.keys() {
+            match self.changes.get(key) {
+                Some(Change::Added(_)) => {
+                    // Added and removed in the same transaction: no durable change remains.
+                    self.changes.remove(key);
+                }
+                _ => {
+                    self.changes.insert(key.clone(), Change::Removed);
+                }
+            }
+        }
+        stats.removed = entries.len();
+        Ok(stats)
     }
 
     /// Upsert. Which value changes are legal is a per-registry rule and lives in
@@ -307,6 +452,7 @@ impl<V> Registry<V> {
         V: PartialEq + Clone + Serialize + DeserializeOwned,
     {
         let changes = std::mem::take(&mut self.changes);
+        let index = index.ordered(self.order);
         if let Some(pointer) = self.pointer.take() {
             if changes.is_empty() {
                 self.pointer = Some(pointer);
@@ -386,6 +532,7 @@ impl<V> std::ops::Index<&str> for Registry<V> {
 impl<V: PartialEq> PartialEq for Registry<V> {
     fn eq(&self, other: &Self) -> bool {
         self.pointer == other.pointer
+            && self.order == other.order
             && self.inline == other.inline
             && self.changes == other.changes
     }

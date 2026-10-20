@@ -77,8 +77,14 @@ pub(crate) fn prepare(
                         .and_then(|status| status.as_str())
                         == Some("completed_gc")
                     && receipt.result == normalized;
+                // A bounded collector publishes its position and progress before the whole
+                // cycle is done. Only the two counters that can legitimately move are
+                // allowed to change, they may only grow, and a still-pending receipt may not
+                // claim a deletion. Everything else (targets, digest, status) is identity.
+                let pending_progress = receipt.digest == candidate.digest
+                    && gc_pending_progress(&receipt.result, &candidate.result);
                 ensure!(
-                    candidate == receipt || completed_gc,
+                    candidate == receipt || completed_gc || pending_progress,
                     "command receipt identity mutation forbidden"
                 );
             }
@@ -115,4 +121,41 @@ pub(crate) fn prepare(
         }
     }
     Ok(())
+}
+
+/// Pending GC receipts may advance `marked` and `batches` while the cycle runs. The
+/// normalizer used for completion rewrites `status` and `deleted`, so those two are the only
+/// fields allowed to differ on a pending-to-pending publish; every other field, including the
+/// target lists, is identity.
+fn gc_pending_progress(previous: &serde_json::Value, candidate: &serde_json::Value) -> bool {
+    let (Some(previous), Some(candidate)) = (previous.as_object(), candidate.as_object()) else {
+        return false;
+    };
+    if previous.get("status").and_then(|value| value.as_str()) != Some("pending_gc")
+        || candidate.get("status").and_then(|value| value.as_str()) != Some("pending_gc")
+        || previous.get("deleted").and_then(|value| value.as_u64()) != Some(0)
+        || candidate.get("deleted").and_then(|value| value.as_u64()) != Some(0)
+    {
+        return false;
+    }
+    let forward = |name: &str| {
+        previous
+            .get(name)
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            <= candidate
+                .get(name)
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+    };
+    if !forward("marked") || !forward("batches") {
+        return false;
+    }
+    let mut previous = previous.clone();
+    let mut candidate = candidate.clone();
+    for name in ["marked", "batches"] {
+        previous.remove(name);
+        candidate.remove(name);
+    }
+    previous == candidate
 }

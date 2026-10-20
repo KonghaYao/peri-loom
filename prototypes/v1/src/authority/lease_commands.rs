@@ -187,10 +187,12 @@ pub(super) fn renew(authority: &OwnershipAuthority, request: RenewRequest) -> Re
         )
     })?;
     service.available()?;
+    let now = service.now()?;
     ensure!(
-        service.now()? < live.deadline && service.now()? < deadline,
+        now < live.deadline && now < deadline,
         "LeaseExpired renewal completed too late"
     );
+    crate::work_metrics::observe_lease_renewal(deadline.saturating_sub(now));
     service
         .memory
         .lock()

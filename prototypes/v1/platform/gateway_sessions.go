@@ -22,9 +22,18 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		}
 		return nil
 	}); err != nil {
-		return operationAdmissionFailure(err)
+		return gateway.admissionFailure(database, err)
 	}
 	worker, binding, err := gateway.route(database)
+	if err != nil {
+		// Authorization above is the gate: only an authorized request may spend
+		// activation budget, and only an idle release (never an administrator
+		// suspension) is eligible.
+		if waiting := gateway.awaitActivation(ctx, database); waiting != nil {
+			return *waiting
+		}
+		worker, binding, err = gateway.route(database)
+	}
 	if err != nil {
 		return gatewayFailure(409, "placement_unavailable")
 	}
@@ -45,7 +54,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", openCommand)
 	leaveIntent()
 	if err != nil {
-		return operationAdmissionFailure(err)
+		return gateway.admissionFailure(database, err)
 	}
 	defer func() {
 		result.operationID, result.operationStage, result.operationDatabase = operationID, "open_session", database
@@ -78,10 +87,14 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		}
 		binding = currentBinding
 		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
+		leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
 		writerState, err = gateway.config.Upstream.(WriterSQLUpstream).CallWriter(ctx, worker, requestID, openCommand, &reply)
+		leaveNative()
 	} else {
 		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
+		leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
 		err = gateway.config.Upstream.Call(ctx, worker, requestID, openCommand, &reply)
+		leaveNative()
 	}
 	if err != nil {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenUpstreamResult, gateway.upstreamFailure(err, nil, permit), err)
@@ -268,12 +281,18 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	if err != nil {
 		return operationAdmissionFailure(err)
 	}
+	// A statement is classified and executed by one worker call: the engine's
+	// read-only verdict is re-checked on the same prepared statement before every
+	// step, so the execution cannot outgrow the proof that removed its intent.
+	if action == "statement" {
+		return gateway.guardedStatement(ctx, session, currentBinding, requestID, stage, command, frozen, permit, quota)
+	}
 	// A platform probe cannot commit and is not a client action, so it takes no
 	// operation record; the client request that needed the answer records its
 	// own. The read-only admission check still refuses an isolated database.
 	if hranaProbeRequest(ctx, action) {
 		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
-			return operationAdmissionFailure(err)
+			return gateway.admissionFailure(session.database, err)
 		}
 	} else {
 		// A statement the worker proves read-only cannot commit, so it needs no
@@ -286,7 +305,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		operationID, pending, err := gateway.beginDispatchOperation(session, action, stage, requestID, request.WriteCursor, frozen, classify)
 		leaveIntent()
 		if err != nil {
-			return operationAdmissionFailure(err)
+			return gateway.admissionFailure(session.database, err)
 		}
 		defer func() {
 			result.operationID, result.operationStage, result.operationDatabase = operationID, stage, session.database
@@ -315,29 +334,88 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		if len(reply) > quota.MaxResultBytes || !validCursorOpenResult(reply) {
 			return gateway.unknown(session, permit)
 		}
+		if request.WriteCursor {
+			session.writeCursorOpen, session.writeCursorCommitted = true, false
+		}
 		return gatewayResult{value: reply, dispatched: true}
 	}
 	if action == "cursor_fetch" {
 		var reply json.RawMessage
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
-			return gateway.upstreamFailure(err, session, permit)
+			result := gateway.upstreamFailure(err, session, permit)
+			if request.WriteCursor && result.code == "outcome_unknown" {
+				result.cursorNativeOutcome = cursorOutcomeUnknown
+			}
+			return result
 		}
 		if len(reply) > quota.MaxResultBytes || !validCursorFetchResponse(reply, request.MaxRows, request.WriteCursor) {
-			return gateway.unknown(session, permit)
+			failure := gateway.unknown(session, permit)
+			if request.WriteCursor {
+				failure.cursorNativeOutcome = cursorOutcomeUnknown
+			}
+			return failure
+		}
+		if request.WriteCursor {
+			var page struct {
+				Done bool `json:"done"`
+			}
+			if json.Unmarshal(reply, &page) != nil {
+				failure := gateway.unknown(session, permit)
+				failure.cursorNativeOutcome = cursorOutcomeUnknown
+				return failure
+			}
+			if page.Done {
+				// The worker's done page is the commit proof. Record it before the
+				// adapter writes any row, so a disconnect during the final page
+				// cannot be mistaken for an unproven write.
+				session.writeCursorOpen, session.writeCursorCommitted = false, true
+				return gatewayResult{value: reply, dispatched: true, cursorNativeOutcome: cursorOutcomeCommitted}
+			}
 		}
 		return gatewayResult{value: reply, dispatched: true}
 	}
 	if action == "cursor_close" {
+		lifecycle := gatewayResult{cursorClientStopped: request.CursorClientStopped, cursorDispatchStopped: request.CursorDispatchStopped}
 		var reply struct {
-			Closed bool `json:"closed"`
+			Closed      bool  `json:"closed"`
+			AbortProven *bool `json:"abort_proven"`
 		}
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
-			return gateway.upstreamFailure(err, session, permit)
+			result := gateway.upstreamFailure(err, session, permit)
+			if request.WriteCursor && result.code == "outcome_unknown" {
+				result.cursorNativeOutcome = cursorOutcomeUnknown
+			}
+			result.cursorClientStopped, result.cursorDispatchStopped = lifecycle.cursorClientStopped, lifecycle.cursorDispatchStopped
+			return result
 		}
 		if !reply.Closed {
-			return gateway.unknown(session, permit)
+			failure := gateway.unknown(session, permit)
+			if request.WriteCursor {
+				failure.cursorNativeOutcome = cursorOutcomeUnknown
+			}
+			failure.cursorClientStopped, failure.cursorDispatchStopped = lifecycle.cursorClientStopped, lifecycle.cursorDispatchStopped
+			return failure
 		}
-		return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
+		if request.WriteCursor {
+			switch {
+			case session.writeCursorCommitted:
+				session.writeCursorOpen = false
+				lifecycle.cursorNativeOutcome = cursorOutcomeCommitted
+			case session.writeCursorOpen && reply.AbortProven != nil && *reply.AbortProven:
+				session.writeCursorOpen = false
+				lifecycle.cursorNativeOutcome = cursorOutcomeRolledBack
+			case session.writeCursorOpen:
+				// The worker had no cursor left to abort and no done page was ever
+				// delivered. A lost fetch reply may have committed, so a successful
+				// close is not a rollback proof; keep the write unknown and isolated.
+				failure := gateway.unknown(session, permit)
+				failure.cursorNativeOutcome = cursorOutcomeUnknown
+				failure.cursorClientStopped, failure.cursorDispatchStopped = lifecycle.cursorClientStopped, lifecycle.cursorDispatchStopped
+				return failure
+			}
+		}
+		lifecycle.value, lifecycle.dispatched = map[string]bool{"closed": true}, true
+		return lifecycle
 	}
 	if action == "describe" {
 		var reply json.RawMessage
@@ -365,17 +443,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: map[string]bool{"autocommit": *reply.Autocommit}, dispatched: true}
 	}
 	if action == "statement" {
-		var reply json.RawMessage
-		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
-			return gateway.upstreamFailure(err, session, permit)
-		}
-		if len(reply) > quota.MaxResultBytes {
-			return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget}
-		}
-		if !validStatementResult(reply) {
-			return gateway.unknown(session, permit)
-		}
-		return gatewayResult{value: reply, dispatched: true}
+		return gateway.dispatchStatement(ctx, session, currentBinding, requestID, frozen, quota, permit)
 	}
 	if action == "execute" {
 		var reply struct {

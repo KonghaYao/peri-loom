@@ -53,6 +53,11 @@ func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewa
 func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command frozenCommand, output any) error {
 	// Deferred: every refusal below still attributes its worker time to the worker segment.
 	defer requestPhaseSpan(ctx, requestPhaseWorker)()
+	// Native is the cross-process boundary itself. It stays nested inside worker so the
+	// subtraction in the trace leaves local encoding and decoding in worker and reports the
+	// call wait separately instead of pretending it is CPU time.
+	leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
+	defer leaveNative()
 	return gateway.sendSession(ctx, session, binding, requestID, command, output)
 }
 
