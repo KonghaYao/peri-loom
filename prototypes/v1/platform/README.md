@@ -4,6 +4,61 @@ This is the Go management, SQL gateway, key broker, and ownership controller for
 the native Rust database services. It is a standalone Go module with a local
 dependency on `../controller`. Initialize the pinned Turso submodule before building.
 
+## 发版卷兼容性（v1.1.9 起）
+
+从 v1.1.9 起创建的**本地 backend** 卷支持跨后续版本干净重启；这是完整证明链
+成立时的兼容约定，不是任意崩溃都能自动恢复的承诺。S3 backend 的启动中断不提供
+自动恢复，必须人工处置。已有旧卷/已 brick 卷不自动迁移，需重建。
+本次不提供 ≤v1.1.4 checkpoint 迁移，也不提供旧版 preserved proof 导入工具。
+
+- `launch.json` 在单一入口进行内存归一化，新增可选字段必须提供历史安全默认值。
+  `wal_replay_bytes` 缺失时为 0（使用 worker 默认值）；不改写被 terminal 哈希绑定的文件。
+- 配置/端口 rebind 拒绝发生在服务启动前，不创建阻塞性的 failure record。
+  新卷在写入 `launch.json`/`platform.json`、密钥或 Authority marker 之前预检所有监听地址；
+  端口占用时直接退出，释放端口后同一 run-dir 可直接重试。已有卷在复用分支预检。
+  预检与实际 bind 之间仍存在竞态，服务启动后的错误不能按无副作用处理。
+- staging 复制 terminal/stop/state/floor/worker proof、本地 Authority root 和 seal，
+  ready 前不移走唯一 canonical 证据。签名 `launcher-startup-attempt.json` 在每次
+  `Popen` **之前**持久化 `starting` 服务、唯一 attempt nonce 和完整 `commands` argv；
+  `Popen` 成功后立即原子写回 PID 和服务名，再继续身份文件/readiness。任一 SIGKILL 点
+  都由 intent、PID 或 `starting` + 完整 argv 加状态证明覆盖；ready 后归档旧 terminal。
+  staging 后、尚未尝试启动服务的 SIGKILL，可在原目录重新启动：必须通过完整门禁，且
+  Authority/控制面/state/floor/证明及本地 seal 快照哈希一致。不会回写 dirty marker。
+- Authority/platform/worker 已尝试启动的中断，正常启动一律拒绝并保留 canonical 证据。
+  先停止并确认存活服务退出；不得把超时或 kill 当作 clean stop 证明。随后显式运行原配置
+  加 `--recover`，可按签名 intent 做**证明式启动回滚**（仅本地 backend）：
+  - **spawn 窗口**（`starting:"authority"`、`services_started:[]`、`pids:{}`）：按 Authority
+    可能已 `Popen` 处理，用 intent 中记录的完整 argv 与 `ps` command 做字符串全等匹配，
+    仅对全等进程做有界 SIGKILL join；path-only、path+`authority` token 等诱饵和 PID 复用
+    都不会匹配。缺失记录 argv 或无法读取进程表时 fail-closed，不回退子串匹配。
+    再校验 preserved terminal HMAC、preserved stop、owned proof HMAC、state/floor、
+    operation journal、本地 backend 清单、Authority root 数据字段、live marker，以及
+    live seal 是否为本 attempt 写入（`seal_before_spawn` + 新 owner，或已记录的 attempt seal）。
+    未写入任何 marker/state 的干净空窗口由正常启动直接通过，不要求 operator。
+    若 platform 在 PID 写回前仍有存活进程，直接 `--recover` 拒绝且**不杀** platform/authority：
+    先用 SIGTERM 优雅停止两者并等待 joined 退出，使 shutdown checkpoint 物化 operation view，
+    再重跑原配置 `--recover`。仅当 joined 停止后 checkpoint 仍缺失时才需重建卷；
+    不得清 marker/proof，也不自动回写 state/floor。
+  - 校验 preserved terminal HMAC、preserved stop、owned proof HMAC、state/floor、operation
+    journal、本地 backend 清单（除 seal/root）、Authority root 数据字段，以及 live seal
+    等于本次 attempt 记录的 seal、marker 为 dirty/本次尝试的 clean、readiness 未宣告、
+    PID 已退出、端口空闲。
+  - 通过后只恢复 preserved 的 owned proof、seal、Authority root 和 clean marker 的原字节，
+    回到上次 clean 点；不生成或伪造 terminal/proof/marker。未 ready 前平台产生的
+    checkpoint 物化控制面状态（例如 worker 注册）可保留，但数据字段变化仍拒绝。
+  - 恢复实例以 SQL 禁用模式启动；SIGTERM 干净停止时写新 terminal，之后正常启动并读回数据。
+  - 任一证明不匹配、Authority 已服务持久写入、数据字段变化、S3 backend 或进程/lease
+    状态不明，`--recover` 仍 fail-closed，并输出具体失败检查与 operator 指令。
+    当前 S3 不提供证明式启动回滚；不得删 marker 强启，需保留卷并按 S3/Authority 证据人工处置。
+- **readiness 已宣告后的 SIGKILL** 不进入 startup rollback：客户端可能已执行未知 SQL，
+  普通启动和 `--recover` 都拒绝把这次尝试回滚到旧 terminal，按普通 unclean 语义处理。
+- 启动后的失败保留签名 `requires_operator:true` 记录。完整 clean 门禁通过并宣告 ready 后，
+  仅当当前记录仍为 `requires_operator:true` 时写一条 `requires_operator:false` 的取代记录，
+  包含 `superseded_by_terminal_sha256` 和时间戳；原始字节保存在
+  `launcher-restart-failure-history/`，最多保留 32 份。已取代记录不会再次重写。
+  显式 `--recover` 必须在干净停止与全部 terminal 条件成立后才能取代失败记录。
+  失败记录缺失签名/不可验证仍 fail-closed；不会自动重试或重放 Unknown SQL。
+
 ## Run the whole local project
 
 From the repository root:
@@ -36,26 +91,21 @@ certificate/key pair is supplied via `PERI_TLS_CERT` and `PERI_TLS_KEY`.
 External listeners require TLS. SIGTERM performs joined shutdown; an uncertain
 gateway operation makes process termination unsuccessful rather than proving
 clean cancellation. A fully acknowledged, joined worker shutdown writes a
-signed stop proof for that exact worker incarnation. The launcher refuses to
-reuse any existing runtime, including one with no proofs or fully verified
-proofs. The standalone proof verifier checks both workers' signed incarnation
-and joined-exit records for Local and S3; it does not authorize restart. The
-proofs do not currently attest the shutdown RPC acknowledgement or establish
-old-process quiescence. The launcher holds a private, nonblocking exclusive
-run-directory lock across startup and joined shutdown; this prevents competing
-launchers, but does not authorize reuse. In-place restart still needs Authority
-clean-marker verification, lease fencing, old-cache lifecycle
-handling, and crash-atomic generation/configuration rotation. Reuse also requires
-the platform payload to be the final view a shutdown checkpoint materialized
-(`operations_checkpoint == revision`); operation records otherwise commit to a
-sidecar that the launcher does not read, so a payload that may trail that sidecar
-is refused as not materialized rather than trusted. Use a new fixture;
-never erase proof records or ownership dirty markers to force a restart.
+signed stop proof for that exact worker incarnation. 启动器允许通过完整 clean
+门禁的原目录复用，而不是无条件拒绝所有已有目录。门禁包含 worker incarnation
+与 joined-exit 签名、terminal 对配置/state/floor/proof 的哈希绑定、Authority clean
+marker、clean stop record、failure record 和无未决操作检查。独占 run-directory
+锁覆盖启动和停止，但锁本身不证明旧进程已停止，也不替代 storage fencing。
+`operation_storage_version=1` 必须满足 `operations_checkpoint == revision`；
+version 0 的完整内联 operation view 不受 checkpoint 字段限制，仍须通过其余门禁。
+不得删除 proof、ownership 或 dirty marker 强行启动。
 
-`--recover` reopens an existing, unclean run directory only to end an
-isolation; it is not a second restart gate. It requires the owned worker stop
-proofs and the clean Authority shutdown marker the previous stop left behind,
-refuses a directory that already passes the unchanged clean gate, and archives
+`--recover` reopens an existing run directory to end an isolation or to roll back an
+interrupted startup from its signed intent and preserved snapshot. It is not a second
+restart gate. The isolation-release path requires the owned worker stop proofs and the
+clean Authority shutdown marker the previous stop left behind. The startup-rollback path
+is described in the release-volume compatibility section and is limited to the local
+backend. It refuses a directory that already passes the unchanged clean gate, and archives
 the failing `launcher-stop.json` as `launcher-stop.pre-recovery.json` before
 starting the recovery instance. The recovery instance starts only the Authority and the platform
 with `PERI_RECOVERY_ONLY=1`: no workers, no reconcile loop, no Hrana, and
@@ -241,12 +291,11 @@ checkpoint that cannot commit leaves the marker behind, keeps both write paths
 open and makes the process exit non-zero, so no clean-terminal proof can be
 recorded for that stop.
 
-v1.1.5 adds `payload.operations_checkpoint`, and it is additive in both
-directions: binaries released before it ignore the field, and a payload without
-it stays readable with the marker at 0. The launcher's reuse gate reads that 0 as
-"not materialized" and refuses the stop, so a run directory written before this
-release cannot be reused by the new launcher and is restarted with a fresh
-directory instead of being judged by the older criteria. The owned-session
+v1.1.5 adds `payload.operations_checkpoint`. `operation_storage_version=1`
+的 payload 若缺少 checkpoint 或 checkpoint 不等于 revision，启动器拒绝复用；
+version 0 的 operation view 全部内联，因此不会仅因缺少 checkpoint 被拒绝。
+本次不提供旧卷迁移，已有旧卷或已 brick 卷需重建；不要手工补 checkpoint 或签名。
+The owned-session
 lifecycle and shutdown budget protocols are additive RPC as well: the Worker and
 the Authority advertise `lifecycle_protocol` and `shutdown_protocol` on
 `get_metrics`, a caller that does not send the new commands keeps the legacy
