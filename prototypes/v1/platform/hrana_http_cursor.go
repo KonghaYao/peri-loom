@@ -189,10 +189,10 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		readonly := false
 		if statement.WantRows {
-			var failure string
+			var describeReply hranaReply
 			var unknown bool
-			readonly, failure, unknown = handler.cursorStatementReadonly(request, credential, stream.session, statement.SQL)
-			if failure != "" {
+			readonly, describeReply, unknown = handler.cursorStatementReadonly(request, credential, stream.session, statement.SQL)
+			if describeReply.code != "" {
 				if unknown {
 					failed = true
 					if !sentHeader {
@@ -203,7 +203,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				if !startResponse() {
 					return true
 				}
-				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": failure, "code": failure}})
+				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": hranaErrorMessage(describeReply), "code": describeReply.code}})
 				if err != nil || writeFrame(frame) != nil {
 					failed = true
 					return true
@@ -225,7 +225,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				if !startResponse() {
 					return true
 				}
-				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": reply.code, "code": reply.code}})
+				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 				if err != nil || writeFrame(frame) != nil {
 					failed = true
 					return true
@@ -266,7 +266,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writeCursor})
 		if reply.code != "" || reply.status != http.StatusOK {
 			if reply.code != "" && !reply.unknown {
-				encoded, err := hranaProtoError(map[string]any{"message": reply.code, "code": reply.code})
+				encoded, err := hranaProtoError(map[string]any{"message": hranaErrorMessage(reply), "code": reply.code})
 				if err != nil || !startResponse() {
 					failed = true
 					return true

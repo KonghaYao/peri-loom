@@ -138,8 +138,8 @@ func serveHranaWS(writer http.ResponseWriter, request *http.Request, handler *hr
 			return true
 		}
 		var output any
-		if failure != "" {
-			output = map[string]any{"type": "response_error", "request_id": message.RequestID, "error": map[string]any{"message": failure, "code": failure}}
+		if failure.code != "" {
+			output = map[string]any{"type": "response_error", "request_id": message.RequestID, "error": map[string]any{"message": hranaErrorMessage(failure), "code": failure.code}}
 		} else {
 			output = map[string]any{"type": "response_ok", "request_id": message.RequestID, "response": response}
 		}
@@ -180,40 +180,40 @@ func (handler *hranaHTTP) wsPipeline(ctx context.Context, credential string, dat
 	return "", result.Results[0], nil
 }
 
-func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, database controller.DatabaseID, subprotocol string, streams map[int]string, storedSQL map[int]string, cursors map[int]*hranaWSCursor, message hranaWSRequest) (map[string]any, string, bool) {
+func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, database controller.DatabaseID, subprotocol string, streams map[int]string, storedSQL map[int]string, cursors map[int]*hranaWSCursor, message hranaWSRequest) (map[string]any, hranaReply, bool) {
 	if message.StreamID < 0 || message.SQLID < 0 || message.CursorID < 0 {
-		return nil, "invalid_arguments", false
+		return nil, hranaReply{code: "invalid_arguments"}, false
 	}
 	if message.Type == "fetch_cursor" {
 		cursor := cursors[message.CursorID]
 		if cursor == nil || message.MaxCount < 1 {
-			return nil, "invalid_cursor", false
+			return nil, hranaReply{code: "invalid_cursor"}, false
 		}
 		return handler.wsFetchCursor(request, credential, cursor, message.MaxCount)
 	}
 	if message.Type == "close_cursor" {
 		if cursors[message.CursorID] == nil {
-			return nil, "invalid_cursor", false
+			return nil, hranaReply{code: "invalid_cursor"}, false
 		}
 		cursor := cursors[message.CursorID]
 		if cursor.native && cursor.active {
 			reply := handler.call(request, credential, "/v1/sql/cursor/close", map[string]any{"session": cursor.session, "write_cursor": cursor.write})
 			if reply.code != "" {
-				return nil, reply.code, reply.unknown
+				return nil, reply, reply.unknown
 			}
 		}
 		delete(cursors, message.CursorID)
-		return map[string]any{"type": "close_cursor"}, "", false
+		return map[string]any{"type": "close_cursor"}, hranaReply{}, false
 	}
 	switch message.Type {
 	case "open_stream":
 		if _, exists := streams[message.StreamID]; exists || len(streams) >= 32 {
-			return nil, "stream_limit", false
+			return nil, hranaReply{code: "stream_limit"}, false
 		}
 		handler.mu.Lock()
 		if len(handler.streams)+handler.reserved >= maxHranaStreams {
 			handler.mu.Unlock()
-			return nil, "stream_limit", false
+			return nil, hranaReply{code: "stream_limit"}, false
 		}
 		handler.reserved++
 		handler.mu.Unlock()
@@ -224,60 +224,60 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 		}()
 		reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
 		if reply.unknown {
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		if reply.code != "" {
-			return nil, reply.code, false
+			return nil, reply, false
 		}
 		var opened struct {
 			Session string `json:"session"`
 		}
 		if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		baton, err := controller.RandomID()
 		if err != nil {
 			_ = handler.call(request, credential, "/v1/sql/close", map[string]any{"session": opened.Session})
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		handler.mu.Lock()
 		handler.streams[baton] = &hranaStream{session: opened.Session, credential: sha256.Sum256([]byte(credential)), database: database, storedSQL: make(map[int]string)}
 		handler.mu.Unlock()
 		streams[message.StreamID] = baton
-		return map[string]any{"type": "open_stream"}, "", false
+		return map[string]any{"type": "open_stream"}, hranaReply{}, false
 	case "store_sql":
 		if message.SQL == "" || len(message.SQL) > 65536 || len(storedSQL) >= 64 && storedSQL[message.SQLID] == "" {
-			return nil, "invalid_arguments", false
+			return nil, hranaReply{code: "invalid_arguments"}, false
 		}
 		storedSQL[message.SQLID] = message.SQL
-		return map[string]any{"type": "store_sql"}, "", false
+		return map[string]any{"type": "store_sql"}, hranaReply{}, false
 	case "close_sql":
 		delete(storedSQL, message.SQLID)
-		return map[string]any{"type": "close_sql"}, "", false
+		return map[string]any{"type": "close_sql"}, hranaReply{}, false
 	}
 	baton, found := streams[message.StreamID]
 	if !found {
-		return nil, "stream_not_found", false
+		return nil, hranaReply{code: "stream_not_found"}, false
 	}
 	if message.Type == "close_stream" {
 		for _, cursor := range cursors {
 			if cursor.streamID == message.StreamID {
-				return nil, "cursor_open", false
+				return nil, hranaReply{code: "cursor_open"}, false
 			}
 		}
 		_, result, err := handler.wsPipeline(request.Context(), credential, database, baton, map[string]any{"type": "close"})
 		if err != nil {
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		if result["type"] != "ok" {
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		delete(streams, message.StreamID)
-		return map[string]any{"type": "close_stream"}, "", false
+		return map[string]any{"type": "close_stream"}, hranaReply{}, false
 	}
 	for _, cursor := range cursors {
 		if cursor.streamID == message.StreamID && cursor.native {
-			return nil, "cursor_open", false
+			return nil, hranaReply{code: "cursor_open"}, false
 		}
 	}
 	var entry map[string]any
@@ -293,7 +293,7 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 			Steps []hranaReadCursorStep `json:"steps"`
 		}
 		if json.Unmarshal(message.Batch, &batch) != nil || len(batch.Steps) > 64 {
-			return nil, "invalid_arguments", false
+			return nil, hranaReply{code: "invalid_arguments"}, false
 		}
 		for index := range batch.Steps {
 			if batch.Steps[index].Stmt.SQL == "" {
@@ -303,18 +303,18 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 		entry = map[string]any{"type": "batch", "batch": batch}
 	case "open_cursor":
 		if _, exists := cursors[message.CursorID]; exists || len(cursors) >= 16 {
-			return nil, "cursor_limit", false
+			return nil, hranaReply{code: "cursor_limit"}, false
 		}
 		for _, cursor := range cursors {
 			if cursor.streamID == message.StreamID {
-				return nil, "cursor_open", false
+				return nil, hranaReply{code: "cursor_open"}, false
 			}
 		}
 		var batch struct {
 			Steps []hranaReadCursorStep `json:"steps"`
 		}
 		if json.Unmarshal(message.Batch, &batch) != nil || len(batch.Steps) > 64 {
-			return nil, "invalid_arguments", false
+			return nil, hranaReply{code: "invalid_arguments"}, false
 		}
 		for index := range batch.Steps {
 			if batch.Steps[index].Stmt.SQL == "" {
@@ -333,15 +333,15 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 			stream := handler.streams[baton]
 			handler.mu.Unlock()
 			if stream == nil || stream.session == "" {
-				return nil, "", true
+				return nil, hranaReply{}, true
 			}
 			cursor := &hranaWSCursor{streamID: message.StreamID, session: stream.session, native: true, steps: batch.Steps, results: make([]any, len(batch.Steps)), failures: make([]any, len(batch.Steps))}
-			failure, fatal := handler.wsStartReadStep(request, credential, cursor)
-			if failure != "" {
-				return nil, failure, fatal
+			reply, fatal := handler.wsStartReadStep(request, credential, cursor)
+			if reply.code != "" {
+				return nil, reply, fatal
 			}
 			cursors[message.CursorID] = cursor
-			return map[string]any{"type": "open_cursor"}, "", false
+			return map[string]any{"type": "open_cursor"}, hranaReply{}, false
 		}
 		entry = map[string]any{"type": "batch", "batch": batch}
 	case "sequence", "describe":
@@ -351,34 +351,39 @@ func (handler *hranaHTTP) wsRequest(request *http.Request, credential string, da
 		entry = map[string]any{"type": message.Type, "sql": message.SQL}
 	case "get_autocommit":
 		if subprotocol != "hrana3" && subprotocol != "hrana3-protobuf" {
-			return nil, "unsupported_protocol", false
+			return nil, hranaReply{code: "unsupported_protocol"}, false
 		}
 		entry = map[string]any{"type": "get_autocommit"}
 	default:
-		return nil, "unsupported_request", false
+		return nil, hranaReply{code: "unsupported_request"}, false
 	}
 	next, result, err := handler.wsPipeline(request.Context(), credential, database, baton, entry)
 	if err != nil || next != baton {
 		log.Printf("hrana WebSocket pipeline not confirmed: %s: %v", message.Type, err)
-		return nil, "", true
+		return nil, hranaReply{}, true
 	}
 	if result["type"] == "error" {
 		failure, ok := result["error"].(map[string]any)
 		if !ok {
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		code, ok := failure["code"].(string)
-		return nil, code, !ok
+		if !ok {
+			return nil, hranaReply{}, true
+		}
+		reply := hranaReply{code: code}
+		reply.message, _ = failure["message"].(string)
+		return nil, reply, false
 	}
 	response, ok := result["response"].(map[string]any)
 	if message.Type == "open_cursor" && ok && result["type"] == "ok" {
 		entries, err := hranaWSCursorEntries(response)
 		if err != nil {
 			log.Printf("hrana WebSocket cursor metadata invalid: %v", err)
-			return nil, "", true
+			return nil, hranaReply{}, true
 		}
 		cursors[message.CursorID] = &hranaWSCursor{streamID: message.StreamID, entries: entries}
-		return map[string]any{"type": "open_cursor"}, "", false
+		return map[string]any{"type": "open_cursor"}, hranaReply{}, false
 	}
-	return response, "", !ok || result["type"] != "ok"
+	return response, hranaReply{}, !ok || result["type"] != "ok"
 }

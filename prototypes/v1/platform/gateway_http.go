@@ -464,6 +464,7 @@ func sqlExecutionVerdict(failure map[string]any, executed, committing bool) {
 func hranaFailureFields(reply hranaReply, dispatched bool) map[string]any {
 	failure := map[string]any{
 		"code":                       reply.code,
+		"message":                    hranaErrorMessage(reply),
 		"partial_execution_possible": dispatched,
 		"outcome_unknown":            reply.unknown,
 		"retryable":                  false,

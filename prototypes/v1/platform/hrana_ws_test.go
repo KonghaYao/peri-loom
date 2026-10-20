@@ -180,11 +180,11 @@ func TestHranaWebSocketCursorFetchIsBoundedAndCloseCancelsRemainingRows(t *testi
 	cursors := map[int]*hranaWSCursor{7: {streamID: 0, entries: entries}}
 	handler := &hranaHTTP{}
 	first, failure, fatal := handler.wsRequest(nil, "", controller.DatabaseID{}, "hrana3", nil, nil, cursors, hranaWSRequest{Type: "fetch_cursor", CursorID: 7, MaxCount: 5000})
-	if failure != "" || fatal || first["done"] != false || len(first["entries"].([]map[string]any)) != 1000 || len(cursors[7].entries) != 1 {
-		t.Fatalf("cursor fetch was not bounded: %v %q %v", first, failure, fatal)
+	if failure.code != "" || fatal || first["done"] != false || len(first["entries"].([]map[string]any)) != 1000 || len(cursors[7].entries) != 1 {
+		t.Fatalf("cursor fetch was not bounded: %v %q %v", first, failure.code, fatal)
 	}
 	closed, failure, fatal := handler.wsRequest(nil, "", controller.DatabaseID{}, "hrana3", nil, nil, cursors, hranaWSRequest{Type: "close_cursor", CursorID: 7})
-	if failure != "" || fatal || closed["type"] != "close_cursor" || len(cursors) != 0 {
-		t.Fatalf("close did not discard buffered rows: %v %q %v", closed, failure, fatal)
+	if failure.code != "" || fatal || closed["type"] != "close_cursor" || len(cursors) != 0 {
+		t.Fatalf("close did not discard buffered rows: %v %q %v", closed, failure.code, fatal)
 	}
 }

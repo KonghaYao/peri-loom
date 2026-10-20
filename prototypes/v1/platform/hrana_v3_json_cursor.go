@@ -432,16 +432,16 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		}
 		readonly := false
 		if statement.WantRows {
-			var failure string
+			var describeReply hranaReply
 			var unknown bool
-			readonly, failure, unknown = handler.cursorStatementReadonly(request, credential, stream.session, statement.SQL)
-			if failure != "" {
+			readonly, describeReply, unknown = handler.cursorStatementReadonly(request, credential, stream.session, statement.SQL)
+			if describeReply.code != "" {
 				if unknown {
-					fatal("cursor describe failed: " + failure)
+					fatal("cursor describe failed: " + describeReply.code)
 					return
 				}
 				failures[index] = true
-				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": failure, "code": failure}}) {
+				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": hranaErrorMessage(describeReply), "code": describeReply.code}}) {
 					return
 				}
 				continue
@@ -455,7 +455,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			}
 			if executeReply.code != "" {
 				failures[index] = true
-				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": executeReply.code, "code": executeReply.code}}) {
+				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": hranaErrorMessage(executeReply), "code": executeReply.code}}) {
 					return
 				}
 				continue
@@ -486,7 +486,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		if reply.code != "" || reply.status != http.StatusOK {
 			if reply.code != "" && !reply.unknown {
 				failures[index] = true
-				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": reply.code, "code": reply.code}}) {
+				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}}) {
 					return
 				}
 				continue

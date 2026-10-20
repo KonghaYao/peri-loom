@@ -298,7 +298,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			if reply.code != "" {
 				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 			} else {
 				var result map[string]any
 				if json.Unmarshal(reply.result, &result) != nil || !validDescribeResult(reply.result) {
@@ -315,7 +315,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					return
 				}
 				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 				continue
 			}
 			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "get_autocommit", "is_autocommit": isAutocommit}})
@@ -341,7 +341,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			if reply.code != "" {
 				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 			} else {
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "sequence"}})
 			}
@@ -389,7 +389,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			if reply.code != "" {
 				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 			} else {
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}})
 			}
@@ -412,7 +412,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 							return
 						}
 						rememberFailure(conditionReply)
-						errors[index] = map[string]any{"message": conditionReply.code, "code": conditionReply.code}
+						errors[index] = map[string]any{"message": hranaErrorMessage(conditionReply), "code": conditionReply.code}
 						continue
 					}
 				}
@@ -434,7 +434,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				}
 				if reply.code != "" {
 					rememberFailure(reply)
-					errors[index] = map[string]any{"message": reply.code, "code": reply.code}
+					errors[index] = map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}
 					continue
 				}
 				encoded, err := json.Marshal(value)
@@ -672,6 +672,10 @@ type hranaReply struct {
 	status int
 	result json.RawMessage
 	code   string
+	// message repeats the platform's already-published classification when the
+	// reply was decoded from a pipeline result instead of a gateway envelope.
+	// hranaErrorMessage falls back to the code when no platform text exists.
+	message string
 	// unknown and readOnlyCandidate are the contract's own answers, decoded from
 	// the reply the gateway published by sqlcontract and never recomputed here.
 	// unknown is the only condition that may abort a pipeline, drop a connection
@@ -683,6 +687,32 @@ type hranaReply struct {
 	// the client itself forwards the platform's correlation, stage and commit
 	// risk instead of inventing a transport-specific code.
 	failure *sqlcontract.Failure
+}
+
+// hranaErrorMessage answers a step error with the platform's own text when the
+// platform published one. The text is the platform's classification, never the
+// worker's raw failure, so the adapter may forward it. A locally built failure
+// has no platform object and keeps its code as the message.
+func hranaErrorMessage(reply hranaReply) string {
+	if reply.failure != nil {
+		if message := reply.failure.Message(); message != "" {
+			return message
+		}
+	}
+	if reply.message != "" {
+		return reply.message
+	}
+	return reply.code
+}
+
+// hranaFatalDescribeReply keeps the reply the platform published behind a fatal
+// describe probe. Only the adapter's status and unknown marker change: the
+// failure object carries the platform's own message and must survive, or the
+// pipeline failure falls back to repeating the code.
+func hranaFatalDescribeReply(reply hranaReply) hranaReply {
+	reply.status = http.StatusBadGateway
+	reply.unknown = true
+	return reply
 }
 
 // hranaGatewayReply decodes the gateway's answer into the decision the adapter
@@ -776,11 +806,11 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 	reply := handler.call(request, credential, "/v1/sql/statement", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "want_rows": statement.WantRows})
 	if reply.code != "" {
 		if reply.readOnlyCandidate {
-			readonly, describeFailure, fatal := handler.cursorStatementReadonly(request, credential, session, statement.SQL)
+			readonly, describeReply, fatal := handler.cursorStatementReadonly(request, credential, session, statement.SQL)
 			if fatal {
-				return nil, hranaReply{status: http.StatusBadGateway, code: describeFailure, unknown: true}
+				return nil, hranaFatalDescribeReply(describeReply)
 			}
-			if describeFailure == "" && readonly {
+			if describeReply.code == "" && readonly {
 				return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, false, !statement.WantRows)
 			}
 		}

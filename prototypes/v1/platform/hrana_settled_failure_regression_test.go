@@ -102,8 +102,9 @@ func TestHranaWebSocketDescribeSettledFailureKeepsTheConnection(test *testing.T)
 	// answers a proved failure with a step error and keeps the WebSocket, and
 	// answers an unproven one by dropping it.
 	reply := exchange(map[string]any{"type": "request", "request_id": 1, "request": map[string]any{"type": "describe", "stream_id": 1, "sql": "SELECT 1"}})
-	if reply["type"] != "response_error" || reply["error"].(map[string]any)["code"] != "sql_timeout" {
-		test.Fatalf("settled describe failure was not a step error: %v", reply)
+	if reply["type"] != "response_error" || reply["error"].(map[string]any)["code"] != "sql_timeout" ||
+		reply["error"].(map[string]any)["message"] != "statement did not finish within the worker per-statement deadline (PERI_SQL_MAX_DURATION_MS)" {
+		test.Fatalf("settled describe failure did not carry the platform message: %v", reply)
 	}
 	if fixture.upstream.count("close_session") != 0 {
 		test.Fatal("a proved failure tore down the session")

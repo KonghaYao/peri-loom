@@ -43,42 +43,42 @@ func (handler *hranaHTTP) readCursorCondition(request *http.Request, credential,
 	return hranaCondition(condition, results, failures, isAutocommit), hranaReply{}
 }
 
-func (handler *hranaHTTP) cursorStatementReadonly(request *http.Request, credential, session, sql string) (bool, string, bool) {
+func (handler *hranaHTTP) cursorStatementReadonly(request *http.Request, credential, session, sql string) (bool, hranaReply, bool) {
 	reply := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": sql})
 	if reply.code != "" {
-		return false, reply.code, reply.unknown
+		return false, reply, reply.unknown
 	}
 	if reply.status != http.StatusOK || !validDescribeResult(reply.result) {
-		return false, "invalid_native_describe", true
+		return false, hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe"}, true
 	}
 	var description struct {
 		Readonly bool `json:"is_readonly"`
 	}
 	if json.Unmarshal(reply.result, &description) != nil {
-		return false, "invalid_native_describe", true
+		return false, hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe"}, true
 	}
-	return description.Readonly, "", false
+	return description.Readonly, hranaReply{}, false
 }
 
-func (handler *hranaHTTP) wsStartReadStep(request *http.Request, credential string, cursor *hranaWSCursor) (string, bool) {
+func (handler *hranaHTTP) wsStartReadStep(request *http.Request, credential string, cursor *hranaWSCursor) (hranaReply, bool) {
 	for cursor.step < len(cursor.steps) {
 		step := cursor.steps[cursor.step]
 		allowed, conditionReply := handler.readCursorCondition(request, credential, cursor.session, step.Condition, cursor.results, cursor.failures)
 		if conditionReply.code != "" {
-			return conditionReply.code, true
+			return conditionReply, true
 		}
 		if allowed {
 			readonly := false
 			if step.Stmt.WantRows {
-				var failure string
+				var describeReply hranaReply
 				var fatal bool
-				readonly, failure, fatal = handler.cursorStatementReadonly(request, credential, cursor.session, step.Stmt.SQL)
-				if failure != "" {
+				readonly, describeReply, fatal = handler.cursorStatementReadonly(request, credential, cursor.session, step.Stmt.SQL)
+				if describeReply.code != "" {
 					if fatal {
-						return failure, true
+						return describeReply, true
 					}
 					cursor.failures[cursor.step] = true
-					cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": failure, "code": failure}})
+					cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": hranaErrorMessage(describeReply), "code": describeReply.code}})
 					cursor.step++
 					continue
 				}
@@ -87,46 +87,46 @@ func (handler *hranaHTTP) wsStartReadStep(request *http.Request, credential stri
 				value, reply := handler.execute(request, credential, cursor.session, step.Stmt)
 				if reply.code != "" {
 					if reply.unknown {
-						return reply.code, true
+						return reply, true
 					}
 					cursor.failures[cursor.step] = true
-					cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": reply.code, "code": reply.code}})
+					cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 				} else {
 					entries, err := hranaNativeStatementCursorEntries(value, cursor.step)
 					if err != nil {
-						return "invalid_native_statement", true
+						return hranaReply{code: "invalid_native_statement"}, true
 					}
 					cursor.results[cursor.step] = true
 					cursor.entries = append(cursor.entries, entries...)
 				}
 				cursor.step++
 				if len(cursor.entries) >= 1000 {
-					return "", false
+					return hranaReply{}, false
 				}
 				continue
 			}
-			cols, failure, fatal := handler.wsOpenReadStep(request, credential, cursor.session, step.Stmt, !readonly)
-			if failure != "" {
+			cols, reply, fatal := handler.wsOpenReadStep(request, credential, cursor.session, step.Stmt, !readonly)
+			if reply.code != "" {
 				if fatal {
-					return failure, true
+					return reply, true
 				}
 				cursor.failures[cursor.step] = true
-				cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": failure, "code": failure}})
+				cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 				cursor.step++
 				continue
 			}
 			cursor.entries = append(cursor.entries, map[string]any{"type": "step_begin", "step": cursor.step, "cols": cols})
 			cursor.active = true
 			cursor.write = !readonly
-			return "", false
+			return hranaReply{}, false
 		}
 		cursor.step++
 	}
 	cursor.ended = true
-	return "", false
+	return hranaReply{}, false
 }
 
-func (handler *hranaHTTP) wsOpenReadStep(request *http.Request, credential, session string, statement hranaStatement, write bool) ([]any, string, bool) {
+func (handler *hranaHTTP) wsOpenReadStep(request *http.Request, credential, session string, statement hranaStatement, write bool) ([]any, hranaReply, bool) {
 	args := make([]sqlArgument, len(statement.Args))
 	for index, argument := range statement.Args {
 		args[index] = sqlArgument{Type: argument.Type, Value: argument.Value, Base64: argument.Base64}
@@ -137,23 +137,23 @@ func (handler *hranaHTTP) wsOpenReadStep(request *http.Request, credential, sess
 	}
 	reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": write})
 	if reply.code != "" {
-		return nil, reply.code, reply.unknown
+		return nil, reply, reply.unknown
 	}
 	var metadata struct {
 		Cols []any `json:"cols"`
 	}
 	if json.Unmarshal(reply.result, &metadata) != nil || metadata.Cols == nil {
-		return nil, "invalid_native_cursor", true
+		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_cursor"}, true
 	}
-	return metadata.Cols, "", false
+	return metadata.Cols, hranaReply{}, false
 }
 
-func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string, cursor *hranaWSCursor, maxCount int) (map[string]any, string, bool) {
+func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string, cursor *hranaWSCursor, maxCount int) (map[string]any, hranaReply, bool) {
 	count := min(maxCount, 1000)
 	if cursor.native && !cursor.active && !cursor.ended && len(cursor.entries) < count {
-		failure, fatal := handler.wsStartReadStep(request, credential, cursor)
-		if failure != "" {
-			return nil, failure, fatal
+		reply, fatal := handler.wsStartReadStep(request, credential, cursor)
+		if reply.code != "" {
+			return nil, reply, fatal
 		}
 	}
 	if cursor.native && cursor.active && !cursor.ended && len(cursor.entries) < count {
@@ -165,7 +165,7 @@ func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string
 				cursor.ended = true
 				cursor.entries = nil
 			}
-			return nil, reply.code, fatal
+			return nil, reply, fatal
 		}
 		var page struct {
 			Rows             [][]any `json:"rows"`
@@ -176,14 +176,14 @@ func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string
 		decoder := json.NewDecoder(bytes.NewReader(reply.result))
 		decoder.UseNumber()
 		if decoder.Decode(&page) != nil || page.Rows == nil {
-			return nil, "invalid_native_cursor_page", true
+			return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_cursor_page"}, true
 		}
 		for _, row := range page.Rows {
 			values := make([]any, 0, len(row))
 			for _, value := range row {
 				converted, valid := hranaOutputValue(value)
 				if !valid {
-					return nil, "invalid_native_cursor_value", true
+					return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_cursor_value"}, true
 				}
 				values = append(values, converted)
 			}
@@ -195,7 +195,7 @@ func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string
 			var lastRowid any
 			if cursor.write {
 				if page.AffectedRowCount == nil {
-					return nil, "invalid_native_write_cursor_page", true
+					return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_write_cursor_page"}, true
 				}
 				affected = json.Number(strconv.FormatUint(uint64(*page.AffectedRowCount), 10))
 				if page.LastInsertRowid != nil {
@@ -205,18 +205,18 @@ func (handler *hranaHTTP) wsFetchCursor(request *http.Request, credential string
 			cursor.entries = append(cursor.entries, map[string]any{"type": "step_end", "affected_row_count": affected, "last_insert_rowid": lastRowid})
 			cursor.results[cursor.step] = true
 			cursor.step++
-			failure, fatal := handler.wsStartReadStep(request, credential, cursor)
-			if failure != "" {
+			reply, fatal := handler.wsStartReadStep(request, credential, cursor)
+			if reply.code != "" {
 				if !fatal {
 					cursor.ended = true
 				}
-				return nil, failure, fatal
+				return nil, reply, fatal
 			}
 		}
 	}
 	entries := cursor.entries[:min(count, len(cursor.entries))]
 	cursor.entries = cursor.entries[len(entries):]
-	return map[string]any{"type": "fetch_cursor", "entries": entries, "done": len(cursor.entries) == 0 && (!cursor.native || cursor.ended)}, "", false
+	return map[string]any{"type": "fetch_cursor", "entries": entries, "done": len(cursor.entries) == 0 && (!cursor.native || cursor.ended)}, hranaReply{}, false
 }
 
 func hranaNativeStatementCursorEntries(value any, index int) ([]map[string]any, error) {
