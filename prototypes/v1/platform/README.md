@@ -368,6 +368,31 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.8
+
+v1.1.8 fixes failure reporting on the terminal path and makes the full SDK
+matrix a release gate. A statement failure is no longer overwritten by a later
+close failure: R1 keeps the first terminal failure and reports a failed close as
+a separate `cleanup_error`. D1 renders the redacted `error.message` in the CLI
+and SDKs; an `outcome_unknown` result also shows `operation_id`,
+`may_have_committed` and `execution_proven`. D2 closes the session on settled
+error paths; `outcome_unknown` and `session_moved` remain opaque, with no
+reconnect and no replay.
+
+E1 remains an explicit known gap: an HTTP v3 write-cursor abort has no
+acknowledged rollback proof, so the default matrix executes 26 of 27 scripts per
+round. Two rounds produce 52 passed runs and 2 known-gap skips.
+`PERI_HRANA_INCLUDE_KNOWN_GAPS=1` executes E1 but does not guarantee a pass.
+This release is not a full Hrana compatibility claim. A failing
+`http-abort-write-cursor-live.mjs` can leave its fixture quarantined; do not
+reuse that fixture or retry an unknown write.
+
+CI runs the P0 gate and the full SDK matrix before an image build, and retains
+the redacted matrix evidence as an artifact. The security boundary is unchanged:
+SQL is never retried automatically, a timeout, close or read-back is not treated
+as cancellation proof, ownership and quarantine markers are not cleared, and TLS
+verification is not disabled.
+
 ## Build, test, and SDKs
 
 ```sh
