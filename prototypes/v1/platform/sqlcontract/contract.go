@@ -192,6 +192,7 @@ var vocabulary = []struct {
 	{"release_not_retired", Platform},
 	{"release_scope_mismatch", Platform},
 	{"release_stop_proof_missing", Platform},
+	{"recovery_restricted", Platform},
 	{"unavailable", Platform},
 	{"not_found", Unsupported},
 	{"method_not_allowed", Unsupported},

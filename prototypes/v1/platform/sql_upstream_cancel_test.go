@@ -3,9 +3,11 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,33 @@ import (
 
 	controller "peri-loom/controller"
 )
+
+// cancelBeforeWriteTransport reproduces a caller that cancels after the
+// connection exists but before the request body was handed to the network. The
+// transport reports GotConn and then fails, exactly as net/http does when the
+// context ends during the write.
+type cancelBeforeWriteTransport struct{}
+
+func (cancelBeforeWriteTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if trace := httptrace.ContextClientTrace(request.Context()); trace != nil && trace.GotConn != nil {
+		trace.GotConn(httptrace.GotConnInfo{})
+	}
+	return nil, context.Canceled
+}
+
+func TestSQLUpstreamCancelBeforeRequestWriteIsNotAmbiguous(test *testing.T) {
+	upstream, err := NewSQLUpstream(map[string]string{"worker-a": sqlTestToken(test)})
+	if err != nil {
+		test.Fatal(err)
+	}
+	upstream.(*sqlHTTPUpstream).client = &http.Client{Transport: cancelBeforeWriteTransport{}}
+	var output map[string]any
+	err = upstream.Call(context.Background(), controller.Worker{ID: "worker-a", Address: "http://127.0.0.1:1"}, "cancel-before-write", map[string]any{"command": "open_session"}, &output)
+	var failure *SQLRPCError
+	if !errors.As(err, &failure) || failure.Ambiguous {
+		test.Fatalf("a request that was never written was treated as dispatched: %v", err)
+	}
+}
 
 func TestGatewayClientCancellationDoesNotReleaseLateUpstreamWork(test *testing.T) {
 	fixture := newGatewayFixture(test)

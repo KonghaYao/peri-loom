@@ -256,14 +256,14 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
 			reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
 			if reply.status != 200 || reply.code != "" {
-				http.Error(writer, "open failed: "+reply.code, reply.status)
+				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 				return
 			}
 			var opened struct {
 				Session string `json:"session"`
 			}
 			if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
-				http.Error(writer, "open outcome unknown", 502)
+				hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
 				return
 			}
 			stream.session = opened.Session
@@ -279,7 +279,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			reply := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": stream.session, "sql": entry.SQL})
 			if reply.unknown {
-				http.Error(writer, "describe outcome unknown: "+reply.code, 502)
+				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 				return
 			}
 			if reply.code != "" {
@@ -287,16 +287,20 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			} else {
 				var result map[string]any
 				if json.Unmarshal(reply.result, &result) != nil || !validDescribeResult(reply.result) {
-					http.Error(writer, "invalid native describe result", 502)
+					hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true})
 					return
 				}
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "describe", "result": result}})
 			}
 		case "get_autocommit":
-			isAutocommit, failure := handler.autocommit(request, credential, stream.session)
-			if failure != "" {
-				http.Error(writer, "native autocommit outcome unknown: "+failure, 502)
-				return
+			isAutocommit, reply := handler.autocommit(request, credential, stream.session)
+			if reply.code != "" {
+				if reply.unknown {
+					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+					return
+				}
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
+				continue
 			}
 			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "get_autocommit", "is_autocommit": isAutocommit}})
 		case "sequence":
@@ -314,7 +318,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			if reply.unknown {
-				http.Error(writer, "SQL outcome unknown: "+reply.code, 502)
+				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 				return
 			}
 			if reply.code != "" {
@@ -336,7 +340,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			if stream.session != "" {
 				reply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": stream.session})
 				if reply.status != 200 || reply.code != "" {
-					http.Error(writer, "close outcome unknown: "+reply.code, 502)
+					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 					return
 				}
 			}
@@ -347,17 +351,17 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
 			}
 			dispatched = true
-			value, failure, unknown := handler.execute(request, credential, stream.session, entry.Stmt)
+			value, reply := handler.execute(request, credential, stream.session, entry.Stmt)
 			if ctx.Err() != nil {
 				limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 				return
 			}
-			if unknown {
-				http.Error(writer, "SQL outcome unknown: "+failure, 502)
+			if reply.unknown {
+				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 				return
 			}
-			if failure != "" {
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": failure, "code": failure}})
+			if reply.code != "" {
+				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": reply.code, "code": reply.code}})
 			} else {
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}})
 			}
@@ -372,11 +376,15 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				}
 				isAutocommit := false
 				if hranaConditionNeedsAutocommit(step.Condition) {
-					var failure string
-					isAutocommit, failure = handler.autocommit(request, credential, stream.session)
-					if failure != "" {
-						http.Error(writer, "native autocommit outcome unknown: "+failure, 502)
-						return
+					var conditionReply hranaReply
+					isAutocommit, conditionReply = handler.autocommit(request, credential, stream.session)
+					if conditionReply.code != "" {
+						if conditionReply.unknown {
+							hranaPipelineFailure(writer, pipeline.Baton, dispatched, conditionReply)
+							return
+						}
+						errors[index] = map[string]any{"message": conditionReply.code, "code": conditionReply.code}
+						continue
 					}
 				}
 				if !hranaCondition(step.Condition, results, errors, isAutocommit) {
@@ -386,17 +394,17 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					step.Stmt.SQL = stream.storedSQL[step.Stmt.SQLID]
 				}
 				dispatched = true
-				value, failure, unknown := handler.execute(request, credential, stream.session, step.Stmt)
+				value, reply := handler.execute(request, credential, stream.session, step.Stmt)
 				if ctx.Err() != nil {
 					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 					return
 				}
-				if unknown {
-					http.Error(writer, "SQL outcome unknown: "+failure, 502)
+				if reply.unknown {
+					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
 					return
 				}
-				if failure != "" {
-					errors[index] = map[string]any{"message": failure, "code": failure}
+				if reply.code != "" {
+					errors[index] = map[string]any{"message": reply.code, "code": reply.code}
 					continue
 				}
 				encoded, err := json.Marshal(value)
@@ -557,18 +565,38 @@ func hranaCondition(raw json.RawMessage, results, errors []any, isAutocommit boo
 	}
 }
 
-func (handler *hranaHTTP) autocommit(request *http.Request, credential, session string) (bool, string) {
+// autocommit answers the protocol's is_autocommit question. A failed probe
+// returns the platform's own reply instead of a synthetic code: the same reply
+// that tells a REST caller the session is isolated or the statement's outcome is
+// unknown has to reach the Hrana caller unchanged, or the client reads a
+// database-level isolation as an autocommit feature being unavailable.
+func (handler *hranaHTTP) autocommit(request *http.Request, credential, session string) (bool, hranaReply) {
 	reply := handler.probe(request, credential, "/v1/sql/session_state", map[string]any{"session": session})
 	if reply.status != http.StatusOK || reply.code != "" {
-		return false, "native_autocommit_unavailable"
+		return false, reply
 	}
 	var native struct {
 		Autocommit *bool `json:"autocommit"`
 	}
 	if json.Unmarshal(reply.result, &native) != nil || native.Autocommit == nil {
-		return false, "invalid_native_autocommit"
+		return false, hranaReply{status: http.StatusBadGateway, code: "invalid_native_autocommit", unknown: true}
 	}
-	return *native.Autocommit, ""
+	return *native.Autocommit, hranaReply{}
+}
+
+// hranaPipelineFailure answers a pipeline that can no longer continue. The
+// pipeline protocol has no place for a partial result, so the error carries the
+// platform's code together with its correlation and commit risk, and repeats the
+// baton when one already exists so the caller can tie the failure to the stream
+// it used. A caller must not retry: the reply may leave an outcome unresolved.
+func hranaPipelineFailure(writer http.ResponseWriter, baton string, dispatched bool, reply hranaReply) {
+	body := map[string]any{"error": hranaFailureFields(reply, dispatched)}
+	if baton != "" {
+		body["baton"] = baton
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(reply.status)
+	_ = json.NewEncoder(writer).Encode(body)
 }
 
 // Only the Hrana adapter can attach this context value. A probe answers a
@@ -603,6 +631,10 @@ type hranaReply struct {
 	// — stays a step error and the pipeline continues.
 	unknown           bool
 	readOnlyCandidate bool
+	// failure keeps the platform's own failure object. An adapter that answers
+	// the client itself forwards the platform's correlation, stage and commit
+	// risk instead of inventing a transport-specific code.
+	failure *sqlcontract.Failure
 }
 
 // hranaGatewayReply decodes the gateway's answer into the decision the adapter
@@ -629,7 +661,8 @@ func hranaGatewayReply(status int, body []byte, path string) hranaReply {
 			log.Printf("Hrana internal gateway failure: path=%s status=%d code=%s", path, status, envelope.Error.Code())
 		}
 		return hranaReply{status: status, code: envelope.Error.Code(),
-			unknown: envelope.Error.Unknown(status), readOnlyCandidate: envelope.Error.ReadOnlyCandidate()}
+			unknown: envelope.Error.Unknown(status), readOnlyCandidate: envelope.Error.ReadOnlyCandidate(),
+			failure: envelope.Error}
 	}
 	return hranaReply{status: status, result: envelope.Result}
 }
@@ -655,9 +688,10 @@ func (handler *hranaHTTP) dispatch(request *http.Request, credential, path strin
 	return hranaGatewayReply(recorder.Code, recorder.Body.Bytes(), path)
 }
 
-func (handler *hranaHTTP) execute(request *http.Request, credential, session string, statement hranaStatement) (any, string, bool) {
+func (handler *hranaHTTP) execute(request *http.Request, credential, session string, statement hranaStatement) (any, hranaReply) {
+	invalid := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
 	if statement.SQL == "" {
-		return nil, "invalid_arguments", false
+		return nil, invalid
 	}
 	args := make([]sqlArgument, len(statement.Args))
 	for index, argument := range statement.Args {
@@ -668,24 +702,24 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		namedArgs[index] = namedSQLArgument{Name: argument.Name, Value: sqlArgument{Type: argument.Value.Type, Value: argument.Value.Value, Base64: argument.Value.Base64}}
 	}
 	if !validSQLArguments(args) || len(args)+len(namedArgs) > 999 {
-		return nil, "invalid_arguments", false
+		return nil, invalid
 	}
 	for _, argument := range namedArgs {
 		if argument.Name == "" || len(argument.Name) > 256 || !validSQLArguments([]sqlArgument{argument.Value}) {
-			return nil, "invalid_arguments", false
+			return nil, invalid
 		}
 	}
 	if statement.WantRows && strings.Contains(strings.ToUpper(statement.SQL), "RETURNING") {
 		prepared := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": statement.SQL})
 		if prepared.code != "" {
-			return nil, prepared.code, prepared.unknown
+			return nil, prepared
 		}
 		var description struct {
 			Readonly bool  `json:"is_readonly"`
 			Cols     []any `json:"cols"`
 		}
 		if prepared.status != http.StatusOK || !validDescribeResult(prepared.result) || json.Unmarshal(prepared.result, &description) != nil {
-			return nil, "invalid_native_describe", true
+			return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true}
 		}
 		if !description.Readonly && len(description.Cols) > 0 {
 			return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, true, false)
@@ -696,13 +730,13 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		if reply.readOnlyCandidate {
 			readonly, describeFailure, fatal := handler.cursorStatementReadonly(request, credential, session, statement.SQL)
 			if fatal {
-				return nil, describeFailure, true
+				return nil, hranaReply{status: http.StatusBadGateway, code: describeFailure, unknown: true}
 			}
 			if describeFailure == "" && readonly {
 				return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, false, !statement.WantRows)
 			}
 		}
-		return nil, reply.code, reply.unknown
+		return nil, reply
 	}
 	var native struct {
 		Cols []struct {
@@ -716,7 +750,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 	decoder := json.NewDecoder(bytes.NewReader(reply.result))
 	decoder.UseNumber()
 	if decoder.Decode(&native) != nil || native.Cols == nil || native.Rows == nil {
-		return nil, "invalid_native_statement", true
+		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_statement", unknown: true}
 	}
 	cols := make([]any, len(native.Cols))
 	for index, column := range native.Cols {
@@ -728,7 +762,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		for _, value := range row {
 			convertedValue, ok := hranaOutputValue(value)
 			if !ok {
-				return nil, "invalid_native_value", true
+				return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_value", unknown: true}
 			}
 			values = append(values, convertedValue)
 		}
@@ -739,7 +773,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		encoded := strconv.FormatInt(*native.LastInsertRowid, 10)
 		rowid = &encoded
 	}
-	return map[string]any{"cols": cols, "rows": converted, "affected_row_count": native.AffectedRowCount, "last_insert_rowid": rowid}, "", false
+	return map[string]any{"cols": cols, "rows": converted, "affected_row_count": native.AffectedRowCount, "last_insert_rowid": rowid}, hranaReply{}
 }
 
 func hranaOutputValue(value any) (any, bool) {

@@ -418,9 +418,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			failed = true
 			return
 		}
-		allowed, failure := handler.readCursorCondition(request, credential, stream.session, step.Condition, results, failures)
-		if failure != "" {
-			fatal("cursor condition unavailable: " + failure)
+		allowed, conditionReply := handler.readCursorCondition(request, credential, stream.session, step.Condition, results, failures)
+		if conditionReply.code != "" {
+			fatal("cursor condition unavailable: " + conditionReply.code)
 			return
 		}
 		if !allowed {
@@ -432,6 +432,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		}
 		readonly := false
 		if statement.WantRows {
+			var failure string
 			var unknown bool
 			readonly, failure, unknown = handler.cursorStatementReadonly(request, credential, stream.session, statement.SQL)
 			if failure != "" {
@@ -447,14 +448,14 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			}
 		}
 		if !readonly && !statement.WantRows {
-			value, failure, unknown := handler.execute(request, credential, stream.session, statement)
-			if unknown {
-				fatal("cursor step failed: " + failure)
+			value, executeReply := handler.execute(request, credential, stream.session, statement)
+			if executeReply.unknown {
+				fatal("cursor step failed: " + executeReply.code)
 				return
 			}
-			if failure != "" {
+			if executeReply.code != "" {
 				failures[index] = true
-				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": failure, "code": failure}}) {
+				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": executeReply.code, "code": executeReply.code}}) {
 					return
 				}
 				continue

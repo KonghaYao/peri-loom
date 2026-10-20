@@ -401,6 +401,46 @@ fn write_cursor_returns_twelve_thousand_rows_with_final_native_counts() -> Resul
 }
 
 #[test]
+fn write_cursor_without_returning_reports_counts_and_no_rows() -> Result<()> {
+    let worker = Worker::with_profile(true)?;
+    let session = worker.session()?;
+    assert_eq!(
+        worker.statement(
+            &session,
+            "CREATE TABLE plain_write_cursor(id INTEGER PRIMARY KEY, name TEXT)",
+            vec![]
+        )?["ok"],
+        true
+    );
+    let opened = worker.call(
+        WorkerCommand::OpenWriteCursor {
+            session: session.clone(),
+            sql: "INSERT INTO plain_write_cursor(name) VALUES ('one'), ('two')".into(),
+            args: vec![],
+            named_args: vec![],
+        },
+        false,
+    )?;
+    assert_eq!(opened["ok"], true, "{opened}");
+    assert_eq!(opened["result"]["cols"], json!([]), "{opened}");
+    let page = worker.call(
+        WorkerCommand::FetchWriteCursor {
+            session: session.clone(),
+            max_rows: 256,
+        },
+        false,
+    )?;
+    assert_eq!(page["ok"], true, "{page}");
+    assert_eq!(page["result"]["rows"], json!([]), "{page}");
+    assert_eq!(page["result"]["done"], true, "{page}");
+    assert_eq!(page["result"]["affected_row_count"], 2, "{page}");
+    assert_eq!(page["result"]["last_insert_rowid"], 2, "{page}");
+    let saved = worker.statement(&session, "SELECT count(*) FROM plain_write_cursor", vec![])?;
+    assert_eq!(saved["result"]["rows"], json!([[2]]), "{saved}");
+    Ok(())
+}
+
+#[test]
 fn write_cursor_early_close_aborts_without_committing_and_releases_owner() -> Result<()> {
     let worker = Worker::with_profile(true)?;
     let session = worker.session()?;

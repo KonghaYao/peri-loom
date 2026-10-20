@@ -273,6 +273,25 @@ def require_materialized_operation_view(state):
         raise OperationViewNotMaterialized("platform operation view was not materialized at shutdown")
 
 
+def released_isolation(record):
+    """A quarantine that the release path ended under its own durable proof.
+
+    The operation stays quarantined and its outcome stays unknown on purpose: the
+    release never claims the old data is intact. What ended is the namespace
+    isolation, and gateway admission treats such a record as closed for the same
+    reason (gateway.go skips released quarantines). The launcher must agree with
+    that durable rule or a released run can never restart cleanly.
+    """
+    return (record.get("state") == "quarantined"
+            and bool(record.get("release_request_id"))
+            and record.get("decision") == "retain_isolation_new_database_required"
+            and record.get("local_resources_retired") is True
+            and record.get("retirement_pending", False) is False
+            and record.get("release_authority_mode") in ("detached", "revoked")
+            and type(record.get("release_epoch")) is int
+            and record.get("release_epoch") >= 0)
+
+
 def verify_no_unresolved_operations(run_directory, configuration):
     path = run_directory / "platform/state.json"
     if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 32 * 1024 * 1024:
@@ -285,7 +304,14 @@ def verify_no_unresolved_operations(run_directory, configuration):
             raise ValueError("platform run binding mismatch")
         require_materialized_operation_view(state)
         for record in operations.values():
-            if not isinstance(record, dict) or record.get("state") != "terminal" or record.get("ambiguous", False) or record.get("retirement_pending", False) or record.get("local_resources_retired", False) or record.get("decision", ""):
+            if not isinstance(record, dict):
+                raise ValueError("unresolved operation")
+            if released_isolation(record):
+                # The release path recorded the stop proof, the retirement and the
+                # authority attestation this record ends under; it is history now,
+                # not an open isolation.
+                continue
+            if record.get("state") != "terminal" or record.get("ambiguous", False) or record.get("retirement_pending", False) or record.get("local_resources_retired", False) or record.get("decision", ""):
                 raise ValueError("unresolved operation")
             if record.get("cleanup_outcome") not in ("completed", "not_applicable"):
                 raise ValueError("unresolved cleanup")
@@ -487,6 +513,7 @@ class Project:
         # until readiness makes later writes possible.
         self.phase = "startup"
         self.restart_attempt = False
+        self.recovery = getattr(arguments, "recover", False)
         # Set when prepare() refused because the existing failure record failed
         # the operator gate. The record is authoritative even when it is legacy,
         # unsigned or asks for reuse: it must not be replaced by this attempt.
@@ -606,6 +633,48 @@ class Project:
                 or record.get("generation") != configuration["generation"]
                 or record.get("outcome") != "clean"):
             raise RuntimeError("launcher stop outcome is not clean; operator recovery required")
+
+    def prepare_recovery(self, configuration):
+        """Admit an unclean run only for the isolation-release path.
+
+        The normal clean-restart gate stays exactly as it is: this mode is not a
+        substitute for a clean stop and takes no clean evidence. What it does
+        require is every proof that still applies to a stopped run — the owned
+        worker joins (their stop proofs are the release's evidence) and the
+        authority's own clean startup marker. A dirty authority needs its remote
+        terminal proven first; starting it here would be the takeover the
+        authority refuses.
+        """
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+        authority = self.directory / "authority/authority.lock"
+        if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
+            raise RuntimeError("recovery requires a clean authority startup marker")
+        try:
+            verify_clean_terminal(self.directory, configuration)
+            verify_no_unresolved_operations(self.directory, configuration)
+            self.verify_clean_stop_record(configuration)
+        except Exception:
+            pass
+        else:
+            raise RuntimeError("run already passes the clean restart gate; start without --recover")
+        self.preserve_previous_stop_record(configuration)
+
+    def preserve_previous_stop_record(self, configuration):
+        """Keep the stop record that made this run unrecoverable by normal means.
+
+        The recovery instance writes its own stop/terminal when it ends, so the
+        original account would otherwise be replaced. The archive is written
+        once; later recovery attempts keep the first record, which is the one
+        that describes the failure an operator is recovering from.
+        """
+        path = self.directory / "launcher-stop.json"
+        if not path.exists():
+            return
+        self.read_signed_private(path, configuration, "previous launcher stop record")
+        archive = self.directory / "launcher-stop.pre-recovery.json"
+        if archive.exists():
+            return
+        atomic_private_json(archive, json.loads(path.read_bytes(), object_pairs_hook=unique_object))
 
     def begin_restart_failure(self, error):
         existing = self.directory / "launcher-restart-failure.json"
@@ -1198,6 +1267,8 @@ class Project:
             subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(self.root / "prototypes/v1/Cargo.toml")], check=True, env=safe_environment())
             subprocess.run(["go", "build", "-o", str(self.go), "./cmd/peri-platform"], cwd=self.root / "prototypes/v1/platform", check=True, env=safe_environment())
         launch_path = self.directory / "launch.json"
+        if self.recovery and not launch_path.exists():
+            raise RuntimeError("recovery requires an existing run directory")
         if launch_path.exists():
             self.restart_attempt = True
             self.launch = json.loads(launch_path.read_text())
@@ -1223,6 +1294,17 @@ class Project:
             configuration = self.config.get("owned_stop_proof")
             if not configuration:
                 raise RuntimeError("owned stop proof configuration missing")
+            if self.recovery:
+                # Recovery is never a way to skip the normal gate when the gate
+                # already passes. An operator-required restart-failure record is
+                # tolerated here because ending the isolation is the operator
+                # action it asks for, but the record itself is never replaced.
+                try:
+                    self.verify_restart_failure_gate(configuration)
+                except Exception:
+                    self.restart_failure_gate_rejected = True
+                self.prepare_recovery(configuration)
+                return
             try:
                 self.verify_restart_failure_gate(configuration)
             except Exception:
@@ -1412,9 +1494,60 @@ class Project:
                             pass
         threading.Thread(target=serve, daemon=True).start()
 
+    def run_recovery(self):
+        """Start only the services the release needs, with SQL disabled.
+
+        No worker is started and no reconcile request is sent. The workers this
+        run owned are stopped and their owned proofs are read from disk; placing
+        them back in service before the release would destroy the fencing
+        evidence the release has to verify.
+        """
+        authority_environment = safe_environment(capacity_trace=True)
+        experimental_environment(authority_environment)
+        authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
+        backend = str(self.directory / "backend")
+        if self.arguments.backend == "s3":
+            backend = "s3"
+            for name in ("S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"):
+                if not os.environ.get(name):
+                    raise RuntimeError(name + " is required for the authority only")
+            authority_environment.update({name: value for name, value in os.environ.items() if name.startswith("S3_")})
+        self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
+        platform_environment = safe_environment()
+        if self.launch["dev_sql_timeout_seconds"] != 30:
+            platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
+        platform_environment["PERI_SQL_OPEN_OBSERVER"] = "0"
+        platform_environment["PERI_HRANA_EXPERIMENTAL"] = "0"
+        platform_environment["PERI_RECOVERY_ONLY"] = "1"
+        platform_environment["PERI_SHUTDOWN_STAGE_CAP_MS"] = str(SHUTDOWN_STAGE_CAPS["platform"] * 1000)
+        platform_environment["PERI_SHUTDOWN_OUTER_GRACE_MS"] = str(ORCHESTRATION_GRACE_SECONDS * 1000)
+        self.start("platform", [str(self.go), "-config", str(self.directory / "platform.json")], platform_environment)
+        scheme = "https://" if self.arguments.tls else "http://"
+        address = self.arguments.listen.replace("0.0.0.0:", "127.0.0.1:")
+        endpoint = scheme + address
+        certificate = self.launch.get("ca_file") or self.config.get("tls_certificate")
+        connection_path = self.directory / "connection.json"
+        if connection_path.exists():
+            connection = json.loads(connection_path.read_text())
+            # status stays readable while the namespace is isolated and proves the
+            # management plane, the credential and the database identity are the
+            # ones the operator is about to recover.
+            request(endpoint, connection["project_api_key"], "/v1/databases/status", {"database": connection["database"]}, certificate)
+        # From here on the operator may retire local resources and release the
+        # isolation; those are durable writes, so an exit is no longer a startup
+        # failure that could restore earlier evidence.
+        self.phase = "recovery"
+        print(json.dumps({"ready": True, "service": "recovery", "recovery": True, "sql": "disabled", "hrana": "disabled", "address": endpoint, "connection_file": str(connection_path)}), flush=True)
+        while not self.stop.wait(0.2):
+            if any(self.processes[name].poll() is not None for name in ("platform", "authority")):
+                raise RuntimeError("a control-plane service stopped; inspect private logs")
+
     def run(self):
         self.acquire_run_lock()
         self.prepare()
+        if self.recovery:
+            self.run_recovery()
+            return
         # Fail closed before any Rust process starts: an unusable diagnostic directory
         # would otherwise disable the sink without failing the launch.
         prepare_slow_diagnostic_directory()
@@ -1637,7 +1770,7 @@ class Project:
         try:
             if not self.cleanup_complete or self.stop_record is None or self.stop_record["outcome"] == "unclean" or self.remaining() <= 0:
                 raise RuntimeError("shutdown incomplete or deadline expired; no clean proof")
-            if set(self.processes) != {"authority", "platform", "worker-a", "worker-b"}:
+            if set(self.processes) != ({"authority", "platform"} if self.recovery else {"authority", "platform", "worker-a", "worker-b"}):
                 raise RuntimeError("clean launcher terminal requires all services")
             configuration = self.config["owned_stop_proof"]
             verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
@@ -1672,14 +1805,18 @@ def main():
     parser.add_argument("--sql-open-observer", action="store_true")
     parser.add_argument("--shutdown-budget-seconds", type=float, default=SHUTDOWN_BUDGET_SECONDS)
     parser.add_argument("--stop-worker", choices=("worker-a", "worker-b"))
+    parser.add_argument("--recover", action="store_true", help="start an unclean run with SQL disabled, only to release an isolation")
     arguments = parser.parse_args()
+    if arguments.recover and arguments.stop_worker:
+        print("--recover and --stop-worker are separate operator actions", file=sys.stderr)
+        return 2
     if arguments.stop_worker:
         try:
             stop_owned_worker(pathlib.Path(arguments.run_dir).resolve(), arguments.stop_worker)
         except Exception:
             print("owned worker stop unavailable; retain isolation", file=sys.stderr)
             return 1
-        print(json.dumps({"stopped": True, "remote_terminal": "not_proven", "recovery": "new_database_or_fixture_required"}))
+        print(json.dumps({"stopped": True, "remote_terminal": "not_proven", "recovery": "isolation_release_or_new_database_required"}))
         return 0
     project = Project(arguments)
     signal.signal(signal.SIGTERM, lambda signum, frame: project.begin_shutdown())

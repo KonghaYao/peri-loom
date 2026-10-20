@@ -16,7 +16,7 @@ func TestOperationDecisionUsesIndependentRecordID(test *testing.T) {
 		if request.URL.Path != "/v1/databases/operations/decision" || json.NewDecoder(request.Body).Decode(&body) != nil || body["request_id"] != "correlation" || body["operation_id"] != "server_record" || body["decision"] != "retain_isolation_new_database_required" {
 			test.Error("CLI operation identity or decision lost")
 		}
-		commandReply(response, "correlation", map[string]any{"operations": []any{}, "recovery": "new_database_or_fixture_required"})
+		commandReply(response, "correlation", map[string]any{"operations": []any{}, "recovery": "none"})
 	}))
 	defer server.Close()
 	var output bytes.Buffer

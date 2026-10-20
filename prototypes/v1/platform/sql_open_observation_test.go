@@ -240,7 +240,11 @@ func TestSQLOpenObservationOriginalTransportUnchanged(test *testing.T) {
 					test.Error("original nonreplay transport shape changed")
 				}
 				if scenario == "transport" {
-					httptrace.ContextClientTrace(request.Context()).GotConn(httptrace.GotConnInfo{})
+					// A completed request write is the point where a lost reply
+					// stays ambiguous; GotConn alone proves nothing.
+					if trace := httptrace.ContextClientTrace(request.Context()); trace != nil && trace.WroteRequest != nil {
+						trace.WroteRequest(httptrace.WroteRequestInfo{})
+					}
 					return nil, errors.New("private_transport_token_body")
 				}
 				response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"request_id":"private_untrusted_echo"}`))}

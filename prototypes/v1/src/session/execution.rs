@@ -269,9 +269,14 @@ pub(super) fn open_write_cursor(
         runner.next().is_none(),
         "multiple SQL statements not supported"
     );
+    // A write cursor without RETURNING columns is a valid statement: it emits no
+    // rows, but its step end still carries affected_row_count and
+    // last_insert_rowid. The Hrana conformance suite and the serverless clients
+    // open cursor streams for such writes, so requiring columns here would refuse
+    // a statement the protocol defines.
     ensure!(
-        !statement.get_program().is_readonly() && statement.num_columns() > 0,
-        "write cursor requires writable SQL with RETURNING columns"
+        !statement.get_program().is_readonly(),
+        "write cursor requires writable SQL"
     );
     bind_parameters(&mut statement, args, named_args)?;
     let cols = (0..statement.num_columns())

@@ -32,11 +32,15 @@ fail closed as `outcome_unknown`. A present RPC observation requires exactly
 three boolean fields: `ambiguous`, `rejected`, and `execution_completed`.
 
 Management supports the defined `operations`, `operations/decision`,
-`operations/clear`, `operations/retire-local`, and `diagnostics` paths, including
-their `databases/`-prefixed forms. Pass `operation_id` explicitly for record
-selection. The only supported `decision` value is
-`retain_isolation_new_database_required`; this does not authorize replay or
-clearing isolation.
+`operations/clear`, `operations/retire-local`, `isolation/release`, and
+`diagnostics` paths, including their `databases/`-prefixed forms. Pass
+`operation_id` explicitly for record selection. The only supported `decision`
+value is `retain_isolation_new_database_required`; this does not authorize
+replay or clearing isolation. `isolation/release` requires the manager key and
+the platform's stop-proof and fencing attestations, and never clears the
+ownership marker. A platform started with `PERI_RECOVERY_ONLY=1` admits only the
+operations, decision, retire-local, release and status paths; every other
+management call answers 409 `recovery_restricted`.
 
 Local checks: `npm run build`, `npm run typecheck`, and `npm test` in this
 directory; `cargo test --test p6_sdk` from `prototypes/v1` for the Rust SDK.

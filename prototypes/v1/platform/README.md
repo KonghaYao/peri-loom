@@ -51,6 +51,22 @@ the platform payload to be the final view a shutdown checkpoint materialized
 sidecar that the launcher does not read, so a payload that may trail that sidecar
 is refused as not materialized rather than trusted. Use a new fixture;
 never erase proof records or ownership dirty markers to force a restart.
+
+`--recover` reopens an existing, unclean run directory only to end an
+isolation; it is not a second restart gate. It requires the owned worker stop
+proofs and the clean Authority shutdown marker the previous stop left behind,
+refuses a directory that already passes the unchanged clean gate, and archives
+the failing `launcher-stop.json` as `launcher-stop.pre-recovery.json` before
+starting the recovery instance. The recovery instance starts only the Authority and the platform
+with `PERI_RECOVERY_ONLY=1`: no workers, no reconcile loop, no Hrana, and
+`/v1/sql/`, `/db/` and `/` answer 503 `sql_unavailable` with `recovery:true`.
+Only `operations`, `operations/decision`, `operations/retire-local`,
+`isolation/release` and `status` are routed; every other management path answers
+409 `recovery_restricted`, and capabilities report `recovery:true` and
+`sql_enabled:false`. `isolation/release` still requires the stop proof, the local
+retirement and the Authority's fencing attestation, and never clears the
+ownership marker. The run becomes reusable only after a clean stop of that
+instance followed by a normal start that passes the unchanged clean gate.
 For a fresh fixture only, `PERI_BOOTSTRAP_KEY` can reuse a previously protected global key;
 other fixture credentials and database contents are new. Never put the key in a command argument or log.
 
@@ -75,7 +91,7 @@ source, argv, run configuration, or diagnostic logs.
 ## API and credentials
 
 - `/v1/sql/open`, `/execute`, `/query`, `/close` manage opaque, principal-bound sessions.
-- `GET /v1/platform/capabilities` reports the public gateway origin and whether experimental Hrana HTTP and WebSocket are actually enabled. With `PERI_HRANA_EXPERIMENTAL=1`, project SQL API keys can use `https://<host>/db/<tenant>/<database>/<branch>/` through the tested JS client's Hrana HTTP v2 transport, the Rust `turso_serverless` 0.1.3 client's v3 JSON pipeline/cursor transport, or `wss://<host>/db/<tenant>/<database>/<branch>/` through the low-level JS client's WebSocket v1/v2 JSON and v3 protobuf. The adapter defaults off; HTTP v3 JSON read cursors, and v3 protobuf read-only and write-RETURNING cursors on HTTP and WebSocket, fetch bounded native pages. HTTP v3 JSON read cursors have a 10,001-row regression; Rust SDK reads and a disposable transactional write batch passed against an isolated loopback HTTP gateway. TLS development certificates must be trusted by the client independently; the Rust SDK does not accept a custom CA through its public builder. Full protocol and remote session-store schema compatibility, as well as crash-restart recovery, are not yet proven.
+- `GET /v1/platform/capabilities` reports the public gateway origin and whether experimental Hrana HTTP and WebSocket are actually enabled. With `PERI_HRANA_EXPERIMENTAL=1`, project SQL API keys can use `https://<host>/db/<tenant>/<database>/<branch>/` through the tested JS client's Hrana HTTP v2 transport, the Rust `turso_serverless` 0.1.3 client's v3 JSON pipeline/cursor transport, or `wss://<host>/db/<tenant>/<database>/<branch>/` through the low-level JS client's WebSocket v1/v2 JSON and v3 protobuf. The adapter defaults off; HTTP v3 JSON read cursors, and v3 protobuf read-only and write cursors on HTTP and WebSocket, fetch bounded native pages. A write cursor no longer requires `RETURNING`: without it the reply carries no columns or rows, and `step_end` reports `affected_row_count` and `last_insert_rowid`. HTTP v3 JSON read cursors have a 10,001-row regression; Rust SDK reads and a disposable transactional write batch passed against an isolated loopback HTTP gateway. TLS development certificates must be trusted by the client independently; the Rust SDK does not accept a custom CA through its public builder. Full protocol and remote session-store schema compatibility, as well as crash-restart recovery, are not yet proven.
 - Query may execute SQL writes: native read-only mode, not SQL text filtering, enforces reader roles.
 - `/v1/databases/*` exposes provisioning, lifecycle, refs, snapshots, clone, restore, PITR, checkpoint, and GC.
 - `/v1/organizations/create` and `/v1/projects/create` require the global management key.
@@ -119,7 +135,12 @@ the request id, stage, database and the session it had, and with the Worker's ow
 verdict (`rpc=ambiguous=…,rejected=…,execution_completed=…`, or `rpc=none` when
 the platform holds no verdict) and its failure text or the transport error
 (`observation=`, `none` when neither exists), while the isolated-namespace
-refusals it causes are audited without a second log line.
+refusals it causes are audited without a second log line. Hrana pipeline errors
+use that same contract: an unproven session or autocommit probe failure is
+`outcome_unknown` with `outcome_unknown: true`, `retry_allowed: false`,
+`possible_commit`, `execution_proven` and whatever operation id and stage the
+platform holds, never a transport-specific code that hides the platform's
+verdict.
 Every client — the Hrana
 adapters, the Go and TypeScript SDKs, the browser console and the stress
 harnesses — decides from `peri-loom/platform/sqlcontract`, which owns the code
@@ -300,15 +321,17 @@ trace detail. None of these switches changes SQL, WAL, publication, audit or
 recovery decisions.
 
 The Go SDK and CLI add `Options.ConnectionReuse` and `--connection-reuse`, both
-default off. Reuse cuts connection churn, but a request racing a server-closed
-idle connection can be reported as `outcome_unknown` even though it was never
-dispatched; the SDK never retries, so callers must resolve that state with
+default off. Reuse cuts connection churn. A request whose cancellation or write
+fails before the request body was written is answered as a proven non-dispatch
+rather than an unknown outcome; a request that completed the write and then lost
+its reply remains `outcome_unknown`, so callers must resolve that state with
 durable operation records or business idempotency. Shutdown retries the worker
 retirement sample within its bounded budget, and a failed launcher restart
 preserves prior clean evidence and failure records instead of overwriting them.
 The restart gate itself is not relaxed: it still requires the signed clean stop
 record, the worker stop proofs, a clean terminal proof, a materialized operation
-view and no unresolved operations. Experimental Hrana remains default-off with
+view and no unresolved operations (a quarantine ended by `isolation/release`
+counts as resolved history, not as an open isolation). Experimental Hrana remains default-off with
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 

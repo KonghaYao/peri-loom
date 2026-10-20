@@ -191,7 +191,17 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 	}
 	var dispatched atomic.Bool
-	trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { dispatched.Store(true) }}
+	// A connection alone does not put a statement in front of the worker: the
+	// request body may still be buffered locally when the caller cancels. Only a
+	// completed write can have reached the worker, so WroteRequest without an
+	// error is the point where an unproven reply must stay ambiguous. Treating
+	// GotConn as dispatch turned a cancelled connect into an isolated database
+	// with no operation behind it.
+	trace := &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
+		if info.Err == nil {
+			dispatched.Store(true)
+		}
+	}}
 	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})

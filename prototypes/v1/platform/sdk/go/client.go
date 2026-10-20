@@ -156,7 +156,7 @@ func (client *Client) Management(ctx context.Context, operation string, request 
 	path := "/v1/databases/" + strings.TrimPrefix(operation, "databases/")
 	operation = strings.TrimPrefix(operation, "databases/")
 	switch operation {
-	case "operations", "operations/decision", "operations/clear", "operations/retire-local", "diagnostics":
+	case "operations", "operations/decision", "operations/clear", "operations/retire-local", "isolation/release", "diagnostics":
 	case "create", "delete", "snapshot", "branch", "clone", "restore", "restore-point", "pitr", "suspend", "resume", "migrate", "status", "checkpoint", "schema", "gc", "gc-inspect", "refs", "compact", "drop-snapshot", "retain-after", "rewrap":
 	case "organizations/create", "projects/create", "keys/create", "keys/revoke", "tokens":
 		path = "/v1/" + operation

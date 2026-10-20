@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-func (handler *hranaHTTP) executeCursor(request *http.Request, credential, session, sql string, args []sqlArgument, namedArgs []namedSQLArgument, writing, discardRows bool) (value any, failure string, unknown bool) {
-	reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": sql, "args": args, "named_args": namedArgs, "write_cursor": writing})
-	if reply.code != "" {
-		return nil, reply.code, reply.unknown
+func (handler *hranaHTTP) executeCursor(request *http.Request, credential, session, sql string, args []sqlArgument, namedArgs []namedSQLArgument, writing, discardRows bool) (value any, reply hranaReply) {
+	opened := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": sql, "args": args, "named_args": namedArgs, "write_cursor": writing})
+	if opened.code != "" {
+		return nil, opened
 	}
-	var opened struct {
+	var metadata struct {
 		Cols []struct {
 			Name     string  `json:"name"`
 			Decltype *string `json:"decltype"`
@@ -29,14 +29,14 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 		defer cancel()
 		close := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": session, "write_cursor": writing})
 		if close.code != "" || close.status != http.StatusOK {
-			value, failure, unknown = nil, "cursor_cleanup_unknown", true
+			value, reply = nil, hranaReply{status: http.StatusBadGateway, code: "cursor_cleanup_unknown", unknown: true}
 		}
 	}()
-	if reply.status != http.StatusOK || json.Unmarshal(reply.result, &opened) != nil || opened.Cols == nil {
-		return nil, "invalid_native_cursor", true
+	if opened.status != http.StatusOK || json.Unmarshal(opened.result, &metadata) != nil || metadata.Cols == nil {
+		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_cursor", unknown: true}
 	}
-	cols := make([]any, len(opened.Cols))
-	for index, column := range opened.Cols {
+	cols := make([]any, len(metadata.Cols))
+	for index, column := range metadata.Cols {
 		cols[index] = map[string]any{"name": column.Name, "decltype": column.Decltype}
 	}
 	rows := make([][]any, 0)
@@ -44,7 +44,10 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 	for {
 		reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": session, "max_rows": 256, "write_cursor": writing})
 		if reply.code != "" {
-			return nil, reply.code, writing || reply.unknown
+			if writing {
+				reply.unknown = true
+			}
+			return nil, reply
 		}
 		if !discardRows {
 			responseBytes += len(reply.result)
@@ -58,21 +61,21 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 		decoder := json.NewDecoder(bytes.NewReader(reply.result))
 		decoder.UseNumber()
 		if reply.status != http.StatusOK || decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 {
-			return nil, "invalid_native_cursor", true
+			return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_cursor", unknown: true}
 		}
 		if !discardRows && (responseBytes > 8*1024*1024 || len(rows)+len(page.Rows) > 100_000) {
 			if writing && page.Done {
 				active = false
-				return nil, "outcome_unknown", true
+				return nil, hranaReply{status: http.StatusBadGateway, code: "outcome_unknown", unknown: true}
 			}
-			return nil, "result_limit", false
+			return nil, hranaReply{status: http.StatusRequestEntityTooLarge, code: "result_limit"}
 		}
 		for _, row := range page.Rows {
 			converted := make([]any, 0, len(row))
 			for _, cell := range row {
 				output, valid := hranaOutputValue(cell)
 				if !valid {
-					return nil, "invalid_native_value", true
+					return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_value", unknown: true}
 				}
 				converted = append(converted, output)
 			}
@@ -86,7 +89,7 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 			affected := uint32(0)
 			if writing {
 				if page.AffectedRowCount == nil {
-					return nil, "outcome_unknown", true
+					return nil, hranaReply{status: http.StatusBadGateway, code: "outcome_unknown", unknown: true}
 				}
 				affected = *page.AffectedRowCount
 				if page.LastInsertRowid != nil {
@@ -94,10 +97,10 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 					rowid = &text
 				}
 			}
-			return map[string]any{"cols": cols, "rows": rows, "affected_row_count": affected, "last_insert_rowid": rowid}, "", false
+			return map[string]any{"cols": cols, "rows": rows, "affected_row_count": affected, "last_insert_rowid": rowid}, hranaReply{}
 		}
 		if !discardRows && len(rows) == 100_000 {
-			return nil, "result_limit", false
+			return nil, hranaReply{status: http.StatusRequestEntityTooLarge, code: "result_limit"}
 		}
 	}
 }

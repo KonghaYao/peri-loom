@@ -79,8 +79,14 @@ func TestHranaUnprovenFailureStillAborts(test *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	newHranaHTTP(fixture.gateway).ServeHTTP(response, request)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "SQL outcome unknown") {
-		test.Fatalf("unproven outcome was answered as a step error: %d %s", response.Code, response.Body.String())
+	// The refusal is still fatal to the pipeline, but it now carries the same
+	// structured outcome the Go/TypeScript clients decode instead of a bare
+	// transport line an SDK cannot classify.
+	failureBody := response.Body.String()
+	if response.Code != http.StatusBadGateway || !strings.Contains(failureBody, `"code":"outcome_unknown"`) ||
+		!strings.Contains(failureBody, `"outcome_unknown":true`) || !strings.Contains(failureBody, `"retry_allowed":false`) ||
+		!strings.Contains(failureBody, `"possible_commit":true`) {
+		test.Fatalf("unproven outcome was answered as a step error: %d %s", response.Code, failureBody)
 	}
 	if fixture.upstream.count("close_session") != 0 {
 		test.Fatal("pipeline continued after an unproven outcome")

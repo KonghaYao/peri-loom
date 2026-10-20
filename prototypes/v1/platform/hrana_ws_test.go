@@ -135,7 +135,7 @@ func TestHranaWebSocketProtobufNegotiatesAndDispatchesNativeSQL(t *testing.T) {
 func TestHranaGatewayShutdownClosesWebSocketBeforeNativeSessions(t *testing.T) {
 	t.Setenv("PERI_HRANA_EXPERIMENTAL", "1")
 	fixture := newGatewayFixture(t)
-	server := httptest.NewServer(newPublicMux(fixture.gateway, http.NotFoundHandler()))
+	server := httptest.NewServer(newPublicMux(fixture.gateway, http.NotFoundHandler(), false))
 	defer server.Close()
 	dialer := websocket.Dialer{Subprotocols: []string{"hrana2"}, HandshakeTimeout: 5 * time.Second}
 	connection, _, err := dialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/db/tenant-a/db-a/main/", nil)

@@ -31,6 +31,11 @@ type ManagementConfig struct {
 	StopProof     WorkerStopVerifier
 	Fence         IsolationFenceVerifier
 	CapacityTrace *capacityTraceBridge
+	// Recovery admits only the paths that end a durable isolation. A recovery
+	// instance must never resume placement, mint credentials, or create
+	// databases: those writes could put an unproven branch back in service
+	// before the release has its fencing evidence.
+	Recovery bool
 }
 
 type Management struct {
@@ -74,6 +79,25 @@ const managementLogDetailLimit = 512
 
 var errManagementForbidden = errors.New("forbidden")
 var errDatabaseQuotaExceeded = errors.New("database quota exceeded")
+
+// errRecoveryRestricted is deliberately distinct from an authorization failure:
+// the caller is allowed to end an isolation, but this instance was not started
+// to serve anything else.
+var errRecoveryRestricted = errors.New("recovery instance only admits isolation recovery")
+
+// recoveryManagementPath lists what an operator may do while the platform runs
+// with SQL disabled. operations/decision and operations/retire-local establish
+// the decision and the local retirement that isolation/release verifies;
+// operations is the readback every step returns.
+func recoveryManagementPath(path string) bool {
+	switch path {
+	case "/v1/databases/operations", "/v1/databases/operations/decision",
+		"/v1/databases/operations/retire-local", "/v1/databases/isolation/release",
+		"/v1/databases/status":
+		return true
+	}
+	return false
+}
 
 func NewManagement(config ManagementConfig) (*Management, error) {
 	if config.State == nil || config.Placements == nil || config.Controller == nil || config.Identity == nil || config.Authority == nil || config.Keys == nil || config.Upstream == nil || config.Audit == nil {
@@ -194,6 +218,9 @@ func managementFailure(err error) (int, string) {
 	if errors.Is(err, errReleaseScopeMismatch) {
 		return 409, "release_scope_mismatch"
 	}
+	if errors.Is(err, errRecoveryRestricted) {
+		return 409, "recovery_restricted"
+	}
 	var native *nativeToolError
 	if !errors.As(err, &native) {
 		if errors.Is(err, errManagementForbidden) {
@@ -207,6 +234,9 @@ func managementFailure(err error) (int, string) {
 }
 
 func (management *Management) dispatch(request *http.Request, principal Principal, input managementRequest) (any, error) {
+	if management.config.Recovery && !recoveryManagementPath(request.URL.Path) {
+		return nil, errRecoveryRestricted
+	}
 	if strings.HasPrefix(request.URL.Path, "/v1/databases/") {
 		if request.URL.Path == "/v1/databases/isolation/release" {
 			// The release is the one path that must run while the database is still

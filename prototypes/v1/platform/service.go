@@ -41,6 +41,10 @@ func RunServiceWithWorkerStopVerifier(parent context.Context, config ServiceConf
 }
 
 func runService(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) (result error) {
+	recovery, err := serviceRecoveryMode()
+	if err != nil {
+		return err
+	}
 	requestTimeout := 30 * time.Second
 	if setting := os.Getenv("PERI_DEV_SQL_TIMEOUT_SECONDS"); setting != "" {
 		seconds, err := strconv.Atoi(setting)
@@ -75,12 +79,17 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 			return errors.New("owned run proof configuration required")
 		}
 	}
-	observation, err := startServiceSQLOpenObservation(ctx, config.StateDirectory, os.Getenv("PERI_SQL_OPEN_OBSERVER"))
-	if err != nil {
-		return err
-	}
-	if observation != nil {
-		defer observation.stop()
+	// A recovery instance admits no SQL, so it also opens no observation sink:
+	// the sink is create-exclusive and belongs to the run that served queries.
+	var observation *serviceSQLOpenObservation
+	if !recovery {
+		observation, err = startServiceSQLOpenObservation(ctx, config.StateDirectory, os.Getenv("PERI_SQL_OPEN_OBSERVER"))
+		if err != nil {
+			return err
+		}
+		if observation != nil {
+			defer observation.stop()
+		}
 	}
 	metadata, err := controller.OpenStore(config.MetadataDirectory)
 	if err != nil {
@@ -143,7 +152,11 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 			activeWorkers[placement.DesiredWorker] = true
 		}
 	}
-	if len(activeWorkers) > 0 {
+	// Recovery must not re-establish worker observations: the workers this run
+	// owned are stopped, and their owned stop proofs are the evidence the
+	// release verifies. Probing an address would only schedule work nobody asked
+	// for.
+	if len(activeWorkers) > 0 && !recovery {
 		identifiers := make([]string, 0, len(activeWorkers))
 		for identifier := range activeWorkers {
 			identifiers = append(identifiers, identifier)
@@ -191,7 +204,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
-	management, err := NewManagement(ManagementConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Authority: transport, Keys: broker, Upstream: upstream, Audit: audit, Metrics: gateway, Telemetry: telemetry, Resources: gateway, StopProof: verifier, CapacityTrace: capacityTrace})
+	management, err := NewManagement(ManagementConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Authority: transport, Keys: broker, Upstream: upstream, Audit: audit, Metrics: gateway, Telemetry: telemetry, Resources: gateway, StopProof: verifier, CapacityTrace: capacityTrace, Recovery: recovery})
 	if err != nil {
 		return err
 	}
@@ -205,13 +218,23 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 		return err
 	}
 	defer publicListener.Close()
-	publicMux := newPublicMux(gateway, management)
+	publicMux := newPublicMux(gateway, management, recovery)
 	publicServer := hardenedServer(publicMux)
 	publicServer.WriteTimeout = requestTimeout + 5*time.Second
 	publicServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
 	brokerServer := hardenedServer(broker)
 	finished := make(chan error, 4)
-	go func() { finished <- control.Run(ctx) }()
+	// The desired-state loop is what puts placements back in service. Recovery
+	// runs it never: the only durable writer allowed in this mode is the
+	// isolation release itself, and it carries its own fencing proof.
+	reconcile := func() error { return control.Run(ctx) }
+	if recovery {
+		reconcile = func() error {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	}
+	go func() { finished <- reconcile() }()
 	go func() { finished <- gateway.runNativeSessionExpiry(ctx) }()
 	go func() { finished <- brokerServer.Serve(brokerListener) }()
 	go func() {
@@ -251,16 +274,46 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	return errors.Join(failure, shutdownError)
 }
 
-func newPublicMux(gateway *Gateway, management http.Handler) *http.ServeMux {
+// serviceRecoveryMode reads the one profile switch that disables SQL. An
+// unrecognized value refuses to start instead of guessing the mode.
+func serviceRecoveryMode() (bool, error) {
+	switch value := os.Getenv("PERI_RECOVERY_ONLY"); value {
+	case "", "0":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, errors.New("invalid recovery profile")
+	}
+}
+
+func newPublicMux(gateway *Gateway, management http.Handler, recovery bool) *http.ServeMux {
 	publicMux := http.NewServeMux()
-	publicMux.Handle("/v1/sql/", gateway)
 	hrana := http.NotFoundHandler()
-	hranaEnabled := os.Getenv("PERI_HRANA_EXPERIMENTAL") == "1"
-	if hranaEnabled {
-		hrana = newHranaHTTP(gateway)
-		gateway.mu.Lock()
-		gateway.hrana = hrana.(*hranaHTTP)
-		gateway.mu.Unlock()
+	hranaEnabled := !recovery && os.Getenv("PERI_HRANA_EXPERIMENTAL") == "1"
+	if recovery {
+		// Recovery serves management only. A refused SQL call must not reach the
+		// gateway, because authentication there could mint an admission permit
+		// even when the statement is never dispatched.
+		refuse := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Header().Set("Cache-Control", "no-store")
+			writer.WriteHeader(503)
+			_ = json.NewEncoder(writer).Encode(map[string]any{"version": 1, "ok": false, "error": map[string]any{"code": "sql_unavailable", "recovery": true, "retry_allowed": false}})
+		})
+		publicMux.Handle("/v1/sql/", refuse)
+		publicMux.Handle("/db/", refuse)
+		publicMux.Handle("/", refuse)
+	} else {
+		publicMux.Handle("/v1/sql/", gateway)
+		if hranaEnabled {
+			hrana = newHranaHTTP(gateway)
+			gateway.mu.Lock()
+			gateway.hrana = hrana.(*hranaHTTP)
+			gateway.mu.Unlock()
+		}
+		publicMux.Handle("/db/", hrana)
+		publicMux.Handle("/", AdminHandler())
 	}
 	publicMux.HandleFunc("/v1/platform/capabilities", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
@@ -278,12 +331,12 @@ func newPublicMux(gateway *Gateway, management http.Handler) *http.ServeMux {
 			"version":       1,
 			"hrana_http":    hranaEnabled,
 			"hrana_ws":      hranaEnabled,
+			"recovery":      recovery,
+			"sql_enabled":   !recovery,
 			"public_origin": scheme + "://" + request.Host,
 		})
 	})
-	publicMux.Handle("/db/", hrana)
 	publicMux.Handle("/v1/", management)
-	publicMux.Handle("/", AdminHandler())
 	return publicMux
 }
 

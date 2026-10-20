@@ -51,7 +51,20 @@ func (management *Management) operations(principal Principal, input managementRe
 		}
 	}
 	sort.Slice(records, func(first, second int) bool { return records[first].OperationID < records[second].OperationID })
-	return map[string]any{"operations": records, "recovery": "new_database_or_fixture_required", "retention": operationRetentionContract()}, nil
+	// recovery names the path the operator still has. A recorded quarantine that
+	// was not released can end through isolation/release once the stop proof and
+	// the authority's fencing attestation exist; only a namespace that cannot
+	// produce those proofs needs a new database or fixture. Reporting the latter
+	// unconditionally sent operators to a new volume while the proved path was
+	// already available.
+	recovery := "none"
+	for _, record := range records {
+		if record.State == "quarantined" && record.ReleaseRequestID == "" {
+			recovery = "isolation_release_or_new_database_required"
+			break
+		}
+	}
+	return map[string]any{"operations": records, "recovery": recovery, "retention": operationRetentionContract()}, nil
 }
 
 func managementUnknownReply(response http.ResponseWriter, requestID string, failure error) {

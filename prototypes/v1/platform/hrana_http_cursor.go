@@ -172,11 +172,11 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		return true
 	}
 	for index, step := range readSteps {
-		allowed, failure := handler.readCursorCondition(request, credential, stream.session, step.Condition, results, failures)
-		if failure != "" {
+		allowed, conditionReply := handler.readCursorCondition(request, credential, stream.session, step.Condition, results, failures)
+		if conditionReply.code != "" {
 			failed = true
 			if !sentHeader {
-				http.Error(writer, "cursor condition unavailable", 502)
+				http.Error(writer, "cursor condition unavailable: "+conditionReply.code, 502)
 			}
 			return true
 		}
@@ -189,6 +189,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		readonly := false
 		if statement.WantRows {
+			var failure string
 			var unknown bool
 			readonly, failure, unknown = handler.cursorStatementReadonly(request, credential, stream.session, statement.SQL)
 			if failure != "" {
@@ -212,19 +213,19 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 			}
 		}
 		if !readonly && !statement.WantRows {
-			value, failure, unknown := handler.execute(request, credential, stream.session, statement)
-			if unknown {
+			value, reply := handler.execute(request, credential, stream.session, statement)
+			if reply.unknown {
 				failed = true
 				if !sentHeader {
-					http.Error(writer, "cursor step outcome unknown", http.StatusBadGateway)
+					http.Error(writer, "cursor step outcome unknown: "+reply.code, http.StatusBadGateway)
 				}
 				return true
 			}
-			if failure != "" {
+			if reply.code != "" {
 				if !startResponse() {
 					return true
 				}
-				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": failure, "code": failure}})
+				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": reply.code, "code": reply.code}})
 				if err != nil || writeFrame(frame) != nil {
 					failed = true
 					return true

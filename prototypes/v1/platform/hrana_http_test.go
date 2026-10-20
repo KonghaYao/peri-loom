@@ -264,7 +264,7 @@ func TestHranaRouteRequiresExplicitExperimentalOptIn(t *testing.T) {
 		request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
-		newPublicMux(fixture.gateway, http.NotFoundHandler()).ServeHTTP(response, request)
+		newPublicMux(fixture.gateway, http.NotFoundHandler(), false).ServeHTTP(response, request)
 		return response
 	}
 	t.Setenv("PERI_HRANA_EXPERIMENTAL", "")
@@ -274,7 +274,7 @@ func TestHranaRouteRequiresExplicitExperimentalOptIn(t *testing.T) {
 	probe := func() int {
 		request := httptest.NewRequest(http.MethodGet, "/db/tenant-a/db-a/main/v3-protobuf", nil)
 		response := httptest.NewRecorder()
-		newPublicMux(fixture.gateway, http.NotFoundHandler()).ServeHTTP(response, request)
+		newPublicMux(fixture.gateway, http.NotFoundHandler(), false).ServeHTTP(response, request)
 		return response.Code
 	}
 	if code := probe(); code != 404 {
@@ -307,7 +307,7 @@ func TestHranaConnectionDiscoveryFollowsLiveRoute(t *testing.T) {
 	call := func() *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "https://example.test/v1/platform/capabilities", nil)
 		response := httptest.NewRecorder()
-		newPublicMux(fixture.gateway, http.NotFoundHandler()).ServeHTTP(response, request)
+		newPublicMux(fixture.gateway, http.NotFoundHandler(), false).ServeHTTP(response, request)
 		return response
 	}
 	for _, setting := range []struct {

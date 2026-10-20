@@ -279,6 +279,31 @@ class OwnedStopProofTests(unittest.TestCase):
     def launcher_arguments(self, directory):
         return ["dev.py", "--run-dir", str(directory), "--no-build", "--listen", "127.0.0.1:19443"]
 
+    def recovery_arguments(self, project):
+        arguments = argparse.Namespace(**vars(project.arguments))
+        arguments.recover = True
+        return arguments
+
+    def test_recovery_admits_only_an_unclean_run_and_preserves_its_stop_record(self):
+        with tempfile.TemporaryDirectory(prefix="recovery-gate-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            # A clean run is not a recovery target: its normal gate already passes.
+            with self.assertRaisesRegex(RuntimeError, "already passes the clean restart gate"):
+                dev.Project(self.recovery_arguments(project)).prepare()
+            terminal = project.directory / "launcher-terminal.json"
+            terminal.unlink()
+            unclean = dict(json.loads(json.loads((project.directory / "launcher-stop.json").read_bytes())["payload"]), outcome="unclean", reason="platform stopped")
+            dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, unclean))
+            dev.Project(self.recovery_arguments(project)).prepare()
+            archive = json.loads(json.loads((project.directory / "launcher-stop.pre-recovery.json").read_bytes())["payload"])
+            self.assertEqual(archive["outcome"], "unclean")
+            self.assertEqual(archive["reason"], "platform stopped")
+            # The authority's own marker is still a hard precondition.
+            (project.directory / "authority/authority.lock").write_bytes(b"dirty\n")
+            with self.assertRaisesRegex(RuntimeError, "clean authority startup marker"):
+                dev.Project(self.recovery_arguments(project)).prepare()
+
     def test_startup_failure_restores_clean_stop_and_terminal(self):
         with tempfile.TemporaryDirectory(prefix="restart-failure-", dir="/tmp") as directory:
             fixture = self.clean_run_directory(directory)

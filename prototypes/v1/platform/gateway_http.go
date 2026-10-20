@@ -457,6 +457,32 @@ func sqlExecutionVerdict(failure map[string]any, executed, committing bool) {
 	failure["may_have_committed"] = mayHaveCommitted
 }
 
+// hranaFailureFields is the pipeline-error form of the client failure writer
+// below. It lives next to writeResponse because that function is the only writer
+// of the evidence fields; the Hrana adapter supplies the platform failure and
+// the dispatch fact, never its own reading of the evidence.
+func hranaFailureFields(reply hranaReply, dispatched bool) map[string]any {
+	failure := map[string]any{
+		"code":                       reply.code,
+		"partial_execution_possible": dispatched,
+		"outcome_unknown":            reply.unknown,
+		"retryable":                  false,
+		"retry_allowed":              false,
+	}
+	if reply.failure != nil {
+		if identifier := reply.failure.OperationID(); identifier != "" {
+			failure["operation_id"] = identifier
+		}
+		if stage := reply.failure.Stage(); stage != "" {
+			failure["stage"] = stage
+		}
+		failure["retry_allowed"] = reply.failure.RetryAllowed()
+		failure["possible_commit"] = reply.failure.MayHaveCommitted()
+		failure["execution_proven"] = reply.failure.ExecutionProven()
+	}
+	return failure
+}
+
 func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID string, result gatewayResult) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")

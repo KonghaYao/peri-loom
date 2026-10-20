@@ -149,6 +149,24 @@ class RuntimeTests(unittest.TestCase):
             dev.atomic_private_json(path, {"version": 1, "payload": state})
             with self.assertRaisesRegex(RuntimeError, "unresolved platform operation"):
                 dev.verify_no_unresolved_operations(project.directory, configuration)
+            # A release ends the isolation without rewriting the unknown outcome:
+            # the record stays quarantined and carries the stop proof, retirement
+            # and authority attestation it was released under.
+            released = {"state": "quarantined", "business_outcome": "unknown", "cleanup_outcome": "unknown",
+                        "ambiguous": True, "decision": "retain_isolation_new_database_required",
+                        "decision_request_id": "decision-1", "local_resources_retired": True,
+                        "retirement_request_id": "retire-1", "release_request_id": "release-1",
+                        "release_authority_mode": "detached", "release_epoch": 7}
+            state["operations"]["unknown"] = released
+            dev.atomic_private_json(path, {"version": 1, "payload": state})
+            dev.verify_no_unresolved_operations(project.directory, configuration)
+            for field, value in (("release_request_id", ""), ("local_resources_retired", False),
+                                 ("release_authority_mode", "writer"), ("release_epoch", None),
+                                 ("retirement_pending", True)):
+                state["operations"]["unknown"] = {**released, field: value}
+                dev.atomic_private_json(path, {"version": 1, "payload": state})
+                with self.assertRaisesRegex(RuntimeError, "unresolved platform operation"):
+                    dev.verify_no_unresolved_operations(project.directory, configuration)
 
     def test_redirects_cannot_forward_credentials(self):
         self.assertIsNone(dev.NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://outside.invalid"))

@@ -28,19 +28,19 @@ type hranaReadCursorStep struct {
 	Condition json.RawMessage `json:"condition,omitempty"`
 }
 
-func (handler *hranaHTTP) readCursorCondition(request *http.Request, credential, session string, condition json.RawMessage, results, failures []any) (bool, string) {
+func (handler *hranaHTTP) readCursorCondition(request *http.Request, credential, session string, condition json.RawMessage, results, failures []any) (bool, hranaReply) {
 	if len(condition) == 0 {
-		return true, ""
+		return true, hranaReply{}
 	}
 	isAutocommit := false
 	if hranaConditionNeedsAutocommit(condition) {
-		var failure string
-		isAutocommit, failure = handler.autocommit(request, credential, session)
-		if failure != "" {
-			return false, failure
+		var reply hranaReply
+		isAutocommit, reply = handler.autocommit(request, credential, session)
+		if reply.code != "" {
+			return false, reply
 		}
 	}
-	return hranaCondition(condition, results, failures, isAutocommit), ""
+	return hranaCondition(condition, results, failures, isAutocommit), hranaReply{}
 }
 
 func (handler *hranaHTTP) cursorStatementReadonly(request *http.Request, credential, session, sql string) (bool, string, bool) {
@@ -63,13 +63,14 @@ func (handler *hranaHTTP) cursorStatementReadonly(request *http.Request, credent
 func (handler *hranaHTTP) wsStartReadStep(request *http.Request, credential string, cursor *hranaWSCursor) (string, bool) {
 	for cursor.step < len(cursor.steps) {
 		step := cursor.steps[cursor.step]
-		allowed, failure := handler.readCursorCondition(request, credential, cursor.session, step.Condition, cursor.results, cursor.failures)
-		if failure != "" {
-			return failure, true
+		allowed, conditionReply := handler.readCursorCondition(request, credential, cursor.session, step.Condition, cursor.results, cursor.failures)
+		if conditionReply.code != "" {
+			return conditionReply.code, true
 		}
 		if allowed {
 			readonly := false
 			if step.Stmt.WantRows {
+				var failure string
 				var fatal bool
 				readonly, failure, fatal = handler.cursorStatementReadonly(request, credential, cursor.session, step.Stmt.SQL)
 				if failure != "" {
@@ -83,13 +84,13 @@ func (handler *hranaHTTP) wsStartReadStep(request *http.Request, credential stri
 				}
 			}
 			if !readonly && !step.Stmt.WantRows {
-				value, failure, unknown := handler.execute(request, credential, cursor.session, step.Stmt)
-				if failure != "" {
-					if unknown {
-						return failure, true
+				value, reply := handler.execute(request, credential, cursor.session, step.Stmt)
+				if reply.code != "" {
+					if reply.unknown {
+						return reply.code, true
 					}
 					cursor.failures[cursor.step] = true
-					cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": failure, "code": failure}})
+					cursor.entries = append(cursor.entries, map[string]any{"type": "step_error", "step": cursor.step, "error": map[string]any{"message": reply.code, "code": reply.code}})
 				} else {
 					entries, err := hranaNativeStatementCursorEntries(value, cursor.step)
 					if err != nil {

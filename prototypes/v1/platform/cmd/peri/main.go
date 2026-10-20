@@ -30,10 +30,10 @@ func run(arguments []string, input io.Reader, output io.Writer) error {
 	if len(arguments) == 0 || arguments[0] == "help" {
 		fmt.Fprintln(output, "peri COMMAND --endpoint HTTPS_URL --database TENANT/DATABASE/BRANCH [--credential-file PRIVATE_FILE] [--ca-file CERTIFICATE] [--connection-reuse]")
 		fmt.Fprintln(output, "Commands: create delete snapshot branch clone restore restore-point pitr suspend resume migrate status checkpoint schema compact refs gc shell sql")
-		fmt.Fprintln(output, "Isolation: operations diagnostics operations/decision --operation-id ID --decision retain_isolation_new_database_required; operations/retire-local requires launcher-owned stop+Wait proof and never clears isolation.")
+		fmt.Fprintln(output, "Isolation: operations diagnostics operations/decision --operation-id ID --decision retain_isolation_new_database_required; operations/retire-local requires launcher-owned stop+Wait proof; isolation/release requires the same stop proof and the authority's fencing attestation, and never clears isolation without them.")
 		fmt.Fprintln(output, "Operation history retains at most 256 safe known terminal records; unresolved/isolation records are never evicted. Missing history proves neither non-execution nor safe replay; request IDs remain correlation-only.")
 		fmt.Fprintln(output, "Credentials: PERI_API_KEY environment or private credential file; SQL requires --execute/--query, shell uses :execute/:query/:reconnect/:quit. No SQL/session replay.")
-		fmt.Fprintln(output, "Transport: --connection-reuse (default off) reuses keep-alive connections. A request racing a server-closed idle connection can then end as outcome_unknown instead of succeeding; requests are never retried.")
+		fmt.Fprintln(output, "Transport: --connection-reuse (default off) reuses keep-alive connections. A request that fails before its body is written is not ambiguous; one that wrote the request and lost the reply ends as outcome_unknown. Requests are never retried.")
 		return nil
 	}
 	command := arguments[0]

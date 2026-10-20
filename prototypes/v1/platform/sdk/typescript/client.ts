@@ -29,7 +29,7 @@ export interface ManagementRequest {
 
 const label = /^[A-Za-z0-9_-]{1,64}$/;
 const component = /^[A-Za-z0-9_-]{1,128}$/;
-const codes = new Set(["outcome_unknown", "session_moved", "invalid_request", "invalid_session", "unauthenticated", "unauthorized", "forbidden", "quota_exceeded", "request_limit", "result_limit", "sql_limit", "session_busy", "upstream_rejected", "upstream_unavailable", "placement_unavailable", "metadata_unavailable", "audit_unavailable", "gateway_closing", "operation_incomplete", "token_binding_mismatch", "readonly_placement_required", "sql_timeout", "sql_budget_exceeded", "sql_conflict", "sql_unavailable", "readonly_session", "not_found", "method_not_allowed", "unavailable", "release_fencing_proof_unavailable", "release_not_retired", "release_scope_mismatch", "release_stop_proof_missing", "writer_profile_unavailable"]);
+const codes = new Set(["outcome_unknown", "session_moved", "invalid_request", "invalid_session", "unauthenticated", "unauthorized", "forbidden", "quota_exceeded", "request_limit", "result_limit", "sql_limit", "session_busy", "upstream_rejected", "upstream_unavailable", "placement_unavailable", "metadata_unavailable", "audit_unavailable", "gateway_closing", "operation_incomplete", "token_binding_mismatch", "readonly_placement_required", "sql_timeout", "sql_budget_exceeded", "sql_conflict", "sql_unavailable", "readonly_session", "not_found", "method_not_allowed", "unavailable", "release_fencing_proof_unavailable", "release_not_retired", "release_scope_mismatch", "release_stop_proof_missing", "recovery_restricted", "writer_profile_unavailable"]);
 // statementSQLCodes report a statement the platform dispatched, so the reply must
 // carry execution evidence; anything less stays an unknown outcome. The review
 // of this file in client.test.mjs reads web/sqlcontract.js — the authority the
@@ -37,7 +37,7 @@ const codes = new Set(["outcome_unknown", "session_moved", "invalid_request", "i
 const statementSQLCodes = new Set(["sql_error", "sql_timeout", "sql_budget_exceeded", "sql_conflict", "sql_unavailable", "readonly_session", "upstream_rejected", "result_limit"]);
 const operations = new Set(["create", "delete", "snapshot", "branch", "clone", "restore", "restore-point", "pitr", "suspend", "resume", "migrate", "status", "checkpoint", "schema", "gc", "gc-inspect", "refs", "compact", "drop-snapshot", "retain-after", "rewrap"]);
 for (const code of ["session_unusable", "database_isolated", "operation_recorded", "operation_registration_unavailable"]) codes.add(code);
-for (const operation of ["operations", "operations/decision", "operations/clear", "operations/retire-local", "diagnostics"]) operations.add(operation);
+for (const operation of ["operations", "operations/decision", "operations/clear", "operations/retire-local", "isolation/release", "diagnostics"]) operations.add(operation);
 
 export class PeriError extends Error {
   readonly operationID?: string;
