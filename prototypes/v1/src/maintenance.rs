@@ -32,6 +32,7 @@ mod ledger;
 mod policy;
 mod scheduler;
 mod signals;
+mod wal_budget;
 
 #[cfg(test)]
 mod integration_tests;
@@ -44,13 +45,35 @@ pub(crate) use budget::BudgetDenied;
 #[cfg(test)]
 pub(crate) use budget::MaintenanceBudget;
 pub(crate) use ledger::{BlockReason, MaintenanceLedger};
-pub(crate) use policy::MaintenanceLane;
+pub(crate) use policy::{MaintenanceLane, UnitBudget};
 #[cfg(test)]
 pub(crate) use scheduler::RetiringMaintenanceAuthorization;
 pub(crate) use scheduler::{retiring_maintenance_authorized, MaintenanceScheduler};
 #[cfg(test)]
 pub(crate) use scheduler::{PreSuspendOutcome, PreSuspendReason};
 pub(crate) use signals::{millis, MaintenanceSignals};
+pub(crate) use wal_budget::PressureLatch;
+pub(crate) use wal_budget::WalBudget;
+
+/// What one bounded maintenance unit actually did.
+///
+/// The scheduler plans a unit from `MaintenanceSignals`, but only the unit can report the
+/// frames it really scanned and whether a truncate happened. Keeping the report separate from
+/// the plan is what makes "the truncate only ran after a complete backfill" and the scanned
+/// page/byte counters observable without re-reading the engine.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MaintenanceUnitReport {
+    /// Frames the native checkpoint backfilled in this unit (not the cumulative total).
+    pub scanned_pages: u64,
+    /// Bytes charged for those frames. Approximate for encrypted or non-default page sizes;
+    /// it is a counter input, never a retention decision.
+    pub backfilled_bytes: u64,
+    /// True only when the WAL index was actually reset/truncated by this unit.
+    pub truncated: bool,
+    /// True when this unit left the WAL with nothing below its applied position. A bounded
+    /// phase can complete without truncating; `truncated` is the stronger claim.
+    pub complete: bool,
+}
 
 /// What the scheduler needs from a database, and nothing else.
 ///
@@ -69,8 +92,12 @@ pub(crate) trait MaintenanceTarget: Send + Sync {
     /// a periodic driver.
     fn signals(&self) -> Result<MaintenanceSignals>;
 
-    /// Runs one unit. Implementations must apply the same preconditions as the admin entry
-    /// point for the same unit, including the complete-backfill and no-unconfirmed-WAL rules
-    /// of the compaction lane.
-    fn run_maintenance(&self, lane: MaintenanceLane) -> Result<()>;
+    /// Runs one unit under the lane's per-unit budget. Implementations must apply the same
+    /// preconditions as the admin entry point for the same unit, including the
+    /// complete-backfill and no-unconfirmed-WAL rules of the compaction lane.
+    fn run_maintenance(
+        &self,
+        lane: MaintenanceLane,
+        budget: policy::UnitBudget,
+    ) -> Result<MaintenanceUnitReport>;
 }
