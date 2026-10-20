@@ -253,37 +253,64 @@ deadline abandoned can still commit after the stop was reported unclean.
 
 v1.1.6 changes how the Authority RPC carries object bytes: `Put` bodies,
 `UploadSegments` batches and `Get` replies use base64 strings instead of JSON
-integer arrays, so a 4 MiB object takes about 5.6 MB on the wire instead of about
-15 MB; the 32 MiB message cap is unchanged. The new decoder still accepts the
-integer-array form and can read a message produced by an older peer, but an older
-decoder cannot read base64. `PROTOCOL_VERSION` remains 1, so this release's
-Authority and Worker binaries must be deployed together: a mixed pair is not
-rejected by a version check, and fails at the first object the older side has to
-decode from the new encoder.
+integer arrays, and a new `put_group` session operation makes a group of
+immutable segment bodies durable, so a 4 MiB object takes about 5.6 MB on the
+wire instead of about 15 MB; the 32 MiB message cap is unchanged. The new
+decoder still accepts the integer-array form and can read a message produced by
+an older peer, but an older decoder cannot read base64 and an older Authority
+rejects `put_group` before dispatch. `PROTOCOL_VERSION` remains 1, so this
+release's Authority and Worker binaries must be deployed together: a mixed pair
+is not rejected by a version check, and fails at the first object the older side
+has to decode from the new encoder. A decode failure is an RPC failure, never
+permission to replay SQL.
 
 The ownership root advances to schema version 5, which adds the paged command
-index. Boot rewrites a version 1, 2 or 4 root to version 5, and v1.1.5 and
-earlier reject version 5, so opening a database with v1.1.6 is a one-way disk
-upgrade: rolling back to an earlier release needs the pre-upgrade object store,
-not just the earlier binary. Command receipts beyond the inline window and WAL
-receipt pages written by truncation are content-addressed and verified on read,
-with a missing or altered page failing closed; a replayed WAL receipt that
-predates the archive and carries no digest is refused instead of being served
-from the old inline record.
+index, and the WAL index gains its receipt index and entry bounds on the first
+append or truncate. Boot rewrites a version 1, 2 or 4 root to version 5, and
+v1.1.5 and earlier reject these documents at open: they accept only root
+versions 1, 2 and 4 and deny unknown fields. Opening a database with v1.1.6 is
+therefore a one-way disk upgrade; rolling back to an earlier release needs the
+pre-upgrade object store, not just the earlier binary. Command receipts beyond
+the inline window and WAL receipt pages written by truncation are
+content-addressed and verified on read, with a missing or altered page failing
+closed. Legacy WAL receipts without a digest stay inline and are never archived;
+once their chunks are truncated, a retry is refused with "WAL receipt content
+unavailable" instead of being served from the baseline.
 
 The maintenance scheduler is still off unless `PERI_MAINTENANCE_SCHEDULE=1`;
 with the switch unset, maintenance cadence is unchanged and a tick is one static
-read per loaded database. Enabling it opts into watermarks, cooldowns and budgets
-whose defaults are experiment inputs, not measured production thresholds.
-`PERI_WORK_METRICS=1` exposes the new admission-wait, connection-wait,
-storage-lock, WAL-workload, metadata and lock-wait counters. The Go platform also
-records operation-journal encode, verification, assembly, write, Sync and
-witness durations as plain counters; the per-request read-phase profile stays
-behind its existing default-off switch. None of these observations changes SQL,
-WAL, publication, audit or fencing behaviour. The Go SDK adds
-`Options.ConnectionReuse` (default false) for external connection reuse; a
-failure after a request was dispatched is still `outcome_unknown` and is never
-replayed.
+read per loaded database. Enabling it opts into checkpoint and compaction lanes,
+watermarks, cooldowns and budgets whose defaults are experiment inputs, not
+measured production thresholds. One maintenance change is unconditional: a
+passive checkpoint no longer takes the writer admission or the operations gate,
+so admin, scheduled and pre-compaction checkpoints can run beside foreground
+SQL; compaction still takes exclusive admission, and maintenance units remain
+mutually exclusive. Per-database diagnostics always expose the maintenance
+ledger and named block reasons, and a failed scheduled unit is logged to stderr.
+`PERI_WORK_METRICS=1` adds WAL/index, lock, execution, result-size, maintenance
+and authority publication/snapshot counters; with the switch off the field is
+omitted rather than reported as zero. The `/v1/metrics` endpoint always reports
+admitted, successful and rejected totals, named rejection reasons, a
+successful-only latency account and operation-journal stage timings;
+`action_latency_ns_total` still includes refusals. The existing default-off
+diagnostics remain diagnostics: `PERI_SQL_OPEN_OBSERVER=1` streams phases for
+requests of at least 100 ms or failures, `PERI_DIAG_SLOW=1` requires
+`PERI_DIAG_DIR`, and `PERI_ADMISSION_TRACE=1` or `PERI_DIAG_GROUP_PHASE=1` adds
+trace detail. None of these switches changes SQL, WAL, publication, audit or
+recovery decisions.
+
+The Go SDK and CLI add `Options.ConnectionReuse` and `--connection-reuse`, both
+default off. Reuse cuts connection churn, but a request racing a server-closed
+idle connection can be reported as `outcome_unknown` even though it was never
+dispatched; the SDK never retries, so callers must resolve that state with
+durable operation records or business idempotency. Shutdown retries the worker
+retirement sample within its bounded budget, and a failed launcher restart
+preserves prior clean evidence and failure records instead of overwriting them.
+The restart gate itself is not relaxed: it still requires the signed clean stop
+record, the worker stop proofs, a clean terminal proof, a materialized operation
+view and no unresolved operations. Experimental Hrana remains default-off with
+its documented gaps, and this release claims neither an SP01 pass nor a capacity
+result.
 
 ## Build, test, and SDKs
 
