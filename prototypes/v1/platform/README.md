@@ -417,6 +417,24 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.10
+
+v1.1.10 raises the default request rate of a newly created project from 100 to
+500 requests per second, so a first browser-host startup (wasm host, session
+creation and session listing) no longer exhausts the token bucket and turns into
+`429 quota_exceeded`. The other defaults are unchanged: 8 databases, 16
+sessions, 4 concurrent requests, 64 KiB SQL and 4 MiB result. A project persists
+the quotas it was created with; this release does not migrate or rewrite an
+existing project's stored quotas.
+
+Hrana failures now carry the platform's sanitized `message` instead of repeating
+`code` in both fields. HTTP v2/v3 pipelines, HTTP protobuf and v3 JSON cursors,
+and the WebSocket adapters share the classification, including condition and
+autocommit probes and cursor describe/open. Worker prose remains in the Gateway
+log and is never forwarded. Codes, statuses, execution evidence and the
+`outcome_unknown` abort rule are unchanged, and SQL is still never retried
+automatically.
+
 ## v1.1.9
 
 v1.1.9 makes a local-backend volume created by this release survive normal stop,
