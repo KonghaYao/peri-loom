@@ -65,22 +65,6 @@ jobs:
           set -euo pipefail
           cargo build --manifest-path prototypes/v1/Cargo.toml --locked
           (cd prototypes/v1/platform/tests/hrana-sdk && npm ci)
-      - name: Pinned Turso SQL smoke (native Rust backend)
-        working-directory: prototypes/p0/turso
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo run --locked --manifest-path testing/sqltest/Cargo.toml --bin sqltest -- run \
-            sqlite/conformance/sqlite-sqltests/transactions.sqltest \
-            sqlite/conformance/sqlite-sqltests/constraint-error-message-suffix.sqltest \
-            sqlite/conformance/sqlite-sqltests/view-rowid.sqltest \
-            --backend rust --skip-matrix --snapshot-mode=no \
-            --hash-join-memory-budget 67108864 --jobs 2
-          cargo run --locked --manifest-path testing/sqltest/Cargo.toml --bin sqltest -- run \
-            sqlite/conformance/sqlite-sqltests/returning.sqltest \
-            --filter insert-returning-single-column \
-            --backend rust --skip-matrix --snapshot-mode=no \
-            --hash-join-memory-budget 67108864 --jobs 2
       - name: Official JS SDK loopback smoke
         shell: bash
         env:
@@ -113,3 +97,8 @@ jobs:
           export NODE_EXTRA_CA_CERTS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ca_file"])' "$fixture/connection.json")"
           node prototypes/v1/platform/tests/hrana-sdk/read-only-live.mjs "$fixture/connection.json"
           node prototypes/v1/platform/tests/hrana-sdk/live.mjs "$fixture/connection.json"
+
+  # 发布门禁：与 baseline 并行执行；命令单一维护在 scripts/p0-gate.sh，
+  # 与 tag 发布工作流调用同一个可复用工作流。
+  p0:
+    uses: ./.github/workflows/p0-gate.yml

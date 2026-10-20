@@ -1,0 +1,23 @@
+name: P0 release gate
+
+# 发布门禁的唯一 CI 定义：v1-baseline 在每次 push / pull request 调用，
+# v1-image 在 tag 发布时、构建镜像之前调用。测试命令由 scripts/p0-gate.sh 单一维护。
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  p0:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Run the P0 test set
+        run: bash scripts/p0-gate.sh

@@ -19,6 +19,16 @@ ROOT=/tmp/peri-loom-p0-demo
 cargo test --test acceptance
 ```
 
+## 发布门禁
+
+`scripts/p0-gate.sh` 是本地发布检查与 CI 共用的唯一入口：先确认 `turso/` 停在父仓库锁定的 gitlink，再运行本目录全部测试（`acceptance`、`final_verify`、`statement_safety`）与固定 commit 的 Turso SQL 冒烟。`.github/workflows/p0-gate.yml` 在每次 push / pull request 与 tag 发布时调用它；门禁失败时不会构建或发布镜像。
+
+在仓库根目录执行：
+
+```sh
+scripts/p0-gate.sh
+```
+
 ## Turso fork 跟踪
 
 `turso/` 是父仓库的 Git submodule，`origin` 指向 `https://github.com/KonghaYao/turso`，`upstream` 指向官方仓库。开发分支为 `codex/p0-core-prototype`。

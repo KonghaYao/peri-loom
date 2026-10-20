@@ -72,7 +72,12 @@ denied. Operators must not mistake an initial successful start for production re
 
 ## CI and image releases
 
-`.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. The tag must
+`.github/workflows/v1-image.yml` runs only when a `v*` tag is pushed. A `p0` job
+first runs the release gate (`.github/workflows/p0-gate.yml` →
+`scripts/p0-gate.sh`): it checks that `prototypes/p0/turso` matches the pinned
+gitlink, runs every `prototypes/p0` test, and runs the pinned Turso SQL smoke.
+`build` depends on both `p0` and `check`, so a failing gate blocks the image
+builds, the multi-architecture manifest, and the GitHub Release. The tag must
 match `v<prototypes/v1/Cargo.toml version>`. A `check` job validates the version and
 the Compose/verifier configuration, then a `build` matrix runs one **native** runner
 per architecture (`ubuntu-24.04` for `linux/amd64`, `ubuntu-24.04-arm` for
