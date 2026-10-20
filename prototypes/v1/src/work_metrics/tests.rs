@@ -140,6 +140,15 @@ fn enabled_sinks_move_the_snapshot() {
     let before = snapshot().expect("enabled snapshot");
     observe_root_publish(128, 3, 7);
     observe_root_publish_retry();
+    observe_root_encoding(
+        4096,
+        crate::authority::types::IdentityCounts {
+            branches: 5,
+            snapshots: 2,
+            pin_identities: 3,
+            branch_history_points: 11,
+        },
+    );
     observe_pin_release_failure();
     observe_wal_index_commit(64, 5);
     observe_wal_index_retry();
@@ -159,6 +168,15 @@ fn enabled_sinks_move_the_snapshot() {
     assert!(after.metadata.index_page_reads - before.metadata.index_page_reads >= 1);
     assert!(after.metadata.index_page_writes - before.metadata.index_page_writes >= 1);
     assert!(after.metadata.index_page_write_bytes - before.metadata.index_page_write_bytes >= 32);
+    assert!(after.metadata.root_encoded_max_bytes >= 4096);
+    assert!(after.metadata.inline_branches - before.metadata.inline_branches >= 5);
+    assert!(after.metadata.inline_snapshots - before.metadata.inline_snapshots >= 2);
+    assert!(after.metadata.inline_pin_identities - before.metadata.inline_pin_identities >= 3);
+    assert!(after.metadata.branch_history_points - before.metadata.branch_history_points >= 11);
+    assert!(after.metadata.max_inline_branches >= 5);
+    assert!(after.metadata.max_inline_snapshots >= 2);
+    assert!(after.metadata.max_inline_pin_identities >= 3);
+    assert!(after.metadata.max_branch_history_points >= 11);
 }
 
 #[test]

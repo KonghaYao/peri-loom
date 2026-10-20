@@ -94,7 +94,17 @@ func (gateway *Gateway) Metrics() map[string]any {
 			workers[identifier] = map[string]any{"observed_load": worker.Load, "healthy": worker.Healthy, "last_heartbeat_ms": worker.LastHeartbeatMS}
 		}
 	}
-	return map[string]any{"actions_total": actions, "errors_total": failures, "action_latency_ns_total": latency, "execute_latency_semantics": "execute_not_all_commits", "admitted_requests_total": admitted, "successful_requests_total": succeeded, "rejected_requests_total": rejected, "rejection_reasons_total": reasons, "rejection_reason_values": rejectionReasonNames(), "successful_latency_ns_total": goodput, "admitted_requests_semantics": "held_an_admission_permit_a_refusal_after_the_permit_counts_as_admitted_and_rejected", "successful_latency_semantics": "successful_requests_only_refusals_never_enter_this_account", "action_latency_semantics": "all_answered_requests_including_refusals", "rejection_reason_semantics": "named_platform_refusals_recorded_at_the_refusal_site_the_client_reply_keeps_its_published_code_and_fields", "projects": projects, "active_permits": active, "unknown_held_permits": unknown, "observed_workers": workers, "cold_load_instrumentation": "not_exposed_by_worker_sql_protocol", "streaming_semantics": "bounded_worker_response_then_ndjson", "quota_scope": "single_gateway_process", "unknown_recovery": "operator_worker_terminal_proof_required_no_automatic_release", "request_id_semantics": "correlation_only_not_sql_deduplication", "state_operation_cost": stateOperationCost(gateway.config.State), "cleanup_ledger": gateway.cleanupLedger(), "cleanup_retry": "bounded_close_retry_no_sql_replay", "cleanup_age_semantics": "in_process_observation_durable_operation_records_carry_no_timestamp"}
+	return map[string]any{"actions_total": actions, "errors_total": failures, "action_latency_ns_total": latency, "execute_latency_semantics": "execute_not_all_commits", "admitted_requests_total": admitted, "successful_requests_total": succeeded, "rejected_requests_total": rejected, "rejection_reasons_total": reasons, "rejection_reason_values": rejectionReasonNames(), "successful_latency_ns_total": goodput, "admitted_requests_semantics": "held_an_admission_permit_a_refusal_after_the_permit_counts_as_admitted_and_rejected", "successful_latency_semantics": "successful_requests_only_refusals_never_enter_this_account", "action_latency_semantics": "all_answered_requests_including_refusals", "rejection_reason_semantics": "named_platform_refusals_recorded_at_the_refusal_site_the_client_reply_keeps_its_published_code_and_fields", "projects": projects, "active_permits": active, "unknown_held_permits": unknown, "observed_workers": workers, "audit": auditMetrics(gateway.config.Audit), "cold_load_instrumentation": "not_exposed_by_worker_sql_protocol", "streaming_semantics": "bounded_worker_response_then_ndjson", "quota_scope": "single_gateway_process", "unknown_recovery": "operator_worker_terminal_proof_required_no_automatic_release", "request_id_semantics": "correlation_only_not_sql_deduplication", "state_operation_cost": stateOperationCost(gateway.config.State), "cleanup_ledger": gateway.cleanupLedger(), "cleanup_retry": "bounded_close_retry_no_sql_replay", "cleanup_age_semantics": "in_process_observation_durable_operation_records_carry_no_timestamp"}
+}
+
+// auditMetrics exposes the bounded audit queue through the gateway's status
+// surface. A sink without admission support has no queue account to report.
+func auditMetrics(audit Audit) map[string]any {
+	provider, ok := audit.(AuditAdmission)
+	if !ok {
+		return nil
+	}
+	return provider.AuditStatus()
 }
 
 // stateOperationCost exposes the shared lock and operation log cost of a commit, which

@@ -10,23 +10,27 @@ import (
 	"testing"
 )
 
-func TestStoreInterruptedMetadataWritePoisonsAndMissingIntentPreventsReallocation(t *testing.T) {
+func TestStoreJournalWriteFailurePoisonsUntilVerifiedReopen(t *testing.T) {
 	directory := t.TempDir()
 	store, err := OpenStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, err := os.ReadFile(filepath.Join(directory, "metadata.json"))
+	if err := store.Update(func(metadata *Metadata) error { metadata.Epoch = 90; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	durable := store.(*diskStore)
+	// A write to a read-only descriptor fails after the store has passed its
+	// availability check, exercising the uncertain-result path.
+	if err := durable.journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := os.Open(filepath.Join(directory, metadataJournalName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(directory, "metadata.json")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(directory, "metadata.json"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Update(func(metadata *Metadata) error { metadata.Epoch = 90; return nil }); !errors.Is(err, ErrStoreUncertain) {
+	durable.journal = readOnly
+	if err := store.Update(func(metadata *Metadata) error { metadata.Epoch = 91; return nil }); !errors.Is(err, ErrStoreUncertain) {
 		t.Fatalf("write uncertainty: %v", err)
 	}
 	if _, err := store.Snapshot(); !errors.Is(err, ErrStoreUncertain) {
@@ -36,24 +40,24 @@ func TestStoreInterruptedMetadataWritePoisonsAndMissingIntentPreventsReallocatio
 	if err := store.Update(func(metadata *Metadata) error { called = true; metadata.Epoch++; return nil }); !errors.Is(err, ErrStoreUncertain) || called {
 		t.Fatal("poisoned store allocated again")
 	}
-	var floor epochFloor
-	if _, err := readEnvelope(directory, "epoch-floor.json", &floor); err != nil || floor.Epoch != 90 || floor.Revision != 1 {
-		t.Fatalf("floor not durable before metadata: %+v %v", floor, err)
-	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(directory, "metadata.json")); err != nil {
+	reopened, err := OpenStore(directory)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "metadata.json"), old, 0600); err != nil {
+	defer reopened.Close()
+	actual, err := reopened.Snapshot()
+	if err != nil || actual.Revision != 1 || actual.Epoch != 90 {
+		t.Fatalf("verified reopen did not recover the durable revision: %+v %v", actual, err)
+	}
+	if err := reopened.Update(func(metadata *Metadata) error { metadata.Epoch++; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(directory, metadataPendingName)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := OpenStore(directory); err == nil {
-		t.Fatal("incomplete state silently reallocated")
+	actual, err = reopened.Snapshot()
+	if err != nil || actual.Revision != 2 || actual.Epoch != 91 {
+		t.Fatalf("post-recovery allocation: %+v %v", actual, err)
 	}
 }
 

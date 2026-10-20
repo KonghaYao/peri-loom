@@ -36,28 +36,48 @@ Default off, no response or log change, no new durable file unless enabled.
 | `sql_open_observation.go` | `SQLOpenObserver.phases *requestPhaseObserver` and a nil-safe `requestPhases()`; a fixture that only wants the open observer stays phase-free |
 | `service.go` | Creates the phase observer and sink inside the existing profile start, and stops it with the profile |
 | `gateway_http.go` | Binds the trace; segments: `auth`, `decode`, `state_read`, `admission`, `terminal`, `audit`, `respond`, plus `entry` computed at finish |
-| `gateway_sessions.go` | Segments: `session` (dispatch lookup), `intent` (open and dispatch registration), `worker` (open's upstream call) |
-| `gateway_writer.go` | Segment: `worker` around every dispatched worker call (`callSession`, deferred) |
+| `gateway_sessions.go` | Segments: `session` (dispatch lookup), `intent` (open and dispatch registration), `worker` (open's upstream call), `native` (the open SQL call's process boundary) |
+| `gateway_writer.go` | Segments: `worker` around every dispatched worker call (`callSession`, deferred), and `native` nested at the cross-process call boundary inside it |
 
 Segments partition the request: a nested span charges its time to no parent, and what no span
-covered is reported as `unaccounted_ns` instead of being folded into a neighbour. The stream
-carries request id, action, outcome, status and durations only - never a credential, SQL text,
-tenant, database or session id.
+covered is reported as `unaccounted_ns` instead of being folded into a neighbour. Each segment
+also carries `kind`: `wait` for a span that crosses to another process (`classify`, `worker`,
+`native`, the reserved `authority`), `cpu` for handler/auth/decode/admission/session work, and
+`io` for local durable appends and response writes (`state_read`, `intent`, `terminal`, `audit`,
+`respond`). The split is static per phase: a process boundary is a wait even though encoding
+around it is CPU. The stream carries request id, action, outcome, status, window and durations
+only - never a credential, SQL text, tenant, database or session id.
 
-**Slow-path sampling.** A request is written only when its `total_ns` is at least 100 ms or
-when it failed (an outcome other than `ok`, or a status outside 2xx). The bound is global and
-was previously exhausted by warmup and fast measurement traffic before the 1-2 s stalls
-appeared; 100 ms keeps an order of magnitude of headroom. Fast successes are counted in the
-closing record's `filtered` field instead of occupying a record. The threshold is a diagnostic
-constant, deliberately not an environment setting.
+**Sampling, window and ring.** A request is written when it failed (an outcome other than `ok`,
+or a status outside 2xx), when its `total_ns` reaches the slow threshold, or when the
+deterministic sampler keeps the fast success. Failures bypass both filters, so a fast Unknown
+cannot disappear. The sampler is a stride counter, not a random draw: exactly
+`sample_permille / 1000` of eligible fast successes are kept over a run, and a rate of `1000`
+keeps every fast success while `0` keeps only slow/failure evidence.
+
+Samples are tagged with the absolute time window they completed in. `windows` in the closing
+line counts window rotations, so a reader can tell a reset from a continuous capture. The ring
+is the memory bound: when a reader falls behind, the oldest record is overwritten, the sample is
+counted in `dropped_ring_overwritten`, and the closing line reports `complete:false`. A
+sampled-out success is counted in `dropped_sampled_out`; `dropped` is their sum.
+
+**Configuration.** The profile stays off unless `PERI_SQL_OPEN_OBSERVER=1`. These optional names
+are read only then; unset names keep the defaults and an invalid value fails the profile start:
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS` | `100` | Keep every success at or above this duration, 0-86400000; `0` keeps every request |
+| `PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE` | `100` | Fast-success sample rate, 0-1000 (100 = 10%) |
+| `PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS` | `60000` | Window used to tag samples and count rotations, 1-86400000 |
+| `PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY` | `8192` | Ring capacity, 1-65536 records |
 
 **Switch.** The private diagnostic profile that already exists: `PERI_SQL_OPEN_OBSERVER=1`,
-which the launcher already forwards (`dev.py --sql-open-observer`). The phase stream is a
-second sink of that profile, in its own file, so the open observer's artifact keeps exactly the
-bytes its consumers already read. A separate switch would need a `dev.py` edit, and `dev.py` is
-another owner's dirty file; reusing the forwarded profile avoids touching it. Off is the
-default: `dev.py` sets `0` unless the flag is given, and the platform creates neither observer
-nor file without `1`.
+which the launcher already forwards (`dev.py --sql-open-observer`). The launcher also forwards
+the four `PERI_SQL_OPEN_OBSERVER_PHASE_*` names when the operator sets them; it does not invent
+values for names it was not given. The phase stream is a second sink of that profile, in its
+own file, so the open observer's artifact keeps exactly the bytes its consumers already read.
+Off is the default: `dev.py` sets `0` unless the flag is given, and the platform creates neither
+observer nor file without `1`.
 
 ## 3. Directed tests and build
 
@@ -97,12 +117,15 @@ Disabled-path micro-measurement (benchmark, not a system measurement):
 
    `--sql-open-observer` is the existing flag that forwards `PERI_SQL_OPEN_OBSERVER=1`; the
    phase stream lands in `<run-dir>/platform/request-phase-observation.jsonl` (0600).
-2. Run the C1 query set unchanged. Only slow requests (`total_ns >= 100 ms`) and failures are
-   written; a written line is one request:
-   `{"stream","request_id","action","outcome","status","total_ns","accounted_ns","unaccounted_ns","truncated","spans":[{"phase","ns"}]}`.
+2. Run the C1 query set unchanged. Slow requests (`total_ns >= threshold`, default 100 ms),
+   failures and the configured sample of fast successes are written; a written line is one
+   request:
+   `{"stream","request_id","action","outcome","status","window","total_ns","accounted_ns","unaccounted_ns","truncated","spans":[{"phase","kind","ns"}]}`.
    The last line is the observer's own closing record (`action":"observer"`,
-   `complete:true|false`, `filtered:<count>`) - `false` means the bounded stream stopped early,
-   and `filtered` counts the fast successes the slow filter removed.
+   `complete:true|false`, `filtered:<count>`, `dropped:<count>`, `dropped_sampled_out`,
+   `dropped_ring_overwritten`, `windows:<count>`, plus the effective threshold, sample rate,
+   window and capacity) - `false` means the ring overwrote a sample before the sink wrote it,
+   and the drop fields separate a designed sample from lost evidence.
 3. Attribute: compare per-action `total_ns` against the client's own p50; read the `intent`,
    `worker`, `terminal`, `audit` and `respond` segments per family. `unaccounted_ns` is the part
    no segment covered (TLS handling, correlation parsing, route selection, quota bookkeeping,
@@ -160,3 +183,40 @@ second is kept, and it is visible in this stream as a new segment:
 Net effect on the phases of one read query that the worker proved read-only: `intent` is gone,
 `classify` carries one describe round trip, and `terminal + audit` are unchanged. The two barriers
 the platform pays for a proven read are the terminal record and the audit row.
+
+## 7. Update: normal-request sampling, windows and the ring (Q02)
+
+The original profile only wrote slow requests and failures, so the 2-30 ms bulk was invisible.
+This update keeps the same switch and the same span subtraction, and changes four things:
+
+1. **Fast successes are sampled.** The deterministic stride sampler keeps
+   `PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE` out of every 1000 fast successes (default
+   100, i.e. 10%). Slow requests and failures bypass the sampler. The sampler is a counter,
+   not a random draw, so the configured rate is exact over a run and a directed test can
+   assert it.
+2. **The stream is a ring, not a cumulative stop.** When a reader falls behind, the oldest
+   record is overwritten and counted in `dropped_ring_overwritten`; `complete:false` in the
+   closing line means evidence was lost, not that the run reached a fixed record count.
+   Sampled-out successes are counted separately in `dropped_sampled_out`, so a designed sample
+   is never confused with loss.
+3. **Windows are visible.** Every record carries the absolute `window` index, and the closing
+   line reports `windows` rotations plus the effective `window_ms`, `sample_permille`,
+   `slow_threshold_ms` and `capacity`. The window does not clear the ring; it is the grouping a
+   reader uses to compare one interval with another.
+4. **Segments name their cost kind.** `wait` is a cross-process boundary (`classify`, `worker`,
+   `native`), `cpu` is handler/auth/decode/admission/session work, and `io` is local durable
+   appends or response writes. The gateway now also emits `native` around the worker call, so a
+   normal read separates the call wait from the gateway's local work. The gateway request path
+   has no Authority RPC (workers hold that boundary), so no `authority` segment is emitted and
+   the trace does not pretend the native call's internal CPU is known.
+
+Configuration is read only when `PERI_SQL_OPEN_OBSERVER=1`; unset names keep the defaults and
+an invalid value fails the profile start. `dev.py` forwards explicit phase knobs, so the
+documented switch remains the only entry point.
+
+Directed tests (same package, `go test -run TestRequestPhase`): `TestRequestPhaseConfigFromEnvironment`,
+`TestRequestPhaseConfigRejectsInvalidValues`, `TestRequestPhaseSamplesFastSuccess`,
+`TestRequestPhaseSampleRate`, `TestRequestPhaseRingIsBounded`,
+`TestRequestPhaseDropsAreCountedByReason`, `TestRequestPhaseFailureBypassesSampling` and
+`TestRequestPhaseWindowRolls`; the existing default-off, privacy, failure, consistency and sink
+tests pass unchanged. `go build -buildvcs=false ./...` passes.

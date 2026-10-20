@@ -66,29 +66,42 @@ func TestStorePlacementEpochsAndCredentialsValidatedBeforePersistence(t *testing
 	}
 }
 
-func TestStoreLowerFloorAndSameEpochRevisionRollbackRefused(t *testing.T) {
-	for _, file := range []string{"epoch-floor.json", "metadata.json"} {
-		t.Run(file, func(t *testing.T) {
+func TestStoreJournalRejectsEpochAndRevisionRollback(t *testing.T) {
+	for _, mutation := range []string{"epoch-decrease", "revision-duplicate"} {
+		t.Run(mutation, func(t *testing.T) {
 			directory := t.TempDir()
 			store, err := OpenStore(directory)
 			if err != nil {
 				t.Fatal(err)
 			}
-			old, err := os.ReadFile(filepath.Join(directory, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Update(func(metadata *Metadata) error { return nil }); err != nil {
+			if err := store.Update(func(metadata *Metadata) error { metadata.Epoch = 10; return nil }); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(directory, file), old, 0600); err != nil {
+			journalPath := filepath.Join(directory, metadataJournalName)
+			records, _, _, err := readJournalFile(journalPath)
+			if err != nil || len(records) == 0 {
+				t.Fatalf("journal fixture: %v", err)
+			}
+			last := records[len(records)-1]
+			var line []byte
+			switch mutation {
+			case "epoch-decrease":
+				epoch := uint64(9)
+				line, _, err = encodeJournalRecord(last.revision+1, last.checksum, metadataDelta{Epoch: &epoch})
+			case "revision-duplicate":
+				line, _, err = encodeJournalRecord(last.revision, last.checksum, metadataDelta{})
+			}
+			if err == nil {
+				err = appendJournalBytes(journalPath, line)
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := OpenStore(directory); err == nil {
-				t.Fatal("same-epoch revision rollback accepted")
+				t.Fatal("journal rollback was accepted")
 			}
 		})
 	}
@@ -131,7 +144,7 @@ func TestStoreClosedOperationsAndDiskPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"metadata.json", "epoch-floor.json", "metadata.lock"} {
+	for _, name := range []string{"metadata.json", "metadata.journal", "metadata.lock"} {
 		info, err := os.Stat(filepath.Join(directory, name))
 		if err != nil || info.Mode().Perm() != 0600 {
 			t.Fatalf("private file mode: %v", err)

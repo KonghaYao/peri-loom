@@ -359,8 +359,9 @@ func TestUnprovableStatementKeepsItsIntent(test *testing.T) {
 	}
 }
 
-// A write statement is classified once per text and keeps the committing path
-// even when the verdict is remembered.
+// A write statement is refused by the guarded call before it steps and keeps
+// the committing path: one durable intent per write, and one committing
+// dispatch after the refusal.
 func TestWriterStatementKeepsItsIntent(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	hook := (&readonlyDescribeHook{verdict: readonlyVerdict(false)}).install(fixture)
@@ -378,8 +379,11 @@ func TestWriterStatementKeepsItsIntent(test *testing.T) {
 	if commits := operationCommits(test, store) - opened; commits != 4 {
 		test.Fatalf("a written statement lost its intent: %d commits for two writes", commits)
 	}
-	if hook.count() != 1 {
-		test.Fatalf("a remembered verdict was not reused for a write: %d describes", hook.count())
+	if hook.count() != 0 {
+		test.Fatalf("a statement still took the describe probe: %d describes", hook.count())
+	}
+	if fixture.upstream.count("guarded_readonly_statement") != 2 {
+		test.Fatal("the write statements did not take the guarded path")
 	}
 	if fixture.upstream.count("statement") != 2 {
 		test.Fatal("the write statements did not reach the worker")

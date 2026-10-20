@@ -5,14 +5,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
 type Controller struct {
-	store      MetadataStore
-	transport  ControlTransport
-	cfg        ReconcileConfig
-	operations chan struct{}
+	store           MetadataStore
+	transport       ControlTransport
+	cfg             ReconcileConfig
+	operations      chan struct{}
+	reconciliations chan struct{}
+	lanesMutex      sync.Mutex
+	lanes           map[string]*databaseLane
+	scheduleMutex   sync.Mutex
+	renewals        map[string]time.Time
+	// wakes merges concurrent request-driven activations by database identity.
+	// The map lock only guards lookup and removal; the call owns its own state.
+	wakeMutex sync.Mutex
+	wakes     map[string]*wakeCall
 }
 
 var ErrPlacementMissing = errors.New("placement missing")
@@ -30,8 +40,29 @@ func NewController(store MetadataStore, transport ControlTransport, cfg Reconcil
 	if cfg.Interval == 0 {
 		cfg.Interval = 100 * time.Millisecond
 	}
+	if cfg.MaxConcurrentOperations == 0 {
+		cfg.MaxConcurrentOperations = 8
+	}
+	if cfg.ReconcileConcurrency == 0 {
+		cfg.ReconcileConcurrency = 8
+	}
+	if cfg.ControlRPCTimeout == 0 {
+		// Half a lease leaves room for the state read and the worker update
+		// inside one lease period; the cap keeps a large production TTL from
+		// letting one slow control call hold a reconcile worker for a minute.
+		cfg.ControlRPCTimeout = min(max(cfg.LeaseTTL/2, 100*time.Millisecond), 2*time.Second)
+	}
+	if cfg.ActivationTimeout == 0 {
+		// A wake may have to replay a WAL before acquire returns. The worker's
+		// own load floor is 60s, so the activation budget outlives it while the
+		// HTTP waiter keeps its own, shorter budget.
+		cfg.ActivationTimeout = min(max(2*cfg.LeaseTTL, 90*time.Second), 10*time.Minute)
+	}
 	if cfg.LeaseTTL < 100*time.Millisecond || cfg.LeaseTTL > 60*time.Second || cfg.LeaseTTL%time.Millisecond != 0 || cfg.HeartbeatTimeout < time.Millisecond || cfg.Interval < time.Millisecond {
 		return nil, errors.New("invalid reconciliation timing")
+	}
+	if cfg.MaxConcurrentOperations < 1 || cfg.MaxConcurrentOperations > 64 || cfg.ReconcileConcurrency < 1 || cfg.ReconcileConcurrency > 64 || cfg.ControlRPCTimeout < time.Millisecond || cfg.ControlRPCTimeout > 60*time.Second || cfg.ActivationTimeout < time.Millisecond || cfg.ActivationTimeout > 10*time.Minute {
+		return nil, errors.New("invalid reconciliation concurrency or control deadline")
 	}
 	metadata, err := store.Snapshot()
 	if err != nil {
@@ -42,20 +73,16 @@ func NewController(store MetadataStore, transport ControlTransport, cfg Reconcil
 			return nil, err
 		}
 	}
-	return &Controller{store: store, transport: transport, cfg: cfg, operations: make(chan struct{}, 1)}, nil
-}
-
-func (controller *Controller) enter(ctx context.Context) (func(), error) {
-	select {
-	case controller.operations <- struct{}{}:
-		if err := ctx.Err(); err != nil {
-			<-controller.operations
-			return nil, err
-		}
-		return func() { <-controller.operations }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return &Controller{
+		store:           store,
+		transport:       transport,
+		cfg:             cfg,
+		operations:      make(chan struct{}, cfg.MaxConcurrentOperations),
+		reconciliations: make(chan struct{}, cfg.ReconcileConcurrency),
+		lanes:           make(map[string]*databaseLane),
+		renewals:        make(map[string]time.Time),
+		wakes:           make(map[string]*wakeCall),
+	}, nil
 }
 
 func (controller *Controller) Status(database DatabaseID) (Placement, error) {
@@ -86,14 +113,14 @@ func (controller *Controller) save(placement Placement) error {
 }
 
 func (controller *Controller) Place(ctx context.Context, database DatabaseID, region, role string) (Placement, error) {
-	release, err := controller.enter(ctx)
+	if err := database.Validate(); err != nil {
+		return Placement{}, err
+	}
+	release, err := controller.enterDatabaseOperation(ctx, database.Key())
 	if err != nil {
 		return Placement{}, err
 	}
 	defer release()
-	if err := database.Validate(); err != nil {
-		return Placement{}, err
-	}
 	if role != "writer" && role != "read_only" {
 		return Placement{}, errors.New("invalid role")
 	}
@@ -104,6 +131,12 @@ func (controller *Controller) Place(ctx context.Context, database DatabaseID, re
 		}
 		if placement.DesiredState != "active" {
 			return placement, errors.New("resume suspended placement explicitly")
+		}
+		if placement.Phase == "idle" {
+			// A create retry is an explicit management action, so it may
+			// activate an idle database. A request is the only caller that
+			// has to respect the manual policy.
+			return controller.activateLocked(ctx, placement)
 		}
 		if err := controller.pollWorkers(ctx); err != nil {
 			return placement, err
@@ -135,7 +168,10 @@ func (controller *Controller) Place(ctx context.Context, database DatabaseID, re
 }
 
 func (controller *Controller) Migrate(ctx context.Context, database DatabaseID, workerID string) (Placement, error) {
-	release, err := controller.enter(ctx)
+	if err := database.Validate(); err != nil {
+		return Placement{}, err
+	}
+	release, err := controller.enterDatabaseOperation(ctx, database.Key())
 	if err != nil {
 		return Placement{}, err
 	}
@@ -169,7 +205,10 @@ func (controller *Controller) Migrate(ctx context.Context, database DatabaseID, 
 }
 
 func (controller *Controller) Suspend(ctx context.Context, database DatabaseID) error {
-	release, err := controller.enter(ctx)
+	if err := database.Validate(); err != nil {
+		return err
+	}
+	release, err := controller.enterDatabaseOperation(ctx, database.Key())
 	if err != nil {
 		return err
 	}
@@ -185,10 +224,23 @@ func (controller *Controller) Suspend(ctx context.Context, database DatabaseID) 
 	if placement.Phase == "suspended" {
 		return nil
 	}
+	if placement.Phase == "idle" {
+		// An idle database has already released its lease. Marking it
+		// administrative keeps the durable reason ahead of any queued request.
+		placement.Phase = "suspended"
+		placement.DesiredState = "suspended"
+		placement.SuspendReason = SuspendReasonAdmin
+		placement.WakePolicy = WakePolicyManual
+		placement.IdleSinceMS = 0
+		return controller.save(placement)
+	}
 	if placement.Phase != "active" {
 		return errors.New("placement not active")
 	}
 	placement.DesiredState = "suspended"
+	placement.SuspendReason = SuspendReasonAdmin
+	placement.WakePolicy = WakePolicyManual
+	placement.IdleSinceMS = 0
 	placement.Phase = "suspend_drain"
 	if err := controller.save(placement); err != nil {
 		return err
@@ -198,41 +250,30 @@ func (controller *Controller) Suspend(ctx context.Context, database DatabaseID) 
 }
 
 func (controller *Controller) Resume(ctx context.Context, database DatabaseID) (Placement, error) {
-	release, err := controller.enter(ctx)
+	if err := database.Validate(); err != nil {
+		return Placement{}, err
+	}
+	release, err := controller.enterDatabaseOperation(ctx, database.Key())
 	if err != nil {
 		return Placement{}, err
 	}
 	defer release()
-	placement, err := controller.Status(database)
+	placement, _, exists, err := ReadRouting(controller.store, database)
 	if err != nil {
 		return placement, err
 	}
-	placement, err = controller.converge(ctx, placement)
-	if err != nil {
-		return placement, err
+	if !exists {
+		return Placement{}, ErrPlacementMissing
 	}
-	if placement.Phase == "active" {
-		return placement, nil
-	}
-	if placement.Phase != "suspended" {
-		return placement, errors.New("suspension not settled")
-	}
-	if err := controller.pollWorkers(ctx); err != nil {
-		return placement, err
-	}
-	worker, err := controller.selectWorker(placement.Region, "")
-	if err != nil {
-		return placement, err
-	}
-	placement.DesiredWorker = worker.ID
-	placement.DesiredState = "active"
-	if err := controller.planGrant(ctx, &placement); err != nil {
-		return placement, err
-	}
-	return controller.converge(ctx, placement)
+	// Resume is an explicit management action: it bypasses the wake policy and
+	// shares the same activation path as an automatic wake. Both take the
+	// database lane, so an administrator Resume racing a Waking request cannot
+	// mint two writer grants.
+	return controller.activateLocked(ctx, placement)
 }
 
 func (controller *Controller) converge(ctx context.Context, placement Placement) (Placement, error) {
+	initial := placement.Phase
 	for transition := 0; transition < 16; transition++ {
 		if err := ctx.Err(); err != nil {
 			return placement, err
@@ -248,7 +289,12 @@ func (controller *Controller) converge(ctx context.Context, placement Placement)
 			err = controller.applyWorker(ctx, &placement)
 		case "migrate_drain", "suspend_drain":
 			err = controller.drain(ctx, &placement)
-		case "active", "suspended":
+		case "idle_drain":
+			// The worker already dropped the instance; only the lease is left,
+			// so there is no drain RPC to wait for.
+			err = controller.planRevoke(&placement)
+		case "active", "suspended", "idle":
+			controller.recordSettledPlacement(placement, initial)
 			return placement, nil
 		default:
 			err = errors.New("unknown placement phase")
@@ -262,6 +308,7 @@ func (controller *Controller) converge(ctx context.Context, placement Placement)
 		}
 		placement.LastError = ""
 		if placement.Phase == previous {
+			controller.recordSettledPlacement(placement, initial)
 			return placement, nil
 		}
 	}
@@ -274,6 +321,15 @@ func clearPending(placement *Placement) {
 	placement.LastError = ""
 }
 
+// clearSuspension drops the idle/admin metadata once the placement is serving
+// again. Keeping it on an active record would let a later idle transition
+// inherit an administrator's manual policy.
+func clearSuspension(placement *Placement) {
+	placement.SuspendReason = ""
+	placement.WakePolicy = ""
+	placement.IdleSinceMS = 0
+}
+
 func validatePlacement(key string, placement Placement) error {
 	if err := placement.Database.Validate(); err != nil {
 		return err
@@ -281,8 +337,24 @@ func validatePlacement(key string, placement Placement) error {
 	if key != placement.Database.Key() || placement.DesiredWorker == "" || (placement.Role != "writer" && placement.Role != "read_only") || (placement.DesiredState != "active" && placement.DesiredState != "suspended") || placement.TTLMS < 100 || placement.TTLMS > 60000 {
 		return errors.New("invalid placement metadata")
 	}
+	switch placement.SuspendReason {
+	case "", SuspendReasonAdmin, SuspendReasonIdle, SuspendReasonFailure:
+	default:
+		return errors.New("invalid suspend reason")
+	}
+	switch placement.WakePolicy {
+	case "", WakePolicyAuto, WakePolicyManual:
+	default:
+		return errors.New("invalid wake policy")
+	}
+	if placement.WakePolicy == WakePolicyAuto && placement.SuspendReason != SuspendReasonIdle || placement.WakePolicy == WakePolicyManual && placement.SuspendReason == "" || placement.IdleSinceMS < 0 {
+		return errors.New("wake policy contradicts suspend reason")
+	}
+	if placement.Phase == "idle" && (placement.SuspendReason != SuspendReasonIdle || placement.WakePolicy != WakePolicyAuto) {
+		return errors.New("idle placement must be auto-wakeable")
+	}
 	switch placement.Phase {
-	case "active", "suspended", "migrate_drain", "suspend_drain", "acquire_pending", "renew_worker_pending":
+	case "active", "suspended", "migrate_drain", "suspend_drain", "idle", "idle_drain", "acquire_pending", "renew_worker_pending":
 		if placement.Grant == nil {
 			return errors.New("placement grant missing")
 		}

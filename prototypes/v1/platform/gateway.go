@@ -47,6 +47,11 @@ type gatewaySession struct {
 	writerSequence uint64
 	hrana          bool
 	lastUsed       time.Time
+	// The worker holds at most one write cursor per session. These flags are the
+	// gateway's own record of what it has proven about that cursor; they never
+	// stand in for a native reply.
+	writeCursorOpen      bool
+	writeCursorCommitted bool
 	// cleanup is this session's bounded retirement account, and unownedAt marks
 	// when an unproven outcome stopped its owner from addressing it.
 	cleanup   sessionCleanup
@@ -77,6 +82,12 @@ type gatewayResult struct {
 	operationObservation    *OperationStatus
 	auditExecutionCompleted bool
 	committing              bool
+	// Cursor lifecycle facts of a write cursor. The stopped flags are the
+	// adapter's own observation and are descriptive only; the native outcome is
+	// set only from a worker reply or from the gateway's proven page state.
+	cursorClientStopped   bool
+	cursorDispatchStopped bool
+	cursorNativeOutcome   string
 }
 
 // pendingOperation carries everything the single terminal record of an

@@ -146,67 +146,69 @@ func (management *Management) fork(ctx context.Context, principal Principal, inp
 	if err := management.config.Identity.Authorize(principal, input.Database, "manage"); err != nil {
 		return nil, err
 	}
-	if !labelPattern.MatchString(input.Name) {
-		return nil, errors.New("invalid branch name")
+	// Validate everything decidable before touching durable state. In
+	// particular an invalid role or a missing snapshot must not reserve a
+	// descriptor, quota, or an authority branch.
+	plan, err := newForkPlan(input, path)
+	if err != nil {
+		return nil, err
 	}
 	state, err := management.config.State.Snapshot()
 	if err != nil {
 		return nil, err
 	}
-	parent, exists := state.Databases[input.Database.Key()]
-	if !exists {
+	parent, exists := state.Databases[plan.parent.Key()]
+	if !exists || parent.State == "deleted" {
 		return nil, errors.New("source database missing")
 	}
-	child := parent
-	child.ID.Branch = input.Name
-	child.State = "provisioning"
-	child.OperationID = input.RequestID
-	err = management.config.State.Update(func(state *State) error {
-		if existing, exists := state.Databases[child.ID.Key()]; exists {
-			if existing.OperationID != child.OperationID || existing.Project != child.Project || existing.State == "deleted" {
-				return errors.New("branch identity already reserved")
-			}
-			return nil
-		}
-		project, exists := state.Projects[parent.Project]
-		if !exists {
-			return errors.New("project missing")
-		}
-		count := 0
-		for _, database := range state.Databases {
-			if database.Project == parent.Project && database.State != "deleted" {
-				count++
-			}
-		}
-		if count >= project.Quotas.MaxDatabases {
-			return errDatabaseQuotaExceeded
-		}
-		state.Databases[child.ID.Key()] = child
-		return nil
-	})
+	project, exists := state.Projects[parent.Project]
+	if !exists {
+		return nil, errors.New("project missing")
+	}
+	plan.project = parent.Project
+	plan.digest = plan.canonicalDigest()
+	record, err := management.reserveFork(plan)
 	if err != nil {
 		return nil, err
 	}
-	operation := map[string]any{"operation": "branch", "source": input.Database.Branch, "name": input.Name}
-	if path == "/v1/databases/clone" {
-		operation = map[string]any{"operation": "clone", "snapshot": input.Snapshot, "name": input.Name}
+	if record.Stage == provisioningActive {
+		return management.config.Controller.Status(plan.child)
 	}
-	if _, err := management.authorityMaintenance(ctx, input.Database, input.RequestID, operation); err != nil {
-		return nil, err
+	if record.Stage == provisioningReserved || record.Stage == provisioningUncertain {
+		if _, err := management.authorityMaintenance(ctx, plan.parent, plan.requestID, plan.authorityOperation()); err != nil {
+			// A lost acknowledgement proves nothing. Ask the catalog before
+			// releasing: absence proves the synchronous branch/clone never
+			// committed, while presence lets the workflow continue.
+			applied, known := false, provisioningNotExecuted(err)
+			if !known {
+				applied, known = management.forkAuthorityApplied(ctx, plan)
+			}
+			if !known || !applied {
+				if known {
+					management.recordProvisioningFailure(plan, provisioningFailed, provisioningErrorAuthorityRejected, true)
+				} else {
+					management.recordProvisioningFailure(plan, provisioningUncertain, provisioningErrorAuthorityUncertain, false)
+				}
+				return nil, err
+			}
+		}
+		if err := management.setProvisioningStage(plan, provisioningAuthorityApplied, ""); err != nil {
+			return nil, err
+		}
 	}
-	project := state.Projects[parent.Project]
-	role := input.Role
-	if role == "" {
-		role = "writer"
-	}
-	if role != "writer" && role != "read_only" {
-		return nil, errors.New("invalid branch role")
-	}
-	placement, err := management.config.Controller.Place(ctx, child.ID, project.Region, role)
+	placement, err := management.config.Controller.Place(ctx, plan.child, project.Region, plan.role)
 	if err != nil {
+		management.recordProvisioningFailure(plan, provisioningAuthorityApplied, provisioningErrorPlacement, false)
 		return nil, err
 	}
-	if err := management.setDatabaseState(child.ID, "active"); err != nil {
+	if err := management.setProvisioningStage(plan, provisioningPlacementReady, ""); err != nil {
+		return nil, err
+	}
+	if err := management.setDatabaseState(plan.child, "active"); err != nil {
+		management.recordProvisioningFailure(plan, provisioningPlacementReady, provisioningErrorActivation, false)
+		return nil, err
+	}
+	if err := management.setProvisioningStage(plan, provisioningActive, ""); err != nil {
 		return nil, err
 	}
 	return placement, nil

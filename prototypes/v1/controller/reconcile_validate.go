@@ -32,14 +32,14 @@ func validatePlacementProtocol(placement Placement) error {
 		if binding.Database != placement.Database || binding.Epoch > placement.Epoch {
 			return errors.New("placement grant identity mismatch")
 		}
-		if placement.Phase == "active" || placement.Phase == "acquire_pending" || placement.Phase == "renew_worker_pending" || placement.Phase == "suspended" {
+		if placement.Phase == "active" || placement.Phase == "acquire_pending" || placement.Phase == "renew_worker_pending" || placement.Phase == "suspended" || placement.Phase == "idle" || placement.Phase == "idle_drain" {
 			if binding.Epoch != placement.Epoch || binding.WorkerID != placement.DesiredWorker || binding.LeaseID != placement.LeaseID || binding.Role != placement.Role {
 				return errors.New("placement serving grant mismatch")
 			}
 		}
 	}
 	switch placement.Phase {
-	case "active", "suspended", "migrate_drain", "suspend_drain":
+	case "active", "suspended", "migrate_drain", "suspend_drain", "idle", "idle_drain":
 		if placement.PendingID != "" || len(placement.PendingCommand) != 0 {
 			return errors.New("settled placement retains pending authority request")
 		}

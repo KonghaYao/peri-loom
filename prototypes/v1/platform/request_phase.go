@@ -2,6 +2,9 @@ package platform
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,15 +22,40 @@ import (
 const (
 	requestPhaseMaxDepth = 8
 	requestPhaseMaxSpans = 16
-	// The bound covers one import-and-query slice so the phases of a data load and the
-	// phases of the reads against that data come from the same process. It stays a
-	// bound: past it the stream drops records and says so instead of growing.
+	// requestPhaseLimit is the default capacity of the ring. The ring overwrites its oldest
+	// record instead of refusing new ones, so the profile keeps observing past the bound; the
+	// overwrite count in the closing line makes the loss visible. The capacity is a bound, not
+	// a cumulative stop.
 	requestPhaseLimit = 8192
-	// Only slow requests and failures are recorded. The S1-S4 stalls this profile exists to
-	// explain are 1-2 s, so 100 ms keeps an order of magnitude of headroom while warmup and
-	// the fast bulk of a measurement no longer consume the bound before the stalls do. Errors
-	// bypass the threshold: an Unknown is evidence even when it returns quickly.
+	// Only slow requests, failures and a deterministic sample of fast successes are recorded.
+	// The S1-S4 stalls this profile exists to explain are 1-2 s, so 100 ms keeps an order of
+	// magnitude of headroom while normal successes are covered by sampling. Errors bypass both
+	// filters: an Unknown is evidence even when it returns quickly.
 	requestPhaseSlowThreshold = 100 * time.Millisecond
+	// Fast successes are kept when the deterministic sampler fires. One hundred per mille
+	// keeps one fast success in ten, enough to explain the 2-30 ms bulk in a controlled run;
+	// an operator measuring a high-rate load can lower it without losing slow evidence.
+	requestPhaseSamplePermille = 100
+	// Samples are tagged with the window they completed in, and window rotation is reported
+	// in the closing line. The window is an observation grouping; the ring, not the window,
+	// bounds memory.
+	requestPhaseWindow = time.Minute
+	// A larger ring is allowed, but the process should not accept an unbounded allocation
+	// through an environment variable.
+	requestPhaseCapacityMaximum = 65536
+	// Duration knobs are capped so an absurd millisecond value cannot overflow
+	// time.Duration*time.Millisecond and silently become a different setting.
+	requestPhaseDurationMaximum = 24 * time.Hour
+)
+
+// The phase knobs are only read when the existing PERI_SQL_OPEN_OBSERVER profile is on. They
+// are documented in request-phase-observation.md; an invalid value fails the profile start
+// instead of silently changing what a measurement means.
+const (
+	requestPhaseThresholdEnvironment = "PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS"
+	requestPhaseSampleEnvironment    = "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE"
+	requestPhaseWindowEnvironment    = "PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS"
+	requestPhaseCapacityEnvironment  = "PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY"
 )
 
 type requestPhase string
@@ -42,10 +70,41 @@ const (
 	requestPhaseClassify  requestPhase = "classify"   // worker describe that proves a statement read-only
 	requestPhaseIntent    requestPhase = "intent"     // durable intent append, including its barrier
 	requestPhaseWorker    requestPhase = "worker"     // worker call
-	requestPhaseTerminal  requestPhase = "terminal"   // durable terminal append, including its barrier
-	requestPhaseAudit     requestPhase = "audit"      // audit append, including its barrier
-	requestPhaseRespond   requestPhase = "respond"    // response encoding and write
+	// requestPhaseNative is the cross-process boundary to the worker. It is deliberately a
+	// wait, not CPU: the gateway can measure how long the call took, not how the native side
+	// spent it. The gateway request path has no Authority RPC of its own (workers hold that
+	// boundary), so requestPhaseAuthority remains a named boundary for the same accounting
+	// rather than a segment this path can emit honestly.
+	requestPhaseNative    requestPhase = "native"
+	requestPhaseAuthority requestPhase = "authority"
+	requestPhaseTerminal  requestPhase = "terminal" // durable terminal append, including its barrier
+	requestPhaseAudit     requestPhase = "audit"    // audit append, including its barrier
+	requestPhaseRespond   requestPhase = "respond"  // response encoding and write
 )
+
+// requestPhaseKind separates waiting on another process from work this process did and from
+// durable I/O. The split is static per phase: a span that crosses a process boundary is a
+// wait even though encoding around it is CPU.
+type requestPhaseKind string
+
+const (
+	requestPhaseCPU  requestPhaseKind = "cpu"
+	requestPhaseWait requestPhaseKind = "wait"
+	requestPhaseIO   requestPhaseKind = "io"
+)
+
+func (phase requestPhase) kind() requestPhaseKind {
+	switch phase {
+	case requestPhaseClassify, requestPhaseWorker, requestPhaseNative, requestPhaseAuthority:
+		return requestPhaseWait
+	case requestPhaseEntry, requestPhaseAuth, requestPhaseDecode, requestPhaseAdmission, requestPhaseSession:
+		return requestPhaseCPU
+	case requestPhaseState, requestPhaseIntent, requestPhaseTerminal, requestPhaseAudit, requestPhaseRespond:
+		return requestPhaseIO
+	default:
+		return requestPhaseCPU
+	}
+}
 
 // requestPhaseRecord is one line of the phase stream. Nothing here identifies a tenant: the
 // request id correlates with the client's own timestamps, and the action names the operation.
@@ -55,6 +114,7 @@ type requestPhaseRecord struct {
 	Action        string                `json:"action"`
 	Outcome       string                `json:"outcome"`
 	Status        int                   `json:"status"`
+	Window        uint64                `json:"window"`
 	TotalNS       uint64                `json:"total_ns"`
 	AccountedNS   uint64                `json:"accounted_ns"`
 	UnaccountedNS uint64                `json:"unaccounted_ns"`
@@ -63,18 +123,108 @@ type requestPhaseRecord struct {
 }
 
 type requestPhaseSegment struct {
-	Phase requestPhase `json:"phase"`
-	NS    uint64       `json:"ns"`
+	Phase requestPhase     `json:"phase"`
+	Kind  requestPhaseKind `json:"kind"`
+	NS    uint64           `json:"ns"`
+}
+
+// requestPhaseConfig is immutable after the observer is built, so readers never take a lock to
+// ask what the current threshold or rate is.
+type requestPhaseConfig struct {
+	SlowThreshold  time.Duration
+	SamplePermille uint64
+	Window         time.Duration
+	Capacity       int
+}
+
+func defaultRequestPhaseConfig() requestPhaseConfig {
+	return requestPhaseConfig{
+		SlowThreshold:  requestPhaseSlowThreshold,
+		SamplePermille: requestPhaseSamplePermille,
+		Window:         requestPhaseWindow,
+		Capacity:       requestPhaseLimit,
+	}
+}
+
+// requestPhaseConfigFromEnvironment reads the knobs of an already-enabled profile. Unset names
+// keep their defaults; invalid values fail the start instead of quietly changing the capture.
+func requestPhaseConfigFromEnvironment() (requestPhaseConfig, error) {
+	config := defaultRequestPhaseConfig()
+	if raw, present := os.LookupEnv(requestPhaseThresholdEnvironment); present {
+		value, err := requestPhaseMilliseconds(requestPhaseThresholdEnvironment, raw, true)
+		if err != nil {
+			return requestPhaseConfig{}, err
+		}
+		config.SlowThreshold = value
+	}
+	if raw, present := os.LookupEnv(requestPhaseSampleEnvironment); present {
+		value, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil || value > 1000 {
+			return requestPhaseConfig{}, fmt.Errorf("%s must be between 0 and 1000", requestPhaseSampleEnvironment)
+		}
+		config.SamplePermille = value
+	}
+	if raw, present := os.LookupEnv(requestPhaseWindowEnvironment); present {
+		value, err := requestPhaseMilliseconds(requestPhaseWindowEnvironment, raw, false)
+		if err != nil {
+			return requestPhaseConfig{}, err
+		}
+		config.Window = value
+	}
+	if raw, present := os.LookupEnv(requestPhaseCapacityEnvironment); present {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > requestPhaseCapacityMaximum {
+			return requestPhaseConfig{}, fmt.Errorf("%s must be between 1 and %d", requestPhaseCapacityEnvironment, requestPhaseCapacityMaximum)
+		}
+		config.Capacity = value
+	}
+	return config, nil
+}
+
+func requestPhaseMilliseconds(name, raw string, allowZero bool) (time.Duration, error) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	minimum := int64(1)
+	if allowZero {
+		minimum = 0
+	}
+	maximum := int64(requestPhaseDurationMaximum / time.Millisecond)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d milliseconds", name, minimum, maximum)
+	}
+	return time.Duration(value) * time.Millisecond, nil
 }
 
 type requestPhaseObserver struct {
-	sequence atomic.Uint64
-	filtered atomic.Uint64
-	queue    chan requestPhaseRecord
-	// slowThreshold is requestPhaseSlowThreshold in production. Directed tests that assert
-	// the span vocabulary set it to zero because a fixture answer is usually faster than the
-	// production threshold and those tests are about the segments, not the filter.
-	slowThreshold time.Duration
+	slowThreshold  time.Duration
+	samplePermille uint64
+	window         time.Duration
+	capacity       int
+
+	sequence    atomic.Uint64 // records accepted into the ring
+	filtered    atomic.Uint64 // fast successes removed by the sampler
+	overwritten atomic.Uint64 // records the ring overwrote before a reader took them
+	dropped     atomic.Uint64 // filtered + overwritten, the total presented for lost samples
+	sampled     atomic.Uint64 // fast successes the sampler considered
+	keptSlow    atomic.Uint64
+	keptFailure atomic.Uint64
+	windows     atomic.Uint64 // window boundaries crossed since the observer started
+	lastWindow  atomic.Uint64
+
+	mutex   sync.Mutex
+	records []requestPhaseRecord
+	head    int
+	size    int
+}
+
+type requestPhaseStats struct {
+	Accepted    uint64
+	Sampled     uint64
+	Filtered    uint64
+	Overwritten uint64
+	Dropped     uint64
+	Windows     uint64
+	KeptSlow    uint64
+	KeptFailure uint64
 }
 
 type requestPhaseFrame struct {
@@ -103,43 +253,144 @@ type requestPhaseKey struct{}
 var noRequestPhaseSpan = func() {}
 
 func newRequestPhaseObserver() *requestPhaseObserver {
-	return &requestPhaseObserver{queue: make(chan requestPhaseRecord, requestPhaseLimit), slowThreshold: requestPhaseSlowThreshold}
+	return newRequestPhaseObserverWithConfig(defaultRequestPhaseConfig())
+}
+
+func newRequestPhaseObserverWithConfig(config requestPhaseConfig) *requestPhaseObserver {
+	if config.Capacity < 1 {
+		config.Capacity = requestPhaseLimit
+	}
+	if config.Window <= 0 {
+		config.Window = requestPhaseWindow
+	}
+	if config.SamplePermille > 1000 {
+		config.SamplePermille = 1000
+	}
+	observer := &requestPhaseObserver{
+		slowThreshold:  config.SlowThreshold,
+		samplePermille: config.SamplePermille,
+		window:         config.Window,
+		capacity:       config.Capacity,
+		records:        make([]requestPhaseRecord, config.Capacity),
+	}
+	// Baselines the rotation counter at the window the observer started in. Without this,
+	// the first record would report every window since the Unix epoch as a rotation.
+	observer.lastWindow.Store(requestPhaseWindowIndex(time.Now(), config.Window))
+	return observer
 }
 
 func (observer *requestPhaseObserver) TryReceive() (requestPhaseRecord, bool) {
-	if observer != nil {
-		select {
-		case record := <-observer.queue:
-			return record, true
-		default:
-		}
+	if observer == nil {
+		return requestPhaseRecord{}, false
 	}
-	return requestPhaseRecord{}, false
+	observer.mutex.Lock()
+	defer observer.mutex.Unlock()
+	if observer.size == 0 {
+		return requestPhaseRecord{}, false
+	}
+	record := observer.records[observer.head]
+	observer.records[observer.head] = requestPhaseRecord{}
+	observer.head = (observer.head + 1) % observer.capacity
+	observer.size--
+	return record, true
 }
 
-// keep decides whether a finished request belongs in the bounded stream. Normal successful
-// traffic is sampled out before it reaches the queue; a failure is always kept so a fast
-// Unknown cannot disappear from the evidence. A threshold of zero keeps every request.
+func (observer *requestPhaseObserver) stats() requestPhaseStats {
+	if observer == nil {
+		return requestPhaseStats{}
+	}
+	return requestPhaseStats{
+		Accepted:    observer.sequence.Load(),
+		Sampled:     observer.sampled.Load(),
+		Filtered:    observer.filtered.Load(),
+		Overwritten: observer.overwritten.Load(),
+		Dropped:     observer.dropped.Load(),
+		Windows:     observer.windows.Load(),
+		KeptSlow:    observer.keptSlow.Load(),
+		KeptFailure: observer.keptFailure.Load(),
+	}
+}
+
+// keep decides whether a finished request belongs in the ring. A failure always stays so a
+// fast Unknown cannot disappear from the evidence. Slow requests stay regardless of the
+// sampler. A fast success is kept by the deterministic sampler, which makes the configured
+// rate exact over a run instead of unpredictable per request.
 func (observer *requestPhaseObserver) keep(total uint64, outcome string, status int) bool {
-	if total >= uint64(observer.slowThreshold) || outcome != "ok" || status < 200 || status >= 300 {
+	if outcome != "ok" || status < 200 || status >= 300 {
+		observer.keptFailure.Add(1)
+		return true
+	}
+	if total >= uint64(observer.slowThreshold) {
+		observer.keptSlow.Add(1)
+		return true
+	}
+	count := observer.sampled.Add(1)
+	if requestPhaseSampled(count, observer.samplePermille) {
 		return true
 	}
 	observer.filtered.Add(1)
+	observer.dropped.Add(1)
 	return false
+}
+
+// requestPhaseSampled reports whether the count-th fast success is kept. The remainder changes
+// exactly permille times per thousand candidates, so a run of 1000 fast successes keeps
+// permille of them and the first kept sample arrives at the configured stride. The modulo keeps
+// the arithmetic bounded for a long-running process.
+func requestPhaseSampled(count, permille uint64) bool {
+	if permille == 0 || count == 0 {
+		return false
+	}
+	if permille >= 1000 {
+		return true
+	}
+	return (count%1000)*permille%1000 < permille
 }
 
 func (observer *requestPhaseObserver) record(record requestPhaseRecord) {
 	if observer == nil {
 		return
 	}
-	// The stream is bounded and never blocks a request: a diagnostic that drops records is
-	// better than one that slows the path it measures.
-	if observer.sequence.Add(1) > requestPhaseLimit {
-		return
+	observer.sequence.Add(1)
+	// The ring is bounded and never blocks a request: when a reader falls behind, the oldest
+	// record is replaced and the loss is counted instead of stalling the path being measured.
+	observer.mutex.Lock()
+	if observer.size == observer.capacity {
+		observer.records[observer.head] = record
+		observer.head = (observer.head + 1) % observer.capacity
+		observer.overwritten.Add(1)
+		observer.dropped.Add(1)
+	} else {
+		index := (observer.head + observer.size) % observer.capacity
+		observer.records[index] = record
+		observer.size++
 	}
-	select {
-	case observer.queue <- record:
-	default:
+	observer.mutex.Unlock()
+}
+
+func requestPhaseWindowIndex(now time.Time, window time.Duration) uint64 {
+	if window <= 0 {
+		return 0
+	}
+	nanos := now.UnixNano()
+	if nanos < 0 {
+		return 0
+	}
+	return uint64(nanos / int64(window))
+}
+
+// observeWindow counts window boundaries as records complete. Out-of-order completions only
+// move the mark forward, so the count is a rotation count, not a per-request counter.
+func (observer *requestPhaseObserver) observeWindow(index uint64) {
+	for {
+		last := observer.lastWindow.Load()
+		if index <= last {
+			return
+		}
+		if observer.lastWindow.CompareAndSwap(last, index) {
+			observer.windows.Add(index - last)
+			return
+		}
 	}
 }
 
@@ -202,7 +453,7 @@ func (trace *requestPhaseTrace) leaveLocked() {
 	if len(trace.frames) > 0 {
 		trace.frames[len(trace.frames)-1].childNS += uint64(elapsed)
 	}
-	trace.spans = append(trace.spans, requestPhaseSegment{Phase: frame.phase, NS: uint64(own)})
+	trace.spans = append(trace.spans, requestPhaseSegment{Phase: frame.phase, Kind: frame.phase.kind(), NS: uint64(own)})
 }
 
 // finish records the request's own totals. Spans are reported as they were measured, and the
@@ -211,16 +462,23 @@ func (trace *requestPhaseTrace) finish(requestID, outcome string, status int) {
 	if trace == nil {
 		return
 	}
-	// Sample before the record is built: a fast success costs one clock read and never
-	// takes a slot in the global bound. Failures and slow requests keep their evidence.
-	if !trace.observer.keep(uint64(time.Since(trace.started)), outcome, status) {
+	now := time.Now()
+	elapsed := now.Sub(trace.started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	window := requestPhaseWindowIndex(now, trace.observer.window)
+	trace.observer.observeWindow(window)
+	// Sample before the record is built: a fast success costs one clock read and never takes
+	// a slot in the ring unless the sampler keeps it. Failures and slow requests keep their
+	// evidence.
+	if !trace.observer.keep(uint64(elapsed), outcome, status) {
 		return
 	}
 	trace.mutex.Lock()
 	for len(trace.frames) > 0 {
 		trace.leaveLocked()
 	}
-	elapsed := time.Since(trace.started)
 	// Entry is what happened before the first span opened: connection handling, the request
 	// context, correlation parsing and route selection.
 	entry := elapsed
@@ -230,7 +488,7 @@ func (trace *requestPhaseTrace) finish(requestID, outcome string, status int) {
 	if entry < 0 {
 		entry = 0
 	}
-	spans := append([]requestPhaseSegment{{Phase: requestPhaseEntry, NS: uint64(entry)}}, trace.spans...)
+	spans := append([]requestPhaseSegment{{Phase: requestPhaseEntry, Kind: requestPhaseEntry.kind(), NS: uint64(entry)}}, trace.spans...)
 	truncated := trace.truncated
 	trace.mutex.Unlock()
 	var accounted uint64
@@ -250,6 +508,7 @@ func (trace *requestPhaseTrace) finish(requestID, outcome string, status int) {
 		Action:        trace.action,
 		Outcome:       outcome,
 		Status:        status,
+		Window:        window,
 		TotalNS:       total,
 		AccountedNS:   accounted,
 		UnaccountedNS: total - accounted,

@@ -56,6 +56,9 @@ const (
 	// rejectionOperationQueueFull is the bounded durable append queue refusing new
 	// work before anything was written (operationJournalQueueMaximum).
 	rejectionOperationQueueFull rejectionReason = "operation_queue_full"
+	// rejectionAuditCapacity is the bounded audit admission refusing new work
+	// before dispatch because the completion reserve or a queue budget is full.
+	rejectionAuditCapacity rejectionReason = "audit_capacity"
 )
 
 // rejectionReasons is the closed vocabulary in publication order. A set that is
@@ -74,6 +77,7 @@ var rejectionReasons = []rejectionReason{
 	rejectionDeadline,
 	rejectionOperationCapacity,
 	rejectionOperationQueueFull,
+	rejectionAuditCapacity,
 }
 
 func rejectionReasonNames() []string {
@@ -202,7 +206,13 @@ func (gate *gatewayAdmission) reserveLane(project string, quota Quotas, session,
 			generalRate--
 			state.ownerTokens = min(1, state.ownerTokens+elapsed)
 		}
-		state.tokens = min(generalRate, state.tokens+elapsed*generalRate)
+		// A quota cut must not silently discard credits the old rate already
+		// granted. Refill is capped at max(accrued, new rate): a bucket above the
+		// new rate keeps those credits and may spend them, but gains no more;
+		// once it falls below the new rate it refills normally. A raise is capped
+		// by the new rate, so it grants no burst either.
+		accrued := state.tokens
+		state.tokens = min(accrued+elapsed*generalRate, max(accrued, generalRate))
 		credit := &state.tokens
 		if profile && owner && state.tokens < 1 {
 			credit = &state.ownerTokens

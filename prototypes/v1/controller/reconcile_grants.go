@@ -91,7 +91,7 @@ func (controller *Controller) challenge(ctx context.Context, placement *Placemen
 		Nonce       string `json:"nonce"`
 		ExpiresInMS uint64 `json:"expires_in_ms"`
 	}
-	if err := controller.transport.Authority(ctx, placement.PendingID, command, &reply); err != nil {
+	if err := controller.authorityCall(ctx, placement.PendingID, command, &reply); err != nil {
 		return err
 	}
 	if reply.Nonce == "" {
@@ -111,10 +111,16 @@ func (controller *Controller) challenge(ctx context.Context, placement *Placemen
 func (controller *Controller) mutateAuthority(ctx context.Context, placement *Placement) error {
 	if placement.Phase == "revoke_pending" {
 		var result json.RawMessage
-		if err := controller.transport.Authority(ctx, placement.PendingID, placement.PendingCommand, &result); err != nil {
+		if err := controller.authorityCall(ctx, placement.PendingID, placement.PendingCommand, &result); err != nil {
 			return err
 		}
-		placement.Phase = "suspended"
+		// An idle release stops at `idle` so the database stays out of the
+		// renewal scheduler until a request or an operator activates it.
+		if placement.SuspendReason == SuspendReasonIdle {
+			placement.Phase = "idle"
+		} else {
+			placement.Phase = "suspended"
+		}
 		clearPending(placement)
 		return controller.save(*placement)
 	}
@@ -126,7 +132,7 @@ func (controller *Controller) mutateAuthority(ctx context.Context, placement *Pl
 		return errors.New("pending mutation identity invalid")
 	}
 	var grant Grant
-	if err := controller.transport.Authority(ctx, placement.PendingID, placement.PendingCommand, &grant); err != nil {
+	if err := controller.authorityCall(ctx, placement.PendingID, placement.PendingCommand, &grant); err != nil {
 		if placement.Phase == "renew_pending" || placement.Phase == "grant_pending" {
 			return controller.recoverExpiredRenewal(ctx, placement, err)
 		}

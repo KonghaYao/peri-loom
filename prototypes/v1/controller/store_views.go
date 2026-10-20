@@ -2,10 +2,20 @@ package controller
 
 import "errors"
 
+// placementActionable is the single definition of which placements stay in the
+// controller's reconcile schedule. Idle and suspended records are still durable
+// and routable; they simply have no renewal or lifecycle work left to do.
+func placementActionable(placement Placement) bool {
+	return placement.Phase != "suspended" && placement.Phase != "idle"
+}
+
 func actionablePlacements(placements map[string]Placement) map[string]struct{} {
 	keys := make(map[string]struct{})
 	for key, placement := range placements {
-		if placement.Phase != "suspended" {
+		// Idle placements keep their durable record but leave the renewal and
+		// reconcile schedule: nothing is left to renew, and a wake reads the
+		// record directly.
+		if placementActionable(placement) {
 			keys[key] = struct{}{}
 		}
 	}
@@ -47,7 +57,14 @@ func (store *diskStore) reconcileView() (Metadata, error) {
 		view.Workers[identifier] = store.applyHeartbeat(worker)
 	}
 	for key := range store.reconcileKeys {
-		view.Placements[key] = clonePlacement(store.metadata.Placements[key])
+		// The stored key set is an optimization, not the schedule's authority:
+		// an idle placement must leave the pass view even if an older entry
+		// still names it.
+		placement := store.metadata.Placements[key]
+		if !placementActionable(placement) {
+			continue
+		}
+		view.Placements[key] = clonePlacement(placement)
 	}
 	return view, nil
 }

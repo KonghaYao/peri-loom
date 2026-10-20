@@ -14,17 +14,37 @@ import (
 var ErrStoreLocked = errors.New("metadata store already locked")
 var ErrStoreClosed = errors.New("metadata store closed")
 var ErrStoreUncertain = errors.New("metadata persistence outcome uncertain; reopen requires durable verification")
+var ErrStoreRevisionMismatch = errors.New("metadata store revision mismatch")
+
+// RevisionedStore is an optional compare-and-commit capability. Callers that
+// derived a mutation from an earlier snapshot can reject stale writes instead
+// of overwriting a newer revision.
+type RevisionedStore interface {
+	UpdateAtRevision(uint64, func(*Metadata) error) error
+}
 
 type diskStore struct {
 	mutex         sync.Mutex
 	directory     string
 	lock          *os.File
+	journal       *os.File
 	metadata      Metadata
 	heartbeats    map[string]heartbeatObservation
 	reconcileKeys map[string]struct{}
 	closed        bool
 	uncertain     bool
-	initialized   bool
+
+	// The journal is the only durable revision authority. The snapshot is a
+	// derived checkpoint, and journalTail links the next record to the durable
+	// prefix so replay can reject gaps, rewrites and stale compaction leftovers.
+	snapshotRevision   uint64
+	journalEntries     int
+	journalBytes       int64
+	journalTail        string
+	replayEntries      int
+	compactions        uint64
+	lastCompactionMS   int64
+	compactionErrorMsg string
 }
 
 type epochFloor struct {
@@ -94,36 +114,23 @@ func OpenStore(directory string) (MetadataStore, error) {
 	}
 	onlyLock := len(entries) == 1 && entries[0].Name() == "metadata.lock"
 	if fresh && onlyLock {
-		store.metadata = Metadata{Version: 1, Workers: make(map[string]Worker), Placements: make(map[string]Placement)}
-		if err := store.persist(store.metadata); err != nil {
+		if err := store.initialize(); err != nil {
 			return nil, err
 		}
 	} else {
 		if err := validateDirectory(entries); err != nil {
 			return nil, err
 		}
-		if err := recoverMetadataCommit(absolute); err != nil {
+		if err := store.load(); err != nil {
 			return nil, err
-		}
-		metadata, floor, err := loadState(absolute)
-		if err != nil {
-			return nil, err
-		}
-		if floor.Version != 1 || floor.Revision != metadata.Revision || floor.Epoch != metadata.Epoch {
-			return nil, errors.New("durable epoch/revision floor mismatch")
-		}
-		if err := validateMetadata(metadata, nil); err != nil {
-			return nil, err
-		}
-		store.metadata = metadata
-		// A persisted heartbeat is historical evidence, not a live probe after
-		// process restart. Keep the durable before image intact for recovery.
-		for identifier, worker := range metadata.Workers {
-			store.heartbeats[identifier] = heartbeatObservation{address: worker.Address, load: 0, lastHeartbeatMS: worker.LastHeartbeatMS}
 		}
 	}
+	// A persisted heartbeat is historical evidence, not a live probe after
+	// process restart. Keep the durable image intact for recovery.
+	for identifier, worker := range store.metadata.Workers {
+		store.heartbeats[identifier] = heartbeatObservation{address: worker.Address, load: 0, lastHeartbeatMS: worker.LastHeartbeatMS}
+	}
 	store.reconcileKeys = actionablePlacements(store.metadata.Placements)
-	store.initialized = true
 	success = true
 	return store, nil
 }
@@ -145,16 +152,38 @@ func (store *diskStore) Snapshot() (Metadata, error) {
 func (store *diskStore) Update(mutation func(*Metadata) error) error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
+	return store.updateLocked(nil, mutation)
+}
+
+func (store *diskStore) UpdateAtRevision(expected uint64, mutation func(*Metadata) error) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	return store.updateLocked(&expected, mutation)
+}
+
+func (store *diskStore) updateLocked(expected *uint64, mutation func(*Metadata) error) error {
 	if err := store.available(); err != nil {
 		return err
 	}
 	if mutation == nil {
 		return errors.New("metadata mutation required")
 	}
-	candidate, err := cloneMetadata(store.metadata)
-	if err != nil {
-		return err
+	if store.journal == nil {
+		return errors.New("metadata journal unavailable")
 	}
+	if expected != nil && store.metadata.Revision != *expected {
+		return fmt.Errorf("%w: expected revision %d, current %d", ErrStoreRevisionMismatch, *expected, store.metadata.Revision)
+	}
+	if store.shouldCompact() {
+		if err := store.compactDurable(); err != nil {
+			store.compactionErrorMsg = err.Error()
+			logCompactionFailure(err)
+		}
+	}
+	if store.journalEntries >= journalMaxEntries || store.journalBytes >= journalFileLimit {
+		return errors.New("metadata journal requires compaction before more commits")
+	}
+	candidate := cloneMetadataForUpdate(store.metadata)
 	store.applyHeartbeats(candidate.Workers)
 	if err := mutation(&candidate); err != nil {
 		return err
@@ -162,25 +191,54 @@ func (store *diskStore) Update(mutation func(*Metadata) error) error {
 	if candidate.Version != store.metadata.Version || candidate.Revision != store.metadata.Revision {
 		return errors.New("metadata version/revision is store owned")
 	}
+	if candidate.Version != 1 || candidate.Workers == nil || candidate.Placements == nil {
+		return errors.New("invalid metadata version or maps")
+	}
 	if candidate.Revision == math.MaxUint64 {
 		return errors.New("metadata revision exhausted")
 	}
 	candidate.Revision++
-	committed, err := cloneMetadata(candidate)
+	delta := diffMetadata(store.metadata, candidate)
+	if err := validateMetadataDelta(store.metadata, delta); err != nil {
+		return err
+	}
+	record, checksum, err := encodeJournalRecord(candidate.Revision, store.journalTail, delta)
 	if err != nil {
 		return err
 	}
-	if err := validateMetadata(committed, &store.metadata); err != nil {
-		return err
+	if store.journalBytes+int64(len(record)) > journalFileLimit {
+		return errors.New("metadata journal would exceed its size limit")
 	}
-	keys := actionablePlacements(committed.Placements)
-	if err := store.persist(committed); err != nil {
-		store.uncertain = true
-		return fmt.Errorf("%w: %v", ErrStoreUncertain, err)
+	store.commitPoint("journal.append.before")
+	if err := writeJournalRecord(store.journal, record); err != nil {
+		return store.uncertainFailure(err)
 	}
-	store.metadata = committed
-	store.reconcileKeys = keys
+	store.commitPoint("journal.append.after")
+	if err := store.journal.Sync(); err != nil {
+		return store.uncertainFailure(err)
+	}
+	store.commitPoint("journal.fsync.after")
+	store.commitPoint("index.before")
+	// Publish only after the record is durable, and apply the delta to the
+	// store's own maps rather than the callback's candidate. A callback that
+	// retains its pointer can therefore never mutate committed state.
+	next := store.metadata
+	applyMetadataDelta(&next, delta, true)
+	next.Version = candidate.Version
+	next.Revision = candidate.Revision
+	store.metadata = next
+	store.journalTail = checksum
+	store.journalEntries++
+	store.journalBytes += int64(len(record))
+	store.updateReconcileKeys(delta)
 	store.refreshHeartbeatObservations()
+	store.commitPoint("index.after")
+	if store.shouldCompact() {
+		if err := store.compactDurable(); err != nil {
+			store.compactionErrorMsg = err.Error()
+			logCompactionFailure(err)
+		}
+	}
 	return nil
 }
 
@@ -194,32 +252,9 @@ func (store *diskStore) available() error {
 	return nil
 }
 
-func (store *diskStore) persist(metadata Metadata) error {
-	encoded, encodedFloor, err := metadataCommitFiles(metadata)
-	if err != nil {
-		return err
-	}
-	intent := metadataCommit{Version: 1, After: metadata}
-	if store.initialized {
-		intent.Before = &store.metadata
-	}
-	if _, err := os.Lstat(filepath.Join(store.directory, metadataPendingName)); !errors.Is(err, os.ErrNotExist) {
-		return errors.New("unfinished or unavailable metadata commit intent")
-	}
-	encodedIntent, _, err := encodeEnvelope(metadata.Revision, intent)
-	if err != nil {
-		return err
-	}
-	if err := atomicFile(store.directory, metadataPendingName, encodedIntent); err != nil {
-		return err
-	}
-	if err := atomicFile(store.directory, "epoch-floor.json", encodedFloor); err != nil {
-		return err
-	}
-	if err := atomicFile(store.directory, "metadata.json", encoded); err != nil {
-		return err
-	}
-	return removeMetadataIntent(store.directory)
+func (store *diskStore) uncertainFailure(err error) error {
+	store.uncertain = true
+	return fmt.Errorf("%w: %v", ErrStoreUncertain, err)
 }
 
 func (store *diskStore) Close() error {
@@ -231,7 +266,11 @@ func (store *diskStore) Close() error {
 	store.closed = true
 	unlock := syscall.Flock(int(store.lock.Fd()), syscall.LOCK_UN)
 	closed := store.lock.Close()
-	return errors.Join(unlock, closed)
+	var journalClosed error
+	if store.journal != nil {
+		journalClosed = store.journal.Close()
+	}
+	return errors.Join(unlock, closed, journalClosed)
 }
 
 func cloneMetadata(metadata Metadata) (Metadata, error) {
