@@ -122,6 +122,60 @@ instance followed by a normal start that passes the unchanged clean gate.
 For a fresh fixture only, `PERI_BOOTSTRAP_KEY` can reuse a previously protected global key;
 other fixture credentials and database contents are new. Never put the key in a command argument or log.
 
+### Isolation recovery runbook
+
+An operation whose outcome is unknown may have committed, so the gateway isolates
+its whole namespace: SQL, PITR and snapshot calls answer `409 database_isolated`
+until an operator ends the isolation with a proof. That 409 is by design while the
+namespace is isolated; it is not a routing failure to retry.
+
+Preconditions are the owned worker stop proofs, the clean Authority shutdown marker
+the previous stop left behind, and the Authority's fencing attestation. Start the
+recovery instance from the same run directory (`dev.py --recover`); it runs only the
+Authority and the platform with `PERI_RECOVERY_ONLY=1`, so SQL is disabled. Then run
+
+```sh
+peri recover --endpoint https://... --database TENANT/DATABASE/BRANCH \
+  --credential-file /private/credential --ca-file /private/ca.pem
+```
+
+or the manual sequence `operations` → `operations/decision` →
+`operations/retire-local` → `isolation/release`, re-reading `operations` after each
+step. The request bodies are the same values `recover` derives:
+`operations/decision` needs `request_id`, `database`, `operation_id` and
+`decision: retain_isolation_new_database_required`; `operations/retire-local` and
+`isolation/release` need `request_id` and `database`. The stop proof is the
+launcher-owned record already on disk; the fencing proof is the Authority's own
+answer for every branch in the namespace, so neither is supplied by the caller.
+There is no `worker_authority_tokens` field. `request_id` in the release record is
+the id the server stored from the request; reusing it is how a retry stays
+idempotent. `recover` refuses `--request-id`: every step derives a deterministic
+id from the operation it acts on, so rerunning it after a failure repeats the same
+durable decision. Stop the recovery instance cleanly, then start normally; the
+unchanged clean gate now admits the run.
+
+`retain_isolation_new_database_required` is a historical decision name. Release
+never deletes data and never claims the unknown operation's contents are intact;
+after release the original database and branch become usable again on a fresh epoch,
+so no new database is required. PITR and snapshot calls return 409 only while the
+isolation is open.
+
+Client guidance: an `outcome_unknown` from `open` means the session establishment
+result is unknown, not that SQL ran; do not transparently replay a session that may
+already exist. A client may retry session establishment explicitly with concurrent
+opens serialized and exponential backoff. An unknown write needs a business
+idempotency key or an `operations` query. `retry_allowed` is `false` in both cases.
+
+Opening a session writes no durable data and submits no SQL, so an `open` whose
+reply was lost is recorded as `terminal`/`unknown` with `may_have_committed=false`
+and `cleanup_outcome=unknown`: it does not isolate the namespace and is not an
+unresolved launcher operation. The namespace stays usable, and a stop followed by
+a restart no longer needs an isolation release. Its retained admission permit keeps
+the unknown session quota visible while the process serves, but shutdown returns
+that permit: the leaked worker session has no identity to retire and disappears with
+the worker, so a normal stop still writes a clean terminal. Any worker session it
+leaked is reclaimed by the worker's idle sweep. Unknown writes still isolate.
+
 Private state, KMS, and audit heads use a bounded complete commit intent before
 the floor/payload renames. Under the exclusive file lock, restart only rolls
 forward exact validated parent/next-revision prefixes. Missing or unsafe files

@@ -567,6 +567,16 @@ def verify_no_unresolved_operations(run_directory, configuration, state_path=Non
                 # authority attestation this record ends under; it is history now,
                 # not an open isolation.
                 continue
+            if (record.get("source") == "gateway" and record.get("action") == "open"
+                    and record.get("state") == "terminal"
+                    and record.get("business_outcome") == "unknown"
+                    and record.get("may_have_committed") is False):
+                # Opening a session stores nothing and submits no SQL. The reply
+                # may have been lost, so the outcome stays unknown, but it cannot
+                # have committed: the leaked worker session is reclaimed by the
+                # worker's idle sweep. It therefore neither isolates the namespace
+                # nor blocks a clean restart. Every other unknown still does.
+                continue
             if record.get("state") != "terminal" or record.get("ambiguous", False) or record.get("retirement_pending", False) or record.get("local_resources_retired", False) or record.get("decision", ""):
                 raise ValueError("unresolved operation")
             if record.get("cleanup_outcome") not in ("completed", "not_applicable"):

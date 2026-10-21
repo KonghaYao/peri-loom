@@ -48,7 +48,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	}
 	openCommand, err := freezeCommand(map[string]any{"command": "open_session", "database": database})
 	if err != nil {
-		return operationAdmissionFailure(err)
+		return gateway.admissionFailure(database, err)
 	}
 	leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
 	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", openCommand)

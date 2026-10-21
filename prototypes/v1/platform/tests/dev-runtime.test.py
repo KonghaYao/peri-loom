@@ -214,6 +214,35 @@ class RuntimeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "unresolved platform operation"):
                     dev.verify_no_unresolved_operations(project.directory, configuration)
 
+    def test_uncommittable_open_unknown_does_not_block_clean_restart(self):
+        with tempfile.TemporaryDirectory(prefix="peri-test-launcher-") as directory:
+            project = self.project(directory)
+            project.prepare()
+            configuration = project.config["owned_stop_proof"]
+            path = pathlib.Path(directory) / "platform/state.json"
+            open_unknown = {"source": "gateway", "action": "open", "state": "terminal",
+                            "business_outcome": "unknown", "cleanup_outcome": "unknown",
+                            "ambiguous": True, "may_have_committed": False}
+            state = {"owned_run_generation": configuration["generation"], "operations": {"open": open_unknown}}
+            dev.atomic_private_json(path, {"version": 1, "payload": state})
+            # An open writes no durable data, so its unknown is honest but cannot
+            # have committed; the launcher must agree with the gateway and admit a
+            # clean restart instead of demanding an isolation release.
+            dev.verify_no_unresolved_operations(project.directory, configuration)
+            missing = {key: value for key, value in open_unknown.items() if key != "may_have_committed"}
+            for name, record in (
+                ("missing may_have_committed", missing),
+                ("may_have_committed true", {**open_unknown, "may_have_committed": True}),
+                ("quarantined open", {**open_unknown, "state": "quarantined"}),
+                ("write unknown", {**open_unknown, "action": "execute"}),
+                ("management source", {**open_unknown, "source": "management"}),
+            ):
+                with self.subTest(case=name):
+                    state["operations"]["open"] = record
+                    dev.atomic_private_json(path, {"version": 1, "payload": state})
+                    with self.assertRaisesRegex(RuntimeError, "unresolved platform operation"):
+                        dev.verify_no_unresolved_operations(project.directory, configuration)
+
     def test_redirects_cannot_forward_credentials(self):
         self.assertIsNone(dev.NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://outside.invalid"))
 

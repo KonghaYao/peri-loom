@@ -385,6 +385,74 @@ func TestUnknownRecoveryNativeResponseLoss(test *testing.T) {
 			for command, count := range proxy.counts {
 				before[command] = count
 			}
+			if scenario.name == "open" {
+				// An open stores nothing and submits no SQL, so its lost reply is an
+				// honest unknown that cannot have committed: the namespace stays
+				// readable, the next open is admitted, and a restart must stay clean.
+				worker, nativeRequestID, nativeSession := proxy.worker, proxy.requestID, proxy.lastSession
+				proxy.mutex.Unlock()
+				if !upstreamSessionID(nativeSession) || worker == "" {
+					test.Fatal("leaked native open session not witnessed")
+				}
+				status, read := unknownNativeCall(test, fixture, fixture.credential, "/v1/databases/operations", "read_operations", map[string]any{"database": fixture.database})
+				if status != 200 || !bytes.Contains(read["result"], []byte(requestID)) ||
+					!bytes.Contains(read["result"], []byte(`"state":"terminal"`)) ||
+					!bytes.Contains(read["result"], []byte(`"business_outcome":"unknown"`)) ||
+					!bytes.Contains(read["result"], []byte(`"cleanup_outcome":"unknown"`)) ||
+					!bytes.Contains(read["result"], []byte(`"may_have_committed":false`)) {
+					test.Fatalf("non-committing open lost its durable form: %d %s", status, read["result"])
+				}
+				for _, path := range []string{"/v1/databases/status", "/v1/databases/schema", "/v1/databases/diagnostics"} {
+					if status, _ := unknownNativeCall(test, fixture, fixture.credential, path, "read_"+strings.ReplaceAll(filepath.Base(path), "-", "_"), map[string]any{"database": fixture.database}); status != 200 {
+						test.Fatalf("non-committing open isolated %s: %d", path, status)
+					}
+				}
+				// A clean SIGTERM is the normal stop the launcher must be able to
+				// prove: the open wrote no durable data and its retained permit is
+				// returned at shutdown instead of blocking the terminal.
+				fixture.platform.stop(test, true)
+				fixture.startPlatform()
+				publicLogs = append(publicLogs, &fixture.platform.log)
+				status, read = unknownNativeCall(test, fixture, fixture.credential, "/v1/databases/operations", "after_restart", map[string]any{"database": fixture.database})
+				if status != 200 || !bytes.Contains(read["result"], []byte(requestID)) ||
+					!bytes.Contains(read["result"], []byte(`"state":"terminal"`)) ||
+					!bytes.Contains(read["result"], []byte(`"may_have_committed":false`)) {
+					test.Fatal("restart rewrote the non-committing open unknown")
+				}
+				metrics := unknownNativeMetrics(test, fixture)
+				if string(metrics["unknown_held_permits"]) != "0" {
+					test.Fatalf("restart restored a non-committing open as a live unknown: %s", metrics["unknown_held_permits"])
+				}
+				if status, _ := unknownNativeCall(test, fixture, fixture.credential, "/v1/sql/open", "after_restart_open", map[string]any{"database": fixture.database}); status != 200 {
+					test.Fatalf("restart isolated an open unknown: %d", status)
+				}
+				proxy.mutex.Lock()
+				counts := map[string]int{}
+				for command, count := range proxy.counts {
+					counts[command] = count
+				}
+				proxy.mutex.Unlock()
+				// The schema read issues its own query; what must not appear is a
+				// write, because the lost open carried no SQL to replay.
+				if counts["execute"] != 0 {
+					test.Fatalf("non-committing open unknown replayed a write: %v", counts)
+				}
+				for _, file := range []string{fixture.config.AuditPath, filepath.Join(fixture.config.StateDirectory, "state.json")} {
+					encoded, err := os.ReadFile(file)
+					if err != nil {
+						test.Fatal(err)
+					}
+					if bytes.Contains(encoded, []byte(nativeSession)) {
+						test.Fatal("unknown native open session persisted")
+					}
+				}
+				// A graceful stop of the restarted process is the clean restart the
+				// launcher gate will verify: the in-memory unknown permit of the lost
+				// open did not survive, because the durable record is terminal.
+				fixture.platform.stop(test, true)
+				test.Logf("TRUE_FAULT case=open native_ack=1 dropped_response=1 worker=%s native_request_id=%s durable_reload=terminal may_have_committed=0 namespace_isolated=0 clean_restart=1", worker, nativeRequestID)
+				return
+			}
 			worker, nativeRequestID := proxy.worker, proxy.requestID
 			nativeSessions := append([]string(nil), proxy.sessions...)
 			proxy.mutex.Unlock()

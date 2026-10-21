@@ -3,6 +3,7 @@ package platform
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"strings"
@@ -189,10 +190,49 @@ func TestGatewayCleanupProgressesInsideIsolation(test *testing.T) {
 	}
 }
 
-// An unproven open has no session to name, and the isolation it creates still
-// has to be attributable: the log line carries the database the operation
-// belongs to instead of a session that never existed.
-func TestUnprovenOpenNamesTheDatabaseItIsolated(test *testing.T) {
+// An isolation refusal on the open path names the unresolved operation that
+// isolated the namespace, so the caller can query it without guessing which
+// write is owed.
+func TestGatewayIsolationRefusalNamesTheOperation(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "execute" {
+			return nil, testRPCError(false, false, SQLRPCError{Ambiguous: true})
+		}
+		return nil, nil
+	})
+	gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/execute", map[string]any{"session": session, "sql": "INSERT INTO records VALUES(1)", "request_id": "isolating_write"})
+	record := operationByRequestID(test, fixture.state, "isolating_write")
+	if record.State != "quarantined" {
+		test.Fatalf("the write did not isolate: %+v", record.OperationStatus)
+	}
+	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first})
+	var reply struct {
+		Error struct {
+			OperationID     string `json:"operation_id"`
+			BusinessOutcome string `json:"business_outcome"`
+			CleanupOutcome  string `json:"cleanup_outcome"`
+			PossibleCommit  *bool  `json:"possible_commit"`
+			RetryAllowed    *bool  `json:"retry_allowed"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &reply); err != nil {
+		test.Fatal(err)
+	}
+	if response.Code != 409 || gatewayCode(test, response) != "database_isolated" ||
+		reply.Error.OperationID != record.OperationID || reply.Error.BusinessOutcome != "unknown" ||
+		reply.Error.CleanupOutcome != record.CleanupOutcome || reply.Error.PossibleCommit == nil || !*reply.Error.PossibleCommit ||
+		reply.Error.RetryAllowed == nil || *reply.Error.RetryAllowed {
+		test.Fatalf("isolation refusal lost its operation evidence: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// An unproven open has no session to name, and it writes no durable data: the
+// log line and the durable record still have to attribute the unknown to the
+// database it belongs to, but the namespace must stay usable because an open
+// cannot commit.
+func TestUnprovenOpenNamesTheDatabaseWithoutIsolating(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	var logged bytes.Buffer
 	previous := log.Writer()
@@ -205,8 +245,25 @@ func TestUnprovenOpenNamesTheDatabaseItIsolated(test *testing.T) {
 		return nil, nil
 	})
 	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first, "request_id": "open_unknown"})
-	if response.Code != 502 || gatewayCode(test, response) != "outcome_unknown" {
-		test.Fatalf("unproven open was not quarantined: %d %s", response.Code, response.Body.String())
+	if response.Code != 502 || gatewayCode(test, response) != "outcome_unknown" || !strings.Contains(response.Body.String(), `"possible_commit":false`) {
+		test.Fatalf("unproven open was not reported as a non-committing unknown: %d %s", response.Code, response.Body.String())
+	}
+	record := operationByRequestID(test, fixture.state, "open_unknown")
+	if record.State != "terminal" || record.BusinessOutcome != "unknown" || record.CleanupOutcome != "unknown" || record.MayHaveCommitted || record.ExecutionProven || !record.Ambiguous {
+		test.Fatalf("open unknown lost its honest durable form: %+v", record.OperationStatus)
+	}
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if isolated, blocked := isolatedOperation(state, fixture.first, false); blocked {
+		test.Fatalf("an open unknown isolated the namespace: %+v", isolated)
+	}
+	// The namespace stays readable before any recovery step: a second open is
+	// admitted again (the retained session quota still applies, so this assertion
+	// is about isolation, not quota).
+	if response = gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first}); gatewayCode(test, response) == "database_isolated" {
+		test.Fatalf("open unknown refused the next open as isolated: %d %s", response.Code, response.Body.String())
 	}
 	line := logged.String()
 	if !strings.Contains(line, "request_id=open_unknown") || !strings.Contains(line, "stage=open_session") ||

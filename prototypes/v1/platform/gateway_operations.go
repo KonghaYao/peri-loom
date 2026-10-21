@@ -86,6 +86,10 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
 	result.operationID, result.operationStage = operationID, stage
+	// observed keeps the committed copy of a record whose outcome the reply must
+	// quote; the edit below only exposes a value copy, and the reply is written
+	// after this function returns. It is request-local, so no lock is shared.
+	var observed *OperationStatus
 	err := updateOperationRecords(gateway.config.State, func(edit *operationEdit) error {
 		key := operationKey(database, operationID)
 		record, exists := edit.record(key)
@@ -94,6 +98,10 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 		}
 		applyOperationOutcome(&record, *result, stage)
 		edit.put(key, record)
+		if stage == "open_session" && result.code == "outcome_unknown" {
+			status := record.OperationStatus
+			observed = &status
+		}
 		if stage == "close_session" && result.code == "" {
 			keys := edit.matching(func(_ string, opened OperationRecord) bool {
 				return opened.Source == "gateway" && opened.Action == "open" && opened.State == "terminal" && opened.Session == record.Session && opened.Worker == record.Worker && opened.Database == record.Database && opened.CleanupOutcome == "pending"
@@ -110,6 +118,8 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)
 		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, stage, database
+	} else if observed != nil {
+		result.operationObservation = observed
 	}
 	if result.code == "outcome_unknown" {
 		gateway.holdOperation(database, operationID, permit)
@@ -184,6 +194,17 @@ func applyOperationOutcome(record *OperationRecord, result gatewayResult, stage 
 		record.Ambiguous, record.Rejected, record.ExecutionCompleted = result.rpc.Ambiguous, result.rpc.evidence.Rejected(), result.rpc.evidence.Executed()
 	}
 	if result.code == "outcome_unknown" {
+		// Opening a session writes no durable data and submits no SQL. Its lost
+		// reply is still honestly unknown and ambiguous, but the operation cannot
+		// have committed, so it must not isolate the namespace: isolation is for
+		// work whose durable effect is in doubt. A worker session the open may have
+		// created is reclaimed by the worker's idle sweep, and the record keeps
+		// cleanup_outcome=unknown so that residue stays visible.
+		if stage == "open_session" && record.Action == "open" {
+			record.State, record.BusinessOutcome, record.MayHaveCommitted = "terminal", "unknown", false
+			record.CleanupOutcome, record.ExecutionProven = "unknown", false
+			return
+		}
 		record.State, record.MayHaveCommitted = "quarantined", true
 		if stage == "close_session" {
 			record.BusinessOutcome, record.CleanupOutcome = "not_applicable", "unknown"
