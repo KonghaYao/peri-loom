@@ -125,10 +125,10 @@ func TestGatewayUnknownContractOpenFailureMatrix(test *testing.T) {
 				if response.Code != 429 || fixture.upstream.count("open_session") != 1 {
 					test.Fatal("unknown Open released session quota for another Open")
 				}
-				if err := fixture.gateway.Close(context.Background()); err == nil || fixture.upstream.count("close_session") != 0 {
-					test.Fatal("shutdown treated unknown Open as terminal")
+				if err := fixture.gateway.Close(context.Background()); err != nil || fixture.upstream.count("close_session") != 0 {
+					test.Fatal("shutdown failed a non-committing Open")
 				}
-				unknownContractAdmission(test, fixture, 1, 1, 1)
+				unknownContractAdmission(test, fixture, 0, 0, 0)
 			}
 			records := sqlOpenTestRecords(observer)
 			if len(records) != 1 || records[0].RequestID != requestID || records[0].CallSequence != 1 || records[0].Classification != scenario.code || records[0].Reason != "upstream_classification" {
@@ -361,7 +361,7 @@ func TestGatewayUnknownContractCheckpointCleanupMatrix(test *testing.T) {
 	}
 }
 
-func TestGatewayUnknownContractCanceledOpenRetainsPermit(test *testing.T) {
+func TestGatewayUnknownContractCanceledOpenReleasesPermitAtShutdown(test *testing.T) {
 	fixture := newGatewayFixture(test)
 	fixture.gateway.config.OpenObserver = NewSQLOpenObserver()
 	entered, returned := make(chan struct{}), make(chan struct{})
@@ -411,10 +411,13 @@ func TestGatewayUnknownContractCanceledOpenRetainsPermit(test *testing.T) {
 	}
 	unknownContractResponse(test, response, "contract_canceled_open", "outcome_unknown", noProof)
 	unknownContractAdmission(test, fixture, 1, 1, 1)
-	if fixture.gateway.Close(context.Background()) == nil || fixture.upstream.count("open_session") != 1 || fixture.upstream.count("close_session") != 0 {
-		test.Fatal("cancellation released/retried/cleaned unknown Open")
+	if err := fixture.gateway.Close(context.Background()); err != nil {
+		test.Fatalf("clean shutdown of a non-committing open failed: %v", err)
 	}
-	unknownContractAdmission(test, fixture, 1, 1, 1)
+	if fixture.upstream.count("open_session") != 1 || fixture.upstream.count("close_session") != 0 {
+		test.Fatal("cancellation retried or cleaned unknown Open")
+	}
+	unknownContractAdmission(test, fixture, 0, 0, 0)
 }
 
 func TestGatewayUnknownContractCompletedWithoutWriterProof(test *testing.T) {

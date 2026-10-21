@@ -153,6 +153,64 @@ sys.exit(module.main())`
 			test.Fatal("retain decision failed")
 		}
 	}
+	if command == "open_session" {
+		// An open cannot commit, so there is nothing to quarantine or retire. The
+		// owned stop proof still has to join the worker, and the restarted platform
+		// must not reconstruct a live unknown from the terminal record.
+		if len(listing.Operations) != 1 || listing.Operations[0].State != "terminal" || listing.Operations[0].BusinessOutcome != "unknown" ||
+			listing.Operations[0].CleanupOutcome != "unknown" || listing.Operations[0].MayHaveCommitted || listing.Operations[0].ExecutionProven {
+			test.Fatalf("non-committing open lost its durable form: %+v", listing.Operations)
+		}
+		if status, _ := unknownNativeCall(test, fixture, fixture.credential, "/v1/databases/operations/retire-local", "no_quarantine", map[string]any{"database": fixture.database}); status != 409 {
+			test.Fatalf("retirement acted on a non-committing open: %d", status)
+		}
+		// Release is idempotent when nothing is quarantined: it returns the same
+		// terminal, non-committing record instead of inventing an isolation.
+		status, released := unknownNativeCall(test, fixture, fixture.credential, "/v1/databases/isolation/release", "no_quarantine", map[string]any{"database": fixture.database})
+		if status != 200 || !bytes.Contains(released["result"], []byte(`"state":"terminal"`)) || !bytes.Contains(released["result"], []byte(`"may_have_committed":false`)) {
+			test.Fatalf("release rewrote a non-committing open: %d %s", status, released["result"])
+		}
+		var opened struct {
+			Session string `json:"session"`
+		}
+		status, reply := unknownNativeCall(test, fixture, fixture.credential, "/v1/sql/open", "after_open_unknown", map[string]any{"database": fixture.database})
+		if status != 200 || json.Unmarshal(reply["result"], &opened) != nil || opened.Session == "" {
+			test.Fatalf("open unknown isolated the namespace: %d %s", status, reply["result"])
+		}
+		if status, _ := unknownNativeCall(test, fixture, fixture.credential, "/v1/sql/close", "after_open_unknown_close", map[string]any{"session": opened.Session}); status != 200 {
+			test.Fatal("admitted session did not close")
+		}
+		stop := exec.Command(python, "-B", launcher, "--run-dir", directory, "--stop-worker", worker)
+		stop.Env = p6VerifyEnvironment(nil)
+		if output, err := stop.CombinedOutput(); err != nil {
+			test.Fatalf("actual launcher stop+Wait failed: %v\n%s", err, output)
+		}
+		_ = project.command.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-project.finished:
+		case <-time.After(50 * time.Second):
+			test.Fatal("launcher shutdown did not join owned stack")
+		}
+		fixture.startPlatform()
+		status, read = unknownNativeCall(test, fixture, fixture.credential, "/v1/databases/operations", "restart_read", map[string]any{"database": fixture.database})
+		if status != 200 || !bytes.Contains(read["result"], []byte(`"state":"terminal"`)) || !bytes.Contains(read["result"], []byte(`"may_have_committed":false`)) {
+			test.Fatal("CLI restart rewrote the non-committing open")
+		}
+		metrics := unknownNativeMetrics(test, fixture)
+		if string(metrics["unknown_held_permits"]) != "0" {
+			test.Fatalf("CLI restart reconstructed a non-committing open: %s", metrics["unknown_held_permits"])
+		}
+		fixture.platform.stop(test, false)
+		fixture.config.OwnedStopProof.Generation = p6VerifyToken(test)
+		p6VerifyPrivate(test, fixture.configPath, fixture.config)
+		rebound := exec.Command(fixture.binary, "-config", fixture.configPath)
+		rebound.Env = p6VerifyEnvironment(nil)
+		if output, err := rebound.CombinedOutput(); err == nil || !bytes.Contains(output, []byte("cannot be rebound")) {
+			test.Fatal("actual CLI rebound old state to new generation")
+		}
+		test.Log("OWNED_STOP_CLI case=open_session native_ack=1 dropped_response=1 may_have_committed=0 owned_wait=1 namespace_isolated=0 retired_quota_not_rebuilt=1")
+		return
+	}
 	retire := func(requestID string, accepted bool) {
 		test.Helper()
 		status, reply := unknownNativeCall(test, fixture, fixture.credential, "/v1/databases/operations/retire-local", requestID, map[string]any{"database": fixture.database})

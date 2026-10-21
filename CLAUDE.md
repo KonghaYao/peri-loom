@@ -116,10 +116,13 @@ scripts/p0-gate.sh
   `session_moved` 保持不透明，不重连、不重放。E1 是显式 known-gap：HTTP v3 写 cursor abort 无
   可确认回滚证明；默认矩阵每轮执行 26/27，2 轮 52 runs + 2 skips，
   `PERI_HRANA_INCLUDE_KNOWN_GAPS=1` 可执行但不保证通过，不是完整 Hrana 兼容。
-- **当前交付缺口**：同一持久卷的*正常*重启仍被 launcher 拒绝（clean 门禁未放宽）；原数据库在 Unknown 后已有
-  有证明条件的隔离释放路径（`operations/decision` → `operations/retire-local` → `isolation/release`，由
+- **当前交付缺口**：可能提交的 Unknown 仍会隔离命名空间，同一持久卷的*正常*重启在隔离或未决记录存在时仍被 launcher
+  拒绝（clean 门禁未放宽）；原数据库在 Unknown 后已有有证明条件的隔离释放路径（`operations/decision` →
+  `operations/retire-local` → `isolation/release`，也可由 `peri recover` 一步执行；由
   `dev.py --recover` 在 SQL 关闭的恢复实例中执行，需 owned worker stop proof 与 authority fencing attestation，
-  且不删除 ownership marker），但“释放后正常重启”的端到端验证尚未跑通。审计已经按 64 MiB 分段并验证连续
+  且不删除 ownership marker），但“释放后正常重启”的端到端验证尚未跑通。网关 `open` 的 `outcome_unknown`
+  已按不可提交操作处理：记录 `may_have_committed=false` 且不隔离命名空间、不阻止 clean restart；写语句的
+  Unknown 仍按隔离处理。审计已经按 64 MiB 分段并验证连续
   hash chain，但磁盘空间耗尽前的并发安全准入预留仍未实现。
   可信 SQL 回执不再被审计失败改写为 Unknown。针对性验证：`cd prototypes/v1/platform && go test ./... -run 'TestAudit|TestDurableRecovery|TestGatewayRealAudit' -count=1`。
   最小 SQL／官方 JS SDK 矩阵已纳入 `.github/workflows/v1-baseline.yml` 发布门禁；E1 known-gap 如上，

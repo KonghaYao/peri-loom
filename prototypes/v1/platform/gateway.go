@@ -199,6 +199,7 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		gateway.releaseNonCommittingOpenHolds()
 		_, active, unknown := gateway.admission.status()
 		if unknown > 0 {
 			return errors.New("gateway has unresolved upstream outcomes; terminal proof required")
@@ -273,6 +274,33 @@ func (gateway *Gateway) removeSession(session *gatewaySession) {
 	delete(gateway.sessions, session.public)
 	gateway.mu.Unlock()
 	gateway.admission.removeSession(session.project)
+}
+
+// releaseNonCommittingOpenHolds hands back the permit of an open whose reply
+// was lost. The open stored nothing and submitted no SQL, so it cannot commit;
+// the permit only accounts for a worker session whose identity the platform
+// never learned. That account is useful while the process serves traffic, but
+// at shutdown nothing is left to protect and keeping it would turn a clean stop
+// into an operator recovery over an operation that wrote no data. Every other
+// unresolved outcome keeps its permit and still refuses a clean terminal.
+func (gateway *Gateway) releaseNonCommittingOpenHolds() {
+	gateway.operationMu.Lock()
+	defer gateway.operationMu.Unlock()
+	if len(gateway.operationHolds) == 0 {
+		return
+	}
+	state, err := gateway.config.State.Snapshot()
+	if err != nil {
+		return
+	}
+	for key, permit := range gateway.operationHolds {
+		record, exists := state.Operations[key]
+		if !exists || record.Action != "open" || record.State != "terminal" || record.BusinessOutcome != "unknown" || record.MayHaveCommitted {
+			continue
+		}
+		permit.releaseRetained()
+		delete(gateway.operationHolds, key)
+	}
 }
 
 var _ http.Handler = (*Gateway)(nil)
