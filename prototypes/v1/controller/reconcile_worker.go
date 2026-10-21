@@ -124,11 +124,9 @@ func (controller *Controller) refreshStaleWorker(ctx context.Context, pass *reco
 	reprobes := 1
 	var observation *workerObservation
 	if pass != nil {
-		observation = pass.workers[identifier]
-		if observation == nil {
-			observation = &workerObservation{}
-			pass.workers[identifier] = observation
-		}
+		observation = pass.observation(identifier)
+		observation.mutex.Lock()
+		defer observation.mutex.Unlock()
 		if observation.failed || observation.reprobes >= maxWorkerReprobesPerPass {
 			return nil
 		}
@@ -212,6 +210,7 @@ func (controller *Controller) applyWorker(ctx context.Context, placement *Placem
 	}
 	if serving(actual, *placement) {
 		placement.Phase = "active"
+		clearSuspension(placement)
 		clearPending(placement)
 		return controller.save(*placement)
 	}
@@ -253,6 +252,7 @@ func (controller *Controller) applyWorker(ctx context.Context, placement *Placem
 		return errors.New("worker did not confirm exact ownership")
 	}
 	placement.Phase = "active"
+	clearSuspension(placement)
 	clearPending(placement)
 	return controller.save(*placement)
 }

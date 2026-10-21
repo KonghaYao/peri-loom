@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
@@ -55,6 +56,9 @@ type Actual struct {
 	Binding        *Binding   `json:"binding"`
 	Epoch          uint64     `json:"epoch"`
 	RemainingTTLMS uint64     `json:"remaining_ttl_ms"`
+	// Resident is present only in the worker's answer. The authority has no
+	// instance to describe, so nil means "not observed" rather than "absent".
+	Resident *bool `json:"resident,omitempty"`
 }
 
 type Worker struct {
@@ -82,7 +86,93 @@ type Placement struct {
 	PendingCommand json.RawMessage `json:"pending_command,omitempty"`
 	Grant          *Grant          `json:"grant,omitempty"`
 	LastError      string          `json:"last_error,omitempty"`
+	// SuspendReason separates an administrator's decision from an idle release.
+	// Without it a request could not tell a database it may wake from one an
+	// operator deliberately stopped.
+	SuspendReason string `json:"suspend_reason,omitempty"`
+	// WakePolicy is the durable answer to "may a request activate this
+	// database?". An administrator suspension and a failed activation are
+	// manual; only an idle release is automatic.
+	WakePolicy string `json:"wake_policy,omitempty"`
+	// IdleSinceMS is when the worker reported no resident instance. It is an
+	// operator-facing fact and never an input to fencing.
+	IdleSinceMS int64 `json:"idle_since_ms,omitempty"`
 }
+
+const (
+	SuspendReasonAdmin   = "admin"
+	SuspendReasonIdle    = "idle"
+	SuspendReasonFailure = "failure"
+
+	WakePolicyAuto   = "auto"
+	WakePolicyManual = "manual"
+
+	// ActivationIdle, ActivationWaking, ActivationActive and ActivationDraining
+	// are the externally visible lifecycle derived from the durable phase. The
+	// phase keeps the protocol detail (which durable intent exists); this is the
+	// single name a request or an operator acts on.
+	ActivationIdle      = "idle"
+	ActivationWaking    = "waking"
+	ActivationProvision = "provisioning"
+	ActivationActive    = "active"
+	ActivationDraining  = "draining"
+	ActivationSuspended = "suspended"
+	ActivationRefused   = "refused"
+	ActivationFailed    = "failed"
+)
+
+// ActivationState collapses the durable phases into the S02 lifecycle. The
+// phase stays the protocol truth: Wake derives its state from here instead of
+// persisting a second copy that could disagree after a crash.
+func (placement Placement) ActivationState() string {
+	switch placement.Phase {
+	case "idle":
+		return ActivationIdle
+	case "active", "renew_intent", "renew_pending", "renew_worker_pending":
+		return ActivationActive
+	case "grant_intent", "grant_pending", "acquire_pending":
+		if placement.SuspendReason == SuspendReasonIdle {
+			return ActivationWaking
+		}
+		return ActivationProvision
+	case "migrate_drain", "suspend_drain", "idle_drain", "revoke_pending":
+		return ActivationDraining
+	case "suspended":
+		return ActivationSuspended
+	default:
+		return ""
+	}
+}
+
+// AutoWakeable reports whether a SQL request may activate this placement. It is
+// deliberately narrow: an administrator suspension, a failed activation, and a
+// legacy suspended record without a reason stay manual.
+func (placement Placement) AutoWakeable() bool {
+	if placement.WakePolicy != WakePolicyAuto || placement.SuspendReason != SuspendReasonIdle {
+		return false
+	}
+	switch placement.Phase {
+	case "idle", "idle_drain", "revoke_pending", "suspended",
+		"grant_intent", "grant_pending", "acquire_pending":
+		return true
+	}
+	return false
+}
+
+// ActivationStatus is the durable identity of one wake attempt. Waiters that
+// leave the budget keep the same operation ID to inspect or retry the open,
+// and they never resend SQL: activation itself dispatches no statement.
+type ActivationStatus struct {
+	Database    DatabaseID `json:"database"`
+	State       string     `json:"state"`
+	OperationID string     `json:"operation_id"`
+	Epoch       uint64     `json:"epoch,omitempty"`
+	Waiters     int        `json:"waiters,omitempty"`
+}
+
+// ErrActivationRefused is returned for a placement whose wake policy forbids a
+// request-driven activation. It is a policy answer, not a retryable failure.
+var ErrActivationRefused = errors.New("database activation refused")
 
 type Metadata struct {
 	Version    uint32               `json:"version"`
@@ -107,4 +197,19 @@ type ReconcileConfig struct {
 	LeaseTTL         time.Duration
 	HeartbeatTimeout time.Duration
 	Interval         time.Duration
+	// MaxConcurrentOperations bounds management operations that hold one
+	// database lane (place, migrate, suspend, resume). Reconcile uses its own
+	// pool so a slow management call cannot starve lease renewal.
+	MaxConcurrentOperations int
+	// ReconcileConcurrency bounds per-database reconcile work across passes.
+	ReconcileConcurrency int
+	// ControlRPCTimeout bounds one authority or worker control call. A call
+	// that exceeds it is left to the next reconcile pass; ambiguous mutators
+	// are never retried inside the call.
+	ControlRPCTimeout time.Duration
+	// ActivationTimeout bounds one request-driven wake, including the cold
+	// load the worker performs while acquiring. It is longer than a control
+	// call because the caller is allowed to keep waiting in the background
+	// after its HTTP request stopped waiting.
+	ActivationTimeout time.Duration
 }

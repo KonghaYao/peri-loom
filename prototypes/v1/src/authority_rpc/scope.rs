@@ -59,3 +59,41 @@ impl Drop for Dispatch<'_> {
         self.0.changed.notify_all();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
+
+    /// A reaper may only release the pin once work that already entered the scope has
+    /// left it. Retirement therefore blocks new dispatch first, then waits for the
+    /// in-flight count to reach zero.
+    #[test]
+    fn retire_waits_for_inflight_dispatch_and_refuses_new_work() {
+        let scope = Arc::new(Scope::default());
+        let dispatch = scope.dispatch().expect("initial dispatch");
+        let (started, entered) = mpsc::channel();
+        let (finished, completed) = mpsc::channel();
+        let retiring = scope.clone();
+        let handle = thread::spawn(move || {
+            started.send(()).expect("signal retirement start");
+            let result = retiring.retire(Instant::now() + Duration::from_secs(5));
+            finished
+                .send(result.is_ok())
+                .expect("signal retirement end");
+        });
+        entered.recv().expect("retirement did not start");
+        assert!(
+            completed.recv_timeout(Duration::from_millis(100)).is_err(),
+            "retirement returned while a dispatch was still in flight"
+        );
+        assert!(scope.dispatch().is_err(), "new work admitted after retire");
+        drop(dispatch);
+        assert!(completed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("retirement did not finish after drain"));
+        handle.join().expect("retirement thread panicked");
+    }
+}

@@ -554,6 +554,7 @@ fn authority_append_replays_on_cas_conflict_and_cold_session() -> Result<()> {
     };
     assert_eq!(session.append_wal(&request("first"))?, Some(1));
     assert_eq!(pin_len(&root)?, initial_pin + 2);
+    let pinned_after_first_append = pin_len(&root)?;
     let snapshot = root.snapshot()?;
     let first_chunk = snapshot
         .root
@@ -566,13 +567,15 @@ fn authority_append_replays_on_cas_conflict_and_cold_session() -> Result<()> {
     *backend.watched.lock().unwrap() = Some(first_key.clone());
 
     assert_eq!(session.append_wal(&request("second"))?, Some(2));
-    assert_eq!(pin_len(&root)?, initial_pin + 4);
+    // A publication keeps only the current pin generation. Repeated appends on the same
+    // store must replace the pin set, not accumulate another copy of it.
+    assert_eq!(pin_len(&root)?, pinned_after_first_append);
     assert_eq!(backend.reads.load(Ordering::SeqCst), 0);
 
     let previous = root.snapshot()?.root.branches["main"].wal.clone().unwrap();
     *backend.fail_changed_wal.lock().unwrap() = Some(previous.hash);
     assert_eq!(session.append_wal(&request("third"))?, Some(3));
-    assert_eq!(pin_len(&root)?, initial_pin + 6);
+    assert_eq!(pin_len(&root)?, pinned_after_first_append);
     assert!(backend.fail_changed_wal.lock().unwrap().is_none());
     assert!(backend.reads.load(Ordering::SeqCst) > 0);
 

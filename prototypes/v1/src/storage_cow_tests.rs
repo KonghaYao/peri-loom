@@ -317,6 +317,121 @@ fn publication_uploads_do_not_hold_the_storage_lock() -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct FetchGate {
+    armed: bool,
+    blocked: bool,
+    released: bool,
+}
+
+/// Blocks the first immutable segment GET until the test releases it, so a partial write can
+/// be observed while its base is being fetched outside the storage lock.
+#[derive(Default)]
+struct FetchGatedStore {
+    inner: MemoryObjectStore,
+    gate: std::sync::Mutex<FetchGate>,
+    changed: std::sync::Condvar,
+}
+
+impl FetchGatedStore {
+    fn arm(&self) {
+        self.gate.lock().expect("fetch gate").armed = true;
+    }
+
+    fn wait_until_blocked(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut gate = self.gate.lock().expect("fetch gate");
+        while !gate.blocked {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
+            gate = self
+                .changed
+                .wait_timeout(gate, remaining)
+                .expect("fetch gate")
+                .0;
+        }
+        true
+    }
+
+    fn release(&self) {
+        self.gate.lock().expect("fetch gate").released = true;
+        self.changed.notify_all();
+    }
+}
+
+impl ObjectStore for FetchGatedStore {
+    fn get(&self, key: &str) -> Result<Option<StoredObject>> {
+        if key.contains("/segments/") {
+            let mut gate = self.gate.lock().expect("fetch gate");
+            if gate.armed {
+                gate.armed = false;
+                gate.blocked = true;
+                self.changed.notify_all();
+                while !gate.released {
+                    gate = self.changed.wait(gate).expect("fetch gate");
+                }
+            }
+        }
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        self.inner.put(key, bytes, condition)
+    }
+
+    fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
+        self.inner.delete(key, expected)
+    }
+
+    fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.list(prefix)
+    }
+}
+
+#[test]
+fn a_partial_write_waiting_on_a_base_fetch_keeps_a_concurrent_dirty_segment() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(FetchGatedStore::default());
+    let storage = RemoteStorage::open(
+        store.clone(),
+        Namespace::new("tenant", "database")?,
+        Arc::new(SegmentCache::new(directory.path(), 0, 0)?),
+    )?;
+    storage.write_at(0, &vec![1; SEGMENT_SIZE])?;
+    storage.publish(WalPosition::default(), 1)?;
+
+    store.arm();
+    let parked = {
+        let storage = storage.clone();
+        std::thread::spawn(move || storage.write_at(17, b"first"))
+    };
+    assert!(
+        store.wait_until_blocked(std::time::Duration::from_secs(5)),
+        "the partial write never fetched its published base"
+    );
+
+    // The fetch runs outside the storage lock, so a full-segment write can replace the base
+    // while the first writer is parked. When that writer resumes it must apply its partial
+    // range on top of the newer dirty bytes, not overwrite them with the fetched base.
+    storage.write_at(0, &vec![9; SEGMENT_SIZE])?;
+    store.release();
+    parked.join().expect("parked writer")?;
+
+    let mut actual = vec![0u8; SEGMENT_SIZE];
+    assert_eq!(storage.read_at(0, &mut actual)?, SEGMENT_SIZE);
+    for (index, byte) in actual.iter().enumerate() {
+        let expected = if let Some(offset) = index.checked_sub(17).filter(|offset| *offset < 5) {
+            b"first"[offset]
+        } else {
+            9
+        };
+        assert_eq!(*byte, expected, "byte {index} lost a concurrent update");
+    }
+    assert_eq!(storage.stats().dirty_segments, 1);
+    Ok(())
+}
+
 #[test]
 fn publish_keeps_a_segment_rewritten_during_the_upload_dirty() -> Result<()> {
     let directory = tempfile::tempdir()?;

@@ -59,6 +59,20 @@ pub enum WorkerCommand {
         #[serde(default = "want_rows_default")]
         want_rows: bool,
     },
+    // One statement prepared, bound and stepped with the engine's read-only
+    // verdict required before every step. A statement the engine classifies as
+    // writing before it runs answers `requires_intent`; it is never stepped on
+    // this path.
+    GuardedReadonlyStatement {
+        session: String,
+        sql: String,
+        #[serde(default)]
+        args: Vec<StatementArg>,
+        #[serde(default)]
+        named_args: Vec<NamedStatementArg>,
+        #[serde(default = "want_rows_default")]
+        want_rows: bool,
+    },
     OpenReadCursor {
         session: String,
         sql: String,

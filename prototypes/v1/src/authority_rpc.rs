@@ -4,6 +4,7 @@ pub(crate) mod http;
 pub(crate) mod ingress;
 pub mod protocol;
 pub mod provider;
+pub mod recovery;
 mod scope;
 mod seal;
 pub mod server;

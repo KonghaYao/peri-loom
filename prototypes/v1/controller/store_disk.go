@@ -148,32 +148,43 @@ func strictJSON(encoded []byte, destination any) error {
 	return nil
 }
 
-func readEnvelope(directory, name string, destination any) (stateEnvelope, error) {
+func readEnvelopeRaw(directory, name string) (stateEnvelope, []byte, error) {
 	path := filepath.Join(directory, name)
 	if err := privateFile(path, false); err != nil {
-		return stateEnvelope{}, err
+		return stateEnvelope{}, nil, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return stateEnvelope{}, err
+		return stateEnvelope{}, nil, err
 	}
 	defer file.Close()
 	encoded, err := io.ReadAll(io.LimitReader(file, (64<<20)+1))
 	if err != nil {
-		return stateEnvelope{}, err
+		return stateEnvelope{}, nil, err
 	}
 	if len(encoded) > 64<<20 {
-		return stateEnvelope{}, errors.New("metadata envelope exceeds size limit")
+		return stateEnvelope{}, nil, errors.New("metadata envelope exceeds size limit")
 	}
 	var envelope stateEnvelope
 	if err := strictJSON(encoded, &envelope); err != nil {
-		return envelope, err
+		return envelope, nil, err
 	}
 	digest := sha256.Sum256(envelope.Payload)
-	if envelope.Version != 1 || envelope.Checksum != hex.EncodeToString(digest[:]) {
+	if envelope.Checksum != hex.EncodeToString(digest[:]) {
+		return envelope, nil, errors.New("metadata envelope checksum/version mismatch")
+	}
+	return envelope, envelope.Payload, nil
+}
+
+func readEnvelope(directory, name string, destination any) (stateEnvelope, error) {
+	envelope, payload, err := readEnvelopeRaw(directory, name)
+	if err != nil {
+		return envelope, err
+	}
+	if envelope.Version != 1 {
 		return envelope, errors.New("metadata envelope checksum/version mismatch")
 	}
-	if err := strictJSON(envelope.Payload, destination); err != nil {
+	if err := strictJSON(payload, destination); err != nil {
 		return envelope, err
 	}
 	return envelope, nil
@@ -181,7 +192,7 @@ func readEnvelope(directory, name string, destination any) (stateEnvelope, error
 
 func loadState(directory string) (Metadata, epochFloor, error) {
 	var metadata Metadata
-	envelope, err := readEnvelope(directory, "metadata.json", &metadata)
+	envelope, err := readEnvelope(directory, metadataSnapshotName, &metadata)
 	if err != nil {
 		return metadata, epochFloor{}, fmt.Errorf("metadata unavailable: %w", err)
 	}
@@ -199,7 +210,7 @@ func loadState(directory string) (Metadata, epochFloor, error) {
 func validateDirectory(entries []os.DirEntry) error {
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == "metadata.json" || name == "epoch-floor.json" || name == "metadata.lock" || name == metadataPendingName {
+		if name == metadataSnapshotName || name == metadataJournalName || name == "epoch-floor.json" || name == "metadata.lock" || name == metadataPendingName {
 			continue
 		}
 		if strings.HasPrefix(name, ".state-") && strings.HasSuffix(name, ".tmp") && entry.Type().IsRegular() {

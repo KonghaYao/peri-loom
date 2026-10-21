@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	controller "peri-loom/controller"
 )
@@ -33,6 +35,35 @@ type auditRecord struct {
 
 const auditSegmentBytes = 64 << 20
 
+// Audit admission budgets. The per-class limits are separate so a rejection
+// storm cannot take the capacity an accepted request needs to settle, and the
+// global limits are the memory ceiling over all classes including reserved
+// completion slots. Counts include the batch currently being written: a slow
+// fsync must not let admission run ahead of the memory the queue already owns.
+const (
+	auditQueueMaximum          = 4096
+	auditQueueBytes            = 8 << 20
+	auditRequestQueueMaximum   = 1024
+	auditRequestQueueBytes     = 2 << 20
+	auditRejectionQueueMaximum = 256
+	auditRejectionQueueBytes   = 512 << 10
+	auditCompletionMaximum     = 1024
+	auditCompletionBytes       = 4 << 20
+	// A reservation is charged this much before the event exists, which is what
+	// makes the slot itself prove the byte budget. validateAudit bounds every
+	// field to 128 ASCII characters, so a real event stays well below it.
+	auditCompletionSlotBytes = 4096
+	// The chain envelope (version, sequence, previous hash, record hash and JSON
+	// punctuation) surrounds one event; it is charged to the queue budget too.
+	auditRecordEnvelopeBytes = 256
+)
+
+// ErrAuditOverloaded is returned before a record is accepted when the queue or
+// one of its class budgets is exhausted. It is a definite refusal, not a
+// durability result: the caller decides how to answer and nothing was dropped
+// silently.
+var ErrAuditOverloaded = errors.New("audit admission capacity exhausted")
+
 type auditRotation struct {
 	Version  uint32 `json:"version"`
 	Start    uint64 `json:"start"`
@@ -41,8 +72,19 @@ type auditRotation struct {
 }
 
 type auditRequest struct {
-	event AuditEvent
-	done  chan error
+	event    AuditEvent
+	class    AuditClass
+	bytes    int
+	enqueued time.Time
+	done     chan error
+}
+
+// auditReservation moves one completion slot from the reserve into the queue.
+// The charge is fixed so ReserveCompletion proves the byte budget too.
+type auditReservation struct {
+	audit   *fileAudit
+	charged int
+	active  bool
 }
 
 // auditWitness proves one chain position survived: recovery has to find the exact
@@ -81,16 +123,185 @@ func (witness *auditWitness) verify() error {
 type fileAudit struct {
 	queueMutex sync.Mutex
 	pending    []*auditRequest
-	running    bool
-	closing    bool
-	writers    sync.WaitGroup
-	mutex      sync.Mutex
-	head       *durableFile
-	file       *os.File
-	state      auditHead
-	size       int64
-	start      uint64
-	closed     bool
+	// writing is the batch the single writer is currently persisting. It keeps
+	// its admission charge, and its age is reported too, because a stalled
+	// barrier is exactly when the queue age matters.
+	writing []*auditRequest
+	running bool
+	closing bool
+	writers sync.WaitGroup
+
+	// admitted counts records accepted into the bounded queue, including the
+	// batch currently being written. reservedCompletion is capacity held for
+	// accepted SQL before its record exists in the queue.
+	admitted                [3]int
+	admittedBytes           [3]int
+	reservedCompletion      int
+	reservedCompletionBytes int
+	dropped                 uint64
+	droppedByClass          [3]uint64
+	admittedMaximum         int
+	admittedBytesMaximum    int
+
+	// fsync cost is accumulated atomically because recordBatch holds the write
+	// lock across the barrier and status must not queue behind it.
+	syncNS    atomic.Uint64
+	syncCount atomic.Uint64
+	syncMaxNS atomic.Uint64
+
+	// testSyncGate holds the writer before the file barrier so a test can make
+	// fsync slow deterministically. Production leaves it nil.
+	testSyncGate func()
+
+	mutex  sync.Mutex
+	head   *durableFile
+	file   *os.File
+	state  auditHead
+	size   int64
+	start  uint64
+	closed bool
+}
+
+func auditEventBytes(event AuditEvent) int {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return auditCompletionSlotBytes
+	}
+	return len(encoded) + auditRecordEnvelopeBytes
+}
+
+func (audit *fileAudit) admittedCountLocked() int {
+	return audit.admitted[AuditClassRequest] + audit.admitted[AuditClassRejection] + audit.admitted[AuditClassCompletion] + audit.reservedCompletion
+}
+
+func (audit *fileAudit) admittedBytesLocked() int {
+	return audit.admittedBytes[AuditClassRequest] + audit.admittedBytes[AuditClassRejection] + audit.admittedBytes[AuditClassCompletion] + audit.reservedCompletionBytes
+}
+
+func (audit *fileAudit) observeMaximumLocked() {
+	if count := audit.admittedCountLocked(); count > audit.admittedMaximum {
+		audit.admittedMaximum = count
+	}
+	if bytes := audit.admittedBytesLocked(); bytes > audit.admittedBytesMaximum {
+		audit.admittedBytesMaximum = bytes
+	}
+}
+
+func (audit *fileAudit) refuseLocked(class AuditClass) {
+	audit.dropped++
+	if class >= AuditClassRequest && class <= AuditClassCompletion {
+		audit.droppedByClass[class]++
+	}
+}
+
+// admitLocked charges one event to its class and the global budget. It is the
+// only place a non-completion record becomes accepted, so a refusal is always
+// counted here rather than after the fact.
+func (audit *fileAudit) admitLocked(class AuditClass, bytes int) bool {
+	maximumCount, maximumBytes := 0, 0
+	switch class {
+	case AuditClassRequest:
+		maximumCount, maximumBytes = auditRequestQueueMaximum, auditRequestQueueBytes
+	case AuditClassRejection:
+		maximumCount, maximumBytes = auditRejectionQueueMaximum, auditRejectionQueueBytes
+	default:
+		return false
+	}
+	if audit.admitted[class]+1 > maximumCount || audit.admittedBytes[class]+bytes > maximumBytes {
+		return false
+	}
+	if audit.admittedCountLocked()+1 > auditQueueMaximum || audit.admittedBytesLocked()+bytes > auditQueueBytes {
+		return false
+	}
+	audit.admitted[class]++
+	audit.admittedBytes[class] += bytes
+	audit.observeMaximumLocked()
+	return true
+}
+
+func (audit *fileAudit) enqueueLocked(request *auditRequest) {
+	audit.pending = append(audit.pending, request)
+	if !audit.running {
+		audit.running = true
+		audit.writers.Add(1)
+		go audit.drain()
+	}
+}
+
+func (audit *fileAudit) releaseReservationLocked(reservation *auditReservation) {
+	if reservation == nil || !reservation.active {
+		return
+	}
+	reservation.active = false
+	audit.reservedCompletion--
+	audit.reservedCompletionBytes -= reservation.charged
+}
+
+func (reservation *auditReservation) Release() {
+	if reservation == nil || reservation.audit == nil {
+		return
+	}
+	reservation.audit.queueMutex.Lock()
+	reservation.audit.releaseReservationLocked(reservation)
+	reservation.audit.queueMutex.Unlock()
+}
+
+func (reservation *auditReservation) Record(event AuditEvent) error {
+	if reservation == nil || reservation.audit == nil {
+		return ErrStateClosed
+	}
+	return reservation.audit.recordCompletion(event, reservation)
+}
+
+// ReserveCompletion takes one completion slot and its fixed byte charge. The
+// slot is held from before dispatch until the record is durable, so queued
+// traffic that arrived later can never take it away.
+func (audit *fileAudit) ReserveCompletion() (AuditReservation, error) {
+	audit.queueMutex.Lock()
+	defer audit.queueMutex.Unlock()
+	if audit.closing {
+		return nil, ErrStateClosed
+	}
+	completionCount := audit.admitted[AuditClassCompletion] + audit.reservedCompletion
+	completionBytes := audit.admittedBytes[AuditClassCompletion] + audit.reservedCompletionBytes
+	if completionCount+1 > auditCompletionMaximum || completionBytes+auditCompletionSlotBytes > auditCompletionBytes ||
+		audit.admittedCountLocked()+1 > auditQueueMaximum || audit.admittedBytesLocked()+auditCompletionSlotBytes > auditQueueBytes {
+		audit.refuseLocked(AuditClassCompletion)
+		return nil, ErrAuditOverloaded
+	}
+	audit.reservedCompletion++
+	audit.reservedCompletionBytes += auditCompletionSlotBytes
+	audit.observeMaximumLocked()
+	return &auditReservation{audit: audit, charged: auditCompletionSlotBytes, active: true}, nil
+}
+
+// recordCompletion transfers a held slot into the queue without rechecking
+// capacity. Admission of the SQL depended on this capacity, so settling it may
+// not be refused by traffic that arrived after the reservation.
+func (audit *fileAudit) recordCompletion(event AuditEvent, reservation *auditReservation) error {
+	if err := validateAudit(event); err != nil {
+		reservation.Release()
+		return err
+	}
+	bytes := min(auditEventBytes(event), reservation.charged)
+	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, enqueued: time.Now(), done: make(chan error, 1)}
+	audit.queueMutex.Lock()
+	if !reservation.active {
+		audit.queueMutex.Unlock()
+		return ErrStateClosed
+	}
+	if audit.closing {
+		audit.releaseReservationLocked(reservation)
+		audit.queueMutex.Unlock()
+		return ErrStateClosed
+	}
+	audit.releaseReservationLocked(reservation)
+	audit.admitted[AuditClassCompletion]++
+	audit.admittedBytes[AuditClassCompletion] += request.bytes
+	audit.observeMaximumLocked()
+	audit.enqueueLocked(request)
+	audit.queueMutex.Unlock()
+	return <-request.done
 }
 
 func auditSegmentPath(path string, start uint64) string {
@@ -324,21 +535,28 @@ func OpenAudit(path string) (Audit, error) {
 }
 
 func (audit *fileAudit) Record(event AuditEvent) error {
+	return audit.RecordClass(event, AuditClassRequest)
+}
+
+func (audit *fileAudit) RecordClass(event AuditEvent, class AuditClass) error {
+	if class != AuditClassRequest && class != AuditClassRejection {
+		return errors.New("audit class requires its own admission path")
+	}
 	if err := validateAudit(event); err != nil {
 		return err
 	}
-	request := &auditRequest{event: event, done: make(chan error, 1)}
+	request := &auditRequest{event: event, class: class, bytes: auditEventBytes(event), enqueued: time.Now(), done: make(chan error, 1)}
 	audit.queueMutex.Lock()
 	if audit.closing {
 		audit.queueMutex.Unlock()
 		return ErrStateClosed
 	}
-	audit.pending = append(audit.pending, request)
-	if !audit.running {
-		audit.running = true
-		audit.writers.Add(1)
-		go audit.drain()
+	if !audit.admitLocked(class, request.bytes) {
+		audit.refuseLocked(class)
+		audit.queueMutex.Unlock()
+		return ErrAuditOverloaded
 	}
+	audit.enqueueLocked(request)
 	audit.queueMutex.Unlock()
 	return <-request.done
 }
@@ -357,10 +575,101 @@ func (audit *fileAudit) drain() {
 		batch := append([]*auditRequest(nil), audit.pending[:count]...)
 		clear(audit.pending[:count])
 		audit.pending = audit.pending[count:]
+		audit.writing = batch
 		audit.queueMutex.Unlock()
 		err := audit.recordBatch(batch)
+		// The batch keeps its admission charge until the barrier returns, so a
+		// stalled device cannot be outrun by records admitted while it waits.
+		audit.queueMutex.Lock()
+		for _, request := range batch {
+			audit.admitted[request.class]--
+			audit.admittedBytes[request.class] -= request.bytes
+		}
+		audit.writing = nil
+		audit.queueMutex.Unlock()
 		for _, request := range batch {
 			request.done <- err
+		}
+	}
+}
+
+// AuditStatus reports the bounded queue and the cost of its barrier. It takes
+// only the bookkeeping lock, so an in-flight fsync never blocks an operator.
+func (audit *fileAudit) AuditStatus() map[string]any {
+	audit.queueMutex.Lock()
+	pendingBytes := 0
+	var oldest time.Time
+	for index, request := range audit.pending {
+		pendingBytes += request.bytes
+		if index == 0 {
+			oldest = request.enqueued
+		}
+	}
+	if len(audit.writing) > 0 && (oldest.IsZero() || audit.writing[0].enqueued.Before(oldest)) {
+		oldest = audit.writing[0].enqueued
+	}
+	age := int64(0)
+	if !oldest.IsZero() {
+		age = time.Since(oldest).Milliseconds()
+	}
+	admitted := [3]int{audit.admitted[0], audit.admitted[1], audit.admitted[2]}
+	admittedBytes := [3]int{audit.admittedBytes[0], audit.admittedBytes[1], audit.admittedBytes[2]}
+	droppedByClass := [3]uint64{audit.droppedByClass[0], audit.droppedByClass[1], audit.droppedByClass[2]}
+	status := map[string]any{
+		"queue_count":               len(audit.pending),
+		"queue_bytes":               pendingBytes,
+		"queue_age_ms":              age,
+		"admitted_count":            audit.admittedCountLocked(),
+		"admitted_bytes":            audit.admittedBytesLocked(),
+		"in_flight_count":           admitted[AuditClassRequest] + admitted[AuditClassRejection] + admitted[AuditClassCompletion] - len(audit.pending),
+		"reserved_completion_slots": audit.reservedCompletion,
+		"reserved_completion_bytes": audit.reservedCompletionBytes,
+		"dropped_total":             audit.dropped,
+		"admitted_by_class": map[string]int{
+			"request":    admitted[AuditClassRequest],
+			"rejection":  admitted[AuditClassRejection],
+			"completion": admitted[AuditClassCompletion],
+		},
+		"admitted_bytes_by_class": map[string]int{
+			"request":    admittedBytes[AuditClassRequest],
+			"rejection":  admittedBytes[AuditClassRejection],
+			"completion": admittedBytes[AuditClassCompletion],
+		},
+		"dropped_by_class": map[string]uint64{
+			"request":    droppedByClass[AuditClassRequest],
+			"rejection":  droppedByClass[AuditClassRejection],
+			"completion": droppedByClass[AuditClassCompletion],
+		},
+		"limits": map[string]any{
+			"queue_count":           auditQueueMaximum,
+			"queue_bytes":           auditQueueBytes,
+			"request_count":         auditRequestQueueMaximum,
+			"request_bytes":         auditRequestQueueBytes,
+			"rejection_count":       auditRejectionQueueMaximum,
+			"rejection_bytes":       auditRejectionQueueBytes,
+			"completion_slots":      auditCompletionMaximum,
+			"completion_bytes":      auditCompletionBytes,
+			"completion_slot_bytes": auditCompletionSlotBytes,
+		},
+		"observed_admitted_max":       audit.admittedMaximum,
+		"observed_admitted_bytes_max": audit.admittedBytesMaximum,
+		"fsync_count":                 audit.syncCount.Load(),
+		"fsync_ns_total":              audit.syncNS.Load(),
+		"fsync_ns_max":                audit.syncMaxNS.Load(),
+		"dropped_semantics":           "records refused before admission; accepted records are never dropped",
+	}
+	audit.queueMutex.Unlock()
+	return status
+}
+
+func (audit *fileAudit) recordSyncDuration(elapsed time.Duration) {
+	nanoseconds := uint64(elapsed)
+	audit.syncNS.Add(nanoseconds)
+	audit.syncCount.Add(1)
+	for {
+		maximum := audit.syncMaxNS.Load()
+		if nanoseconds <= maximum || audit.syncMaxNS.CompareAndSwap(maximum, nanoseconds) {
+			return
 		}
 	}
 }
@@ -433,10 +742,15 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
 		audit.head.poisoned = true
 		return ErrStateUncertain
 	}
+	if gate := audit.testSyncGate; gate != nil {
+		gate()
+	}
+	syncStarted := time.Now()
 	if err := audit.file.Sync(); err != nil {
 		audit.head.poisoned = true
 		return ErrStateUncertain
 	}
+	audit.recordSyncDuration(time.Since(syncStarted))
 	audit.state = next
 	audit.size += int64(len(line))
 	return nil

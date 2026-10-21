@@ -15,11 +15,13 @@ mod execution_clock;
 pub(crate) use evidence::SqlEvidence;
 mod lane;
 pub(crate) mod lease_window;
+mod notify;
 pub use admission::{AdmissionError, AdmissionStatus};
 pub(crate) use admission::{SessionWriterState, UnsettledSqlOutcome, WriterAdmission};
 pub use budget::Budget;
 pub(crate) use budget::RequestDeadline;
 pub(crate) use lane::SessionLane;
+pub(crate) use notify::GateNotify;
 
 pub struct StatementColumn {
     pub name: String,
@@ -46,6 +48,16 @@ pub struct DescribeResult {
     pub cols: Vec<StatementColumn>,
     pub is_explain: bool,
     pub is_readonly: bool,
+}
+
+/// The answer of one guarded read-only dispatch. `Executed` carries the result
+/// of the statement the worker proved non-writing on every step it ran;
+/// `RequiresIntent` means the engine classified the statement as writing before
+/// its first instruction, so nothing executed and the caller has to take the
+/// committing path.
+pub enum GuardedStatementOutcome {
+    Executed(StatementResult),
+    RequiresIntent,
 }
 
 pub struct RemoteSession {
@@ -129,7 +141,7 @@ impl RemoteSession {
             .fetch_write_cursor(self.lane.database()?.as_ref(), page_size)
     }
 
-    pub fn close_write_cursor(&self) -> Result<()> {
+    pub fn close_write_cursor(&self) -> Result<bool> {
         self.lane.close_write_cursor(self.lane.database()?.as_ref())
     }
 
@@ -178,6 +190,23 @@ impl RemoteSession {
             named_args,
             want_rows,
             budget,
+        )
+    }
+
+    pub fn guarded_readonly_statement(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        want_rows: bool,
+    ) -> Result<GuardedStatementOutcome> {
+        self.lane.guarded_readonly_statement(
+            self.lane.database()?.as_ref(),
+            sql,
+            args,
+            named_args,
+            want_rows,
+            &Budget::trusted_default(),
         )
     }
 

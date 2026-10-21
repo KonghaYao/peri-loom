@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,10 +105,27 @@ func TestRequestPhaseRecordsReadSegments(test *testing.T) {
 			test.Fatalf("a segment was reported twice: %s", segment.Phase)
 		}
 		seen[segment.Phase] = segment.NS
+		switch segment.Kind {
+		case requestPhaseCPU, requestPhaseWait, requestPhaseIO:
+		default:
+			test.Fatalf("segment %s has no wait/cpu/io kind: %q", segment.Phase, segment.Kind)
+		}
 	}
-	for _, phase := range []requestPhase{requestPhaseAuth, requestPhaseIntent, requestPhaseWorker, requestPhaseTerminal, requestPhaseAudit, requestPhaseRespond} {
+	for _, phase := range []requestPhase{requestPhaseAuth, requestPhaseIntent, requestPhaseWorker, requestPhaseNative, requestPhaseTerminal, requestPhaseAudit, requestPhaseRespond} {
 		if _, reported := seen[phase]; !reported {
 			test.Fatalf("the read path did not report its %s segment: %+v", phase, record.Spans)
+		}
+	}
+	for _, segment := range record.Spans {
+		switch segment.Phase {
+		case requestPhaseWorker, requestPhaseNative:
+			if segment.Kind != requestPhaseWait {
+				test.Fatalf("%s was not classified as a wait: %q", segment.Phase, segment.Kind)
+			}
+		case requestPhaseIntent, requestPhaseTerminal, requestPhaseAudit:
+			if segment.Kind != requestPhaseIO {
+				test.Fatalf("%s was not classified as durable I/O: %q", segment.Phase, segment.Kind)
+			}
 		}
 	}
 	// A read query pays no sidecar terminal write: its audit row is the durable
@@ -327,18 +345,21 @@ func TestRequestPhaseSinkReportsFiltered(test *testing.T) {
 func TestRequestPhaseClosingLineStaysBounded(test *testing.T) {
 	observer := newRequestPhaseObserver()
 	observer.filtered.Store(7)
+	observer.dropped.Store(7)
 	sink := &serviceRequestPhaseSink{observer: observer, stream: "synthetic"}
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
-	sink.finish(func() {}, encoder, requestPhaseLimit-1, nil)
+	sink.finish(encoder, nil)
 	var complete serviceRequestPhaseClose
-	if err := json.Unmarshal(output.Bytes(), &complete); err != nil || !complete.Complete || complete.Outcome != "stopped" || complete.Filtered != 7 {
+	if err := json.Unmarshal(output.Bytes(), &complete); err != nil || !complete.Complete || complete.Outcome != "stopped" || complete.Filtered != 7 || complete.DroppedSampledOut != 7 {
 		test.Fatalf("the complete closing line is wrong: %v %s", err, output.String())
 	}
 	output.Reset()
-	sink.finish(func() {}, encoder, requestPhaseLimit, nil)
+	observer.overwritten.Store(1)
+	observer.dropped.Add(1)
+	sink.finish(encoder, nil)
 	var bounded serviceRequestPhaseClose
-	if err := json.Unmarshal(output.Bytes(), &bounded); err != nil || bounded.Complete || bounded.Outcome != "bounded" || bounded.Filtered != 7 {
+	if err := json.Unmarshal(output.Bytes(), &bounded); err != nil || bounded.Complete || bounded.Outcome != "bounded" || bounded.Filtered != 7 || bounded.Dropped != 8 || bounded.DroppedRingOverwritten != 1 {
 		test.Fatalf("the bounded closing line is wrong: %v %s", err, output.String())
 	}
 }
@@ -386,6 +407,174 @@ func TestRequestPhaseSinkIsExclusiveAndComplete(test *testing.T) {
 	var absent *serviceRequestPhaseSink
 	if !absent.stop() {
 		test.Fatal("a disabled sink reported an incomplete stop")
+	}
+}
+
+// The phase knobs belong to the profile: unset names keep the documented defaults and every
+// invalid value is rejected instead of silently changing the capture.
+func TestRequestPhaseConfigFromEnvironment(test *testing.T) {
+	defaults := defaultRequestPhaseConfig()
+	if defaults.SlowThreshold != requestPhaseSlowThreshold || defaults.SamplePermille != requestPhaseSamplePermille || defaults.Window != requestPhaseWindow || defaults.Capacity != requestPhaseLimit {
+		test.Fatalf("default phase config changed: %+v", defaults)
+	}
+	test.Setenv(requestPhaseThresholdEnvironment, "0")
+	test.Setenv(requestPhaseSampleEnvironment, "1000")
+	test.Setenv(requestPhaseWindowEnvironment, "250")
+	test.Setenv(requestPhaseCapacityEnvironment, "4")
+	config, err := requestPhaseConfigFromEnvironment()
+	if err != nil {
+		test.Fatal(err)
+	}
+	if config.SlowThreshold != 0 || config.SamplePermille != 1000 || config.Window != 250*time.Millisecond || config.Capacity != 4 {
+		test.Fatalf("phase config did not follow the environment: %+v", config)
+	}
+}
+
+func TestRequestPhaseConfigRejectsInvalidValues(test *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{name: requestPhaseThresholdEnvironment, value: "-1"},
+		{name: requestPhaseThresholdEnvironment, value: "86400001"},
+		{name: requestPhaseSampleEnvironment, value: "1001"},
+		{name: requestPhaseSampleEnvironment, value: "-1"},
+		{name: requestPhaseWindowEnvironment, value: "0"},
+		{name: requestPhaseWindowEnvironment, value: "86400001"},
+		{name: requestPhaseCapacityEnvironment, value: "0"},
+		{name: requestPhaseCapacityEnvironment, value: "65537"},
+	}
+	for _, item := range cases {
+		test.Run(item.name+"="+item.value, func(test *testing.T) {
+			test.Setenv(item.name, item.value)
+			if _, err := requestPhaseConfigFromEnvironment(); err == nil {
+				test.Fatalf("%s=%s was accepted", item.name, item.value)
+			}
+		})
+	}
+}
+
+// A profile that keeps every fast success is the sampling switch a controlled measurement
+// uses; with sampling off the same fast success is counted as dropped instead of recorded.
+func TestRequestPhaseSamplesFastSuccess(test *testing.T) {
+	observer := newRequestPhaseObserverWithConfig(requestPhaseConfig{SlowThreshold: time.Hour, SamplePermille: 1000, Window: time.Minute, Capacity: 8})
+	_, trace := beginRequestPhases(context.Background(), observer, "synthetic_fast", "query", time.Now())
+	trace.finish("synthetic_fast", "ok", 200)
+	record, found := observer.TryReceive()
+	if !found {
+		test.Fatal("a fast success was not sampled in")
+	}
+	if record.Outcome != "ok" || record.Window == 0 || record.TotalNS == 0 {
+		test.Fatalf("the sampled success is unusable: %+v", record)
+	}
+	if stats := observer.stats(); stats.Sampled != 1 || stats.Filtered != 0 || stats.KeptSlow != 0 {
+		test.Fatalf("sampling counters are wrong: %+v", stats)
+	}
+
+	observer = newRequestPhaseObserverWithConfig(requestPhaseConfig{SlowThreshold: time.Hour, SamplePermille: 0, Window: time.Minute, Capacity: 8})
+	_, trace = beginRequestPhases(context.Background(), observer, "synthetic_filtered", "query", time.Now())
+	trace.finish("synthetic_filtered", "ok", 200)
+	if _, found := observer.TryReceive(); found {
+		test.Fatal("a fast success was kept with sampling disabled")
+	}
+	if stats := observer.stats(); stats.Sampled != 1 || stats.Filtered != 1 || stats.Dropped != 1 {
+		test.Fatalf("the filtered sample was not counted: %+v", stats)
+	}
+}
+
+// The deterministic sampler keeps exactly the configured permille of fast successes.
+func TestRequestPhaseSampleRate(test *testing.T) {
+	observer := newRequestPhaseObserverWithConfig(requestPhaseConfig{SlowThreshold: time.Hour, SamplePermille: 500, Window: time.Minute, Capacity: 1024})
+	for index := 0; index < 1000; index++ {
+		_, trace := beginRequestPhases(context.Background(), observer, fmt.Sprintf("synthetic_%d", index), "query", time.Now())
+		trace.finish("", "ok", 200)
+	}
+	records := requestPhaseRecords(test, observer)
+	if len(records) != 500 {
+		test.Fatalf("records = %d, want 500 for 500 per mille", len(records))
+	}
+	if stats := observer.stats(); stats.Sampled != 1000 || stats.Filtered != 500 || stats.Dropped != 500 {
+		test.Fatalf("sampling counters are wrong: %+v", stats)
+	}
+}
+
+// The ring overwrites its oldest sample instead of growing or refusing new ones, and the loss
+// is visible in the counters.
+func TestRequestPhaseRingIsBounded(test *testing.T) {
+	observer := newRequestPhaseObserverWithConfig(requestPhaseConfig{SlowThreshold: 0, Window: time.Minute, Capacity: 3})
+	for index := 0; index < 5; index++ {
+		_, trace := beginRequestPhases(context.Background(), observer, fmt.Sprintf("synthetic_%d", index), "query", time.Now())
+		trace.finish("", "ok", 200)
+	}
+	records := requestPhaseRecords(test, observer)
+	if len(records) != 3 {
+		test.Fatalf("records = %d, want the ring capacity", len(records))
+	}
+	for index, record := range records {
+		if want := fmt.Sprintf("synthetic_%d", index+2); record.RequestID != want {
+			test.Fatalf("record %d = %q, want %q", index, record.RequestID, want)
+		}
+	}
+	if stats := observer.stats(); stats.Accepted != 5 || stats.Overwritten != 2 || stats.Dropped != 2 {
+		test.Fatalf("ring counters are wrong: %+v", stats)
+	}
+}
+
+// Both drop reasons stay separate: a designed sample is not the same as evidence overwritten
+// before a reader took it.
+func TestRequestPhaseDropsAreCountedByReason(test *testing.T) {
+	observer := newRequestPhaseObserverWithConfig(requestPhaseConfig{SlowThreshold: time.Hour, SamplePermille: 0, Window: time.Minute, Capacity: 1})
+	_, trace := beginRequestPhases(context.Background(), observer, "synthetic_filtered", "query", time.Now())
+	trace.finish("", "ok", 200)
+	_, trace = beginRequestPhases(context.Background(), observer, "synthetic_first", "query", time.Now())
+	trace.finish("", "outcome_unknown", 500)
+	_, trace = beginRequestPhases(context.Background(), observer, "synthetic_second", "query", time.Now())
+	trace.finish("", "unavailable", 503)
+	records := requestPhaseRecords(test, observer)
+	if len(records) != 1 || records[0].RequestID != "synthetic_second" {
+		test.Fatalf("the ring did not keep the newest failure: %+v", records)
+	}
+	stats := observer.stats()
+	if stats.Sampled != 1 || stats.Filtered != 1 || stats.Overwritten != 1 || stats.Dropped != 2 || stats.KeptFailure != 2 {
+		test.Fatalf("drop counters are wrong: %+v", stats)
+	}
+}
+
+// A failure bypasses the sampler even when the sampler is configured to keep nothing.
+func TestRequestPhaseFailureBypassesSampling(test *testing.T) {
+	observer := newRequestPhaseObserverWithConfig(requestPhaseConfig{SlowThreshold: time.Hour, SamplePermille: 0, Window: time.Minute, Capacity: 4})
+	_, trace := beginRequestPhases(context.Background(), observer, "synthetic_unknown", "query", time.Now())
+	trace.finish("", "outcome_unknown", 500)
+	record, found := observer.TryReceive()
+	if !found || record.Outcome != "outcome_unknown" || record.Status != 500 {
+		test.Fatalf("a fast Unknown was not kept: %+v", record)
+	}
+	if stats := observer.stats(); stats.Filtered != 0 || stats.KeptFailure != 1 {
+		test.Fatalf("a kept failure changed the sampler counters: %+v", stats)
+	}
+}
+
+// Window rotation is observable as a counter, and a record says which window it belongs to.
+func TestRequestPhaseWindowRolls(test *testing.T) {
+	observer := newRequestPhaseObserverWithConfig(requestPhaseConfig{Window: time.Second, SlowThreshold: 0, Capacity: 4})
+	base := time.Unix(1_700_000_000, 0)
+	first := requestPhaseWindowIndex(base, observer.window)
+	later := requestPhaseWindowIndex(base.Add(3*time.Second), observer.window)
+	observer.lastWindow.Store(first - 1)
+	observer.observeWindow(first)
+	observer.observeWindow(later)
+	if stats := observer.stats(); stats.Windows != later-first+1 {
+		test.Fatalf("window rotations = %d, want %d", stats.Windows, later-first+1)
+	}
+	observer.observeWindow(first)
+	if stats := observer.stats(); stats.Windows != later-first+1 {
+		test.Fatalf("a backwards window moved the rotation counter: %+v", stats)
+	}
+	_, trace := beginRequestPhases(context.Background(), observer, "synthetic_window", "query", time.Now())
+	trace.finish("", "ok", 200)
+	record, found := observer.TryReceive()
+	if !found || record.Window == 0 {
+		test.Fatalf("a record did not carry its window: %+v", record)
 	}
 }
 

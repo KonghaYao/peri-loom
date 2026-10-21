@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use super::budget::MaintenanceBudget;
-use super::policy::{MaintenancePolicy, Watermark};
+use super::policy::{MaintenancePolicy, UnitBudget, Watermark};
 use super::{MaintenanceLane, MaintenanceScheduler, MaintenanceTarget, PreSuspendReason};
 use crate::database::RemoteDatabase;
 use crate::namespace::Namespace;
 use crate::object_store::{MemoryObjectStore, ObjectStore, PutCondition, StoredObject};
-use crate::session::{Budget, RequestDeadline};
+use crate::session::{AdmissionError, Budget, RequestDeadline};
 use crate::wal::RemoteWal;
 
 const MIB: u64 = 1024 * 1024;
@@ -240,6 +240,101 @@ fn scheduled_lanes_run_through_the_real_entry_points_and_compaction_reclaims_the
     Ok(())
 }
 
+/// A bounded compaction is staged: the passive backfill may stop at its frame budget, and that
+/// pass must not touch the WAL index. The truncate is only allowed once a pass has backfilled
+/// the complete log, so draining one bounded pass at a time still reaches a safe reset.
+#[test]
+fn a_bounded_compaction_never_truncates_before_the_backfill_is_complete() -> Result<()> {
+    let fixture = Fixture::open("bounded_compaction")?;
+    let before = fixture.wal.metadata(&fixture.namespace)?;
+    let budget = UnitBudget {
+        max_pages: 1,
+        max_bytes: 4096,
+        max_time: Duration::from_secs(30),
+    };
+
+    let first = fixture.database.compact_wal_with_budget(budget)?;
+    assert!(
+        !first.truncated,
+        "the first bounded pass cannot have covered the whole log"
+    );
+    assert!(!first.complete);
+    assert_eq!(
+        first.scanned_pages, 1,
+        "a one-frame budget backfills exactly one frame per pass"
+    );
+    let after_first = fixture.wal.metadata(&fixture.namespace)?;
+    assert_same_index(
+        &before,
+        &after_first,
+        "a bounded backfill must not rebase or rewrite the WAL index",
+    );
+
+    let mut passes = 0;
+    loop {
+        passes += 1;
+        assert!(passes < 1024, "bounded passes made no progress");
+        let report = fixture.database.compact_wal_with_budget(budget)?;
+        assert!(report.scanned_pages <= budget.max_pages);
+        if report.truncated {
+            assert!(
+                report.complete,
+                "a truncate is only allowed after a complete backfill"
+            );
+            break;
+        }
+    }
+
+    let compacted = fixture.wal.metadata(&fixture.namespace)?;
+    assert_eq!(
+        compacted.replay_baseline_lsn, compacted.last_lsn,
+        "the drain ends in a reset baseline only after the truncate"
+    );
+    assert_eq!(fixture.values()?, "4");
+    Ok(())
+}
+
+/// A bounded unit that reaches a visible reader without spending its frame bound must
+/// classify the reader before it bails. The scheduler's backoff is driven by the block
+/// reason, so an unexplained partial backfill would keep retrying a unit the reader will
+/// keep blocking.
+#[test]
+fn a_bounded_compaction_classifies_a_visible_reader_as_a_block() -> Result<()> {
+    let fixture = Fixture::open("bounded_reader")?;
+    let reader = fixture.database.session()?;
+    reader.execute("BEGIN")?;
+    assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
+    fixture.database.execute("INSERT INTO entries VALUES(4)")?;
+    // Capture the index after the new commit: the assertion is that the blocked unit leaves
+    // the WAL byte-for-byte as it found it, not that the unit's own writer traffic is undone.
+    let settled = fixture.wal.metadata(&fixture.namespace)?;
+
+    let error = fixture
+        .database
+        .compact_wal_with_budget(UnitBudget {
+            max_pages: 4096,
+            max_bytes: 64 * MIB,
+            max_time: Duration::from_secs(30),
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<AdmissionError>(),
+        Some(&AdmissionError::Conflict)
+    );
+    let counters = fixture.counters();
+    assert_eq!(counters.blocks.get("long_reader"), Some(&1));
+    assert_eq!(
+        counters.blocks.get("partial_backfill"),
+        None,
+        "a reader the registry can see is not an unexplained partial backfill"
+    );
+    let after = fixture.wal.metadata(&fixture.namespace)?;
+    assert_same_index(&settled, &after, "a blocked bounded unit keeps the old WAL");
+    assert_eq!(reader.query("SELECT value FROM entries")?.len(), 4);
+    assert_eq!(fixture.values()?, "5");
+    Ok(())
+}
+
 /// A refused unit is skipped as a whole. The only window request admitted the checkpoint; the
 /// compaction queued behind it is refused, nothing starts, and the index is byte-for-byte the
 /// one the checkpoint left. The block covers the whole database, so the next pass does not
@@ -427,10 +522,13 @@ fn a_long_reader_blocks_the_scheduled_compaction_and_the_wal_survives() -> Resul
 
     scheduler.observe(&fixture.target(), compaction_slot)?;
     let summary = scheduler.drain(1, compaction_slot);
-    assert_eq!(summary.failed, 1);
+    // A reader block is not an ordinary failure: it is counted separately, backed off, and
+    // never reported as a completion.
+    assert_eq!(summary.blocked, 1);
+    assert_eq!(summary.failed, 0);
     assert_eq!(summary.completed, 0);
     let counters = fixture.counters();
-    assert_eq!(counters.failed, 1);
+    assert_eq!(counters.failed, 0);
     assert_eq!(counters.blocks.get("long_reader"), Some(&1));
 
     let after = fixture.wal.metadata(&fixture.namespace)?;

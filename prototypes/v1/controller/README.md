@@ -68,18 +68,28 @@ boundary. An ambiguous SQL write must never be automatically retried.
 ## Durability and availability limits
 
 One controller owns one private metadata directory under an exclusive advisory
-lock. Updates first fsync a private checksummed commit intent containing the
-previous and next metadata, then replace the epoch/revision floor and metadata
-with separately fsynced atomic renames. Reopening rolls forward only the exact
-validated next revision when both files match a legal prefix of that intent;
-it never rolls the floor back or dispatches a Rust RPC during recovery. Missing,
-corrupt, stale, or mismatched intent/files still refuse startup. An interrupted
-initialization needs a complete valid initial intent, not merely a lock marker.
-Uncertain metadata persistence poisons the store and refuses further allocation
-until reopening verifies the durable state. Completed intents are removed and
-the directory fsynced before acknowledging an update.
+lock. Each update appends one checksummed delta record to `metadata.journal`,
+fsyncs it, and only then publishes the new in-memory revision; the journal is the
+single durable revision authority. Records carry the revision, the previous
+record checksum and a payload checksum, so replay rejects gaps, duplicate
+revisions, broken chains and checksum failures. A trailing record without its
+terminating newline is a torn append and is discarded; a complete corrupt record
+refuses startup. `metadata.json` is a derived snapshot, replaced when journal
+entry/byte thresholds are reached. The journal is truncated only after the new
+snapshot rename and directory fsync are durable. Recovery starts from the
+snapshot and replays a bounded journal (currently 8192 records or 256 MiB, with
+compaction every 256 records or 8 MiB); stale journal prefixes left by an
+interrupted compaction are checked against the snapshot anchor and skipped. A
+directory containing only the lock marker is never treated as a fresh store.
+Stores created before this format (version 1 snapshot plus `epoch-floor.json`)
+are validated and migrated atomically. Unsupported versions, checksum/floor
+mismatches, ambiguous legacy/journal mixes and a legacy floor ahead of the
+snapshot refuse startup. Uncertain metadata persistence poisons the store and
+refuses further allocation until reopening verifies the durable state.
+`UpdateAtRevision` rejects stale conditional commits, and `StoreMetrics` exposes
+journal bytes/entries, replayed entries, and compaction count/duration.
 Do not reset/delete these files to recover a deployment. Coordinated rollback of
-all metadata/floor files is **not** prevented by a local embedded store: preserve
+both snapshot and journal is **not** prevented by a local embedded store: preserve
 the authoritative Rust epoch floor and use external monotonic consensus for HA.
 
 Desired epochs are globally allocated and persisted before mutating Rust RPC.

@@ -150,7 +150,10 @@ impl Edge {
                                 serde_json::from_slice::<serde_json::Value>(&request.bytes)
                                     .ok()
                                     .is_some_and(|body| {
-                                        body["command"]["command"] == "close_session"
+                                        matches!(
+                                            body["command"]["command"].as_str(),
+                                            Some("close_session" | "retire_session")
+                                        )
                                     })
                             }
                         });

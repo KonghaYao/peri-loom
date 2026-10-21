@@ -63,6 +63,10 @@ type managementRequest struct {
 	OperationID    string                `json:"operation_id"`
 	Decision       string                `json:"decision"`
 	Quotas         Quotas                `json:"quotas"`
+	// Revision is the registry revision a quota edit was read from. It makes the
+	// edit a compare-and-swap: a second writer that still holds the old revision
+	// is refused instead of overwriting the first decision.
+	Revision uint64 `json:"revision"`
 }
 
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -139,6 +143,13 @@ func (management *Management) ServeHTTP(response http.ResponseWriter, request *h
 		return
 	}
 	event := AuditEvent{RequestID: input.RequestID, Subject: principal.Subject, Project: principal.Project, Action: request.URL.Path, Outcome: "admitted", TimestampMS: time.Now().UnixMilli()}
+	// A quota edit acts on one project while the caller is a global admin.
+	// Attribute the audit row to the target project so the record identifies
+	// what changed, not only who asked; an unusable id stays unattributed and is
+	// answered as a normal refusal.
+	if (request.URL.Path == projectQuotasPath || request.URL.Path == projectQuotasMigratePath) && labelPattern.MatchString(input.ID) {
+		event.Project = input.ID
+	}
 	if input.Database.Validate() == nil {
 		event.Database = input.Database.Key()
 	}
@@ -221,6 +232,9 @@ func managementFailure(err error) (int, string) {
 	if errors.Is(err, errRecoveryRestricted) {
 		return 409, "recovery_restricted"
 	}
+	if errors.Is(err, errQuotaRevisionMismatch) {
+		return 409, "revision_mismatch"
+	}
 	var native *nativeToolError
 	if !errors.As(err, &native) {
 		if errors.Is(err, errManagementForbidden) {
@@ -290,6 +304,10 @@ func (management *Management) dispatch(request *http.Request, principal Principa
 		return management.createOrganization(principal, input)
 	case "/v1/projects/create":
 		return management.createProject(principal, input)
+	case projectQuotasPath:
+		return management.updateProjectQuotas(principal, input)
+	case projectQuotasMigratePath:
+		return management.migrateProjectQuotas(principal, input)
 	case "/v1/keys/create":
 		return management.createAPIKey(principal, input)
 	case "/v1/keys/revoke":

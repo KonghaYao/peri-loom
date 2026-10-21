@@ -621,10 +621,12 @@ fn completion_gate(real_s3: bool, lost: bool, timeout: bool) -> Result<()> {
         let endpoint = fixture.rpc.endpoint.clone();
         let closing_scope = scope.clone();
         let closing = threads.spawn(move || {
+            // The worker provider may still hold a reference to this scope; terminal
+            // retirement is the operation that must drain it regardless of references.
             let _ = close_sent.send(wire_call(
                 &endpoint,
                 WORKER_A,
-                AuthorityCommand::CloseSession {
+                AuthorityCommand::RetireSession {
                     session: closing_scope,
                 },
             ));
@@ -675,12 +677,23 @@ fn completion_gate(real_s3: bool, lost: bool, timeout: bool) -> Result<()> {
         granting.join().unwrap();
         closing.join().unwrap();
         if !timeout {
-            let proof = close_result.recv_timeout(Duration::from_secs(3))??;
-            assert_eq!(proof["drained"], true);
-            assert_eq!(
-                serde_json::from_value::<LeaseBinding>(proof["binding"].clone())?,
-                lease.binding
-            );
+            let proof = close_result.recv_timeout(Duration::from_secs(3))?;
+            if lost {
+                // The write outcome is unknown, so the namespace is isolated and the
+                // pin cannot be published away. The scope stays retiring for a retry.
+                let error = proof.unwrap_err();
+                ensure!(
+                    error.to_string().contains("session release deferred"),
+                    "unexpected deferred close error {error}"
+                );
+            } else {
+                let proof = proof?;
+                assert_eq!(proof["drained"], true);
+                assert_eq!(
+                    serde_json::from_value::<LeaseBinding>(proof["binding"].clone())?,
+                    lease.binding
+                );
+            }
         }
         assert!(put(
             &fixture.worker_client,
@@ -1126,7 +1139,7 @@ fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Res
                 );
             }
             let rpc_before = fixture.rpc.statistics();
-            let close_started_before = rpc_before["close_session/none"]["started"]
+            let close_started_before = rpc_before["retire_session/none"]["started"]
                 .as_u64()
                 .unwrap_or(0);
             let grant_started_before = rpc_before["grant/none"]["started"].as_u64().unwrap_or(0);
@@ -1146,7 +1159,7 @@ fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Res
             let dispatch_deadline = Instant::now() + Duration::from_secs(2);
             let dispatched = loop {
                 let rpc = fixture.rpc.statistics();
-                let close_started = rpc["close_session/none"]["started"].as_u64().unwrap_or(0);
+                let close_started = rpc["retire_session/none"]["started"].as_u64().unwrap_or(0);
                 let grant_started = rpc["grant/none"]["started"].as_u64().unwrap_or(0);
                 if close_started > close_started_before && grant_started > grant_started_before {
                     assert_eq!(close_started, close_started_before + 1);
@@ -1155,7 +1168,7 @@ fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Res
                 }
                 ensure!(
                     Instant::now() < dispatch_deadline,
-                    "CloseSession and Grant were not both dispatched while backend response remained held: {rpc}"
+                    "RetireSession and Grant were not both dispatched while backend response remained held: {rpc}"
                 );
                 thread::sleep(Duration::from_millis(1));
             };
@@ -1411,7 +1424,7 @@ fn grant_drains_backend_not_delivery_of_worker_rpc_receipt() -> Result<()> {
         let proof = wire_call(
             &fixture.rpc.endpoint,
             WORKER_A,
-            AuthorityCommand::CloseSession {
+            AuthorityCommand::RetireSession {
                 session: scope.clone(),
             },
         )?;

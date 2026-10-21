@@ -19,7 +19,7 @@ pub(super) struct Transition<'admission> {
 }
 
 #[derive(Debug)]
-struct AdmissionBusy;
+pub(super) struct AdmissionBusy;
 
 impl std::fmt::Display for AdmissionBusy {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

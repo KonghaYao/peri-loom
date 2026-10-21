@@ -1,6 +1,6 @@
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -11,13 +11,18 @@ use super::admission::{
 };
 use super::budget::{Budget, RequestDeadline};
 use super::execution::{self, ReadCursor, WriteCursor};
-use super::{DescribeResult, StatementResult, WriteCursorPage};
+use super::notify::GateNotify;
+use super::{DescribeResult, GuardedStatementOutcome, StatementResult, WriteCursorPage};
 use crate::database::RemoteDatabase;
-use crate::work_metrics::LaneWait;
+use crate::work_metrics::{GateDomain, LaneWait};
 
 pub(crate) struct SessionLane {
     pub control: Arc<SessionControl>,
     pub(crate) connection: Mutex<Option<Arc<Connection>>>,
+    /// Wakes lockers after a release, a close request or a quarantine. Polling the connection
+    /// mutex every 10ms bounded the wait only to the next tick, and try_lock cannot enforce
+    /// the request deadline while the guard is held.
+    notify: GateNotify,
     read_cursor: Mutex<Option<ReadCursor>>,
     write_cursor: Mutex<Option<WriteCursor>>,
     database: Mutex<Option<Arc<RemoteDatabase>>>,
@@ -25,6 +30,51 @@ pub(crate) struct SessionLane {
     retired_unsettled: AtomicBool,
     /// When this session opened. Used as an upper bound for the maintenance reader age.
     opened: std::time::Instant,
+}
+
+/// The lane connection guard. Releasing the connection and waking waiters are one operation:
+/// the notification must be sent after the mutex is free, otherwise a woken waiter would fail
+/// to acquire it and go back to sleep with no further release to wake it.
+pub(crate) struct LaneConnectionGuard<'lane> {
+    connection: Option<MutexGuard<'lane, Option<Arc<Connection>>>>,
+    notify: &'lane GateNotify,
+}
+
+impl<'lane> LaneConnectionGuard<'lane> {
+    fn new(
+        connection: MutexGuard<'lane, Option<Arc<Connection>>>,
+        notify: &'lane GateNotify,
+    ) -> Self {
+        Self {
+            connection: Some(connection),
+            notify,
+        }
+    }
+}
+
+impl Deref for LaneConnectionGuard<'_> {
+    type Target = Option<Arc<Connection>>;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("lane connection guard released")
+    }
+}
+
+impl DerefMut for LaneConnectionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("lane connection guard released")
+    }
+}
+
+impl Drop for LaneConnectionGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.connection.take());
+        self.notify.notify_all();
+    }
 }
 
 /// How long this lane waited for the connection before its deadline expired. Recorded beside
@@ -37,6 +87,7 @@ impl SessionLane {
     pub fn new(connection: Arc<Connection>, admission: &WriterAdmission) -> Result<Self> {
         Ok(Self {
             connection: Mutex::new(Some(connection)),
+            notify: GateNotify::new(),
             read_cursor: Mutex::new(None),
             write_cursor: Mutex::new(None),
             database: Mutex::new(None),
@@ -84,6 +135,7 @@ impl SessionLane {
     pub(crate) fn mark_retired_unsettled(&self) {
         self.retired_unsettled.store(true, Ordering::Release);
         self.control.closing.store(true, Ordering::Release);
+        self.notify.notify_all();
     }
 
     pub(crate) fn detach_database(&self) -> Result<Option<Arc<RemoteDatabase>>> {
@@ -94,63 +146,105 @@ impl SessionLane {
             .take())
     }
 
+    /// Takes the lane connection, waiting for a release instead of polling.
+    ///
+    /// The attempt is always a `try_lock`: the absolute deadline is enforced by
+    /// [`GateNotify::wait`], and the success path stays the same uncontended mutex
+    /// acquisition it was before. A newcomer defers while another thread is registered as a
+    /// waiter so it cannot consume the release that thread is about to wake for; a thread
+    /// that already waited always tries, otherwise two woken waiters could each treat the
+    /// other as first and sleep again.
     fn lock<'lane>(
         &'lane self,
         database: &RemoteDatabase,
         deadline: &RequestDeadline,
         cleanup: bool,
-    ) -> Result<MutexGuard<'lane, Option<Arc<Connection>>>> {
+    ) -> Result<LaneConnectionGuard<'lane>> {
         let mut blocked_at = None;
         loop {
-            if let Err(error) = deadline.check() {
-                if let Some(started) = blocked_at {
-                    crate::work_metrics::note_lane_wait(LaneWait {
-                        waited_ns: waited_ns(started),
-                    });
-                }
+            let checked = if cleanup {
+                deadline.check()
+            } else {
+                deadline
+                    .check()
+                    .and_then(|()| self.check(database))
+                    .and_then(|()| database.storage().store().validate_local())
+            };
+            if let Err(error) = checked {
+                self.record_failed_wait(blocked_at);
                 return Err(error);
             }
-            if !cleanup {
-                self.check(database)?;
-                database.storage().store().validate_local()?;
-            }
-            match self.connection.try_lock() {
-                Ok(connection) => {
-                    if connection.is_none() {
+            let seen = self.notify.generation();
+            let may_try = blocked_at.is_some() || self.notify.waiters() == 0;
+            if may_try {
+                match self.connection.try_lock() {
+                    Ok(connection) => {
+                        // Wrap before the cursor checks so an early return also releases the
+                        // connection through Drop and wakes the next waiter.
+                        let connection = LaneConnectionGuard::new(connection, &self.notify);
+                        if connection.is_none() {
+                            return Err(AdmissionError::Quarantine.into());
+                        }
+                        if !cleanup
+                            && self
+                                .read_cursor
+                                .lock()
+                                .map_err(|_| AdmissionError::Quarantine)?
+                                .is_some()
+                        {
+                            anyhow::bail!("read cursor is active on this session");
+                        }
+                        if !cleanup
+                            && self
+                                .write_cursor
+                                .lock()
+                                .map_err(|_| AdmissionError::Quarantine)?
+                                .is_some()
+                        {
+                            anyhow::bail!("write cursor is active on this session");
+                        }
+                        if let Some(started) = blocked_at {
+                            crate::work_metrics::observe_gate_wait_done(
+                                GateDomain::Lane,
+                                started.elapsed(),
+                            );
+                        }
+                        return Ok(connection);
+                    }
+                    Err(TryLockError::WouldBlock) => {}
+                    Err(TryLockError::Poisoned(_)) => {
+                        self.quarantine(database);
+                        self.record_failed_wait(blocked_at);
                         return Err(AdmissionError::Quarantine.into());
                     }
-                    if !cleanup
-                        && self
-                            .read_cursor
-                            .lock()
-                            .map_err(|_| AdmissionError::Quarantine)?
-                            .is_some()
-                    {
-                        anyhow::bail!("read cursor is active on this session");
-                    }
-                    if !cleanup
-                        && self
-                            .write_cursor
-                            .lock()
-                            .map_err(|_| AdmissionError::Quarantine)?
-                            .is_some()
-                    {
-                        anyhow::bail!("write cursor is active on this session");
-                    }
-                    return Ok(connection);
-                }
-                Err(TryLockError::WouldBlock) => {
-                    if blocked_at.is_none() && crate::work_metrics::enabled() {
-                        blocked_at = Some(Instant::now());
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(TryLockError::Poisoned(_)) => {
-                    database.admission().quarantine();
-                    return Err(AdmissionError::Quarantine.into());
                 }
             }
+            if blocked_at.is_none() {
+                blocked_at = Some(Instant::now());
+                crate::work_metrics::observe_gate_wait(GateDomain::Lane);
+            }
+            if let Err(error) = self.notify.wait(seen, deadline) {
+                self.record_failed_wait(blocked_at);
+                return Err(error);
+            }
         }
+    }
+
+    /// A wait that ends without the connection is a timeout or a cancellation (close or
+    /// quarantine); both are counted once, and the per-request diagnostic keeps the same
+    /// shape it had for the polling implementation.
+    fn record_failed_wait(&self, blocked_at: Option<Instant>) {
+        if let Some(started) = blocked_at {
+            crate::work_metrics::note_lane_wait(LaneWait {
+                waited_ns: waited_ns(started),
+            });
+            crate::work_metrics::observe_gate_wait_timeout(GateDomain::Lane);
+        }
+    }
+
+    fn quarantine(&self, database: &RemoteDatabase) {
+        database.admission().quarantine();
+        self.notify.notify_all();
     }
 
     pub fn check(&self, database: &RemoteDatabase) -> Result<()> {
@@ -247,6 +341,36 @@ impl SessionLane {
             .lock(database, &deadline, false)
             .map_err(|error| deadline.evidence.failure(error))?;
         let result = execution::statement(
+            database,
+            connection.as_ref().ok_or(AdmissionError::Quarantine)?,
+            &self.control,
+            sql,
+            args,
+            named_args,
+            want_rows,
+            budget,
+            &deadline,
+        );
+        drop(connection);
+        self.finish_call(database, result)
+            .map_err(|error| deadline.evidence.failure(error))
+    }
+
+    pub fn guarded_readonly_statement(
+        &self,
+        database: &RemoteDatabase,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        want_rows: bool,
+        budget: &Budget,
+    ) -> Result<GuardedStatementOutcome> {
+        let _reads = crate::authority::request_reads::Scope::enter();
+        let deadline = RequestDeadline::new(budget)?;
+        let connection = self
+            .lock(database, &deadline, false)
+            .map_err(|error| deadline.evidence.failure(error))?;
+        let result = execution::guarded_readonly_statement(
             database,
             connection.as_ref().ok_or(AdmissionError::Quarantine)?,
             &self.control,
@@ -434,7 +558,7 @@ impl SessionLane {
         let _reads = crate::authority::request_reads::Scope::enter();
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
         let connection = self.lock(database, &deadline, true).map_err(|error| {
-            database.admission().quarantine();
+            self.quarantine(database);
             error.context(UnsettledSqlOutcome)
         })?;
         let native = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
@@ -461,7 +585,7 @@ impl SessionLane {
                 if let Err(error) =
                     execution::settle_write_cursor(database, native, &self.control, cursor)
                 {
-                    database.admission().quarantine();
+                    self.quarantine(database);
                     Err(error.context(UnsettledSqlOutcome))
                 } else {
                     Ok(page)
@@ -473,7 +597,7 @@ impl SessionLane {
                     native.is_in_write_tx() || native.get_pager().holds_write_lock(),
                 ) {
                     let _ = execution::cancel_write_cursor(database, native, &self.control, cursor);
-                    database.admission().quarantine();
+                    self.quarantine(database);
                     Err(error.context(UnsettledSqlOutcome))
                 } else {
                     *self
@@ -497,10 +621,15 @@ impl SessionLane {
         self.finish_call(database, result)
     }
 
-    pub fn close_write_cursor(&self, database: &RemoteDatabase) -> Result<()> {
+    /// Closes the write cursor and reports whether a live cursor was actually
+    /// aborted. `true` is the native rollback proof: `cancel_write_cursor` only
+    /// succeeds when `abort_noncommitting` returned `StatementStopped`. `false`
+    /// means there was no cursor left to abort (it already finished or was never
+    /// opened), so a caller must not read this as a rollback.
+    pub fn close_write_cursor(&self, database: &RemoteDatabase) -> Result<bool> {
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
         let connection = self.lock(database, &deadline, true).map_err(|error| {
-            database.admission().quarantine();
+            self.quarantine(database);
             error.context(UnsettledSqlOutcome)
         })?;
         let cursor = self
@@ -513,7 +642,7 @@ impl SessionLane {
         // write outcome was already reported by the fetch that finished it.
         let Some(cursor) = cursor else {
             drop(connection);
-            return self.finish_call(database, Ok(()));
+            return self.finish_call(database, Ok(false));
         };
         let result = execution::cancel_write_cursor(
             database,
@@ -522,7 +651,7 @@ impl SessionLane {
             cursor,
         );
         drop(connection);
-        self.finish_call(database, result)
+        self.finish_call(database, result).map(|()| true)
     }
 
     fn finish_call<Output>(
@@ -595,6 +724,9 @@ impl SessionLane {
 
     pub fn begin_close(&self, database: &RemoteDatabase) {
         database.admission().close_requested(&self.control);
+        // A lock waiter checks `closing` before every attempt; waking it here turns a session
+        // close into a prompt cancellation instead of a wait for the current guard's deadline.
+        self.notify.notify_all();
     }
 
     pub fn close(&self, database: &RemoteDatabase) -> Result<()> {
@@ -613,7 +745,7 @@ impl SessionLane {
         let connection = match self.lock(database, deadline, true) {
             Ok(connection) => connection,
             Err(error) => {
-                database.admission().quarantine();
+                self.quarantine(database);
                 return Err(error);
             }
         };
@@ -640,7 +772,7 @@ impl SessionLane {
         let _operation = database.operation_until(deadline, true)?;
         super::configure(native);
         if let Err(error) = native.close() {
-            database.admission().quarantine();
+            self.quarantine(database);
             return Err(error.into());
         }
         let pager = native.get_pager();
@@ -649,7 +781,7 @@ impl SessionLane {
             || pager.holds_write_lock()
             || pager.holds_read_lock()
         {
-            database.admission().quarantine();
+            self.quarantine(database);
             return Err(AdmissionError::Quarantine.into());
         }
         database.admission().settle(&self.control, false)?;
@@ -661,7 +793,255 @@ impl SessionLane {
         &self,
         deadline: &RequestDeadline,
         database: &RemoteDatabase,
-    ) -> Result<MutexGuard<'_, Option<Arc<Connection>>>> {
+    ) -> Result<LaneConnectionGuard<'_>> {
         self.lock(database, deadline, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::namespace::Namespace;
+    use crate::object_store::MemoryObjectStore;
+    use std::sync::mpsc;
+
+    fn open(name: &str) -> Result<(tempfile::TempDir, Arc<RemoteDatabase>)> {
+        let cache = tempfile::tempdir()?;
+        let database = Arc::new(RemoteDatabase::open(
+            Arc::new(MemoryObjectStore::default()),
+            Namespace::new("gate", name)?,
+            cache.path(),
+            0,
+        )?);
+        Ok((cache, database))
+    }
+
+    fn deadline_after(duration: Duration) -> RequestDeadline {
+        RequestDeadline::until(Instant::now() + duration)
+    }
+
+    /// Polls the registration counter rather than sleeping a fixed amount: the test only
+    /// makes sense once the worker is really inside the notification wait.
+    fn wait_until_registered(lane: &SessionLane, expected: usize) {
+        let started = Instant::now();
+        while lane.notify.waiters() < expected {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "waiter did not register: expected {expected}, saw {}",
+                lane.notify.waiters()
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_release_wakes_the_waiter_before_its_deadline() -> Result<()> {
+        let (_cache, database) = open("lane_wake")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let held = lane.lock(&database, &deadline_after(Duration::from_secs(2)), false)?;
+
+        let (sender, receiver) = mpsc::channel();
+        let worker_lane = lane.clone();
+        let worker_database = database.clone();
+        let worker = std::thread::spawn(move || {
+            let result = worker_lane
+                .lock(
+                    &worker_database,
+                    &deadline_after(Duration::from_secs(2)),
+                    false,
+                )
+                .map(|_| ());
+            sender.send(result).unwrap();
+        });
+        wait_until_registered(&lane, 1);
+        drop(held);
+        receiver.recv_timeout(Duration::from_secs(1))??;
+        worker.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn a_waiter_times_out_at_its_absolute_deadline() -> Result<()> {
+        let (_cache, database) = open("lane_timeout")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let held = lane.lock(&database, &deadline_after(Duration::from_secs(2)), false)?;
+
+        let started = Instant::now();
+        let error = lane
+            .lock(&database, &deadline_after(Duration::from_millis(80)), false)
+            .err()
+            .expect("a held lane must time out");
+        assert_eq!(
+            error.downcast_ref::<AdmissionError>(),
+            Some(&AdmissionError::Deadline)
+        );
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(80));
+        assert!(
+            waited < Duration::from_secs(1),
+            "timed out late: {waited:?}"
+        );
+        assert_eq!(
+            lane.notify.waiters(),
+            0,
+            "a timed-out waiter must leave no registration"
+        );
+        drop(held);
+        Ok(())
+    }
+
+    #[test]
+    fn close_wakes_a_cancelled_waiter() -> Result<()> {
+        let (_cache, database) = open("lane_close")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let held = lane.lock(&database, &deadline_after(Duration::from_secs(2)), false)?;
+
+        let (sender, receiver) = mpsc::channel();
+        let worker_lane = lane.clone();
+        let worker_database = database.clone();
+        let worker = std::thread::spawn(move || {
+            let result = worker_lane
+                .lock(
+                    &worker_database,
+                    &deadline_after(Duration::from_secs(5)),
+                    false,
+                )
+                .map(|_| ());
+            sender.send(result).unwrap();
+        });
+        wait_until_registered(&lane, 1);
+        lane.begin_close(&database);
+        match receiver.recv_timeout(Duration::from_secs(1))? {
+            Ok(()) => panic!("close must cancel the wait"),
+            Err(error) => assert_eq!(
+                error.downcast_ref::<AdmissionError>(),
+                Some(&AdmissionError::Closing)
+            ),
+        }
+        worker.join().unwrap();
+        drop(held);
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_wakes_a_waiter_with_a_terminal_error() -> Result<()> {
+        let (_cache, database) = open("lane_quarantine")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let held = lane.lock(&database, &deadline_after(Duration::from_secs(2)), false)?;
+
+        let (sender, receiver) = mpsc::channel();
+        let worker_lane = lane.clone();
+        let worker_database = database.clone();
+        let worker = std::thread::spawn(move || {
+            let result = worker_lane
+                .lock(
+                    &worker_database,
+                    &deadline_after(Duration::from_secs(5)),
+                    false,
+                )
+                .map(|_| ());
+            sender.send(result).unwrap();
+        });
+        wait_until_registered(&lane, 1);
+        lane.quarantine(&database);
+        match receiver.recv_timeout(Duration::from_secs(1))? {
+            Ok(()) => panic!("quarantine must cancel the wait"),
+            Err(error) => assert!(matches!(
+                error.downcast_ref::<AdmissionError>(),
+                Some(AdmissionError::Closing | AdmissionError::Quarantine)
+            )),
+        }
+        worker.join().unwrap();
+        drop(held);
+        Ok(())
+    }
+
+    #[test]
+    fn waiters_advance_one_release_at_a_time() -> Result<()> {
+        let (_cache, database) = open("lane_fair")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let held = lane.lock(&database, &deadline_after(Duration::from_secs(2)), false)?;
+
+        let mut receivers = Vec::new();
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let (sender, receiver) = mpsc::channel();
+            let worker_lane = lane.clone();
+            let worker_database = database.clone();
+            workers.push(std::thread::spawn(move || {
+                let result = worker_lane
+                    .lock(
+                        &worker_database,
+                        &deadline_after(Duration::from_secs(3)),
+                        false,
+                    )
+                    .map(|_| ());
+                sender.send(result).unwrap();
+            }));
+            receivers.push(receiver);
+        }
+        wait_until_registered(&lane, 4);
+        drop(held);
+        for receiver in receivers {
+            receiver.recv_timeout(Duration::from_secs(2))??;
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_release_is_never_lost_across_a_thousand_cycles() -> Result<()> {
+        let (_cache, database) = open("lane_no_lost")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let (wake_sender, wake_receiver) = mpsc::channel::<()>();
+        let (done_sender, done_receiver) = mpsc::channel::<Result<()>>();
+        let worker_lane = lane.clone();
+        let worker_database = database.clone();
+        let worker = std::thread::spawn(move || {
+            while wake_receiver.recv().is_ok() {
+                let result = worker_lane
+                    .lock(
+                        &worker_database,
+                        &deadline_after(Duration::from_secs(2)),
+                        false,
+                    )
+                    .map(|_| ());
+                if done_sender.send(result).is_err() {
+                    return;
+                }
+            }
+        });
+        for _ in 0..1000 {
+            let held = lane.lock(&database, &deadline_after(Duration::from_secs(2)), false)?;
+            wake_sender.send(()).unwrap();
+            wait_until_registered(&lane, 1);
+            drop(held);
+            done_receiver.recv_timeout(Duration::from_secs(2))??;
+        }
+        drop(wake_sender);
+        worker.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn an_uncontended_lane_never_enters_the_wait() -> Result<()> {
+        let (_cache, database) = open("lane_fast")?;
+        let session = database.session()?;
+        let lane = session.lane.clone();
+        let started = Instant::now();
+        for _ in 0..1000 {
+            drop(lane.lock(&database, &deadline_after(Duration::from_secs(1)), false)?);
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(lane.notify.waiters(), 0);
+        Ok(())
     }
 }

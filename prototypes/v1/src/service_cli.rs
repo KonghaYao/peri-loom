@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
@@ -9,8 +9,12 @@ use serde_json::json;
 
 use crate::authority::ownership::OwnershipAuthority;
 use crate::authority_rpc::{
-    auth::AuthConfig, client::AuthorityClient, provider::RemoteAuthorityProvider, server::Server,
-    startup::AuthorityStartup,
+    auth::AuthConfig,
+    client::AuthorityClient,
+    provider::RemoteAuthorityProvider,
+    recovery::{BackendKind, RecoveryEvidence},
+    server::Server,
+    startup::{AuthorityStartup, RecoveryRequest},
 };
 use crate::ownership::{OwnershipRuntime, SystemLeaseClock};
 use crate::runtime::WorkerLimits;
@@ -35,8 +39,48 @@ pub fn run(arguments: &[String]) -> Result<()> {
 
 fn authority(arguments: &[String]) -> Result<()> {
     ensure!(
-        arguments.len() == 4 || arguments.len() == 5 && arguments[4] == "--reconciled",
-        "usage: peri-loom-v1 authority STORE LISTEN STATE_DIR [--reconciled]"
+        arguments.len() >= 4,
+        "usage: peri-loom-v1 authority STORE LISTEN STATE_DIR [--reconciled] [--recovery-evidence PATH] [--recovery-plan-out PATH]"
+    );
+    let mut reconciled = false;
+    let mut evidence_path: Option<PathBuf> = None;
+    let mut plan_out: Option<PathBuf> = None;
+    let mut index = 4;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--reconciled" => {
+                ensure!(!reconciled, "--reconciled specified more than once");
+                reconciled = true;
+                index += 1;
+            }
+            "--recovery-evidence" => {
+                ensure!(evidence_path.is_none(), "--recovery-evidence specified more than once");
+                evidence_path = Some(
+                    arguments
+                        .get(index + 1)
+                        .context("--recovery-evidence requires a path")?
+                        .into(),
+                );
+                index += 2;
+            }
+            "--recovery-plan-out" => {
+                ensure!(plan_out.is_none(), "--recovery-plan-out specified more than once");
+                plan_out = Some(
+                    arguments
+                        .get(index + 1)
+                        .context("--recovery-plan-out requires a path")?
+                        .into(),
+                );
+                index += 2;
+            }
+            other => anyhow::bail!(
+                "usage: peri-loom-v1 authority STORE LISTEN STATE_DIR [--reconciled] [--recovery-evidence PATH] [--recovery-plan-out PATH]; unknown argument {other}"
+            ),
+        }
+    }
+    ensure!(
+        !(reconciled && evidence_path.is_some()),
+        "--reconciled confirms quiescence without proof and cannot be combined with --recovery-evidence"
     );
     let address: SocketAddr = arguments[2].parse()?;
     ensure!(
@@ -48,7 +92,24 @@ fn authority(arguments: &[String]) -> Result<()> {
         .context("PERI_AUTHORITY_WORKERS_FILE is required")?;
     let workers = worker_credentials(Path::new(&workers_path))?;
     let auth = AuthConfig::new(control, workers)?;
-    let startup = AuthorityStartup::acquire(Path::new(&arguments[3]), arguments.len() == 5)?;
+    let backend = if arguments[1] == "s3" {
+        BackendKind::S3
+    } else {
+        BackendKind::Local
+    };
+    let evidence = match &evidence_path {
+        Some(path) => Some(read_recovery_evidence(path)?),
+        None => None,
+    };
+    let startup = AuthorityStartup::acquire_with_recovery(
+        Path::new(&arguments[3]),
+        RecoveryRequest {
+            backend,
+            evidence,
+            confirmed_quiescence: reconciled,
+            plan_out,
+        },
+    )?;
     let store = crate::config::authority_backend(&arguments[1])?;
     let store = Arc::new(
         crate::object_store::metrics::MetricsObjectStore::new(
@@ -59,8 +120,39 @@ fn authority(arguments: &[String]) -> Result<()> {
     );
     let authority = OwnershipAuthority::new(store, Arc::new(SystemLeaseClock));
     let server = Server::bind(address, authority, auth, startup)?;
+    server.write_recovery_plan()?;
     ready("authority", server.local_addr())?;
     server.run()
+}
+
+fn read_recovery_evidence(path: &Path) -> Result<RecoveryEvidence> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .with_context(|| format!("recovery evidence {} is unavailable", path.display()))?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file(),
+        "recovery evidence must be a regular file"
+    );
+    ensure!(
+        metadata.len() <= 1024 * 1024,
+        "recovery evidence exceeds 1 MiB"
+    );
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 1024 * 1024,
+        "recovery evidence exceeds 1 MiB"
+    );
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse recovery evidence {}", path.display()))
 }
 
 fn worker(arguments: &[String]) -> Result<()> {

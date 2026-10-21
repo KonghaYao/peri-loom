@@ -85,13 +85,13 @@ func writerCommandValid(operation string, encoded []byte, fields map[string]json
 	expected := 3
 	if operation == "close_session" || operation == "close_read_cursor" || operation == "close_write_cursor" {
 		expected = 2
-	} else if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" {
+	} else if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" || operation == "guarded_readonly_statement" {
 		expected = 5
 	}
 	// The row projection is optional: an absent field and an explicit true mean
 	// the same thing to the worker, so a caller that omits it keeps the full
 	// result this contract always allowed.
-	if operation == "statement" {
+	if operation == "statement" || operation == "guarded_readonly_statement" {
 		if raw, exists := fields["want_rows"]; exists {
 			var wantRows bool
 			if json.Unmarshal(raw, &wantRows) != nil {
@@ -114,7 +114,7 @@ func writerCommandValid(operation string, encoded []byte, fields map[string]json
 		var maxRows int
 		return json.Unmarshal(fields["max_rows"], &maxRows) == nil && maxRows >= 1 && maxRows <= 256
 	}
-	if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" {
+	if operation == "statement" || operation == "open_read_cursor" || operation == "open_write_cursor" || operation == "guarded_readonly_statement" {
 		var args []sqlArgument
 		var namedArgs []namedSQLArgument
 		if json.Unmarshal(fields["args"], &args) != nil || args == nil || !validSQLArguments(args) || json.Unmarshal(fields["named_args"], &namedArgs) != nil || namedArgs == nil || len(args)+len(namedArgs) > 999 {

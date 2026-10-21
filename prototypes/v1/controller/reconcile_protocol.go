@@ -109,13 +109,28 @@ type workerReportDatabase struct {
 	ResourceError  *string         `json:"resource_error"`
 }
 
+// authorityCall bounds one control call independently of the caller's broader
+// pass deadline. An ambiguous grant or renewal is never retried inside the
+// call: the durable pending intent is replayed by the next reconcile pass.
+func (controller *Controller) authorityCall(ctx context.Context, requestID string, command any, output any) error {
+	bounded, cancel := context.WithTimeout(ctx, controller.rpcTimeout(ctx))
+	defer cancel()
+	return controller.transport.Authority(bounded, requestID, command, output)
+}
+
+func (controller *Controller) workerCall(ctx context.Context, worker Worker, requestID string, command any, output any) error {
+	bounded, cancel := context.WithTimeout(ctx, controller.rpcTimeout(ctx))
+	defer cancel()
+	return controller.transport.Worker(bounded, worker, requestID, command, output)
+}
+
 func (controller *Controller) authorityState(ctx context.Context, database DatabaseID) (Actual, error) {
 	identifier, err := RandomID()
 	if err != nil {
 		return Actual{}, err
 	}
 	var actual Actual
-	err = controller.transport.Authority(ctx, identifier, authorityAction{Command: "get_database_state", Database: &database}, &actual)
+	err = controller.authorityCall(ctx, identifier, authorityAction{Command: "get_database_state", Database: &database}, &actual)
 	if err == nil && (actual.Database != database || (actual.Binding != nil && (actual.Binding.Database != database || actual.Binding.Epoch != actual.Epoch))) {
 		err = errors.New("authority state identity mismatch")
 	}
@@ -128,7 +143,7 @@ func (controller *Controller) workerState(ctx context.Context, worker Worker, da
 		return Actual{}, err
 	}
 	var actual Actual
-	err = controller.transport.Worker(ctx, worker, identifier, workerAction{Command: "get_database_state", Database: &database}, &actual)
+	err = controller.workerCall(ctx, worker, identifier, workerAction{Command: "get_database_state", Database: &database}, &actual)
 	if err == nil && (actual.Database != database || (actual.Binding != nil && (actual.Binding.Database != database || actual.Binding.WorkerID != worker.ID || actual.Binding.Epoch != actual.Epoch))) {
 		err = errors.New("worker state identity mismatch")
 	}
@@ -146,5 +161,5 @@ func serving(actual Actual, placement Placement) bool {
 
 func (controller *Controller) sendWorker(ctx context.Context, worker Worker, identifier string, action workerAction) error {
 	var result json.RawMessage
-	return controller.transport.Worker(ctx, worker, identifier, action, &result)
+	return controller.workerCall(ctx, worker, identifier, action, &result)
 }

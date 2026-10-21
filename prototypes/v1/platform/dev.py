@@ -2286,6 +2286,13 @@ class Project:
         if self.launch["dev_sql_timeout_seconds"] != 30:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"
+        # The phase knobs belong to the profile. Forward only explicit values, and only when
+        # the profile is on; the platform keeps its documented defaults for names not set.
+        if getattr(self.arguments, "sql_open_observer", False):
+            for name in ("PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS", "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE",
+                         "PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS", "PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY"):
+                if name in os.environ:
+                    platform_environment[name] = os.environ[name]
         platform_environment["PERI_HRANA_EXPERIMENTAL"] = "1" if os.environ.get("PERI_HRANA_EXPERIMENTAL") == "1" else "0"
         # The launcher owns the outer deadline, so it declares it: the platform
         # refuses to start on a budget its own stage cap would not cover, and on a

@@ -12,7 +12,9 @@ use anyhow::{anyhow, Result};
 use turso_core::io::{Buffer, Completion, FileSyncType, OpenFlags, IO};
 
 use super::{Namespace, RemoteIO};
+use crate::maintenance::WalBudget;
 use crate::object_store::{LocalObjectStore, ObjectStore, PutCondition, StoredObject};
+use crate::wal::{WalBatch, WalOperation};
 
 #[derive(Default)]
 struct PublishGate {
@@ -189,5 +191,93 @@ fn parked_publication_does_not_block_wal_reads_behind_usage_snapshots() -> Resul
     settle(&signals_receiver, "maintenance snapshot")?;
     settle(&size_receiver, "main size")?;
     publisher.join().expect("publisher thread")?;
+    Ok(())
+}
+
+#[test]
+fn a_wal_write_over_the_capacity_is_refused_before_it_is_queued() -> Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let store: Arc<dyn ObjectStore> = Arc::new(LocalObjectStore::open(objects.path())?);
+    let io = RemoteIO::open_with_budget(
+        store,
+        Namespace::new("io", "capacity")?,
+        cache.path(),
+        0,
+        8 * 1024 * 1024,
+        64 * 1024 * 1024,
+        Some(WalBudget::new(4096, 2048)?),
+    )?;
+    let wal = io.open_file(
+        &format!("{}-wal", io.database_path()),
+        OpenFlags::Create,
+        false,
+    )?;
+
+    // The header is a control write: it initialises the log rather than extending committed
+    // data, and is admitted even though it is the first bytes in the image.
+    let header = Arc::new(Buffer::new_temporary(32));
+    wal.pwrite(
+        0,
+        header,
+        Completion::new_write(|result| {
+            result.unwrap();
+        }),
+    )
+    .map(|completion| completion.finished())?;
+    assert_eq!(wal.size()?, 32);
+
+    let body = Arc::new(Buffer::new_temporary(4000));
+    wal.pwrite(
+        32,
+        body,
+        Completion::new_write(|result| {
+            result.unwrap();
+        }),
+    )
+    .map(|completion| completion.finished())?;
+    assert_eq!(wal.size()?, 4032);
+    let usage = io.resources()?;
+    assert_eq!(usage.wal_capacity_bytes, 4096);
+    assert!(usage.wal_pressure, "the WAL is past the soft mark");
+    assert_eq!(usage.pending_wal_bytes, 4032);
+
+    let overflow = Arc::new(Buffer::new_temporary(128));
+    let error = wal
+        .pwrite(
+            4032,
+            overflow,
+            Completion::new_write(|_| {
+                // The refusal is surfaced from `pwrite` itself; the completion carries the
+                // same error and is not expected to report a success callback.
+            }),
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("WAL capacity budget exceeded"),
+        "{error:#}"
+    );
+    assert_eq!(
+        wal.size()?,
+        4032,
+        "a refused write must not join the WAL image"
+    );
+    assert_eq!(
+        io.resources()?.pending_wal_bytes,
+        4032,
+        "a refused write must not join the pending batch"
+    );
+
+    // Cleanup and reset writes pass the control flag explicitly. A batch that would grow the
+    // image past the capacity is still refused on the data path, but not on the control path.
+    let batch = WalBatch {
+        operations: vec![WalOperation::Write {
+            offset: 0,
+            bytes: vec![0u8; 8192],
+        }],
+    };
+    let state = io.shared.lock()?;
+    assert!(io.shared.check_wal_budget(&state, &batch, false).is_err());
+    assert!(io.shared.check_wal_budget(&state, &batch, true).is_ok());
     Ok(())
 }

@@ -1,6 +1,7 @@
 use super::{registry::Instance, DatabaseId, WorkerRuntime};
 use crate::session::{
-    DescribeResult, SessionWriterState, StatementColumn, StatementResult, WriteCursorPage,
+    DescribeResult, GuardedStatementOutcome, SessionWriterState, StatementColumn, StatementResult,
+    WriteCursorPage,
 };
 use crate::{resources::ResourceUsage, session::RemoteSession};
 use anyhow::{ensure, Result};
@@ -78,7 +79,7 @@ impl DatabaseHandle {
     pub fn fetch_write_cursor(&self, page_size: usize) -> Result<WriteCursorPage> {
         self.session.as_ref().unwrap().fetch_write_cursor(page_size)
     }
-    pub fn close_write_cursor(&self) -> Result<()> {
+    pub fn close_write_cursor(&self) -> Result<bool> {
         self.session.as_ref().unwrap().close_write_cursor()
     }
     pub(crate) fn quarantine_unknown_write_result(&self) -> Result<()> {
@@ -101,6 +102,18 @@ impl DatabaseHandle {
             .as_ref()
             .unwrap()
             .statement_with_named_args(sql, args, named_args, want_rows)
+    }
+    pub fn guarded_readonly_statement(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        want_rows: bool,
+    ) -> Result<GuardedStatementOutcome> {
+        self.session
+            .as_ref()
+            .unwrap()
+            .guarded_readonly_statement(sql, args, named_args, want_rows)
     }
     pub fn in_transaction(&self) -> Result<bool> {
         self.session.as_ref().unwrap().in_transaction()

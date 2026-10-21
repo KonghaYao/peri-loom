@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -28,6 +29,11 @@ type gatewayRequest struct {
 	// still executes and settles; only the row payload is left unmaterialized.
 	WantRows  *bool  `json:"want_rows,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+	// These are the Hrana adapter's descriptive account of an aborted write
+	// cursor: it stopped reading and stopped dispatching fetches. They annotate
+	// the close record; they never prove a rollback and never release isolation.
+	CursorClientStopped   bool `json:"cursor_client_stopped,omitempty"`
+	CursorDispatchStopped bool `json:"cursor_dispatch_stopped,omitempty"`
 }
 
 type sqlArgument struct {
@@ -101,6 +107,10 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal
 	var permit *admissionPermit
+	// completion holds the audit capacity reserved before dispatch; its record is
+	// written after the SQL answer is known and may not be refused by queue
+	// pressure that arrived in between.
+	var completion AuditReservation
 	// The refusal of an admission lane is recorded at the lane, not derived from the
 	// answer, so it starts as "no lane refused anything".
 	admissionReason := rejectionNone
@@ -144,20 +154,33 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				event.Database = result.session.database.Key()
 			}
 			leaveAudit := requestPhaseSpan(ctx, requestPhaseAudit)
-			auditErr := gateway.config.Audit.Record(event)
+			auditErr := gateway.recordAuditEvent(event, completion, principal, &result)
+			completion = nil
 			leaveAudit()
 			if auditErr != nil {
 				if result.code != "outcome_unknown" {
-					result.auditExecutionCompleted = result.dispatched && sqlExecutedOutcome(result)
-					result.code = "audit_unavailable"
-					result.status = 503
-					result.value = nil
-					result.stream = nil
-					// The degraded reply reports the audit failure, not the SQL
-					// failure it replaced.
-					result.failure = nil
+					// A refusal that already answered before dispatch stays that
+					// refusal: replacing it with audit_unavailable would make the
+					// audit queue produce a second refusal for the same work, which
+					// is the recursion the isolated rejection budget exists to stop.
+					// The sink counted the record it refused, so the loss is visible.
+					if !errors.Is(auditErr, ErrAuditOverloaded) || result.dispatched || result.code == "" {
+						result.auditExecutionCompleted = result.dispatched && sqlExecutedOutcome(result)
+						result.code = "audit_unavailable"
+						result.status = 503
+						result.value = nil
+						result.stream = nil
+						// The degraded reply reports the audit failure, not the SQL
+						// failure it replaced.
+						result.failure = nil
+					}
 				}
 			}
+		} else if completion != nil {
+			// The internal probe wrote no row, so the reserved slot must go back
+			// instead of shrinking the completion budget for the next request.
+			completion.Release()
+			completion = nil
 		}
 		// One account answers "did this request hold an admission permit" separately
 		// from "was it refused", so the goodput numbers are not read off the codes.
@@ -315,6 +338,19 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	if releaseClassification != nil {
 		releaseClassification()
 	}
+	// Reserve the completion row before any dispatch. Capacity is the only audit
+	// failure knowable at this point; an unavailable sink keeps the previous
+	// post-dispatch answer, which carries the execution proof instead of
+	// pretending nothing ran.
+	if admission, ok := gateway.config.Audit.(AuditAdmission); ok {
+		reservation, reserveErr := admission.ReserveCompletion()
+		if reserveErr == nil {
+			completion = reservation
+		} else if errors.Is(reserveErr, ErrAuditOverloaded) {
+			result = gatewayRefusal(503, "audit_unavailable", rejectionAuditCapacity)
+			return
+		}
+	}
 	switch action {
 	case "open":
 		result = gateway.open(ctx, principal, *parsed.Database, identifier, permit, project.Quotas)
@@ -324,6 +360,26 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			permit = result.permit
 		}
 	}
+}
+
+// recordAuditEvent charges one request to the budget its traffic belongs to.
+// A reserved completion row goes through the reservation; everything else is
+// split so an unauthenticated storm and ordinary requests cannot starve each
+// other. A sink without admission support keeps the plain Record contract.
+func (gateway *Gateway) recordAuditEvent(event AuditEvent, completion AuditReservation, principal Principal, result *gatewayResult) error {
+	if completion != nil {
+		defer completion.Release()
+		return completion.Record(event)
+	}
+	admission, ok := gateway.config.Audit.(AuditAdmission)
+	if !ok {
+		return gateway.config.Audit.Record(event)
+	}
+	class := AuditClassRequest
+	if principal.Subject == "" || result.rejection != rejectionNone || (result.status >= 400 && !result.dispatched) {
+		class = AuditClassRejection
+	}
+	return admission.RecordClass(event, class)
 }
 
 func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gatewayRequest, bool) {
@@ -371,6 +427,8 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 	case "cursor_close":
 		allowed["session"] = true
 		allowed["write_cursor"] = true
+		allowed["cursor_client_stopped"] = true
+		allowed["cursor_dispatch_stopped"] = true
 	case "close":
 		allowed["session"] = true
 	}
@@ -388,6 +446,9 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 		return request, request.Database != nil && request.Database.Validate() == nil
 	}
 	if action == "cursor_fetch" && (request.MaxRows < 1 || request.MaxRows > 256) {
+		return request, false
+	}
+	if (request.CursorClientStopped || request.CursorDispatchStopped) && (action != "cursor_close" || !request.WriteCursor || request.CursorClientStopped && !request.CursorDispatchStopped) {
 		return request, false
 	}
 	if (action == "statement" || action == "cursor_open") && (!validSQLArguments(request.Args) || len(request.NamedArgs) > 999 || len(request.Args)+len(request.NamedArgs) > 999) {
@@ -510,6 +571,19 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 			if record := result.operationObservation; record != nil {
 				failure["business_outcome"], failure["cleanup_outcome"] = record.BusinessOutcome, record.CleanupOutcome
 				failure["execution_proven"], failure["possible_commit"] = record.ExecutionProven, record.MayHaveCommitted
+			}
+		}
+		if result.code == "database_isolated" && result.operationObservation != nil {
+			// An isolation refusal names the unresolved operation that isolated the
+			// namespace, so the abort's operation stays queryable from the refusal
+			// itself and the caller does not have to guess which write is owed.
+			record := result.operationObservation
+			failure["operation_id"], failure["stage"] = record.OperationID, record.Stage
+			failure["business_outcome"], failure["cleanup_outcome"] = record.BusinessOutcome, record.CleanupOutcome
+			failure["execution_proven"], failure["possible_commit"] = record.ExecutionProven, record.MayHaveCommitted
+			failure["retry_allowed"] = false
+			if record.CursorNativeOutcome != "" {
+				failure["cursor_native_outcome"] = record.CursorNativeOutcome
 			}
 		}
 		if result.code == "result_limit" && result.dispatched {

@@ -111,17 +111,106 @@ fn pin_entries(root: &CatalogRoot, pin: &str) -> Result<BTreeMap<String, ObjectE
         .collect())
 }
 
+/// Register `count` immutable segments and return their branch keys. These objects are
+/// reachable through the logical registry, so a session can widen its pin by reading them
+/// without moving the branch snapshot (which would retire the previous generation).
+fn seed_segments(
+    authority: &Authority,
+    namespace: &Namespace,
+    count: usize,
+) -> Result<Vec<String>> {
+    let mut keys = Vec::with_capacity(count);
+    for batch_start in (0..count).step_by(96) {
+        let batch_end = (batch_start + 96).min(count);
+        let segments = (batch_start..batch_end)
+            .map(|index| {
+                let mut bytes = vec![0x5a; crate::manifest::SEGMENT_SIZE];
+                bytes[0] = index as u8;
+                bytes[1] = (index >> 8) as u8;
+                bytes
+            })
+            .collect::<Vec<_>>();
+        let uploaded = authority.upload_segments(&segments)?;
+        authority.register_segments(&uploaded)?;
+        for entry in uploaded {
+            keys.push(namespace.key(&format!("segments/{}", entry.hash))?);
+        }
+    }
+    Ok(keys)
+}
+
+fn pin_keys(branch: &Arc<BranchStore>, keys: &[String]) -> Result<()> {
+    for key in keys {
+        branch.get(key)?;
+    }
+    Ok(())
+}
+
+fn frame_batch(byte: u8) -> WalBatch {
+    WalBatch {
+        operations: vec![WalOperation::Write {
+            offset: 0,
+            bytes: vec![byte; 8],
+        }],
+    }
+}
+
+/// Publish one manifest that references every seeded segment and point HEAD at it. A cold
+/// session then pins the whole closure in one transaction, which keeps fixture setup cheap
+/// while making each pin large enough to spill the page tree.
+fn publish_many_segment_head(
+    branch: &Arc<BranchStore>,
+    namespace: &Namespace,
+    keys: &[String],
+) -> Result<()> {
+    let mut segments = BTreeMap::new();
+    let mut size = 0u64;
+    for (index, key) in keys.iter().enumerate() {
+        let hash = key
+            .rsplit('/')
+            .next()
+            .context("segment key without hash")?
+            .to_owned();
+        segments.insert(index as u64, hash);
+        size = size.saturating_add(crate::manifest::SEGMENT_SIZE as u64);
+    }
+    let manifest = crate::manifest::Manifest {
+        logical_db_size: size,
+        segments,
+        ..Default::default()
+    };
+    manifest.validate()?;
+    let bytes = serde_json::to_vec(&manifest)?;
+    let hash = crate::manifest::digest(&bytes);
+    branch.put(
+        &namespace.key(&format!("manifests/{hash}"))?,
+        &bytes,
+        crate::object_store::PutCondition::Absent,
+    )?;
+    branch.put(
+        &namespace.key("HEAD")?,
+        &serde_json::to_vec(&serde_json::json!({ "manifest": hash }))?,
+        crate::object_store::PutCondition::Any,
+    )?;
+    Ok(())
+}
+
 fn legacy_inline_root(
     authority: &Authority,
     pin: &str,
 ) -> Result<(CatalogRoot, BTreeMap<String, ObjectEntry>)> {
     let mut root = authority.snapshot()?.root;
     let entries = pin_entries(&root, pin)?;
+    let expected = entries
+        .values()
+        .map(|entry| (pin_entry_key(pin, 0, &entry.blob), entry.clone()))
+        .collect();
     root.pin_entries = crate::authority::registry::Registry::inline(BTreeMap::new());
     root.pin_schema = None;
+    root.pin_generations.clear();
     root.pins
         .insert(pin.to_owned(), entries.values().cloned().collect());
-    Ok((root, entries))
+    Ok((root, expected))
 }
 
 /// Publishes through the same entry point the fenced worker path uses.
@@ -783,16 +872,9 @@ fn segmented_wal_pins_and_gc_reach_segments_and_chunks() -> Result<()> {
 #[test]
 fn pin_entries_spill_without_growing_the_head_and_survive_cold_recovery() -> Result<()> {
     let (store, authority, branch, namespace) = fixture()?;
+    let keys = seed_segments(&authority, &namespace, 160)?;
+    pin_keys(&branch, &keys)?;
     let pin = branch.pin.clone();
-    for ordinal in 1..=160 {
-        append(
-            &branch,
-            &namespace,
-            WalBatch::default(),
-            None,
-            &format!("pin-spill-{ordinal}"),
-        )?;
-    }
     let snapshot = authority.snapshot()?;
     assert!(snapshot.root.pins[&pin].is_empty());
     assert!(
@@ -801,11 +883,11 @@ fn pin_entries_spill_without_growing_the_head_and_survive_cold_recovery() -> Res
     );
     assert_eq!(snapshot.root.pin_entries.window_len(), 0);
     let entries = pin_entries(&snapshot.root, &pin)?;
-    assert!(entries.len() >= 320);
+    assert!(entries.len() >= 160);
     let pin_bytes = serde_json::to_vec(&entries)?.len();
     let head_bytes = crate::authority::codec::encode(&snapshot.root)?.len();
     assert!(
-        pin_bytes > 64 * 1024,
+        pin_bytes > 16 * 1024,
         "pin payload did not exceed the inline budget: {pin_bytes}"
     );
     assert!(
@@ -871,15 +953,8 @@ fn releasing_a_reader_pin_drops_entries_and_releases_its_blobs() -> Result<()> {
 #[test]
 fn pin_entries_fail_closed_when_pages_are_missing_corrupt_or_legacy_inline() -> Result<()> {
     let (store, authority, branch, namespace) = fixture()?;
-    for ordinal in 1..=48 {
-        append(
-            &branch,
-            &namespace,
-            WalBatch::default(),
-            None,
-            &format!("pin-page-{ordinal}"),
-        )?;
-    }
+    let keys = seed_segments(&authority, &namespace, 160)?;
+    pin_keys(&branch, &keys)?;
     let snapshot = authority.snapshot()?;
     let pointer = snapshot
         .root
@@ -969,15 +1044,19 @@ fn removing_a_pin_entry_without_removing_its_pin_is_rejected() -> Result<()> {
         &segment,
         crate::object_store::PutCondition::Absent,
     )?;
-    branch.delete(&namespace.key(&relative)?, None)?;
 
     let pin = branch.pin.clone();
+    let generation = branch.generation()?;
     let snapshot = authority.snapshot()?;
     let entries = pin_entries(&snapshot.root, &pin)?;
     let (key, entry) = entries
         .iter()
         .find(|(_, entry)| entry.hash == blake3::hash(&segment).to_hex().as_str())
         .context("pinned segment missing")?;
+    assert_eq!(
+        pin_entry_parts(key).map(|parts| parts.generation),
+        Some(generation)
+    );
     let blob = entry.blob.clone();
     assert!(authority.reachable(&snapshot.root)?.contains(&blob));
 
@@ -997,6 +1076,8 @@ fn removing_a_pin_entry_without_removing_its_pin_is_rejected() -> Result<()> {
 #[test]
 fn whole_pin_registry_replacements_are_rejected_and_reader_protection_survives() -> Result<()> {
     let (_, authority, branch, namespace) = fixture()?;
+    let seeded = seed_segments(&authority, &namespace, 160)?;
+    pin_keys(&branch, &seeded)?;
     let segment = vec![7; crate::manifest::SEGMENT_SIZE];
     let relative = format!("segments/{}", blake3::hash(&segment).to_hex());
     branch.put(
@@ -1004,6 +1085,9 @@ fn whole_pin_registry_replacements_are_rejected_and_reader_protection_survives()
         &segment,
         crate::object_store::PutCondition::Absent,
     )?;
+    // The delete starts a new generation. Hold the one that wrote the segment so its
+    // entries remain the protection under test instead of being retired as idle.
+    let _guard = branch.hold_generation()?;
     branch.delete(&namespace.key(&relative)?, None)?;
     let pin = branch.pin.clone();
     let segment_hash = blake3::hash(&segment).to_hex().to_string();
@@ -1125,28 +1209,34 @@ fn split_transitional_inline_root_loads_and_is_upgraded() -> Result<()> {
     reopened.transact(None, |_| Ok(()))?;
     let stored = store.inner.get(&root_key)?.context("root missing")?;
     let envelope: serde_json::Value = serde_json::from_slice(&stored.bytes)?;
-    assert_eq!(envelope["root"]["pin_schema"], 1);
+    assert_eq!(envelope["root"]["pin_schema"], 2);
     Ok(())
 }
 
 #[test]
 fn split_transitional_paged_root_loads_and_is_upgraded() -> Result<()> {
     let (store, authority, branch, namespace) = fixture()?;
-    for ordinal in 1..=48 {
-        append(
-            &branch,
-            &namespace,
-            WalBatch::default(),
-            None,
-            &format!("pin-transition-paged-{ordinal}"),
-        )?;
-    }
+    let keys = seed_segments(&authority, &namespace, 160)?;
+    pin_keys(&branch, &keys)?;
     let pin = branch.pin.clone();
     let root = authority.snapshot()?.root;
     let entries = pin_entries(&root, &pin)?;
     assert!(root.pin_entries.pointer().is_some());
     let mut transitional = root;
     transitional.pin_schema = None;
+    // A genuine schema-1 document stored its entries in the hash-ordered tree.
+    let serialized = entries
+        .iter()
+        .map(|(key, entry)| Ok((key.clone(), serde_json::to_value(entry)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let pointer = crate::authority::paged_index::PagedIndex::new(&store.inner, &namespace)
+        .build(serialized)?
+        .context("hashed pin page tree missing")?;
+    transitional.pin_entries = crate::authority::registry::Registry::paged_with_order(
+        Some(pointer),
+        BTreeMap::new(),
+        crate::authority::paged_index::KeyOrder::Hashed,
+    );
     assert!(transitional.pins.values().all(Vec::is_empty));
     drop(branch);
 
@@ -1163,7 +1253,7 @@ fn split_transitional_paged_root_loads_and_is_upgraded() -> Result<()> {
     reopened.transact(None, |_| Ok(()))?;
     let stored = store.inner.get(&root_key)?.context("root missing")?;
     let envelope: serde_json::Value = serde_json::from_slice(&stored.bytes)?;
-    assert_eq!(envelope["root"]["pin_schema"], 1);
+    assert_eq!(envelope["root"]["pin_schema"], 2);
     Ok(())
 }
 
@@ -1196,7 +1286,7 @@ fn empty_split_transitional_root_loads_and_is_upgraded() -> Result<()> {
     reopened.transact(None, |_| Ok(()))?;
     let stored = store.inner.get(&root_key)?.context("root missing")?;
     let envelope: serde_json::Value = serde_json::from_slice(&stored.bytes)?;
-    assert_eq!(envelope["root"]["pin_schema"], 1);
+    assert_eq!(envelope["root"]["pin_schema"], 2);
     assert_eq!(envelope["root"]["pins"], serde_json::json!({}));
     assert_eq!(envelope["root"]["pin_entries"], serde_json::json!({}));
     Ok(())
@@ -1205,15 +1295,8 @@ fn empty_split_transitional_root_loads_and_is_upgraded() -> Result<()> {
 #[test]
 fn mixed_pin_representations_are_rejected_on_load() -> Result<()> {
     let (store, authority, branch, namespace) = fixture()?;
-    for ordinal in 1..=48 {
-        append(
-            &branch,
-            &namespace,
-            WalBatch::default(),
-            None,
-            &format!("pin-mixed-{ordinal}"),
-        )?;
-    }
+    let keys = seed_segments(&authority, &namespace, 160)?;
+    pin_keys(&branch, &keys)?;
     let root = authority.snapshot()?.root;
     let pin = branch.pin.clone();
     let entries = pin_entries(&root, &pin)?;
@@ -1259,7 +1342,7 @@ fn mixed_pin_representations_are_rejected_on_load() -> Result<()> {
 fn unsupported_pin_schema_is_rejected_at_decode_time() -> Result<()> {
     let (_, authority, _, _) = fixture()?;
     let mut root = authority.snapshot()?.root;
-    root.pin_schema = Some(2);
+    root.pin_schema = Some(3);
     let encoded = crate::authority::codec::encode(&root)?;
     assert!(crate::authority::codec::decode(&encoded).is_err());
     Ok(())
@@ -1282,6 +1365,10 @@ fn a_failed_drop_release_is_counted_and_leaves_the_pin_visible() -> Result<()> {
         .pin_release_failures;
     assert!(after.saturating_sub(before) >= 1);
     assert!(authority.snapshot()?.root.pins.contains_key(&pin));
+    assert!(matches!(
+        authority.pin_state(&pin)?,
+        super::super::PinState::Orphan
+    ));
     Ok(())
 }
 
@@ -1317,7 +1404,11 @@ fn a_segment_group_publishes_and_pins_every_body_in_one_publication() -> Result<
         assert!(!root.uploads.contains(&entry.blob)?);
         assert!(root
             .pin_entries
-            .get(&format!("{}/{}", branch.pin_identity(), entry.blob))?
+            .get(&pin_entry_key(
+                branch.pin_identity(),
+                branch.generation()?,
+                &entry.blob
+            ))?
             .is_some());
     }
     // A group is all-or-nothing: retrying landed bodies leaves the catalog unchanged and
@@ -1327,5 +1418,227 @@ fn a_segment_group_publishes_and_pins_every_body_in_one_publication() -> Result<
         .expect_err("an existing segment must reject the group");
     assert!(rejected.is::<crate::object_store::PreconditionFailed>());
     assert_eq!(authority.snapshot()?.root.revision, root.revision);
+    Ok(())
+}
+
+#[test]
+fn releasing_one_of_many_pins_reads_only_its_own_page_range() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    let keys = seed_segments(&authority, &namespace, 128)?;
+    publish_many_segment_head(&branch, &namespace, &keys)?;
+    let mut sessions = Vec::new();
+    for _ in 0..64 {
+        sessions.push(authority.branch_store("main")?);
+    }
+    let snapshot = authority.snapshot()?;
+    assert!(
+        snapshot.root.pin_entries.pointer().is_some(),
+        "the shared pin registry did not spill"
+    );
+    let (_, global_pages) = snapshot.root.pin_entries.entries_counted()?;
+    assert!(
+        global_pages > 20,
+        "global pin registry is too small for a page bound: {global_pages}"
+    );
+    let target = &sessions[0];
+    let other = &sessions[1];
+    let target_entries = pin_entries(&snapshot.root, target.pin_identity())?.len();
+    let other_entries = pin_entries(&snapshot.root, other.pin_identity())?.len();
+    assert!(target_entries > 0 && other_entries > 0);
+
+    crate::authority::paged_index::reset_test_page_reads();
+    let stats = target.release_pin(&authority)?;
+    let pages = crate::authority::paged_index::test_page_reads();
+
+    assert_eq!(stats.entries, target_entries);
+    assert!(stats.batches >= 2, "release was not split into batches");
+    assert!(
+        stats.scanned <= target_entries + 256,
+        "release scanned too many entries: {} for {} owned",
+        stats.scanned,
+        target_entries
+    );
+    assert!(
+        pages <= 128,
+        "release read {pages} pages for one pin of {target_entries} entries"
+    );
+    assert!(
+        pages * 4 < global_pages,
+        "release cost {pages} pages is not clearly below the global {global_pages}"
+    );
+    let root = authority.snapshot()?.root;
+    assert!(
+        pin_entries(&root, target.pin_identity())?.is_empty(),
+        "released pin left entries"
+    );
+    assert_eq!(
+        pin_entries(&root, other.pin_identity())?.len(),
+        other_entries,
+        "releasing one pin changed another"
+    );
+    assert!(matches!(
+        authority.pin_state(target.pin_identity())?,
+        super::super::PinState::Absent
+    ));
+    Ok(())
+}
+
+#[test]
+fn long_lived_store_retires_superseded_generations() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    append(
+        &branch,
+        &namespace,
+        WalBatch::default(),
+        None,
+        "generation-0",
+    )?;
+    let initial = branch.pinned_entries()?.len();
+    for ordinal in 1..=32 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("generation-{ordinal}"),
+        )?;
+    }
+    let observation = branch.observe_pin()?;
+    assert!(
+        observation.live_generations <= 2,
+        "store kept {} generations",
+        observation.live_generations
+    );
+    assert!(
+        observation.pinned_entries <= initial + 128,
+        "pin grew with history: {} entries, initial {initial}",
+        observation.pinned_entries
+    );
+    let root = authority.snapshot()?.root;
+    let current = branch.generation()?;
+    for key in pin_entries(&root, branch.pin_identity())?.keys() {
+        let parts = pin_entry_parts(key).context("invalid pin key")?;
+        assert_eq!(
+            parts.generation, current,
+            "an idle old generation is still registered"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_held_generation_is_not_retired_until_its_reader_exits() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    append(&branch, &namespace, WalBatch::default(), None, "held-0")?;
+    let held_generation = branch.generation()?;
+    let guard = branch.hold_generation()?;
+    for ordinal in 1..=2 {
+        append(
+            &branch,
+            &namespace,
+            WalBatch::default(),
+            None,
+            &format!("held-{ordinal}"),
+        )?;
+    }
+    assert_ne!(branch.generation()?, held_generation);
+    let root = authority.snapshot()?.root;
+    assert!(
+        !pin_entries(&root, branch.pin_identity())?
+            .keys()
+            .filter_map(|key| pin_entry_parts(key))
+            .filter(|parts| parts.generation == held_generation)
+            .collect::<Vec<_>>()
+            .is_empty(),
+        "a held generation was retired by refresh"
+    );
+    let observation = branch.observe_pin()?;
+    assert!(observation.live_generations >= 2);
+    assert!(observation.held_generations >= 1);
+
+    drop(guard);
+    let root = authority.snapshot()?.root;
+    assert!(
+        pin_entries(&root, branch.pin_identity())?
+            .keys()
+            .filter_map(|key| pin_entry_parts(key))
+            .all(|parts| parts.generation != held_generation),
+        "the generation survived its last reader"
+    );
+    let observation = branch.observe_pin()?;
+    assert_eq!(observation.held_generations, 0);
+    assert_eq!(observation.live_generations, 1);
+    Ok(())
+}
+
+#[test]
+fn concurrent_refresh_release_and_gc_do_not_lose_objects() -> Result<()> {
+    let (_, authority, branch, namespace) = fixture()?;
+    append(
+        &branch,
+        &namespace,
+        WalBatch::default(),
+        None,
+        "concurrent-0",
+    )?;
+    let writer = branch.clone();
+    let writer_namespace = namespace.clone();
+    let writer_handle = std::thread::spawn(move || -> Result<()> {
+        for ordinal in 1..=8 {
+            append(
+                &writer,
+                &writer_namespace,
+                frame_batch(ordinal as u8),
+                None,
+                &format!("concurrent-writer-{ordinal}"),
+            )?;
+        }
+        Ok(())
+    });
+    let collector_authority = authority.clone();
+    let collector_handle = std::thread::spawn(move || -> Result<()> {
+        for _ in 0..8 {
+            let root = collector_authority.snapshot()?.root;
+            collector_authority.reachable(&root)?;
+        }
+        crate::gc::GarbageCollector::new(collector_authority.clone(), std::time::Duration::ZERO)
+            .collect()?;
+        Ok(())
+    });
+    let releaser_authority = authority.clone();
+    let releaser_handle = std::thread::spawn(move || -> Result<()> {
+        for _ in 0..8 {
+            let session = releaser_authority.branch_store("main")?;
+            drop(session);
+        }
+        Ok(())
+    });
+    for ordinal in 1..=8 {
+        append(
+            &branch,
+            &namespace,
+            frame_batch((ordinal + 100) as u8),
+            None,
+            &format!("concurrent-main-{ordinal}"),
+        )?;
+    }
+    writer_handle.join().expect("writer panicked")?;
+    collector_handle.join().expect("collector panicked")?;
+    releaser_handle.join().expect("releaser panicked")?;
+
+    let session = authority.branch_store("main")?;
+    let index_bytes = session
+        .get(&namespace.key("wal/index")?)?
+        .context("WAL index lost")?
+        .bytes;
+    let index = crate::authority::semantic::index(&index_bytes)?;
+    assert!(
+        index.last_lsn >= 16,
+        "concurrent appends lost WAL positions: {}",
+        index.last_lsn
+    );
+    assert!(!RemoteWal::new(session).read(&namespace, 0)?.is_empty());
+    let root = authority.snapshot()?.root;
+    authority.reachable(&root)?;
     Ok(())
 }

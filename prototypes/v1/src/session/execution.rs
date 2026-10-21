@@ -9,7 +9,9 @@ use turso_core::{Connection, LimboError, NoncommittingAbort, Statement, StepResu
 
 use super::admission::{Permit, SessionControl, UnsettledSqlOutcome};
 use super::budget::{Budget, ExecutionBudget, RequestDeadline};
-use super::{DescribeResult, StatementColumn, StatementResult, WriteCursorPage};
+use super::{
+    DescribeResult, GuardedStatementOutcome, StatementColumn, StatementResult, WriteCursorPage,
+};
 use crate::database::RemoteDatabase;
 use crate::metrics::{Metrics, Operation};
 
@@ -226,6 +228,299 @@ pub(super) fn statement(
         },
         |_| 0,
     )
+}
+
+/// Statements whose side effects the engine's read-only flag does not describe:
+/// they control the transaction or change connection/database state without
+/// writing a table row. They keep the describe+execute path instead of being
+/// admitted by a classification that only answers "may this commit?".
+const GUARDED_REFUSED_KEYWORDS: &[&str] = &[
+    "BEGIN",
+    "COMMIT",
+    "END",
+    "ROLLBACK",
+    "SAVEPOINT",
+    "RELEASE",
+    "PRAGMA",
+    "ATTACH",
+    "DETACH",
+    "VACUUM",
+    "ANALYZE",
+    "REINDEX",
+];
+
+/// The first keyword of the statement, ignoring leading whitespace and comments.
+/// Only ASCII is considered: anything else cannot name one of the refused
+/// keywords, and the engine's verdict still governs whether it may run.
+fn leading_keyword(sql: &str) -> Option<String> {
+    let bytes = sql.as_bytes();
+    let mut index = 0;
+    loop {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index + 1 < bytes.len() && bytes[index] == b'-' && bytes[index + 1] == b'-' {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = index.saturating_add(2).min(bytes.len());
+            continue;
+        }
+        break;
+    }
+    let start = index;
+    while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+        index += 1;
+    }
+    (start < index).then(|| sql[start..index].to_ascii_uppercase())
+}
+
+fn guarded_statement_fast_path(sql: &str) -> bool {
+    leading_keyword(sql).is_none_or(|keyword| !GUARDED_REFUSED_KEYWORDS.contains(&keyword.as_str()))
+}
+
+/// Prepares, binds and steps one statement while requiring the engine to call
+/// it read-only before every step, including the step after an automatic
+/// reprepare. A statement the engine classifies as writing before it can run is
+/// aborted and answered with `RequiresIntent`, so the caller persists its
+/// intent and takes the committing path.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn guarded_readonly_statement(
+    database: &RemoteDatabase,
+    connection: &Arc<Connection>,
+    control: &Arc<SessionControl>,
+    sql: &str,
+    args: &[Value],
+    named_args: &[(String, Value)],
+    want_rows: bool,
+    budget: &Budget,
+    deadline: &RequestDeadline,
+) -> Result<GuardedStatementOutcome> {
+    Metrics::global().observe(
+        Operation::Query,
+        || {
+            crate::work_metrics::note_guarded_statement_call();
+            // A statement inside an explicit transaction cannot be proven to
+            // finish without committing that transaction, and a transaction
+            // control statement has effects the read-only flag does not cover.
+            if !connection.get_auto_commit() || !guarded_statement_fast_path(sql) {
+                crate::work_metrics::note_guarded_statement_outcome(0, true);
+                return Ok(GuardedStatementOutcome::RequiresIntent);
+            }
+            let context = ExecutionContext {
+                database,
+                connection,
+                control,
+                deadline,
+            };
+            let store = database.storage().store().clone();
+            let mut guard = ExecutionBudget::install(
+                connection,
+                sql,
+                budget,
+                store,
+                deadline,
+                control.clone(),
+            )?;
+            let mut statement = {
+                let _operation = database.operation_until(deadline, false)?;
+                guard.check()?;
+                super::configure(connection);
+                let mut runner = connection.query_runner(sql.as_bytes());
+                let statement = runner
+                    .next()
+                    .context("empty remote SQL statement")??
+                    .context("empty remote SQL statement")?;
+                ensure!(
+                    runner.next().is_none(),
+                    "multiple SQL statements not supported"
+                );
+                statement
+            };
+            crate::work_metrics::note_guarded_statement_prepare();
+            bind_parameters(&mut statement, args, named_args)?;
+            let cols = (0..statement.num_columns())
+                .map(|index| StatementColumn {
+                    name: statement.get_column_name(index).into_owned(),
+                    decltype: statement.get_column_decltype(index),
+                })
+                .collect::<Vec<_>>();
+            let prior_rowid_generation = connection.last_insert_rowid_generation();
+            let prior_changes = connection.total_changes();
+            let (rows, statement) = run_guarded(&context, statement, &mut guard, want_rows)?;
+            let reprepares = statement.metrics().reprepares;
+            drop(statement);
+            if database
+                .admission()
+                .settle(control, writer(connection))
+                .is_err()
+            {
+                database.admission().quarantine();
+                return Err(UnsettledSqlOutcome.into());
+            }
+            deadline.evidence.settle();
+            let Some(rows) = rows else {
+                crate::work_metrics::note_guarded_statement_outcome(reprepares, true);
+                return Ok(GuardedStatementOutcome::RequiresIntent);
+            };
+            let affected_row_count = if connection.total_changes() != prior_changes {
+                connection.changes()
+            } else {
+                0
+            };
+            let last_insert_rowid = (connection.last_insert_rowid_generation()
+                != prior_rowid_generation)
+                .then(|| connection.last_insert_rowid());
+            crate::work_metrics::note_guarded_statement_outcome(reprepares, false);
+            Ok(GuardedStatementOutcome::Executed(StatementResult {
+                cols,
+                rows,
+                affected_row_count,
+                last_insert_rowid,
+                autocommit: connection.get_auto_commit(),
+            }))
+        },
+        |_| 0,
+    )
+}
+
+/// Runs the statement with the read-only admission enforced on every step. The
+/// statement is returned so its engine counters can be read and so the caller
+/// keeps ownership of the engine state until it settles the session.
+fn run_guarded(
+    context: &ExecutionContext<'_>,
+    mut statement: Statement,
+    guard: &mut ExecutionBudget<'_>,
+    collect: bool,
+) -> Result<(Option<Vec<Vec<Value>>>, Statement)> {
+    let ExecutionContext {
+        database,
+        connection,
+        control,
+        deadline,
+    } = *context;
+    let store = database.storage().store();
+    store.validate_transaction(!connection.get_auto_commit())?;
+    let mut rows = Vec::new();
+    let stepped = (|| -> Result<Option<Vec<Vec<Value>>>> {
+        loop {
+            guard.check()?;
+            deadline.check()?;
+            let mut refused = false;
+            let result = {
+                let _operation = database.operation_until(deadline, false)?;
+                let step_clock = guard.enter_step()?;
+                // The engine calls this again for every step and for the new
+                // program after an automatic reprepare, so a schema change that
+                // turns the statement into a write cannot slip through the
+                // verdict taken at prepare time.
+                let result = statement.step_with_admission_check(|readonly| {
+                    if readonly {
+                        deadline.evidence.enter();
+                        true
+                    } else {
+                        refused = true;
+                        false
+                    }
+                });
+                step_clock.finish()?;
+                result?
+            };
+            if refused {
+                // Nothing the engine classified as writing ran; every program
+                // that did run carried a read-only verdict for that step.
+                guard.account_steps(statement.metrics().vm_steps)?;
+                return Ok(None);
+            }
+            match result {
+                StepResult::Row => {
+                    let row = statement.row().context("native statement row missing")?;
+                    guard.account_row(row.get_values())?;
+                    if collect {
+                        rows.push(row.get_values().cloned().collect());
+                    }
+                }
+                StepResult::Done => {
+                    guard.account_steps(statement.metrics().vm_steps)?;
+                    return Ok(Some(rows));
+                }
+                StepResult::Busy => return Err(LimboError::Busy.into()),
+                StepResult::Interrupt => {
+                    guard.check()?;
+                    deadline.check()?;
+                    store.validate_local()?;
+                    return Err(LimboError::Interrupt.into());
+                }
+                StepResult::IO | StepResult::Yield => {
+                    let _operation = database.operation_until(deadline, false)?;
+                    guard.check()?;
+                    store.validate_local()?;
+                    statement._io().step()?;
+                    guard.check()?;
+                    store.validate_local()?;
+                }
+                StepResult::Sleep { duration } => {
+                    super::drive::sleep(duration, store.as_ref(), guard)?
+                }
+            }
+            guard.account_steps(statement.metrics().vm_steps)?;
+        }
+    })();
+    match stepped {
+        Ok(Some(rows)) => Ok((Some(rows), statement)),
+        Ok(None) => {
+            let stopped = database
+                .operation_until(deadline, true)
+                .and_then(|_operation| Ok(statement.abort_noncommitting()?));
+            match stopped {
+                Ok(NoncommittingAbort::StatementStopped) => Ok((None, statement)),
+                Ok(
+                    NoncommittingAbort::PendingIo | NoncommittingAbort::FinalizationAlreadyStarted,
+                )
+                | Err(_) => {
+                    database.defer_native_retirement(statement);
+                    Err(UnsettledSqlOutcome.into())
+                }
+            }
+        }
+        Err(error) => {
+            #[cfg(test)]
+            database.before_native_abort();
+            let stopped = database
+                .operation_until(deadline, true)
+                .and_then(|_operation| Ok(statement.abort_noncommitting()?));
+            match stopped {
+                Ok(NoncommittingAbort::StatementStopped) => {
+                    drop(statement);
+                    if database
+                        .admission()
+                        .settle(control, writer(connection))
+                        .is_err()
+                    {
+                        database.admission().quarantine();
+                        return Err(error.context(UnsettledSqlOutcome));
+                    }
+                    deadline.evidence.settle();
+                    Err(error)
+                }
+                Ok(
+                    NoncommittingAbort::PendingIo | NoncommittingAbort::FinalizationAlreadyStarted,
+                )
+                | Err(_) => {
+                    database.defer_native_retirement(statement);
+                    Err(error.context(UnsettledSqlOutcome))
+                }
+            }
+        }
+    }
 }
 
 pub(super) struct ReadCursor {

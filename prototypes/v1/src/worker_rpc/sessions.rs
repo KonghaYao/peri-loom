@@ -142,6 +142,10 @@ impl Sessions {
             registry.opening += 1;
         }
         let _opening = Opening(self);
+        // This caller waits on a shared cold load only until the RPC deadline. The load
+        // itself keeps its own PERI_WORKER_LOAD_MS budget and stays resident for later
+        // opens, so a slow S3 or a large WAL outliving this request is not a cancelled load.
+        let _waiter_deadline = crate::runtime::WaiterDeadlineScope::until(deadline);
         let refresh = self.image_refresh.for_database(database)?;
         let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
         self.refresh_initial_image(database)?;

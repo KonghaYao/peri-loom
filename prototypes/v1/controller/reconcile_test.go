@@ -565,6 +565,7 @@ func TestReconcileContextAndCapacityPreconditions(test *testing.T) {
 func TestReconcileRefreshesHeartbeatThatAgesOutDuringThePass(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	fixture.config.HeartbeatTimeout = 250 * time.Millisecond
+	fixture.config.ControlRPCTimeout = 2 * time.Second
 	controller, err := NewController(fixture.store, fixture.fake, fixture.config)
 	if err != nil {
 		test.Fatal(err)
@@ -741,6 +742,9 @@ func TestReconcileDoesNotReprobeDeadDesiredWorker(test *testing.T) {
 func TestReconcileReprobesWhenObservationExpiresAgain(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	fixture.config.HeartbeatTimeout = 100 * time.Millisecond
+	// This test is about a pass that outlives the heartbeat window while it
+	// walks placements one at a time.
+	fixture.config.ReconcileConcurrency = 1
 	controller, err := NewController(fixture.store, fixture.fake, fixture.config)
 	if err != nil {
 		test.Fatal(err)
@@ -784,6 +788,9 @@ func TestReconcileReprobesWhenObservationExpiresAgain(test *testing.T) {
 func TestReconcileReprobeIsBoundedPerPass(test *testing.T) {
 	fixture := newReconcileFixture(test)
 	fixture.config.HeartbeatTimeout = 100 * time.Millisecond
+	// Serial processing makes the heartbeat age out between placements; the
+	// per-worker bound must then stop the pass before it probes every database.
+	fixture.config.ReconcileConcurrency = 1
 	controller, err := NewController(fixture.store, fixture.fake, fixture.config)
 	if err != nil {
 		test.Fatal(err)

@@ -19,12 +19,17 @@ import (
 // observer's own artifact keeps exactly the bytes its consumers already read.
 const requestPhaseFileName = "request-phase-observation.jsonl"
 
+// One drain writes a bounded batch so a producer that keeps the ring full cannot starve the
+// stop/context branch; the stop path repeats the batch until the ring is empty.
+const requestPhaseDrainBatch = 64
+
 type serviceRequestPhaseRecord struct {
 	Stream        string                `json:"stream"`
 	RequestID     string                `json:"request_id"`
 	Action        string                `json:"action"`
 	Outcome       string                `json:"outcome"`
 	Status        int                   `json:"status"`
+	Window        uint64                `json:"window"`
 	TotalNS       uint64                `json:"total_ns"`
 	AccountedNS   uint64                `json:"accounted_ns"`
 	UnaccountedNS uint64                `json:"unaccounted_ns"`
@@ -35,13 +40,26 @@ type serviceRequestPhaseRecord struct {
 }
 
 // serviceRequestPhaseClose is the closing line. Filtered is always present so a complete
-// stream cannot be mistaken for a capture of every request.
+// stream cannot be mistaken for a capture of every request. Dropped separates the sampler
+// from the ring so a reader can tell a designed sample from lost evidence.
 type serviceRequestPhaseClose struct {
-	Stream   string `json:"stream"`
-	Action   string `json:"action"`
-	Outcome  string `json:"outcome"`
-	Complete bool   `json:"complete"`
-	Filtered uint64 `json:"filtered"`
+	Stream                 string `json:"stream"`
+	Action                 string `json:"action"`
+	Outcome                string `json:"outcome"`
+	Complete               bool   `json:"complete"`
+	Accepted               uint64 `json:"accepted"`
+	Sampled                uint64 `json:"sampled"`
+	Filtered               uint64 `json:"filtered"`
+	KeptSlow               uint64 `json:"kept_slow"`
+	KeptFailure            uint64 `json:"kept_failure"`
+	Dropped                uint64 `json:"dropped"`
+	DroppedSampledOut      uint64 `json:"dropped_sampled_out"`
+	DroppedRingOverwritten uint64 `json:"dropped_ring_overwritten"`
+	Windows                uint64 `json:"windows"`
+	WindowMS               int64  `json:"window_ms"`
+	SamplePermille         uint64 `json:"sample_permille"`
+	SlowThresholdMS        int64  `json:"slow_threshold_ms"`
+	Capacity               int    `json:"capacity"`
 }
 
 type serviceRequestPhaseSink struct {
@@ -106,52 +124,84 @@ func (sink *serviceRequestPhaseSink) consume(ctx context.Context, output io.Writ
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	encoder := json.NewEncoder(output)
-	count := 0
 	var failure error
-	// The stream is bounded, so the consumer stops with the profile instead of following a
-	// request burst forever; what it wrote stays truthful because it is written in order.
-	drain := func() {
-		for count < requestPhaseLimit {
+	// The ring is the memory bound. A reader that falls behind lets the producer overwrite the
+	// oldest records; that loss is reported by the closing line instead of being hidden or
+	// turning into an unbounded queue.
+	drain := func(limit int) int {
+		processed := 0
+		for processed < limit {
 			record, found := sink.observer.TryReceive()
 			if !found {
-				return
+				break
 			}
-			count++
+			processed++
 			if failure != nil {
 				continue
 			}
-			projected := serviceRequestPhaseRecord{Stream: sink.stream, RequestID: record.RequestID, Action: record.Action, Outcome: record.Outcome, Status: record.Status, TotalNS: record.TotalNS, AccountedNS: record.AccountedNS, UnaccountedNS: record.UnaccountedNS, Truncated: record.Truncated, Spans: record.Spans}
+			projected := serviceRequestPhaseRecord{Stream: sink.stream, RequestID: record.RequestID, Action: record.Action, Outcome: record.Outcome, Status: record.Status, Window: record.Window, TotalNS: record.TotalNS, AccountedNS: record.AccountedNS, UnaccountedNS: record.UnaccountedNS, Truncated: record.Truncated, Spans: record.Spans}
 			if failure = encoder.Encode(projected); failure != nil {
+				break
+			}
+		}
+		return processed
+	}
+	// The stop path drains at most one ring, so a producer that is still running cannot keep
+	// the shutdown waiting on records it is adding.
+	drainAll := func() {
+		for remaining := sink.observer.capacity; remaining > 0; {
+			processed := drain(requestPhaseDrainBatch)
+			if processed == 0 {
 				return
 			}
+			remaining -= processed
 		}
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			drain()
-			sink.finish(drain, encoder, count, failure)
+			drainAll()
+			sink.finish(encoder, failure)
 			return
 		case <-sink.stopping:
-			drain()
-			sink.finish(drain, encoder, count, failure)
+			drainAll()
+			sink.finish(encoder, failure)
 			return
 		case <-ticker.C:
-			drain()
+			drain(requestPhaseDrainBatch)
 		}
 	}
 }
 
 // finish writes the closing line that states whether the stream is complete, so a reader never
-// mistakes a bounded stop for a full capture.
-func (sink *serviceRequestPhaseSink) finish(drain func(), encoder *json.Encoder, count int, failure error) {
+// mistakes an overwritten ring for a full capture.
+func (sink *serviceRequestPhaseSink) finish(encoder *json.Encoder, failure error) {
 	if failure != nil {
 		return
 	}
-	filtered := sink.observer.filtered.Load()
-	if count < requestPhaseLimit {
-		_ = encoder.Encode(serviceRequestPhaseClose{Stream: sink.stream, Action: "observer", Outcome: "stopped", Complete: true, Filtered: filtered})
-		return
+	stats := sink.observer.stats()
+	complete := stats.Overwritten == 0
+	outcome := "stopped"
+	if !complete {
+		outcome = "bounded"
 	}
-	_ = encoder.Encode(serviceRequestPhaseClose{Stream: sink.stream, Action: "observer", Outcome: "bounded", Complete: false, Filtered: filtered})
+	_ = encoder.Encode(serviceRequestPhaseClose{
+		Stream:                 sink.stream,
+		Action:                 "observer",
+		Outcome:                outcome,
+		Complete:               complete,
+		Accepted:               stats.Accepted,
+		Sampled:                stats.Sampled,
+		Filtered:               stats.Filtered,
+		KeptSlow:               stats.KeptSlow,
+		KeptFailure:            stats.KeptFailure,
+		Dropped:                stats.Dropped,
+		DroppedSampledOut:      stats.Filtered,
+		DroppedRingOverwritten: stats.Overwritten,
+		Windows:                stats.Windows,
+		WindowMS:               sink.observer.window.Milliseconds(),
+		SamplePermille:         sink.observer.samplePermille,
+		SlowThresholdMS:        sink.observer.slowThreshold.Milliseconds(),
+		Capacity:               sink.observer.capacity,
+	})
 }

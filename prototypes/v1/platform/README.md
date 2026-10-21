@@ -52,6 +52,8 @@ dependency on `../controller`. Initialize the pinned Turso submodule before buil
     当前 S3 不提供证明式启动回滚；不得删 marker 强启，需保留卷并按 S3/Authority 证据人工处置。
 - **readiness 已宣告后的 SIGKILL** 不进入 startup rollback：客户端可能已执行未知 SQL，
   普通启动和 `--recover` 都拒绝把这次尝试回滚到旧 terminal，按普通 unclean 语义处理。
+  另有一条独立的 Authority 恢复 profile：仅在可机器检查的 `--recovery-evidence` 计划
+  通过后以受限模式启动，不会回滚旧 terminal；见 `## v1.1.10` 的 S05 小节。
 - 启动后的失败保留签名 `requires_operator:true` 记录。完整 clean 门禁通过并宣告 ready 后，
   仅当当前记录仍为 `requires_operator:true` 时写一条 `requires_operator:false` 的取代记录，
   包含 `superseded_by_terminal_sha256` 和时间戳；原始字节保存在
@@ -141,7 +143,7 @@ source, argv, run configuration, or diagnostic logs.
 ## API and credentials
 
 - `/v1/sql/open`, `/execute`, `/query`, `/close` manage opaque, principal-bound sessions.
-- `GET /v1/platform/capabilities` reports the public gateway origin and whether experimental Hrana HTTP and WebSocket are actually enabled. With `PERI_HRANA_EXPERIMENTAL=1`, project SQL API keys can use `https://<host>/db/<tenant>/<database>/<branch>/` through the tested JS client's Hrana HTTP v2 transport, the Rust `turso_serverless` 0.1.3 client's v3 JSON pipeline/cursor transport, or `wss://<host>/db/<tenant>/<database>/<branch>/` through the low-level JS client's WebSocket v1/v2 JSON and v3 protobuf. The adapter defaults off; HTTP v3 JSON read cursors, and v3 protobuf read-only and write cursors on HTTP and WebSocket, fetch bounded native pages. A write cursor no longer requires `RETURNING`: without it the reply carries no columns or rows, and `step_end` reports `affected_row_count` and `last_insert_rowid`. HTTP v3 JSON read cursors have a 10,001-row regression; Rust SDK reads and a disposable transactional write batch passed against an isolated loopback HTTP gateway. TLS development certificates must be trusted by the client independently; the Rust SDK does not accept a custom CA through its public builder. Full protocol and remote session-store schema compatibility, as well as crash-restart recovery, are not yet proven.
+- `GET /v1/platform/capabilities` reports the public gateway origin and whether experimental Hrana HTTP and WebSocket are actually enabled. With `PERI_HRANA_EXPERIMENTAL=1`, project SQL API keys can use `https://<host>/db/<tenant>/<database>/<branch>/` through the tested JS client's Hrana HTTP v2 transport, the Rust `turso_serverless` 0.1.3 client's v3 JSON pipeline/cursor transport, or `wss://<host>/db/<tenant>/<database>/<branch>/` through the low-level JS client's WebSocket v1/v2 JSON and v3 protobuf. The adapter defaults off; HTTP v3 JSON read cursors, and v3 protobuf read-only and write cursors on HTTP and WebSocket, fetch bounded native pages. A write cursor no longer requires `RETURNING`: without it the reply carries no columns or rows, and `step_end` reports `affected_row_count` and `last_insert_rowid`. HTTP v3 JSON read cursors have a 10,001-row regression; Rust SDK reads and a disposable transactional write batch passed against an isolated loopback HTTP gateway. TLS development certificates must be trusted by the client independently; the Rust SDK does not accept a custom CA through its public builder. An HTTP v3 write-cursor abort records `cursor_client_stopped`, `cursor_dispatch_stopped` and a proof-bound `cursor_native_outcome` (`rolled_back`, `committed` or `unknown`) on its operation; a close that proves neither outcome keeps the namespace isolated. Full protocol and remote session-store schema compatibility, as well as crash-restart recovery, are not yet proven.
 - Query may execute SQL writes: native read-only mode, not SQL text filtering, enforces reader roles.
 - `/v1/databases/*` exposes provisioning, lifecycle, refs, snapshots, clone, restore, PITR, checkpoint, and GC.
 - `/v1/organizations/create` and `/v1/projects/create` require the global management key.
@@ -397,7 +399,11 @@ admitted, successful and rejected totals, named rejection reasons, a
 successful-only latency account and operation-journal stage timings;
 `action_latency_ns_total` still includes refusals. The existing default-off
 diagnostics remain diagnostics: `PERI_SQL_OPEN_OBSERVER=1` streams phases for
-requests of at least 100 ms or failures, `PERI_DIAG_SLOW=1` requires
+slow requests, failures and a sampled share of fast successes; the phase threshold, sample
+rate, window and ring capacity are the optional `PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS`,
+`PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE`, `PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS` and
+`PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY` knobs documented in
+`request-phase-observation.md`. `PERI_DIAG_SLOW=1` requires
 `PERI_DIAG_DIR`, and `PERI_ADMISSION_TRACE=1` or `PERI_DIAG_GROUP_PHASE=1` adds
 trace detail. None of these switches changes SQL, WAL, publication, audit or
 recovery decisions.
@@ -434,6 +440,52 @@ autocommit probes and cursor describe/open. Worker prose remains in the Gateway
 log and is never forwarded. Codes, statuses, execution evidence and the
 `outcome_unknown` abort rule are unchanged, and SQL is still never retried
 automatically.
+
+### Proof-based post-ready recovery (S05)
+
+The authority now has a separate recovery state machine for a crash after
+readiness was announced. `peri-loom-v1 authority ... --recovery-evidence PATH`
+evaluates a strict, versioned JSON attestation, and `--recovery-plan-out PATH`
+writes the machine-checkable plan: path, per-step evidence and outcome,
+operator actions, pending unknown operations, and replay policy `never`. The
+evidence schema is `RecoveryEvidence` in `src/authority_rpc/recovery.rs`;
+unknown fields are rejected. A dirty marker is still fail-closed. Without
+evidence the authority refuses; `--reconciled` remains an explicit legacy
+confirmation, cannot be combined with evidence, and cannot take over a dirty
+seal.
+
+The plan separates three cases. `readiness: not_announced` is an interrupted
+startup: the authority refuses and directs the operator to the launcher
+`--recover` path; it never rolls back a marker itself. `readiness: unknown` is
+not treated as pre-ready. `readiness: announced` is a post-ready crash and may
+start only in a restricted recovery profile after the exclusive state-directory
+lock and the launcher's exact argv/PID record establish the old process stop,
+and after the evidence binds the old seal owner/etag, the recovery journal and
+terminal, the launcher-verified audit head, read-back of every confirmed write,
+and the state floor/root revisions. Local process evidence is accepted only for
+the local backend. S3 additionally requires a provider read-back bound to the
+old seal owner/etag; that remote record is an operator attestation, not a
+cryptographic proof that no in-flight data write can still land.
+
+The recovery profile admits only metrics/inspection, database state, session
+state, close/retire and shutdown RPCs. Challenges, grants, renew/revoke,
+opens, session work, maintenance and imports are rejected with
+`recovery_restricted`; unknown operations stay pending and are never replayed.
+It is an authority-only gate: it does not start or admit the platform, workers,
+or SQL, and their clean gates are unchanged. A dirty seal is replaced only by a
+conditional write that matches the evidence-bound owner/etag, and the
+replacement is always written dirty, so a late old owner cannot publish a seal.
+The operator verifies the restricted state, stops it cleanly, and then starts
+normally.
+
+Not covered: automatic evidence generation by `dev.py`, real SIGKILL injection
+at the intent/commit/terminal/audit/response boundaries (the tests use
+state-machine fixtures), cryptographic S3 quiescence, and multi-authority/HA.
+Rust validates the evidence record's internal consistency and the live
+seal/lock; it does not re-read the platform state, journal or audit files, so
+the launcher/operator must still produce and verify those digests. The
+launcher's clean restart gate, ownership markers and fencing rules are
+unchanged.
 
 ## v1.1.9
 
@@ -481,9 +533,19 @@ and SDKs; an `outcome_unknown` result also shows `operation_id`,
 error paths; `outcome_unknown` and `session_moved` remain opaque, with no
 reconnect and no replay.
 
-E1 remains an explicit known gap: an HTTP v3 write-cursor abort has no
-acknowledged rollback proof, so the default matrix executes 26 of 27 scripts per
-round. Two rounds produce 52 passed runs and 2 known-gap skips.
+E1 remains an explicit known gap: an HTTP v3 write-cursor abort does not provide
+an automatic rollback proof, and there is still no end-to-end protocol
+acknowledgement before the client may read again, so the default matrix executes
+26 of 27 scripts per round. The adapter now records a
+queryable cursor lifecycle on the operation journal:
+`cursor_client_stopped` and `cursor_dispatch_stopped` describe what the adapter
+stopped doing, and `cursor_native_outcome` is `rolled_back` only when the worker
+acknowledged that a live cursor was aborted, `committed` only when a done page
+was delivered, and `unknown` when neither proof exists. An `unknown` close
+quarantines the namespace, and the resulting `409 database_isolated` names the
+`operation_id` and `possible_commit` that must be queried; the adapter never
+reads a fetch abort as a rollback and never reconnects or replays. Two rounds
+still produce 52 passed runs and 2 known-gap skips.
 `PERI_HRANA_INCLUDE_KNOWN_GAPS=1` executes E1 but does not guarantee a pass.
 This release is not a full Hrana compatibility claim. A failing
 `http-abort-write-cursor-live.mjs` can leave its fixture quarantined; do not

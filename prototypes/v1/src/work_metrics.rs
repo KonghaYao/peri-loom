@@ -243,6 +243,15 @@ static WAL_INDEX_RETRIES: AtomicU64 = AtomicU64::new(0);
 static INDEX_PAGE_READS: AtomicU64 = AtomicU64::new(0);
 static INDEX_PAGE_WRITES: AtomicU64 = AtomicU64::new(0);
 static INDEX_PAGE_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
+static ROOT_ENCODED_MAX_BYTES: AtomicU64 = AtomicU64::new(0);
+static INLINE_BRANCHES: AtomicU64 = AtomicU64::new(0);
+static INLINE_SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+static INLINE_PIN_IDENTITIES: AtomicU64 = AtomicU64::new(0);
+static BRANCH_HISTORY_POINTS: AtomicU64 = AtomicU64::new(0);
+static MAX_INLINE_BRANCHES: AtomicU64 = AtomicU64::new(0);
+static MAX_INLINE_SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+static MAX_INLINE_PIN_IDENTITIES: AtomicU64 = AtomicU64::new(0);
+static MAX_BRANCH_HISTORY_POINTS: AtomicU64 = AtomicU64::new(0);
 
 /// One encoded authority candidate: the head document size the publication CAS carries,
 /// the inline reader-pin entries left in that document, and its receipts. Paged pin entries
@@ -272,6 +281,34 @@ pub(crate) fn observe_root_publish_retry() {
         return;
     }
     add(&ROOT_PUBLISH_RETRIES, 1);
+}
+
+/// One encoded head document, measured at the point the publication CAS carries it. The
+/// identity counts are the inline populations the head still holds; the paged registries
+/// contribute nothing because they live behind a pointer. `root_encoded_bytes` is the same
+/// document, summed per attempt by `observe_root_publish`; this sink adds the peak and the
+/// residual inline growth, so a namespace approaching an identity ceiling is visible before
+/// the fail-closed check rejects it.
+pub(crate) fn observe_root_encoding(
+    encoded_bytes: usize,
+    identities: crate::authority::types::IdentityCounts,
+) {
+    if !enabled() {
+        return;
+    }
+    let bytes = encoded_bytes as u64;
+    ROOT_ENCODED_MAX_BYTES.fetch_max(bytes, Ordering::Relaxed);
+    add(&INLINE_BRANCHES, identities.branches as u64);
+    add(&INLINE_SNAPSHOTS, identities.snapshots as u64);
+    add(&INLINE_PIN_IDENTITIES, identities.pin_identities as u64);
+    add(
+        &BRANCH_HISTORY_POINTS,
+        identities.branch_history_points as u64,
+    );
+    MAX_INLINE_BRANCHES.fetch_max(identities.branches as u64, Ordering::Relaxed);
+    MAX_INLINE_SNAPSHOTS.fetch_max(identities.snapshots as u64, Ordering::Relaxed);
+    MAX_INLINE_PIN_IDENTITIES.fetch_max(identities.pin_identities as u64, Ordering::Relaxed);
+    MAX_BRANCH_HISTORY_POINTS.fetch_max(identities.branch_history_points as u64, Ordering::Relaxed);
 }
 
 /// The stages of one authority publication. A publication is the unit a slow statement hides
@@ -528,6 +565,146 @@ pub(crate) fn observe_index_page_write(encoded_bytes: usize) {
     add(&INDEX_PAGE_WRITE_BYTES, encoded_bytes as u64);
 }
 
+// --- D. bounded garbage collection ------------------------------------------------------
+//
+// GC is the one maintenance path that previously held a namespace exclusive barrier for the
+// whole mark and sweep. These counters make the replacement observable: how long a tick
+// waited for and held the barrier, how much of the registry it actually scanned, how many
+// deletions it asked the store for, and why it stopped before finishing. The interruption
+// names are the contract used in the RPC result, so they are kept in one array.
+pub(crate) const GC_INTERRUPTION_NAMES: [&str; 8] = [
+    "scan_budget",
+    "mark_budget",
+    "prune_budget",
+    "delete_budget",
+    "time_budget",
+    "admission_busy",
+    "cas_conflict",
+    "revision_changed",
+];
+
+static GC_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static GC_RESUMED: AtomicU64 = AtomicU64::new(0);
+static GC_COMPLETED: AtomicU64 = AtomicU64::new(0);
+static GC_BATCHES: AtomicU64 = AtomicU64::new(0);
+static GC_SCANNED_PAGES: AtomicU64 = AtomicU64::new(0);
+static GC_SCANNED_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static GC_SCANNED_BYTES: AtomicU64 = AtomicU64::new(0);
+static GC_MARKED: AtomicU64 = AtomicU64::new(0);
+static GC_DELETED: AtomicU64 = AtomicU64::new(0);
+static GC_DELETE_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static GC_DELETE_FAILURES: AtomicU64 = AtomicU64::new(0);
+static GC_WAIT_NANOS: AtomicU64 = AtomicU64::new(0);
+static GC_MAX_WAIT_NANOS: AtomicU64 = AtomicU64::new(0);
+static GC_EXCLUSIVE_NANOS: AtomicU64 = AtomicU64::new(0);
+static GC_MAX_EXCLUSIVE_NANOS: AtomicU64 = AtomicU64::new(0);
+static GC_INTERRUPTIONS: [AtomicU64; GC_INTERRUPTION_NAMES.len()] =
+    [const { AtomicU64::new(0) }; GC_INTERRUPTION_NAMES.len()];
+static LEASE_RENEWALS: AtomicU64 = AtomicU64::new(0);
+static LEASE_REMAINING_MS: AtomicU64 = AtomicU64::new(0);
+static LEASE_REMAINING_MIN_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+
+pub(crate) fn observe_gc_request(resumed: bool) {
+    if !enabled() {
+        return;
+    }
+    add(&GC_REQUESTS, 1);
+    if resumed {
+        add(&GC_RESUMED, 1);
+    }
+}
+
+pub(crate) fn observe_gc_completed() {
+    if !enabled() {
+        return;
+    }
+    add(&GC_COMPLETED, 1);
+}
+
+pub(crate) fn observe_gc_batch() {
+    if !enabled() {
+        return;
+    }
+    add(&GC_BATCHES, 1);
+}
+
+pub(crate) fn observe_gc_scan(pages: usize, entries: usize, bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    add(&GC_SCANNED_PAGES, pages as u64);
+    add(&GC_SCANNED_ENTRIES, entries as u64);
+    add(&GC_SCANNED_BYTES, bytes as u64);
+}
+
+pub(crate) fn observe_gc_marked(count: usize) {
+    if !enabled() {
+        return;
+    }
+    add(&GC_MARKED, count as u64);
+}
+
+pub(crate) fn observe_gc_deleted(completed: usize, reaped: usize, requests: usize) {
+    if !enabled() {
+        return;
+    }
+    add(&GC_DELETED, completed as u64);
+    add(&GC_DELETE_REQUESTS, requests as u64);
+    // Reaping a completed tombstone changes no metadata, so it is reported through the
+    // delete-request count only; `deleted` stays the number of acknowledged tombstones.
+    let _ = reaped;
+}
+
+pub(crate) fn observe_gc_delete_failure() {
+    if !enabled() {
+        return;
+    }
+    add(&GC_DELETE_FAILURES, 1);
+}
+
+pub(crate) fn observe_gc_wait(elapsed: Duration) {
+    if !enabled() {
+        return;
+    }
+    let elapsed = nanos(elapsed);
+    add(&GC_WAIT_NANOS, elapsed);
+    GC_MAX_WAIT_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+}
+
+pub(crate) fn observe_gc_exclusive(elapsed: Duration) {
+    if !enabled() {
+        return;
+    }
+    let elapsed = nanos(elapsed);
+    add(&GC_EXCLUSIVE_NANOS, elapsed);
+    GC_MAX_EXCLUSIVE_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+}
+
+pub(crate) fn observe_gc_interruption(reason: &'static str) {
+    if !enabled() {
+        return;
+    }
+    let Some(index) = GC_INTERRUPTION_NAMES
+        .iter()
+        .position(|name| *name == reason)
+    else {
+        debug_assert!(false, "unregistered GC interruption reason: {reason}");
+        return;
+    };
+    add(&GC_INTERRUPTIONS[index], 1);
+}
+
+/// Headroom left on a completed lease renewal. The minimum is the number to watch: one
+/// renewal that nearly missed its deadline is hidden by any average.
+pub(crate) fn observe_lease_renewal(remaining_ms: u64) {
+    if !enabled() {
+        return;
+    }
+    add(&LEASE_RENEWALS, 1);
+    add(&LEASE_REMAINING_MS, remaining_ms);
+    LEASE_REMAINING_MIN_MS.fetch_min(remaining_ms, Ordering::Relaxed);
+}
+
 // --- C. locks and execution --------------------------------------------------------------
 
 /// The three state locks the request path contends on. Session lanes and per-registry locks
@@ -579,6 +756,69 @@ pub(crate) struct AdmissionWait {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LaneWait {
     pub(crate) waited_ns: u64,
+}
+
+/// The in-process gates that replaced a `try_lock` poll with notification. Kept apart from
+/// the storage lock counters: these are contention episodes, not lock acquisitions. The
+/// notification hit rate is `(waits - timeouts) / waits`, and an uncontended acquisition
+/// charges none of these counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GateDomain {
+    /// A session's connection guard.
+    Lane,
+    /// The database-wide foreground/maintenance operations gate.
+    Operation,
+}
+
+impl GateDomain {
+    pub(crate) const ALL: [GateDomain; 2] = [GateDomain::Lane, GateDomain::Operation];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            GateDomain::Lane => "lane",
+            GateDomain::Operation => "operation",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct GateTotals {
+    /// Contention episodes that entered the notification wait.
+    pub waits: u64,
+    /// Time spent inside those waits, including the wake-up reacquisition.
+    pub wait_ns: u64,
+    /// Waits that ended at the deadline, or at a close/quarantine cancellation, instead of
+    /// acquiring the gate.
+    pub timeouts: u64,
+}
+
+static GATE_WAITS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static GATE_WAIT_NANOS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static GATE_TIMEOUTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+pub(crate) fn observe_gate_wait(domain: GateDomain) {
+    if !enabled() {
+        return;
+    }
+    add(&GATE_WAITS[domain.index()], 1);
+}
+
+pub(crate) fn observe_gate_wait_done(domain: GateDomain, waited: Duration) {
+    if !enabled() {
+        return;
+    }
+    add(&GATE_WAIT_NANOS[domain.index()], nanos(waited));
+}
+
+pub(crate) fn observe_gate_wait_timeout(domain: GateDomain) {
+    if !enabled() {
+        return;
+    }
+    add(&GATE_TIMEOUTS[domain.index()], 1);
 }
 
 pub(crate) fn begin_request_observation() {
@@ -734,6 +974,41 @@ impl ExecuteTimer {
     }
 }
 
+// --- F. guarded read-only statement ------------------------------------------------------
+
+static GUARDED_STATEMENT_CALLS: AtomicU64 = AtomicU64::new(0);
+static GUARDED_STATEMENT_PREPARES: AtomicU64 = AtomicU64::new(0);
+static GUARDED_STATEMENT_REPREPARES: AtomicU64 = AtomicU64::new(0);
+static GUARDED_STATEMENT_REQUIRES_INTENT: AtomicU64 = AtomicU64::new(0);
+
+/// One guarded read-only RPC. `prepares` counts the calls that reached the
+/// engine; a transaction control or already-transactional statement is refused
+/// before preparing.
+pub(crate) fn note_guarded_statement_call() {
+    if enabled() {
+        add(&GUARDED_STATEMENT_CALLS, 1);
+    }
+}
+
+pub(crate) fn note_guarded_statement_prepare() {
+    if enabled() {
+        add(&GUARDED_STATEMENT_PREPARES, 1);
+    }
+}
+
+/// The outcome of one guarded call: the engine's automatic reprepares and
+/// whether the statement was handed back to the committing path. A refused
+/// statement has no rows and no write; the caller records the intent next.
+pub(crate) fn note_guarded_statement_outcome(reprepares: u64, requires_intent: bool) {
+    if !enabled() {
+        return;
+    }
+    add(&GUARDED_STATEMENT_REPREPARES, reprepares);
+    if requires_intent {
+        add(&GUARDED_STATEMENT_REQUIRES_INTENT, 1);
+    }
+}
+
 // --- D. maintenance ----------------------------------------------------------------------
 
 // The names and the counters come from the maintenance enums themselves, so reordering or
@@ -745,13 +1020,27 @@ static UNIT_CALLS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static UNIT_NANOS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static UNIT_BACKFILL_BYTES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static UNIT_FAILURES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_WAITS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_WAIT_NANOS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_SCANNED_PAGES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_BACKFILLED_BYTES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static UNIT_TRUNCATIONS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 static BLOCKS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static BACKOFFS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static DENIED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 static WAL_INDEX_READS: AtomicU64 = AtomicU64::new(0);
 static WAL_INDEX_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 static WAL_INDEX_READ_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+static WAL_BUDGET_BYTES: AtomicU64 = AtomicU64::new(0);
+static WAL_BUDGET_PEAK_BYTES: AtomicU64 = AtomicU64::new(0);
+static WAL_BUDGET_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+static WAL_BUDGET_PRESSURE_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+static READER_BLOCK_EVENTS: AtomicU64 = AtomicU64::new(0);
+static READER_BLOCK_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// Timer for one maintenance unit. Disabled, it carries no clock, so a process with the
 /// switch off reads no time it would not have read anyway.
@@ -773,18 +1062,31 @@ impl MaintenanceTimer {
         }
     }
 
-    /// One maintenance unit: the backfill volume it acted on, the wall time inside it, and
-    /// whether it completed. Both the admin entry points and the scheduler's units report
-    /// through here, so the two triggers are measured on one caliber.
-    pub(crate) fn finish(self, backfill_bytes: u64, completed: bool) {
+    /// One maintenance unit: the planned backfill volume, the frames the unit really scanned,
+    /// whether it truncated, the wall time inside it, and whether it completed. Both the admin
+    /// entry points and the scheduler's units report through here, so the two triggers are
+    /// measured on one caliber.
+    pub(crate) fn finish(
+        self,
+        charge_bytes: u64,
+        report: Option<crate::maintenance::MaintenanceUnitReport>,
+        completed: bool,
+    ) {
         let Some(started) = self.started else {
             return;
         };
         let elapsed_ns = nanos(started.elapsed());
         let index = self.lane.index();
         add(&UNIT_CALLS[index], 1);
-        add(&UNIT_BACKFILL_BYTES[index], backfill_bytes);
+        add(&UNIT_BACKFILL_BYTES[index], charge_bytes);
         add(&UNIT_NANOS[index], elapsed_ns);
+        if let Some(report) = report {
+            add(&UNIT_SCANNED_PAGES[index], report.scanned_pages);
+            add(&UNIT_BACKFILLED_BYTES[index], report.backfilled_bytes);
+            if report.truncated {
+                add(&UNIT_TRUNCATIONS[index], 1);
+            }
+        }
         if !completed {
             add(&UNIT_FAILURES[index], 1);
         }
@@ -801,7 +1103,11 @@ impl MaintenanceTimer {
                 "start_unix_ms": started_wall_ms,
                 "end_unix_ms": unix_ms(),
                 "duration_ns": elapsed_ns,
-                "backfill_bytes": backfill_bytes,
+                "backfill_bytes": charge_bytes,
+                "scanned_pages": report.map_or(0, |report| report.scanned_pages),
+                "backfilled_bytes": report.map_or(0, |report| report.backfilled_bytes),
+                "truncated": report.is_some_and(|report| report.truncated),
+                "complete": report.is_some_and(|report| report.complete),
                 "completed": completed,
                 "storage_holds_delta": ended_storage.holds.saturating_sub(started_storage.holds),
                 "storage_hold_ns_delta": ended_storage
@@ -843,6 +1149,71 @@ pub(crate) fn observe_maintenance_refused(denied: crate::maintenance::BudgetDeni
         return;
     }
     add(&DENIED[denied as usize], 1);
+}
+
+/// Time a unit spent queued between the scheduling decision and its execution. Kept apart
+/// from the unit's own duration so a slow drain is not mistaken for a slow checkpoint.
+pub(crate) fn observe_maintenance_wait(
+    lane: crate::maintenance::MaintenanceLane,
+    waited: std::time::Duration,
+) {
+    if !enabled() {
+        return;
+    }
+    let index = lane.index();
+    add(&UNIT_WAITS[index], 1);
+    add(&UNIT_WAIT_NANOS[index], nanos(waited));
+}
+
+/// One scheduler backoff after a unit observed a block. The block reason itself is counted by
+/// `observe_maintenance_blocked`; this counter says a backoff was actually applied, which is a
+/// different event because a refusal never starts a unit and a pre-suspend unit does not back
+/// off the periodic driver.
+pub(crate) fn observe_maintenance_backoff(reason: crate::maintenance::BlockReason) {
+    if !enabled() {
+        return;
+    }
+    add(&BACKOFFS[reason as usize], 1);
+}
+
+/// A reader held a native read lock long enough to block compaction. The age is the upper
+/// bound described on `ReaderAge`, so the nanos are an upper bound as well.
+pub(crate) fn observe_reader_block(age: std::time::Duration) {
+    if !enabled() {
+        return;
+    }
+    add(&READER_BLOCK_EVENTS, 1);
+    add(&READER_BLOCK_NANOS, nanos(age));
+}
+
+/// The configured WAL capacity and the largest materialized WAL seen while it was enabled.
+/// A peak is more useful than a live gauge here because the periods that matter are the ones
+/// just before a maintenance pass drained the log.
+pub(crate) fn observe_wal_budget_state(hard_bytes: u64, current_bytes: u64) {
+    if !enabled() {
+        return;
+    }
+    WAL_BUDGET_BYTES.store(hard_bytes, Ordering::Relaxed);
+    WAL_BUDGET_PEAK_BYTES.fetch_max(current_bytes, Ordering::Relaxed);
+}
+
+/// One new WAL write refused because it would cross the hard capacity. A rejection is not a
+/// maintenance skip: no unit was queued and the SQL call fails instead.
+pub(crate) fn observe_wal_budget_rejection(hard_bytes: u64, projected_bytes: u64) {
+    if !enabled() {
+        return;
+    }
+    add(&WAL_BUDGET_REJECTIONS, 1);
+    WAL_BUDGET_BYTES.store(hard_bytes, Ordering::Relaxed);
+    WAL_BUDGET_PEAK_BYTES.fetch_max(projected_bytes, Ordering::Relaxed);
+}
+
+/// One calm-to-pressured transition across the soft mark.
+pub(crate) fn observe_wal_budget_pressure() {
+    if !enabled() {
+        return;
+    }
+    add(&WAL_BUDGET_PRESSURE_EVENTS, 1);
 }
 
 /// One read of the branch's `wal/index` document. The read happens on paths that already
@@ -926,6 +1297,21 @@ pub(crate) struct MetadataWork {
     pub index_page_reads: u64,
     pub index_page_writes: u64,
     pub index_page_write_bytes: u64,
+    /// Largest encoded head document built for a publication attempt.
+    pub root_encoded_max_bytes: u64,
+    /// Inline identity populations summed over encoded heads. The identity tables are not
+    /// paged yet, so these are the counters that show whether a namespace is approaching the
+    /// explicit ceilings.
+    pub inline_branches: u64,
+    pub inline_snapshots: u64,
+    pub inline_pin_identities: u64,
+    /// Regression points carried inline by branch hot windows, summed over encoded heads.
+    pub branch_history_points: u64,
+    /// Largest single encoded head's inline identity populations.
+    pub max_inline_branches: u64,
+    pub max_inline_snapshots: u64,
+    pub max_inline_pin_identities: u64,
+    pub max_branch_history_points: u64,
     /// Per stage, in `PublishStage::ALL` order: attempts that reached the stage, the time they
     /// spent there, and the longest single stay. A dropped attempt still charges the stage it
     /// was in, so an error path does not vanish from the account.
@@ -969,6 +1355,13 @@ pub(crate) struct ExecutionWork {
     pub native_execute_max_ns: u64,
     /// Engine VM steps of the executions that reached the success path.
     pub native_execute_steps: u64,
+    /// Guarded read-only RPCs, the calls that reached the engine, the engine's
+    /// automatic reprepares during them, and the calls handed back to the
+    /// committing path because the engine classified the statement as writing.
+    pub guarded_statement_calls: u64,
+    pub guarded_statement_prepares: u64,
+    pub guarded_statement_reprepares: u64,
+    pub guarded_statement_requires_intent: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -980,6 +1373,14 @@ pub(crate) struct UnitTotals {
     pub backfill_bytes: u64,
     /// Units that executed and did not complete, including a blocked compaction.
     pub failures: u64,
+    /// Units that were queued and the time they spent waiting before execution.
+    pub waits: u64,
+    pub wait_ns: u64,
+    /// Frames the native checkpoint reports as scanned, and the bytes they represent.
+    pub scanned_pages: u64,
+    pub backfilled_bytes: u64,
+    /// Units that reset the WAL index.
+    pub truncations: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -988,12 +1389,58 @@ pub(crate) struct MaintenanceWork {
     pub units: BTreeMap<&'static str, UnitTotals>,
     /// Why a unit did not complete, counted where the reason was decided.
     pub blocked: BTreeMap<&'static str, u64>,
+    /// A block that the scheduler turned into a database-wide backoff.
+    pub backoffs: BTreeMap<&'static str, u64>,
     /// Budget refusals, by the budget that ran out. A refusal is a skip.
     pub refused: BTreeMap<&'static str, u64>,
+    /// Reader-block events and the peak age that caused them, process-wide.
+    pub reader_block_events: u64,
+    pub reader_block_ns: u64,
+    /// Configured hard WAL capacity (0 when disabled), the largest materialized WAL seen,
+    /// new-write rejections and calm-to-pressured transitions.
+    pub wal_budget_bytes: u64,
+    pub wal_budget_peak_bytes: u64,
+    pub wal_budget_rejections: u64,
+    pub wal_budget_pressure_events: u64,
     /// `wal/index` reads that happened on paths which already needed the index.
     pub wal_index_reads: u64,
     pub wal_index_read_bytes: u64,
     pub wal_index_read_entries: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct GcWork {
+    /// Collection requests that reached the bounded state machine, including replays.
+    pub requests: u64,
+    /// Requests that continued a previously published cursor instead of starting a cycle.
+    pub resumed: u64,
+    /// Requests that observed the cycle at `done`.
+    pub completed: u64,
+    /// Bounded mark/sweep/cursor publications. One tick publishes at most one of these for
+    /// progress, plus one conditional transaction per deletion batch.
+    pub batches: u64,
+    pub scanned_pages: u64,
+    pub scanned_entries: u64,
+    /// Bytes of scanned registry keys/values. Physical object sizes are not recorded in the
+    /// catalog, so this is metadata volume, not downloaded or deleted bytes.
+    pub scanned_bytes: u64,
+    pub marked: u64,
+    pub deleted: u64,
+    /// Physical `delete` calls issued by sweep, including late-arrival reaps.
+    pub delete_requests: u64,
+    pub delete_failures: u64,
+    /// Time spent waiting for the namespace exclusive barrier, and holding it.
+    pub wait_ns: u64,
+    pub max_wait_ns: u64,
+    pub exclusive_ns: u64,
+    pub max_exclusive_ns: u64,
+    /// Bounded ticks that stopped before the cycle finished, by reason.
+    pub interruptions: BTreeMap<&'static str, u64>,
+    /// Completed lease renewals and the headroom they reported.
+    pub lease_renewals: u64,
+    pub lease_remaining_ms: u64,
+    /// Smallest remaining TTL reported by a renewal; 0 when no renewal was observed.
+    pub lease_remaining_min_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -1011,9 +1458,11 @@ pub(crate) struct WorkMetricsSnapshot {
     pub wal_workload: WalWorkload,
     pub metadata: MetadataWork,
     pub locks: BTreeMap<&'static str, LockTotals>,
+    pub gates: BTreeMap<&'static str, GateTotals>,
     pub execution: ExecutionWork,
     pub results: ResultWork,
     pub maintenance: MaintenanceWork,
+    pub gc: GcWork,
 }
 
 fn units() -> BTreeMap<&'static str, UnitTotals> {
@@ -1028,6 +1477,11 @@ fn units() -> BTreeMap<&'static str, UnitTotals> {
                     ns: load(&UNIT_NANOS[index]),
                     backfill_bytes: load(&UNIT_BACKFILL_BYTES[index]),
                     failures: load(&UNIT_FAILURES[index]),
+                    waits: load(&UNIT_WAITS[index]),
+                    wait_ns: load(&UNIT_WAIT_NANOS[index]),
+                    scanned_pages: load(&UNIT_SCANNED_PAGES[index]),
+                    backfilled_bytes: load(&UNIT_BACKFILLED_BYTES[index]),
+                    truncations: load(&UNIT_TRUNCATIONS[index]),
                 },
             )
         })
@@ -1050,6 +1504,23 @@ fn locks() -> BTreeMap<&'static str, LockTotals> {
         .into_iter()
         .zip(LOCK_NAMES)
         .map(|(domain, name)| (name, lock_totals(domain)))
+        .collect()
+}
+
+fn gates() -> BTreeMap<&'static str, GateTotals> {
+    GateDomain::ALL
+        .into_iter()
+        .map(|domain| {
+            let index = domain.index();
+            (
+                domain.name(),
+                GateTotals {
+                    waits: load(&GATE_WAITS[index]),
+                    wait_ns: load(&GATE_WAIT_NANOS[index]),
+                    timeouts: load(&GATE_TIMEOUTS[index]),
+                },
+            )
+        })
         .collect()
 }
 
@@ -1088,6 +1559,15 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             index_page_reads: load(&INDEX_PAGE_READS),
             index_page_writes: load(&INDEX_PAGE_WRITES),
             index_page_write_bytes: load(&INDEX_PAGE_WRITE_BYTES),
+            root_encoded_max_bytes: load(&ROOT_ENCODED_MAX_BYTES),
+            inline_branches: load(&INLINE_BRANCHES),
+            inline_snapshots: load(&INLINE_SNAPSHOTS),
+            inline_pin_identities: load(&INLINE_PIN_IDENTITIES),
+            branch_history_points: load(&BRANCH_HISTORY_POINTS),
+            max_inline_branches: load(&MAX_INLINE_BRANCHES),
+            max_inline_snapshots: load(&MAX_INLINE_SNAPSHOTS),
+            max_inline_pin_identities: load(&MAX_INLINE_PIN_IDENTITIES),
+            max_branch_history_points: load(&MAX_BRANCH_HISTORY_POINTS),
             publish_stage_calls: report(
                 &PublishStage::ALL,
                 PublishStage::name,
@@ -1122,11 +1602,16 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             snapshot_root_max_bytes: load(&SNAPSHOT_ROOT_MAX_BYTES),
         },
         locks: locks(),
+        gates: gates(),
         execution: ExecutionWork {
             native_execute_calls: load(&EXECUTE_CALLS),
             native_execute_ns: load(&EXECUTE_NANOS),
             native_execute_max_ns: load(&EXECUTE_MAX_NANOS),
             native_execute_steps: load(&EXECUTE_STEPS),
+            guarded_statement_calls: load(&GUARDED_STATEMENT_CALLS),
+            guarded_statement_prepares: load(&GUARDED_STATEMENT_PREPARES),
+            guarded_statement_reprepares: load(&GUARDED_STATEMENT_REPREPARES),
+            guarded_statement_requires_intent: load(&GUARDED_STATEMENT_REQUIRES_INTENT),
         },
         results: ResultWork {
             batches: load(&RESULT_BATCHES),
@@ -1140,16 +1625,56 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
                 crate::maintenance::BlockReason::name,
                 &BLOCKS,
             ),
+            backoffs: report(
+                &crate::maintenance::BlockReason::ALL,
+                crate::maintenance::BlockReason::name,
+                &BACKOFFS,
+            ),
             refused: report(
                 &crate::maintenance::BudgetDenied::ALL,
                 crate::maintenance::BudgetDenied::name,
                 &DENIED,
             ),
+            reader_block_events: load(&READER_BLOCK_EVENTS),
+            reader_block_ns: load(&READER_BLOCK_NANOS),
+            wal_budget_bytes: load(&WAL_BUDGET_BYTES),
+            wal_budget_peak_bytes: load(&WAL_BUDGET_PEAK_BYTES),
+            wal_budget_rejections: load(&WAL_BUDGET_REJECTIONS),
+            wal_budget_pressure_events: load(&WAL_BUDGET_PRESSURE_EVENTS),
             wal_index_reads: load(&WAL_INDEX_READS),
             wal_index_read_bytes: load(&WAL_INDEX_READ_BYTES),
             wal_index_read_entries: load(&WAL_INDEX_READ_ENTRIES),
         },
+        gc: GcWork {
+            requests: load(&GC_REQUESTS),
+            resumed: load(&GC_RESUMED),
+            completed: load(&GC_COMPLETED),
+            batches: load(&GC_BATCHES),
+            scanned_pages: load(&GC_SCANNED_PAGES),
+            scanned_entries: load(&GC_SCANNED_ENTRIES),
+            scanned_bytes: load(&GC_SCANNED_BYTES),
+            marked: load(&GC_MARKED),
+            deleted: load(&GC_DELETED),
+            delete_requests: load(&GC_DELETE_REQUESTS),
+            delete_failures: load(&GC_DELETE_FAILURES),
+            wait_ns: load(&GC_WAIT_NANOS),
+            max_wait_ns: load(&GC_MAX_WAIT_NANOS),
+            exclusive_ns: load(&GC_EXCLUSIVE_NANOS),
+            max_exclusive_ns: load(&GC_MAX_EXCLUSIVE_NANOS),
+            interruptions: named(&GC_INTERRUPTION_NAMES, &GC_INTERRUPTIONS),
+            lease_renewals: load(&LEASE_RENEWALS),
+            lease_remaining_ms: load(&LEASE_REMAINING_MS),
+            lease_remaining_min_ms: lease_remaining_min(),
+        },
     })
+}
+
+fn lease_remaining_min() -> u64 {
+    if load(&LEASE_RENEWALS) == 0 {
+        0
+    } else {
+        load(&LEASE_REMAINING_MIN_MS)
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@ use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 
 use crate::authority_rpc::provider::RemoteAuthorityProvider;
-use crate::runtime::{DatabaseId, WorkerLimits, WorkerRuntime};
+use crate::runtime::{BudgetLane, DatabaseId, MemoryReservation, WorkerLimits, WorkerRuntime};
 
 use super::context::{LeaseContext, LeaseState};
 use super::handle::OwnedHandle;
@@ -116,7 +116,20 @@ impl OwnershipRuntime {
                 Ok(json!({"draining": true}))
             }
             OwnershipCommand::GetDatabaseState { database } => {
-                Ok(serde_json::to_value(self.database_state(&database)?)?)
+                // The ownership context outlives an idle instance: it keeps the
+                // role and deadline until the controller revokes the lease. The
+                // controller needs the separate residency fact to tell an idle
+                // release from a serving database, and the authority has no
+                // instance to describe, so the field stays worker-only.
+                let ownership = self.database_state(&database)?;
+                let mut state = serde_json::to_value(ownership)?;
+                if let serde_json::Value::Object(ref mut fields) = state {
+                    fields.insert(
+                        "resident".to_owned(),
+                        serde_json::json!(self.worker.is_resident(&database)?),
+                    );
+                }
+                Ok(state)
             }
             OwnershipCommand::GetWorkerState => Ok(serde_json::to_value(self.status()?)?),
             OwnershipCommand::GetWorkerHeartbeat => {
@@ -129,11 +142,26 @@ impl OwnershipRuntime {
         self.report(true)
     }
 
+    /// The same sampled status plus the memory ledger for the control metrics response.
+    pub(crate) fn status_and_memory(
+        &self,
+    ) -> Result<(OwnershipWorkerState, crate::runtime::MemoryBudgetStatus)> {
+        self.report_with_memory(true)
+    }
+
     fn heartbeat_state(&self) -> Result<OwnershipWorkerState> {
         self.report(false)
     }
 
     fn report(&self, include_resources: bool) -> Result<OwnershipWorkerState> {
+        self.report_with_memory(include_resources)
+            .map(|(state, _)| state)
+    }
+
+    fn report_with_memory(
+        &self,
+        include_resources: bool,
+    ) -> Result<(OwnershipWorkerState, crate::runtime::MemoryBudgetStatus)> {
         let contexts: Vec<_> = self
             .contexts
             .lock()
@@ -171,16 +199,30 @@ impl OwnershipRuntime {
                 });
             }
         }
-        Ok(OwnershipWorkerState {
-            worker_id: self.worker_id.clone(),
-            databases,
-            failures,
-            resources: if include_resources {
-                self.worker.status()?
-            } else {
-                self.worker.status_for_control()?
+        let (resources, memory) = if include_resources {
+            self.worker.status_and_memory()?
+        } else {
+            self.worker.status_for_control_and_memory()?
+        };
+        Ok((
+            OwnershipWorkerState {
+                worker_id: self.worker_id.clone(),
+                databases,
+                failures,
+                resources,
             },
-        })
+            memory,
+        ))
+    }
+
+    /// Charges one request against the worker memory ledger before its SQL is dispatched.
+    /// The token must live for the request so the bytes are returned on every exit path.
+    pub(crate) fn reserve_inflight(
+        &self,
+        lane: BudgetLane,
+        bytes: usize,
+    ) -> Result<MemoryReservation> {
+        self.worker.reserve_inflight(lane, bytes)
     }
 
     /// Schedules maintenance for every open database. Kept off the request path by the same

@@ -173,3 +173,105 @@ func TestGatewayRealAuditFailureStillFailClosed(test *testing.T) {
 		})
 	}
 }
+
+// Capacity is knowable before dispatch, so a full completion reserve refuses
+// the request at the entry instead of executing SQL it cannot record.
+func TestGatewayAuditCapacityRefusesBeforeDispatch(test *testing.T) {
+	fixture, service, _ := gatewayFileAuditFixture(test)
+	audit := service.(*fileAudit)
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	held := make([]AuditReservation, 0, auditCompletionMaximum)
+	for index := 0; index < auditCompletionMaximum; index++ {
+		reservation, err := audit.ReserveCompletion()
+		if err != nil {
+			test.Fatalf("reserve %d: %v", index, err)
+		}
+		held = append(held, reservation)
+	}
+	defer func() {
+		for _, reservation := range held {
+			reservation.Release()
+		}
+	}()
+	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
+	if response.Code != 503 || gatewayCode(test, response) != "audit_unavailable" {
+		test.Fatalf("full audit reserve did not refuse before dispatch: %d %s", response.Code, response.Body.String())
+	}
+	if fixture.upstream.count("query") != 0 {
+		test.Fatal("SQL was dispatched after audit admission refused")
+	}
+	status, ok := fixture.gateway.Metrics()["audit"].(map[string]any)
+	if !ok || status["reserved_completion_slots"].(int) != auditCompletionMaximum {
+		test.Fatalf("gateway metrics omit reserved completion slots: %+v", status)
+	}
+	if auditDroppedStatus(status, "completion") == 0 {
+		test.Fatalf("refused completion capacity was not counted: %+v", status)
+	}
+	for _, reservation := range held {
+		reservation.Release()
+	}
+	held = nil
+	response = gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
+	if response.Code != 200 || fixture.upstream.count("query") != 1 {
+		test.Fatalf("released audit capacity did not resume service: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// An unauthenticated storm fills only the rejection budget. The authenticated
+// query still reserves a completion slot and reaches the worker; its audit row
+// waits for the same slow barrier instead of being refused.
+func TestGatewayRejectionStormKeepsCompletionCapacity(test *testing.T) {
+	fixture, service, _ := gatewayFileAuditFixture(test)
+	audit := service.(*fileAudit)
+	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	entered, release := blockAuditSync(audit)
+	test.Cleanup(release)
+	const extra = 16
+	storm := auditRejectionQueueMaximum + extra
+	responses := make(chan int, storm)
+	for index := 0; index < storm; index++ {
+		go func() {
+			request := httptest.NewRequest("POST", "/v1/sql/query", strings.NewReader(`{"session":"forged","sql":"SELECT 1"}`))
+			request.Header.Set("Authorization", "Bearer invalid-private-token")
+			response := httptest.NewRecorder()
+			fixture.gateway.ServeHTTP(response, request)
+			responses <- response.Code
+		}()
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		test.Fatal("audit writer did not reach the barrier")
+	}
+	waitAuditStatus(test, audit, "a full rejection budget", func(status map[string]any) bool {
+		return auditClassStatus(status, "admitted_by_class", "rejection") == auditRejectionQueueMaximum &&
+			auditDroppedStatus(status, "rejection") >= extra
+	})
+	queryResult := make(chan int, 1)
+	go func() {
+		request := httptest.NewRequest("POST", "/v1/sql/query", strings.NewReader(`{"session":"`+session+`","sql":"SELECT 1"}`))
+		request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
+		response := httptest.NewRecorder()
+		fixture.gateway.ServeHTTP(response, request)
+		queryResult <- response.Code
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for fixture.upstream.count("query") != 1 {
+		if time.Now().After(deadline) {
+			test.Fatal("authenticated query was blocked by the unauthenticated storm")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	for index := 0; index < storm; index++ {
+		if code := <-responses; code != 401 {
+			test.Fatalf("unauthenticated storm answered with %d, want 401", code)
+		}
+	}
+	if code := <-queryResult; code != 200 {
+		test.Fatalf("authenticated query lost its completion slot: %d", code)
+	}
+	if status := audit.AuditStatus(); status["admitted_count"].(int) != 0 {
+		test.Fatalf("audit queue did not drain after the storm: %+v", status)
+	}
+}

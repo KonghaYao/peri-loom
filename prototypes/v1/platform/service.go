@@ -380,6 +380,12 @@ func startServiceSQLOpenObservation(ctx context.Context, directory, enabled stri
 	if enabled != "1" {
 		return nil, errors.New("invalid SQL open observer profile")
 	}
+	// The phase knobs belong to the same profile. Parsing them before any file is opened
+	// makes an invalid measurement configuration a start failure rather than a half-on profile.
+	phaseConfig, err := requestPhaseConfigFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
 	info, err := os.Lstat(directory)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("SQL open observer private directory unavailable")
@@ -409,7 +415,7 @@ func startServiceSQLOpenObservation(ctx context.Context, directory, enabled stri
 	// both and disabling it leaves neither. Its observer is created here and nowhere else, so a
 	// fixture that only wants the open observer cannot turn phase recording on. A sink that
 	// cannot open is fatal like the first, so a profile is never silently half on.
-	observation.observer.phases = newRequestPhaseObserver()
+	observation.observer.phases = newRequestPhaseObserverWithConfig(phaseConfig)
 	phases, err := phaseSink(ctx, observation.observer.requestPhases(), directory)
 	if err != nil {
 		file.Close()

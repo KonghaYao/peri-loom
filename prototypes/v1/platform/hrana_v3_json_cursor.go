@@ -359,15 +359,39 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		}
 	}
 	started, failed, active, activeWrite := false, false, false, false
+	writeCommitted, clientStopped := false, false
 	defer func() {
+		if request.Context().Err() != nil {
+			clientStopped = true
+		}
+		closedNative := false
 		if active {
 			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			reply := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", map[string]any{"session": stream.session, "write_cursor": activeWrite})
-			if reply.code != "" || reply.status != http.StatusOK {
-				log.Printf("Hrana JSON cursor cleanup not proven: status=%d code=%s", reply.status, reply.code)
+			cleanupInput := map[string]any{"session": stream.session, "write_cursor": activeWrite}
+			if activeWrite {
+				cleanupInput["cursor_dispatch_stopped"] = true
+				if clientStopped {
+					cleanupInput["cursor_client_stopped"] = true
+				}
+			}
+			reply := handler.call(request.WithContext(cleanup), credential, "/v1/sql/cursor/close", cleanupInput)
+			closedNative = reply.code == "" && reply.status == http.StatusOK
+			if !closedNative {
+				log.Printf("Hrana JSON cursor cleanup not proven: status=%d code=%s client_stopped=%t dispatch_stopped=true committed=%t", reply.status, reply.code, clientStopped, writeCommitted)
 				failed = true
 			}
+		}
+		if activeWrite && clientStopped {
+			outcome := "unknown"
+			if writeCommitted {
+				outcome = "committed"
+			} else if closedNative {
+				// The close was acknowledged; only the gateway's operation record
+				// knows whether the worker proved an abort.
+				outcome = "close_acknowledged"
+			}
+			log.Printf("Hrana JSON write cursor abort: native_outcome=%s committed=%t", outcome, writeCommitted)
 		}
 		if failed || request.Context().Err() != nil || baton == nil && !started {
 			handler.expireStreamLocked(identifier, stream)
@@ -386,6 +410,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		writer.WriteHeader(http.StatusOK)
 		started = true
 		if encoder.Encode(map[string]any{"baton": identifier, "base_url": nil}) != nil {
+			clientStopped = true
 			failed = true
 			return false
 		}
@@ -399,6 +424,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			return false
 		}
 		if encoder.Encode(entry) != nil {
+			clientStopped = true
 			failed = true
 			return false
 		}
@@ -495,6 +521,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			return
 		}
 		active, activeWrite = true, writing
+		if writing {
+			writeCommitted = false
+		}
 		var metadata struct {
 			Cols []json.RawMessage `json:"cols"`
 		}
@@ -507,11 +536,28 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		}
 		for {
 			if request.Context().Err() != nil {
+				clientStopped = true
 				failed = true
 				return
 			}
 			reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
 			if reply.code != "" || reply.status != http.StatusOK {
+				if request.Context().Err() != nil {
+					clientStopped = true
+				}
+				if reply.failure != nil && reply.failure.OperationID() != "" {
+					// The stream can no longer promise a settled write. Publish the
+					// platform's operation so the client can query what is owed
+					// instead of retrying.
+					failed = true
+					entry := map[string]any{"type": "error", "error": hranaFailureFields(reply, true)}
+					if !started {
+						http.Error(writer, "cursor outcome unknown: "+reply.code, http.StatusBadGateway)
+					} else {
+						_ = encoder.Encode(entry)
+					}
+					return
+				}
 				fatal("cursor fetch failed: " + reply.code)
 				return
 			}
@@ -526,6 +572,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			if decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 || len(page.Rows) == 0 && !page.Done {
 				fatal("invalid cursor page")
 				return
+			}
+			if writing && page.Done {
+				writeCommitted = true
 			}
 			for _, row := range page.Rows {
 				if len(row) != len(metadata.Cols) {

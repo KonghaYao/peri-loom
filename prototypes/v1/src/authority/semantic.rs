@@ -68,7 +68,7 @@ pub(super) fn migrate_legacy_pins(root: &mut CatalogRoot) -> Result<()> {
         for entry in entries {
             validate_entry(&entry)?;
             registered(root, &entry)?;
-            let key = pin_entry_key(&pin, &entry.blob);
+            let key = pin_entry_key(&pin, 0, &entry.blob);
             match root.pin_entries.get(&key)? {
                 Some(previous) => ensure!(
                     previous == entry,
@@ -79,6 +79,7 @@ pub(super) fn migrate_legacy_pins(root: &mut CatalogRoot) -> Result<()> {
                 }
             }
         }
+        root.pin_generations.insert(pin.clone(), 0);
         root.pins.insert(pin, Vec::new());
     }
     Ok(())
@@ -184,7 +185,7 @@ impl Authority {
                 && valid_hash(&root.incarnation)
                 && root
                     .pin_schema
-                    .is_none_or(|schema| schema == super::types::PIN_SCHEMA_VERSION),
+                    .is_none_or(|schema| matches!(schema, 1 | super::types::PIN_SCHEMA_VERSION)),
             "authority root identity mismatch"
         );
         super::migration::validate(root)?;
@@ -244,6 +245,18 @@ impl Authority {
             ensure!(
                 inline.is_empty(),
                 "inline reader pin entries escaped migration"
+            );
+            if root.pin_schema == Some(super::types::PIN_SCHEMA_VERSION) {
+                ensure!(
+                    root.pin_generations.contains_key(pin),
+                    "reader pin without a generation"
+                );
+            }
+        }
+        for pin in &root.pin_releases {
+            ensure!(
+                root.pins.contains_key(pin) && root.pin_generations.contains_key(pin),
+                "reader pin release without pin"
             );
         }
         Ok(())
@@ -340,16 +353,39 @@ impl Authority {
                 inline.is_empty(),
                 "inline reader pin entries escaped migration"
             );
+            if let Some(generation) = root.pin_generations.get(pin) {
+                ensure!(*generation < u64::MAX, "reader pin generation exhausted");
+            } else {
+                ensure!(
+                    root.pin_schema != Some(super::types::PIN_SCHEMA_VERSION),
+                    "reader pin without a generation"
+                );
+            }
         }
         for (key, entry) in root.pin_entries.entries()? {
-            let (pin, blob) = pin_entry_parts(&key).context("invalid reader pin entry key")?;
+            let parts = pin_entry_parts(&key).context("invalid reader pin entry key")?;
             ensure!(
-                valid_hash(pin) && valid_hash(blob) && blob == entry.blob,
+                valid_hash(parts.pin) && valid_hash(parts.blob) && parts.blob == entry.blob,
                 "invalid reader pin entry identity"
             );
-            ensure!(root.pins.contains_key(pin), "reader pin entry without pin");
+            ensure!(
+                root.pins.contains_key(parts.pin),
+                "reader pin entry without pin"
+            );
+            if let Some(generation) = root.pin_generations.get(parts.pin) {
+                ensure!(
+                    parts.generation <= *generation,
+                    "reader pin entry from a future generation"
+                );
+            }
             validate_entry(&entry)?;
             registered(root, &entry)?;
+        }
+        for pin in &root.pin_releases {
+            ensure!(
+                root.pins.contains_key(pin) && root.pin_generations.contains_key(pin),
+                "reader pin release without pin"
+            );
         }
         Ok(())
     }
@@ -496,22 +532,48 @@ impl Authority {
             walker.point(point)?;
         }
         for (key, change) in root.pin_entries.changes() {
-            let (pin, blob) = pin_entry_parts(key).context("invalid reader pin entry key")?;
+            let parts = pin_entry_parts(key).context("invalid reader pin entry key")?;
             ensure!(
-                valid_hash(pin) && valid_hash(blob),
+                valid_hash(parts.pin) && valid_hash(parts.blob),
                 "invalid reader pin entry identity"
             );
             match change {
                 super::registry::Change::Added(entry) => {
-                    ensure!(blob == entry.blob, "invalid reader pin entry identity");
-                    ensure!(root.pins.contains_key(pin), "reader pin entry without pin");
+                    ensure!(
+                        parts.blob == entry.blob,
+                        "invalid reader pin entry identity"
+                    );
+                    ensure!(
+                        root.pins.contains_key(parts.pin),
+                        "reader pin entry without pin"
+                    );
+                    // A pin may only grow its current generation. Writing into an older
+                    // generation would let a transaction keep protection that the release
+                    // path is allowed to delete.
+                    if let Some(generation) = root.pin_generations.get(parts.pin) {
+                        ensure!(
+                            parts.generation == *generation,
+                            "reader pin entry outside the current generation"
+                        );
+                    }
                     validate_entry(entry)?;
                     registered(root, entry)?;
                 }
-                super::registry::Change::Removed => ensure!(
-                    !root.pins.contains_key(pin),
-                    "reader pin entry removal requires pin removal"
-                ),
+                super::registry::Change::Removed => {
+                    // The current generation may only leave with the pin itself. An older
+                    // generation is exactly what a superseded snapshot retire removes.
+                    if let Some(generation) = root.pin_generations.get(parts.pin) {
+                        ensure!(
+                            !root.pins.contains_key(parts.pin) || parts.generation < *generation,
+                            "reader pin entry removal requires pin removal or a retired generation"
+                        );
+                    } else {
+                        ensure!(
+                            !root.pins.contains_key(parts.pin),
+                            "reader pin entry removal requires pin removal"
+                        );
+                    }
+                }
             }
         }
         for (key, change) in root.objects.changes() {
@@ -550,7 +612,12 @@ impl Authority {
     /// Physical blob identities reachable from the durable references. Registry pages are
     /// intentionally outside this mark: they are immutable logical metadata, not members of
     /// the physical blob registry, and this walk does not drive page reclamation.
-    pub(super) fn mark(&self, root: &CatalogRoot) -> Result<BTreeSet<String>> {
+    ///
+    /// `aliases` also counts blobs named by the logical object registry. The sweep path
+    /// must not: prune has removed the orphan aliases by then, and a completed tombstone
+    /// must stay deletable. The mark path must, because an alias still keeps the bytes
+    /// reachable and a tombstone before its alias is gone would leave an unopenable head.
+    pub(super) fn mark(&self, root: &CatalogRoot, aliases: bool) -> Result<BTreeSet<String>> {
         let mut walker = Walker::new(self, root, true);
         for branch in root.branches.values() {
             walker.refs(branch.head.as_ref(), branch.wal.as_ref())?;
@@ -565,6 +632,11 @@ impl Authority {
         let pins = root.pin_entries.entries()?;
         for entry in pins.values().chain(uploads.values()) {
             walker.direct(entry)?;
+        }
+        if aliases {
+            for entry in root.objects.entries()?.values() {
+                walker.direct(entry)?;
+            }
         }
         Ok(walker.reachable)
     }

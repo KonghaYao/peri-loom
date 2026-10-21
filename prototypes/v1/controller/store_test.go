@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -99,15 +100,11 @@ func TestStoreConcurrentEpochsAndCallbackRollback(t *testing.T) {
 	}
 }
 
-func TestStoreChecksumAndDurableFloorDetectRollback(t *testing.T) {
-	for _, corruption := range []string{"checksum", "rollback", "missing-floor", "missing-both"} {
+func TestStoreJournalCorruptionAndMissingSnapshotRefused(t *testing.T) {
+	for _, corruption := range []string{"snapshot-checksum", "journal-checksum", "journal-gap", "missing-snapshot", "unsupported-snapshot"} {
 		t.Run(corruption, func(t *testing.T) {
 			directory := t.TempDir()
 			store, err := OpenStore(directory)
-			if err != nil {
-				t.Fatal(err)
-			}
-			old, err := os.ReadFile(filepath.Join(directory, "metadata.json"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,25 +114,77 @@ func TestStoreChecksumAndDurableFloorDetectRollback(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
+			journalPath := filepath.Join(directory, metadataJournalName)
 			switch corruption {
-			case "checksum":
-				err = os.WriteFile(filepath.Join(directory, "metadata.json"), []byte(`{"version":1}`), 0600)
-			case "rollback":
-				err = os.WriteFile(filepath.Join(directory, "metadata.json"), old, 0600)
-			case "missing-floor":
-				err = os.Remove(filepath.Join(directory, "epoch-floor.json"))
-			case "missing-both":
-				err = os.Remove(filepath.Join(directory, "metadata.json"))
-				if err == nil {
-					err = os.Remove(filepath.Join(directory, "epoch-floor.json"))
+			case "snapshot-checksum":
+				err = os.WriteFile(filepath.Join(directory, metadataSnapshotName), []byte(`{"version":2}`), 0600)
+			case "journal-checksum":
+				err = appendJournalBytes(journalPath, []byte(`{"version":1,"revision":2,"prev":"broken","checksum":"deadbeef","delta":{}}`+"\n"))
+			case "journal-gap":
+				records, _, _, readErr := readJournalFile(journalPath)
+				if readErr != nil || len(records) == 0 {
+					t.Fatalf("journal fixture: %v", readErr)
 				}
+				var line []byte
+				line, _, err = encodeJournalRecord(3, records[0].checksum, metadataDelta{})
+				if err == nil {
+					err = appendJournalBytes(journalPath, line)
+				}
+			case "missing-snapshot":
+				err = os.Remove(filepath.Join(directory, metadataSnapshotName))
+			case "unsupported-snapshot":
+				payload := []byte(`{}`)
+				encoded, marshalErr := json.Marshal(stateEnvelope{Version: 3, Revision: 1, Checksum: sha256Sum(payload), Payload: payload})
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				err = os.WriteFile(filepath.Join(directory, metadataSnapshotName), encoded, 0600)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := OpenStore(directory); err == nil {
-				t.Fatal("corruption/rollback reset")
+				t.Fatal("corruption or unsupported state was accepted")
 			}
 		})
 	}
+}
+
+func TestStoreJournalReplaysDurablePrefixAfterSnapshotRollback(t *testing.T) {
+	directory := t.TempDir()
+	store, err := OpenStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.ReadFile(filepath.Join(directory, metadataSnapshotName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(metadata *Metadata) error { metadata.Epoch = 11; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, metadataSnapshotName), old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	actual, err := reopened.Snapshot()
+	if err != nil || actual.Revision != 1 || actual.Epoch != 11 {
+		t.Fatalf("journal did not restore the durable revision: %+v %v", actual, err)
+	}
+}
+
+func appendJournalBytes(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(data)
+	return errors.Join(writeErr, file.Sync(), file.Close())
 }

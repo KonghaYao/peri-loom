@@ -1,16 +1,15 @@
-use std::sync::RwLockWriteGuard;
 use std::time::Instant;
 
 use anyhow::Result;
 use turso_core::{NativeIoRetirementGuard, IO};
 
-use super::RemoteDatabase;
+use super::{OperationWriteGuard, RemoteDatabase};
 use crate::io::NativeIoToken;
-use crate::session::{AdmissionError, RequestDeadline};
+use crate::session::RequestDeadline;
 
 pub(crate) struct DatabaseRetirementGuard<'instance> {
     native: NativeIoToken<'instance>,
-    _operations: RwLockWriteGuard<'instance, ()>,
+    _operations: OperationWriteGuard<'instance>,
 }
 
 impl NativeIoRetirementGuard for DatabaseRetirementGuard<'_> {
@@ -89,21 +88,10 @@ impl RemoteDatabase {
     ) -> Result<DatabaseRetirementGuard<'_>> {
         self.admission.quarantine();
         self.io.disable_native_dispatch();
-        let operations = loop {
-            match self.operations.try_write() {
-                Ok(operations) => break operations,
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err(AdmissionError::Quarantine.into());
-                }
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    deadline.check()?;
-                    let remaining = deadline
-                        .end()
-                        .saturating_duration_since(std::time::Instant::now());
-                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
-                }
-            }
-        };
+        let operations = self.operations.write_until(deadline, || {
+            deadline.check()?;
+            Ok(())
+        })?;
         let native = self.io.retirement_token(deadline.end())?;
         self.storage().store().retire_scope(deadline.end())?;
         Ok(DatabaseRetirementGuard {

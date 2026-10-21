@@ -103,11 +103,14 @@ impl MutationGuard for Guard {
 fn pins_only(current: &CatalogRoot, candidate: &CatalogRoot) -> Result<()> {
     // Pin changes are exempt from the generic equality below. The publish path's
     // `catalog::prepare` still requires the registry base to be the one this transaction
-    // started from and rejects removals/replacements of a surviving pin's entries, so this
-    // normalization cannot hide a whole-registry replacement.
+    // started from and rejects removals/replacements of a surviving pin's current
+    // generation, so this normalization cannot hide a whole-registry replacement or a
+    // silent shrink of reader protection.
     let mut normalized = candidate.clone();
     normalized.pins = current.pins.clone();
     normalized.pin_entries = current.pin_entries.clone();
+    normalized.pin_generations = current.pin_generations.clone();
+    normalized.pin_releases = current.pin_releases.clone();
     normalized.revision = current.revision;
     normalized.receipts = current.receipts.clone();
     normalized.receipt_index = current.receipt_index.clone();
@@ -136,8 +139,9 @@ mod tests {
         let blob = "b".repeat(64);
         let mut candidate = current.clone();
         candidate.pins.insert(pin.clone(), Vec::new());
+        candidate.pin_generations.insert(pin.clone(), 0);
         candidate.pin_entries.insert(
-            pin_entry_key(&pin, &blob),
+            pin_entry_key(&pin, 0, &blob),
             ObjectEntry {
                 blob: blob.clone(),
                 hash: "c".repeat(64),

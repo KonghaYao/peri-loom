@@ -1,10 +1,11 @@
 // E1 known-gap：HttpCursor.close() 仅调用 reader.cancel()，没有服务器 aborted 回执。
 // hrana_http_cursor.go 的连续 fetch 继承请求 context；取消可能丢失已派发的末页回复。
-// Rust session/lane.rs 的 fetch_write_cursor 会收束末页写入，close_write_cursor
-// 对已完成 cursor 也返回成功，所以后续 close/回读不能证明在途写入已取消。
-// WS/native 对照用例先收到 done=false，再显式 close 并等待确认，没有并行 fetch。
-// 本用例原断言保持不变；偶发通过不代表协议取消证明。矩阵默认明确跳过 E1，
-// PERI_HRANA_INCLUDE_KNOWN_GAPS=1 可在独立 fixture 运行，失败仍以非零状态退出。
+// Rust session/lane.rs 的 fetch_write_cursor 会收束末页写入；close_write_cursor 对
+// 已完成 cursor 返回 abort_proven=false，对真正取消返回 true，但 HTTP 客户端在
+// close 时仍收不到该回执。WS/native 对照用例先收到 done=false，再显式 close 并
+// 等待确认，没有并行 fetch。本用例原断言保持不变；偶发通过不代表协议取消证明。
+// 矩阵默认明确跳过 E1，PERI_HRANA_INCLUDE_KNOWN_GAPS=1 可在独立 fixture 运行，
+// 失败仍以非零状态退出。
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
