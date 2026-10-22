@@ -477,6 +477,41 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.11
+
+A lost or canceled reply to a session `open` no longer turns the database
+read-only. `open_session` writes no durable data and submits no SQL, but its
+`outcome_unknown` was recorded with `may_have_committed=true`, so one concurrent
+open whose reply was lost isolated the whole namespace (`409 database_isolated`)
+and blocked a normal restart on the same volume. The outcome stays honest —
+`terminal`/`unknown`, `may_have_committed=false`, `cleanup_outcome=unknown` — and
+is no longer an open isolation; an unknown write still isolates. The retained
+admission permit keeps the possibly leaked session visible in the quota while the
+process serves, and shutdown now returns it, so a normal stop still writes a
+clean terminal; that worker session has no identity to retire and is reclaimed by
+the worker's idle sweep. The launcher clean gate admits exactly this record and
+stays fail-closed for every other unresolved operation.
+
+`peri recover` performs the documented `operations` → `operations/decision` →
+`operations/retire-local` → `isolation/release` sequence in one step, re-reads
+and prints the operation view after each step, stops at the first failure, and
+derives deterministic request ids from the operation so a rerun repeats the same
+durable decision. It rejects `--request-id`, and with nothing pending it returns
+the unchanged view. The manual sequence and its exact request bodies remain in
+the isolation recovery runbook; `retain_isolation_new_database_required` is kept
+as a historical decision name because release never deletes data and makes the
+original database and branch usable again on a fresh epoch. A
+`409 database_isolated` on open now names the blocking operation, its stage,
+business and cleanup outcome, `possible_commit` and `retry_allowed` instead of a
+bare code.
+
+Remaining gaps: a v1.1.10 volume whose `open` unknown already quarantined the
+namespace still needs `dev.py --recover` and `peri recover` once. The release →
+normal restart path is covered by targeted gateway, launcher config and native
+worker tests, not by a full-stack end-to-end run. Unknown writes still isolate
+and require a business idempotency key or an `operations` query. The experimental
+Hrana gaps and the absence of an SP01 or capacity result are unchanged.
+
 ## v1.1.10
 
 v1.1.10 raises the default request rate of a newly created project from 100 to
