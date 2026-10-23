@@ -9,6 +9,8 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use turso_core::{Numeric, Value};
 
+use crate::metrics::Metrics;
+use crate::object_store::metrics::MetricsObjectStore;
 use crate::object_store::ObjectStore;
 use crate::provider::LocalAuthorityProvider;
 use crate::runtime::{DatabaseHandle, DatabaseId, WorkerLimits, WorkerRuntime};
@@ -149,8 +151,12 @@ impl WorkerProtocol {
 }
 
 pub fn run(store: Arc<dyn ObjectStore>, cache: impl AsRef<Path>) -> Result<()> {
+    finish(run_protocol(store, cache))
+}
+
+fn run_protocol(store: Arc<dyn ObjectStore>, cache: impl AsRef<Path>) -> Result<()> {
     let runtime = WorkerRuntime::new(
-        Arc::new(LocalAuthorityProvider::new(store)),
+        Arc::new(LocalAuthorityProvider::new(instrumented_store(store))),
         cache,
         WorkerLimits::default(),
     )?;
@@ -199,6 +205,26 @@ pub fn run(store: Arc<dyn ObjectStore>, cache: impl AsRef<Path>) -> Result<()> {
     }
     drop(protocol.sessions);
     Ok(())
+}
+
+/// Counters are recorded at work points that already accept the `PERI_WORK_METRICS` switch;
+/// wrapping here only adds the object-store get/put accounting the exit snapshot exports. The
+/// wrapper is installed only when both switches are on, so enabling the counters alone keeps
+/// the store stack identical to before.
+fn instrumented_store(store: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
+    if !crate::work_metrics::enabled() || !crate::work_metrics::exit_snapshot_configured() {
+        return store;
+    }
+    Arc::new(MetricsObjectStore::new(store, Metrics::global()).with_backend("worker"))
+}
+
+/// Diagnostics never rewrite the close outcome: a snapshot failure is reported on stderr (the
+/// process's existing error channel) and the protocol result is returned unchanged.
+fn finish(result: Result<()>) -> Result<()> {
+    if let Err(error) = crate::work_metrics::write_exit_snapshot_if_configured() {
+        eprintln!("peri-loom-v1: metrics exit snapshot not written: {error:#}");
+    }
+    result
 }
 
 fn sql_value(value: &Value) -> JsonValue {
@@ -281,5 +307,120 @@ mod tests {
         let result = protocol.handle(request(json!({"id":"query","op":"query","session":reopened["session"],"sql":"SELECT count(*) FROM items"})))?;
         assert_eq!(result["result"], json!([[0]]));
         Ok(())
+    }
+
+    #[test]
+    fn a_worker_write_advances_the_counters_the_exit_snapshot_exports() -> Result<()> {
+        crate::work_metrics::set_enabled(true);
+        let cache = tempfile::tempdir()?;
+        let runtime = WorkerRuntime::new(
+            Arc::new(LocalAuthorityProvider::new(Arc::new(
+                MemoryObjectStore::default(),
+            ))),
+            cache.path(),
+            WorkerLimits::default(),
+        )?;
+        let mut protocol = WorkerProtocol {
+            runtime,
+            sessions: BTreeMap::new(),
+            next_session: 0,
+        };
+        let identifier = json!({"namespace":{"tenant":"tenant","database":"db"},"branch":"main"});
+        let opened = protocol.handle(request(
+            json!({"id":"open","op":"open","database":identifier,"epoch":0}),
+        ))?;
+        let session = opened["session"].clone();
+        protocol.handle(request(json!({"id":"create","op":"exec","session":session,"sql":"CREATE TABLE items(id INTEGER PRIMARY KEY)"})))?;
+        let before = crate::work_metrics::snapshot().expect("enabled snapshot");
+        protocol.handle(request(
+            json!({"id":"write","op":"exec","session":session,"sql":"INSERT INTO items VALUES(1)"}),
+        ))?;
+        let after = crate::work_metrics::snapshot().expect("enabled snapshot");
+        assert!(
+            after.wal_workload.append_calls - before.wal_workload.append_calls >= 1,
+            "the write path did not reach the WAL append counter"
+        );
+        assert!(
+            after.metadata.root_publish_attempts - before.metadata.root_publish_attempts >= 1,
+            "the write path did not reach the root CAS counter"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn instrumented_store_counts_object_operations_while_diagnostics_are_on() -> Result<()> {
+        crate::work_metrics::set_enabled(true);
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("metrics.json");
+        let _env = SnapshotPathEnv::set(Some(&path));
+        let store = instrumented_store(Arc::new(MemoryObjectStore::default()));
+        let before = Metrics::global().snapshot().put.total;
+        store.put(
+            "metrics/probe",
+            b"value",
+            crate::object_store::PutCondition::Any,
+        )?;
+        let after = Metrics::global().snapshot().put.total;
+        assert!(after > before, "the wrapper did not count the put");
+        Ok(())
+    }
+
+    #[test]
+    fn counters_without_an_exit_snapshot_keep_the_store_unwrapped() {
+        crate::work_metrics::set_enabled(true);
+        let _env = SnapshotPathEnv::set(None);
+        let store: Arc<dyn ObjectStore> = Arc::new(MemoryObjectStore::default());
+        let instrumented = instrumented_store(store.clone());
+        assert!(
+            Arc::ptr_eq(&store, &instrumented),
+            "the counters alone must not add a store wrapper"
+        );
+    }
+
+    struct SnapshotPathEnv {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SnapshotPathEnv {
+        fn set(path: Option<&Path>) -> Self {
+            let lock = crate::work_metrics::SNAPSHOT_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous = std::env::var_os(crate::work_metrics::SNAPSHOT_PATH_ENV);
+            match path {
+                Some(path) => std::env::set_var(crate::work_metrics::SNAPSHOT_PATH_ENV, path),
+                None => std::env::remove_var(crate::work_metrics::SNAPSHOT_PATH_ENV),
+            }
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for SnapshotPathEnv {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => {
+                    std::env::set_var(crate::work_metrics::SNAPSHOT_PATH_ENV, value);
+                }
+                None => std::env::remove_var(crate::work_metrics::SNAPSHOT_PATH_ENV),
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_exit_snapshot_does_not_rewrite_the_close_outcome() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("missing").join("metrics.json");
+        let _env = SnapshotPathEnv::set(Some(&path));
+
+        assert!(finish(Ok(())).is_ok(), "a diagnostic failure changed Ok");
+        assert!(
+            finish(Err(anyhow::anyhow!("close failed"))).is_err(),
+            "a diagnostic failure hid the close error"
+        );
+        assert!(!path.exists());
     }
 }

@@ -4,6 +4,7 @@ mod codec;
 mod decode_cache;
 #[cfg(test)]
 mod identity_scale_tests;
+pub(crate) mod local_store;
 mod migration;
 pub mod ownership;
 mod ownership_view;

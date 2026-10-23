@@ -218,3 +218,218 @@ fn snapshot_serializes_every_group_and_reason() {
         assert!(value["locks"].get(domain).is_some());
     }
 }
+
+/// Holds the process-wide path for one test and restores whatever was there before. The lock
+/// stays held until the restore, so two tests cannot interleave their environment changes.
+struct SnapshotPathEnv {
+    previous: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl SnapshotPathEnv {
+    fn set(value: Option<&str>) -> Self {
+        let lock = SNAPSHOT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os(SNAPSHOT_PATH_ENV);
+        match value {
+            Some(value) => std::env::set_var(SNAPSHOT_PATH_ENV, value),
+            None => std::env::remove_var(SNAPSHOT_PATH_ENV),
+        }
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for SnapshotPathEnv {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(SNAPSHOT_PATH_ENV, value),
+            None => std::env::remove_var(SNAPSHOT_PATH_ENV),
+        }
+    }
+}
+
+fn snapshot_directory_entries(directory: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(directory)
+        .expect("read snapshot directory")
+        .map(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn exit_snapshot_is_written_atomically_with_the_expected_schema() {
+    set_enabled(true);
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("metrics.json");
+    observe_append(AppendPosition::Reused, 4096, 512, 2);
+
+    let _env = SnapshotPathEnv::set(Some(path.to_str().expect("utf-8 path")));
+    write_exit_snapshot_if_configured().expect("write exit snapshot");
+
+    let encoded = std::fs::read(&path).expect("snapshot exists");
+    let value: serde_json::Value = serde_json::from_slice(&encoded).expect("snapshot parses");
+    assert_eq!(value["schema_version"], serde_json::json!(1));
+    assert!(value["generated_at_unix_ms"]
+        .as_u64()
+        .is_some_and(|millis| millis > 0));
+    assert_eq!(
+        value["process"]["pid"],
+        serde_json::json!(std::process::id())
+    );
+    assert!(value["process"]["version"].is_string());
+    assert_eq!(value["work_metrics_enabled"], serde_json::json!(true));
+    assert_eq!(value["group_phases"]["available"], serde_json::json!(false));
+
+    let phases = value["phases"].as_array().expect("phases array");
+    assert_eq!(phases.len(), PublishStage::ALL.len());
+    for (phase, stage) in phases.iter().zip(PublishStage::ALL) {
+        assert_eq!(phase["name"], serde_json::json!(stage.name()));
+        for field in ["count", "total_ns", "max_ns"] {
+            assert!(
+                phase[field].is_u64(),
+                "phase {} is missing {field}",
+                stage.name()
+            );
+        }
+    }
+
+    let counters = value["counters"].as_array().expect("counters array");
+    let counter = |name: &str| {
+        counters
+            .iter()
+            .find(|counter| counter["name"] == serde_json::json!(name))
+            .map(|counter| counter["value"].as_u64().expect("u64 counter"))
+    };
+    assert!(counter("work.wal_workload.append_calls").expect("append counter") >= 1);
+    assert!(counter("work.wal_workload.append_position.reused").expect("position counter") >= 1);
+    assert!(
+        counter("object_store.get.total").is_some(),
+        "object store counters are part of the document"
+    );
+
+    let entries = snapshot_directory_entries(directory.path());
+    assert!(
+        entries.iter().all(|name| !name.contains(".tmp")),
+        "temporary file left behind: {entries:?}"
+    );
+    assert_eq!(entries, vec!["metrics.json".to_owned()]);
+}
+
+#[test]
+fn exit_snapshot_stays_off_when_the_path_is_unset_or_empty() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("metrics.json");
+
+    {
+        let _env = SnapshotPathEnv::set(Some(path.to_str().expect("utf-8 path")));
+        write_exit_snapshot_if_configured().expect("write exit snapshot");
+        assert!(path.exists());
+    }
+    std::fs::remove_file(&path).expect("remove snapshot");
+
+    {
+        let _env = SnapshotPathEnv::set(None);
+        write_exit_snapshot_if_configured().expect("unset path is a no-op");
+    }
+    assert!(!path.exists(), "unset path must not write the old file");
+
+    {
+        let _env = SnapshotPathEnv::set(Some(""));
+        write_exit_snapshot_if_configured().expect("empty path is a no-op");
+    }
+    assert!(!path.exists(), "empty path must be treated as unset");
+    assert!(snapshot_directory_entries(directory.path()).is_empty());
+}
+
+#[test]
+fn exit_snapshot_failure_is_reported_and_leaves_no_file() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("missing").join("metrics.json");
+
+    let _env = SnapshotPathEnv::set(Some(path.to_str().expect("utf-8 path")));
+    let error = write_exit_snapshot_if_configured().expect_err("missing directory must fail");
+    assert!(
+        format!("{error:#}").contains("metrics.json"),
+        "unexpected error: {error:#}"
+    );
+    assert!(!path.exists());
+    assert!(snapshot_directory_entries(directory.path()).is_empty());
+}
+
+#[test]
+fn exit_snapshot_counter_names_are_stable() {
+    set_enabled(true);
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("metrics.json");
+    let _env = SnapshotPathEnv::set(Some(path.to_str().expect("utf-8 path")));
+    write_exit_snapshot_if_configured().expect("write exit snapshot");
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read snapshot")).expect("parse");
+    let counters = value["counters"].as_array().expect("counters array");
+    let names = counters
+        .iter()
+        .map(|counter| counter["name"].as_str().expect("counter name"))
+        .collect::<Vec<_>>();
+    for name in [
+        "work.wal_workload.append_calls",
+        "work.wal_workload.scan_resets.header_changed",
+        "work.wal_workload.append_position.not_covered",
+        "work.metadata.root_publish_attempts",
+        "work.metadata.root_publish_retries",
+        "work.metadata.publish_stage_calls.snapshot",
+        "work.metadata.publish_stage_calls.group",
+        "work.metadata.publish_stage_max_ns.recover",
+        "work.locks.storage.waits",
+        "work.gates.operation.timeouts",
+        "work.execution.native_execute_calls",
+        "work.results.batches",
+        "work.maintenance.wal_budget_bytes",
+        "work.maintenance.reader_block_events",
+        "work.gc.requests",
+        "object_store.get.total",
+        "object_store.put.total",
+        "object_store.put.bytes",
+        "object_store.wal_durability.total",
+        "object_store.cold_open.total",
+    ] {
+        assert!(names.contains(&name), "counter name {name} disappeared");
+    }
+}
+
+#[test]
+fn exit_snapshot_reports_object_store_counters_after_operations() {
+    set_enabled(true);
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("metrics.json");
+    crate::metrics::Metrics::global().record(
+        crate::metrics::Operation::Put,
+        Duration::from_millis(1),
+        true,
+        64,
+    );
+
+    let _env = SnapshotPathEnv::set(Some(path.to_str().expect("utf-8 path")));
+    write_exit_snapshot_if_configured().expect("write exit snapshot");
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read snapshot")).expect("parse");
+    let counters = value["counters"].as_array().expect("counters array");
+    let counter = |name: &str| {
+        counters
+            .iter()
+            .find(|counter| counter["name"] == serde_json::json!(name))
+            .map(|counter| counter["value"].as_u64().expect("u64 counter"))
+    };
+    assert!(counter("object_store.put.total").expect("put counter") >= 1);
+    assert!(counter("object_store.put.bytes").expect("put bytes") >= 64);
+}

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::authority::Authority;
+use crate::authority::{local_store::LocalStore, Authority};
 use crate::object_store::ObjectStore;
 use crate::runtime::{DatabaseId, DatabaseProvider};
 
@@ -17,9 +17,13 @@ impl LocalAuthorityProvider {
 }
 
 impl DatabaseProvider for LocalAuthorityProvider {
-    fn open_store(&self, identifier: &DatabaseId, _epoch: u64) -> Result<Arc<dyn ObjectStore>> {
+    fn open_store(&self, identifier: &DatabaseId, epoch: u64) -> Result<Arc<dyn ObjectStore>> {
         identifier.validate()?;
         let authority = Authority::open(self.store.clone(), identifier.namespace.clone())?;
-        Ok(authority.branch_store(&identifier.branch)?)
+        Ok(Arc::new(LocalStore::new(
+            authority.branch_store(&identifier.branch)?,
+            identifier.namespace.clone(),
+            epoch,
+        )))
     }
 }

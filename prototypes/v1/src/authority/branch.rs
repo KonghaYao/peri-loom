@@ -896,6 +896,11 @@ impl BranchStore {
 }
 
 impl ObjectStore for BranchStore {
+    fn publish_pages(&self, writes: &[crate::object_store::GroupWrite]) -> Result<bool> {
+        self.publish_wal_pages(writes)?;
+        Ok(true)
+    }
+
     fn validate_local(&self) -> Result<()> {
         Ok(())
     }

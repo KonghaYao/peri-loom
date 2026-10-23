@@ -22,13 +22,21 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::MutexGuard;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 const ENABLED_ENV: &str = "PERI_WORK_METRICS";
+
+/// Opt-in exit snapshot channel. It is independent of `PERI_WORK_METRICS`: the counters are
+/// only recorded when that switch is on, and this variable only decides where the process
+/// writes them when it closes. Unset (or empty), the exit path reads no clock, allocates
+/// nothing and touches no file.
+pub(crate) const SNAPSHOT_PATH_ENV: &str = "PERI_METRICS_SNAPSHOT_PATH";
 
 // The environment is consulted once per process; `UNSET` is the state before that read.
 const UNSET: u8 = 0;
@@ -1676,6 +1684,198 @@ fn lease_remaining_min() -> u64 {
         load(&LEASE_REMAINING_MIN_MS)
     }
 }
+
+// --- Exit snapshot -----------------------------------------------------------------------
+//
+// The counters above are process-wide and cheap to read, but the stdio worker has no request
+// that could return them without widening its protocol. A diagnostics run instead asks the
+// process to dump them once, on the way out, to `PERI_METRICS_SNAPSHOT_PATH`.
+//
+// The document is written as a whole and renamed into place, so a reader never sees a half
+// file. It is a diagnostic artifact: it is not fsynced, because the plan forbids putting
+// durable-write cost on the disk the benchmark is measuring. `schema_version` is bumped when
+// a field changes meaning; adding a field is backward compatible for a reader that selects by
+// name.
+
+const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+const GROUP_PHASES_REASON: &str =
+    "PERI_DIAG_GROUP_PHASE writes one stderr line per group; no process aggregate is exported yet";
+
+#[derive(Serialize)]
+struct ExitSnapshot {
+    schema_version: u32,
+    generated_at_unix_ms: u64,
+    process: ExitProcess,
+    work_metrics_enabled: bool,
+    phases: Vec<ExitPhase>,
+    counters: Vec<ExitCounter>,
+    group_phases: ExitGroupPhases,
+}
+
+#[derive(Serialize)]
+struct ExitProcess {
+    pid: u32,
+    version: &'static str,
+}
+
+/// One of the eleven `PublishStage` steps. `count` is the number of publication attempts that
+/// reached the stage, not the number that completed it.
+#[derive(Serialize)]
+struct ExitPhase {
+    name: &'static str,
+    count: u64,
+    total_ns: u64,
+    max_ns: u64,
+}
+
+#[derive(Serialize)]
+struct ExitCounter {
+    name: String,
+    value: u64,
+}
+
+/// `GroupPhase` keeps no process aggregate and its storage lives in `object_store/local.rs`, so
+/// this snapshot reports why the data is absent instead of an empty array that could be read
+/// as "no group ran".
+#[derive(Serialize)]
+struct ExitGroupPhases {
+    available: bool,
+    reason: &'static str,
+}
+
+/// Write the process-wide counters to `path`, atomically. Failure is returned to the caller and
+/// is never retried; the worker's close result is owned by the caller and must not change
+/// because a diagnostic artifact could not be written.
+pub(crate) fn write_exit_snapshot(path: &Path) -> Result<()> {
+    let work = snapshot();
+    let document = ExitSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
+        generated_at_unix_ms: unix_millis(),
+        process: ExitProcess {
+            pid: std::process::id(),
+            version: env!("CARGO_PKG_VERSION"),
+        },
+        work_metrics_enabled: work.is_some(),
+        phases: exit_phases(work.as_ref()),
+        counters: exit_counters(work.as_ref())?,
+        group_phases: ExitGroupPhases {
+            available: false,
+            reason: GROUP_PHASES_REASON,
+        },
+    };
+    let encoded = serde_json::to_vec(&document).context("serialize metrics exit snapshot")?;
+    write_atomically(path, &encoded)
+}
+
+/// The worker's exit hook. An unset or empty variable is the off state and does no work.
+pub(crate) fn write_exit_snapshot_if_configured() -> Result<()> {
+    let Some(path) = snapshot_path() else {
+        return Ok(());
+    };
+    write_exit_snapshot(&path)
+}
+
+/// Whether an exit snapshot was requested. Used at startup so that enabling the counters alone
+/// keeps the store stack byte-for-byte identical to a non-diagnostic run.
+pub(crate) fn exit_snapshot_configured() -> bool {
+    snapshot_path().is_some()
+}
+
+fn snapshot_path() -> Option<PathBuf> {
+    std::env::var_os(SNAPSHOT_PATH_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn exit_phases(work: Option<&WorkMetricsSnapshot>) -> Vec<ExitPhase> {
+    PublishStage::ALL
+        .iter()
+        .map(|stage| {
+            let name = stage.name();
+            let value = |map: Option<&BTreeMap<&'static str, u64>>| {
+                map.and_then(|map| map.get(name).copied()).unwrap_or(0)
+            };
+            ExitPhase {
+                name,
+                count: value(work.map(|work| &work.metadata.publish_stage_calls)),
+                total_ns: value(work.map(|work| &work.metadata.publish_stage_ns)),
+                max_ns: value(work.map(|work| &work.metadata.publish_stage_max_ns)),
+            }
+        })
+        .collect()
+}
+
+/// Flat `{name, value}` pairs. Counter names are the existing serialized paths, only prefixed:
+/// `work.<field>` for [`WorkMetricsSnapshot`] and `object_store.<operation>.<field>` for the
+/// wrapper counters in [`crate::metrics`]. Flattening instead of restating every name keeps the
+/// export from drifting away from the definitions that own the counters.
+fn exit_counters(work: Option<&WorkMetricsSnapshot>) -> Result<Vec<ExitCounter>> {
+    let Some(work) = work else {
+        return Ok(Vec::new());
+    };
+    let mut counters = Vec::new();
+    let work = serde_json::to_value(work).context("serialize workload counters")?;
+    flatten_counters("work", &work, &mut counters);
+    let mut metrics = serde_json::to_value(crate::metrics::Metrics::global().snapshot())
+        .context("serialize object store counters")?;
+    if let serde_json::Value::Object(fields) = &mut metrics {
+        // Already exported above as `work.*`; a nested copy would make two values that can be
+        // read at different instants.
+        fields.remove("work_metrics");
+    }
+    flatten_counters("object_store", &metrics, &mut counters);
+    Ok(counters)
+}
+
+fn flatten_counters(prefix: &str, value: &serde_json::Value, counters: &mut Vec<ExitCounter>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (field, value) in fields {
+                flatten_counters(&format!("{prefix}.{field}"), value, counters);
+            }
+        }
+        serde_json::Value::Number(number) => {
+            if let Some(value) = number.as_u64() {
+                counters.push(ExitCounter {
+                    name: prefix.to_owned(),
+                    value,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let name = path.file_name().context("snapshot path has no file name")?;
+    let temporary = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.with_context(|| format!("write metrics exit snapshot {}", path.display()))
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+/// Serializes tests that must change the process-wide snapshot path.
+#[cfg(test)]
+pub(crate) static SNAPSHOT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests;

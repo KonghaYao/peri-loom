@@ -336,13 +336,20 @@ impl WalAppendRequest {
         }
     }
     pub(crate) fn validate(&self) -> Result<()> {
+        self.validate_local()?;
+        ensure!(self.epoch > 0, "invalid WAL append identity");
+        Ok(())
+    }
+
+    // Local workers historically open at epoch zero; only the lease-backed boundary
+    // requires a positive epoch. Payload and append identity rules stay shared.
+    pub(crate) fn validate_local(&self) -> Result<()> {
         Namespace::new(
             self.namespace.tenant.clone(),
             self.namespace.database.clone(),
         )?;
         ensure!(
-            self.epoch > 0
-                && self.append_id.len() <= 128
+            self.append_id.len() <= 128
                 && !self.append_id.is_empty()
                 && self
                     .append_id
