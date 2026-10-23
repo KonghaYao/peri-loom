@@ -1,0 +1,201 @@
+{
+  "version": 1,
+  "purpose": "Fixed workload contract; extend the repository runner to execute it. This is not a runtime benchmark implementation.",
+  "seed": 20261023,
+  "baseline_commit": "f3c75622924d84189fa74f3069c209761ceeec31",
+  "turso_commit": "24a3a4609683b73935888f8bc30b47727d100aa8",
+  "setups": {
+    "historical": {
+      "fixture": "sql/01-historical-fixture.sql",
+      "tables": [
+        "bench"
+      ],
+      "rows": 64,
+      "payload_bytes": 256,
+      "post_setup": [
+        "worker.checkpoint",
+        "full_content_oracle"
+      ],
+      "extra_tables_forbidden": true
+    },
+    "suite": {
+      "fixture": "sql/02-suite-small-fixture.sql",
+      "scale_rows": [
+        64,
+        100000,
+        1000000
+      ],
+      "payload_bytes": [
+        256,
+        4096,
+        65536
+      ],
+      "scale_payload_cross_product": false,
+      "post_setup": [
+        "worker.checkpoint",
+        "full_content_oracle"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "S0",
+      "kind": "historical_smoke",
+      "setup": "historical",
+      "modes": [
+        "read",
+        "write",
+        "mixed"
+      ],
+      "lanes": 2,
+      "operations_per_lane": 100,
+      "warmup_operations": 0,
+      "generator": "generate_fixture.py:smoke_records",
+      "formal_gate": false
+    },
+    {
+      "id": "S1",
+      "kind": "autocommit_update",
+      "setup": "historical",
+      "sql": "sql/11-smoke-write.sql",
+      "concurrency": [
+        1,
+        2
+      ],
+      "schedule": "id=i%64; payload=(y if floor(i/64)%2==0 else z)*256",
+      "formal_gate": "G2"
+    },
+    {
+      "id": "S2",
+      "kind": "alternating_read_write",
+      "setup": "historical",
+      "sql": [
+        "sql/10-smoke-read.sql",
+        "sql/11-smoke-write.sql"
+      ],
+      "schedule": "same as S0 mixed; writes only at odd operation indices",
+      "concurrency": [
+        1,
+        2
+      ],
+      "separate_latency_buckets": [
+        "read",
+        "write",
+        "all"
+      ],
+      "formal_gate": "mixed"
+    },
+    {
+      "id": "S3",
+      "kind": "business_update",
+      "setup": "suite",
+      "sql": "sql/12-update.sql",
+      "bindings": "deterministic uniform id; delta=1; alternating y/z payload; revision always increments",
+      "scales": [
+        "small",
+        "medium"
+      ],
+      "formal_gate": "nonregression"
+    },
+    {
+      "id": "S4",
+      "kind": "insert",
+      "setup": "suite",
+      "sql": "sql/13-insert.sql",
+      "bindings": "id unique per run/lane/seq; no shared id range; fixed payload size",
+      "formal_gate": "nonregression"
+    },
+    {
+      "id": "S5",
+      "kind": "explicit_transaction",
+      "setup": "suite",
+      "sql": "sql/12-update.sql",
+      "batch_sizes": [
+        16,
+        64
+      ],
+      "protocol": [
+        "BEGIN IMMEDIATE",
+        "N updates on same session",
+        "COMMIT"
+      ],
+      "durable_ack": "COMMIT ACK only",
+      "metrics": [
+        "transactions_per_second",
+        "rows_per_second",
+        "transaction_latency",
+        "commit_latency"
+      ],
+      "formal_gate": "nonregression"
+    },
+    {
+      "id": "S6",
+      "kind": "read",
+      "setup": "suite",
+      "sql": [
+        "sql/14-point-read.sql",
+        "sql/15-range-read.sql",
+        "sql/16-scan.sql"
+      ],
+      "scales": [
+        "small",
+        "medium"
+      ],
+      "separate_buckets": true,
+      "formal_gate": "read_nonregression"
+    },
+    {
+      "id": "S7",
+      "kind": "transaction_correctness",
+      "setup": "suite",
+      "sql": "sql/20-transfer.sql",
+      "op_id": "run_id:lane_id:seq",
+      "source_id": 1,
+      "target_id": 2,
+      "amount": 1,
+      "rollback_case": true,
+      "formal_gate": "correctness"
+    },
+    {
+      "id": "S8",
+      "kind": "steady_state",
+      "setup": "suite",
+      "duration_seconds": 1800,
+      "minimum_maintenance_cycles": 3,
+      "write_case": "S3",
+      "data_growth": "fixed live rows",
+      "formal_gate": "steady_state"
+    },
+    {
+      "id": "S9",
+      "kind": "fault_recovery",
+      "setup": "suite",
+      "data_case": "S7",
+      "faults": [
+        "worker_kill",
+        "authority_kill",
+        "lost_reply",
+        "CAS_conflict",
+        "stale_epoch",
+        "short_write",
+        "sync_failure",
+        "disk_full",
+        "rotation_failure",
+        "corrupt_object"
+      ],
+      "formal_gate": "correctness"
+    }
+  ],
+  "driver_rules": {
+    "sql_auto_retry": false,
+    "report_all_attempts": true,
+    "collect_full_content_oracle": true,
+    "transaction_statement_ack_is_durable_commit": false,
+    "literal_vs_prepared_separate": true,
+    "same_db_concurrency_requires_real_concurrent_ingress": true,
+    "historical_stdout_wire_records": false,
+    "warmup_operations_for_S1_to_S6": 512,
+    "reset_before_each_arm": true,
+    "stream_raw_records": true
+  }
+}

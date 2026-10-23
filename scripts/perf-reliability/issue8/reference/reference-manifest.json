@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "note": "Read-only, byte-identical copies of the Issue 8 kit generator/validator/sql-validation files. The harness never executes them; hashes must also match issue8/SHA256SUMS.json.",
+  "files": {
+    "generate_fixture.py": "97531de970d09595764112ace83a4196f6ec47c708b2b890f55914ffb2543737",
+    "sql-validation.json": "75d08935d28b9c4088f3863460277e6613879c4d8f9dfc577d3fa25e0f2810ab",
+    "validate_sql.py": "c02259989c1feb4189e0db4e37bb318be9305bae4fb027db4b36bb0bf081dd43"
+  }
+}

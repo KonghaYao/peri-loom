@@ -51,6 +51,36 @@ class RunnerTests(unittest.TestCase):
                 finally:
                     usage = worker.stop()
                 self.assertTrue(usage["group_joined"])
+    def test_worker_env_passthrough_and_raw_ns_timestamps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "fake-worker"
+            ready = Path(directory) / "ready"
+            observed = Path(directory) / "observed-env"
+            binary.write_text(
+                f"#!{sys.executable}\nimport os,sys\n"
+                f"open({str(observed)!r},'w').write(os.environ.get('PERI_METRICS_SNAPSHOT_PATH',''))\n"
+                f"open({str(ready)!r},'w').write('ready')\n"
+                "sys.stdin.readline()\n"
+                "print('{\"id\":1,\"ok\":true,\"error\":\"\",\"result\":[]}',flush=True)\n"
+                "sys.stdin.read()\n")
+            binary.chmod(0o700)
+            worker = Worker(binary, directory, directory, 2, time.monotonic() + 10,
+                            env={"PERI_METRICS_SNAPSHOT_PATH": str(Path(directory) / "metrics.json")})
+            try:
+                for _ in range(500):
+                    if ready.exists():
+                        break
+                    time.sleep(.01)
+                self.assertTrue(ready.exists())
+                self.assertEqual(observed.read_text(), str(Path(directory) / "metrics.json"))
+                response, record = worker.request("query", sql="SELECT 1")
+                self.assertTrue(response["ok"])
+                self.assertEqual(record["duration_ns"], record["completed_ns"] - record["started_ns"])
+                self.assertGreaterEqual(record["duration_ns"], 0)
+            finally:
+                usage = worker.stop()
+            self.assertTrue(usage["group_joined"])
+
     def test_full_payload_oracle_rejects_same_length_wrong_value(self):
         expected = {0: "yyy", 1: "xxx"}
         self.assertTrue(payload_matches([[0, "yyy"], [1, "xxx"]], expected))

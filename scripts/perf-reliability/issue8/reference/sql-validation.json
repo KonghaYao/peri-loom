@@ -1,0 +1,25 @@
+{
+  "status": "PASS_SQL_REFERENCE_ONLY",
+  "sqlite_version": "3.53.1",
+  "checks_passed": 15,
+  "checks": [
+    "historical fixture has only the original bench table",
+    "100000-row deterministic fixture",
+    "read historical schedule and complete oracle",
+    "write historical schedule and complete oracle",
+    "mixed historical schedule and complete oracle",
+    "single-row mutation and point read",
+    "append insertion",
+    "indexed range read and full row oracle",
+    "explicit transaction 16 updates",
+    "explicit transaction 64 updates",
+    "rollback preserves data",
+    "atomic transfer and receipt content",
+    "duplicate operation does not apply twice after rollback",
+    "aggregate consistency cross-check",
+    "all full-content oracle queries execute"
+  ],
+  "peri_loom_execution": "NOT_RUN",
+  "durability_fault_tests": "NOT_RUN",
+  "performance_measurement": "NOT_RUN"
+}

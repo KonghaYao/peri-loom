@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "note": "Derived Issue 8 harness policy. Original contract files under issue8/ are byte-frozen and never edited.",
+  "contract_root": "issue8",
+  "sha256sums_sha256": "0e4eb35e279e452d7b984dcf13b82fc580ea7a7803ea3385aa7533579f524692",
+  "official_denominator": {
+    "commit_source": "issue8/acceptance.json:baseline_commit",
+    "version_source": "perf_contract.FROZEN_DENOMINATOR (frozen commit map)",
+    "note": "v1.1.10 (913a20b63203fe42078655d5e43dcc519e5108dc) is fallback attribution only, never the official denominator"
+  },
+  "required_files": [
+    "acceptance.json",
+    "workloads.json",
+    "sql/00-schema.sql",
+    "sql/01-historical-fixture.sql",
+    "sql/02-suite-small-fixture.sql",
+    "sql/10-smoke-read.sql",
+    "sql/11-smoke-write.sql",
+    "sql/12-update.sql",
+    "sql/13-insert.sql",
+    "sql/14-point-read.sql",
+    "sql/15-range-read.sql",
+    "sql/16-scan.sql",
+    "sql/20-transfer.sql",
+    "sql/30-oracle.sql"
+  ],
+  "profiles": {
+    "quick": {
+      "max_seconds_per_arm": 300,
+      "maximum_seconds_per_arm": 900,
+      "maximum_pairs": 3,
+      "maximum_samples_per_lane": 1000000
+    },
+    "formal": {
+      "maximum_seconds_per_arm": 3600,
+      "maximum_pairs": 3,
+      "maximum_samples_per_lane": 1000000
+    },
+    "steady": {
+      "max_seconds_per_arm": 1800,
+      "maximum_seconds_per_arm": 7200,
+      "maximum_samples_per_lane": 1000000
+    }
+  },
+  "request": {
+    "max_request_bytes": 1048576,
+    "large_payload_probe_bytes": [
+      51200,
+      65536
+    ],
+    "truncation_allowed": false
+  },
+  "paths": {
+    "forbidden_filesystems": [
+      "tmpfs",
+      "ramfs",
+      "devtmpfs",
+      "overlay"
+    ],
+    "formal_requires_measured_filesystem": true,
+    "forbid_repository_scripts_subtree": true,
+    "require_distinct_roots": true
+  }
+}

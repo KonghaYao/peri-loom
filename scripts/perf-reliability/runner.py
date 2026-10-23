@@ -94,15 +94,17 @@ def summary(records, seconds):
 
 
 class Worker:
-    def __init__(self, binary, store, cache, timeout, deadline):
+    def __init__(self, binary, store, cache, timeout, deadline, env=None):
         self.timeout = timeout
         self.deadline = deadline
         self.buffer = b""
         self.sequence = 0
         self.usage = None
+        environment = {**os.environ, **env} if env else None
         self.process = subprocess.Popen([str(binary), "worker", str(store), str(cache)],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, start_new_session=True)
+                                        stderr=subprocess.DEVNULL, start_new_session=True,
+                                        env=environment)
         self.group = self.process.pid
         os.set_blocking(self.process.stdin.fileno(), False)
         self.selector = selectors.DefaultSelector()
@@ -147,6 +149,7 @@ class Worker:
         return response
 
     def request(self, operation, **arguments):
+        started_ns = time.monotonic_ns()
         started = time.monotonic()
         try:
             self.send(operation, **arguments)
@@ -162,7 +165,11 @@ class Worker:
         except (TimeoutError, EOFError, BrokenPipeError, OSError, ValueError) as failure:
             response = None
             record = {"operation": operation, "outcome": "Unknown", "error_category": type(failure).__name__}
+        completed_ns = time.monotonic_ns()
         record["latency_ms"] = (time.monotonic() - started) * 1000
+        record["started_ns"] = started_ns
+        record["completed_ns"] = completed_ns
+        record["duration_ns"] = completed_ns - started_ns
         return response, record
 
     def require(self, operation, **arguments):

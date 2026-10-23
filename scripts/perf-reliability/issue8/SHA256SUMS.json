@@ -1,0 +1,21 @@
+{
+  "PERFORMANCE-ROADMAP.md": "112ddc6b2ce9eeea77ab8fbfa129e182a84498761dc3dd5ac5b24cc1dcd8cb5c",
+  "README.md": "35403c2249cc139d5dd3988168ab4dcf37ecc5c29f8cb2f7fa04b4b45203a7e4",
+  "acceptance.json": "21a50a855a84d63e6f6a24c72b10a815b3326333c40dc594f114407eb026c7e0",
+  "generate_fixture.py": "97531de970d09595764112ace83a4196f6ec47c708b2b890f55914ffb2543737",
+  "sql/00-schema.sql": "a1d2a3a24aa0cd61ef4584d5f2ea98dd835470622e53cdbe4b93ec944385126e",
+  "sql/01-historical-fixture.sql": "52367be2d800c3b2e55f93c054d661de6662ed115a3bf89eda2a4b6000c446ed",
+  "sql/02-suite-small-fixture.sql": "24ca891d1badae1961a55b68136230fceee56a013a52b5d84894c99b6b3c785a",
+  "sql/10-smoke-read.sql": "90c1e855283b66e202c4e344a5555c77475e19f35288f2623c5ea43afbf6dae5",
+  "sql/11-smoke-write.sql": "9222ecc998c0db5879cd204d401a74753a7d789556ccc802db5b958997a5815b",
+  "sql/12-update.sql": "88a7ae02c417c1938de5583a74405dfb5675424cde4675c85be05162e8adf4c6",
+  "sql/13-insert.sql": "68e54f5ee67ec9c311b3a113bd4c96f5bf783e0fadabc7723e3a3dfaf7e5efaf",
+  "sql/14-point-read.sql": "b77d3692ab861ed73ff11f0075106edb5a2c0a5458dcf1f3bff7e1815d66806b",
+  "sql/15-range-read.sql": "e818ca693ca8fcc97c42fb73efc0037aa8cc0fdd366e38af504b1b9aee1d5ded",
+  "sql/16-scan.sql": "a0172ea79103c8f5429c8e9d0659269cd52787fd4e61792026ac40d5b8c66d56",
+  "sql/20-transfer.sql": "d613db5dc3df4bf862f4f878f1dbcbd1314725bc9d1fdac8a78deb53a6c48003",
+  "sql/30-oracle.sql": "379a80f016f9ff39ebca9f9e413178884db20b74b2c18b21192871420c937cc4",
+  "sql-validation.json": "75d08935d28b9c4088f3863460277e6613879c4d8f9dfc577d3fa25e0f2810ab",
+  "validate_sql.py": "c02259989c1feb4189e0db4e37bb318be9305bae4fb027db4b36bb0bf081dd43",
+  "workloads.json": "9ea76453444753e814d108510c9dcd8156a3bb96068fd67fe87a95996c0b8d03"
+}

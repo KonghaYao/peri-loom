@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "status": "DESIGN_TARGETS_NOT_MEASURED",
+  "gate_implementation": "TO_BE_IMPLEMENTED_IN_REPOSITORY",
+  "baseline_commit": "f3c75622924d84189fa74f3069c209761ceeec31",
+  "environment_contract": {
+    "native_arch": true,
+    "build": "release",
+    "fixed_turso_commit": true,
+    "persistent_same_mount": true,
+    "same_durability": true,
+    "same_retention": true,
+    "same_maintenance": true,
+    "no_tmpfs": true,
+    "freeze_hashes": true
+  },
+  "sampling": {
+    "smoke": {
+      "operations_per_lane": 100,
+      "warmup_operations": 0
+    },
+    "quick": {
+      "minimum_operations_per_lane": 512,
+      "minimum_seconds": 30
+    },
+    "formal": {
+      "minimum_samples_per_lane": 10000,
+      "minimum_seconds": 180,
+      "max_seconds_per_arm": 900,
+      "pairs": 3,
+      "order": [
+        "AB",
+        "BA",
+        "AB"
+      ],
+      "candidate_absolute_gates": "all rounds",
+      "paired_speedup_gate": "median of paired ratios",
+      "p999_minimum_samples_per_bucket": 100000
+    }
+  },
+  "native": {
+    "G1": {
+      "S1_C2": {
+        "p50_ms_max": 20,
+        "p95_ms_max": 35,
+        "p99_ms_max": 50,
+        "ack_per_second_min": 100
+      }
+    },
+    "G2": {
+      "S1_C2": {
+        "p50_ms_max": 5,
+        "p95_ms_max": 10,
+        "p99_ms_max": 20,
+        "ack_per_second_min": 300,
+        "paired_p50_speedup_min": 10,
+        "paired_ack_throughput_speedup_min": 8
+      },
+      "S1_C1": {
+        "p50_ms_max": 5,
+        "p99_ms_max": 20,
+        "ack_per_second_min": 150
+      },
+      "S2": {
+        "paired_ack_throughput_speedup_min": 5
+      }
+    },
+    "G3_stretch_not_required": {
+      "S1_C2": {
+        "p50_ms_max": 3,
+        "p95_ms_max": 6,
+        "p99_ms_max": 10,
+        "ack_per_second_min": 600
+      }
+    }
+  },
+  "nonregression": {
+    "read_p50_ratio_max": 1.1,
+    "read_p95_ratio_max": 1.1,
+    "read_p99_ratio_max": 1.1,
+    "read_throughput_ratio_min": 0.9,
+    "other_case_p95_ratio_max": 1.1,
+    "other_case_throughput_ratio_min": 0.9
+  },
+  "product_local": {
+    "write_p50_ms_max": 15,
+    "write_p95_ms_max": 30,
+    "write_p99_ms_max": 60,
+    "nonregression_applies": true
+  },
+  "s3": {
+    "paired_write_p50_ratio_max": 1.1,
+    "paired_write_p95_ratio_max": 1.1,
+    "throughput_ratio_min": 0.9,
+    "requests_per_commit_ratio_max": 1.0,
+    "fault_recovery_required": true,
+    "absolute_local_latency_targets_apply": false
+  },
+  "steady_state": {
+    "seconds_min": 1800,
+    "maintenance_cycles_min": 3,
+    "last_10m_p95_over_first_10m_max": 1.2,
+    "fixed_live_data": true,
+    "fixed_retention": true
+  },
+  "resources": {
+    "peak_rss_ratio_max": 1.1,
+    "frozen_absolute_budget_required": true,
+    "last_10m_rss_growth_over_budget_max": 0.01,
+    "all_processes_accounted": true,
+    "process_group_join_proof_required": true
+  },
+  "correctness": {
+    "normal_error_count_max": 0,
+    "normal_unknown_count_max": 0,
+    "oracle_mismatches_max": 0,
+    "all_durable_ACKs_recovered": true,
+    "fault_unknowns_resolved_without_SQL_replay": true,
+    "no_partial_transactions": true,
+    "storage_fencing_required": true,
+    "crash_and_unflushed_write_loss_models_separate": true
+  },
+  "status_rules": {
+    "missing_evidence": "NOT_RUN",
+    "insufficient_samples": "INCOMPLETE",
+    "threshold_failure": "FAIL",
+    "required_sections": [
+      "native",
+      "product",
+      "s3_nonregression",
+      "correctness",
+      "resources"
+    ],
+    "any_not_pass_exit_nonzero": true,
+    "manual_summary_without_raw_records_forbidden": true
+  }
+}
