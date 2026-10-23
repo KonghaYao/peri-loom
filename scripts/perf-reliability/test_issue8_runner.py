@@ -20,6 +20,11 @@ import perf_contract
 
 class FakeSampler:
     def __init__(self, roots, paths, interval=.1):
+        # Production samples disk usage through these paths; passing byte
+        # counts instead of paths used to be masked by this fake.
+        for name, path in paths.items():
+            if not isinstance(path, (str, Path)):
+                raise AssertionError("sampler_path_not_pathlike: " + name)
         self.roots = roots
         self.paths = paths
         self.interval = interval

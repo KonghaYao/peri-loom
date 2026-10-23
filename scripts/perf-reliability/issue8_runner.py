@@ -285,7 +285,7 @@ def execute_run(campaign, campaign_path, arm, case, concurrency, pair, order, pr
         disk_start = {"store": evidence_module.directory_size(store),
                       "cache": evidence_module.directory_size(cache_base)}
         sampler = evidence_module.ResourceSampler([worker.process.pid for worker in workers],
-                                                  disk_start)
+                                                  {"store": store, "cache": cache_base})
         sampler.start()
         initial_lanes = {}
         setup_seconds = 0.0
