@@ -10,7 +10,40 @@ import tempfile
 import time
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+
+
+class ContractError(ValueError):
+    pass
+
+
+def resolve_repo_root(module_file=None, environ=None):
+    """Locate the repository root in the checkout and in the container snapshot.
+
+    The checkout keeps this file under ``<repo>/scripts/perf-reliability``. The
+    container snapshot copies it to ``<snapshot>/perf-reliability`` (or to
+    ``<snapshot>/scripts/perf-reliability``) and links ``prototypes`` next to
+    it. ``PERI_REPO_ROOT`` is the entrypoint's explicit, validated override;
+    without it the two candidate parents are probed and an unresolvable layout
+    is an error rather than a silently wrong root.
+    """
+    module_file = Path(module_file or __file__).resolve()
+    environ = os.environ if environ is None else environ
+    explicit = environ.get("PERI_REPO_ROOT")
+    if explicit:
+        root = Path(explicit)
+        if not root.is_absolute():
+            raise ContractError("repository_root_env_must_be_absolute: " + str(explicit))
+        if not (root / "prototypes").is_dir():
+            raise ContractError("repository_root_env_missing_prototypes: " + str(root))
+        return root.resolve()
+    for candidate in (module_file.parent.parent, module_file.parent.parent.parent):
+        if (candidate / "prototypes").is_dir():
+            return candidate.resolve()
+    raise ContractError("repository_root_unresolved: no prototypes directory above "
+                        + str(module_file))
+
+
+ROOT = resolve_repo_root()
 CONTRACT_ROOT = HERE / "issue8"
 REFERENCE_ROOT = CONTRACT_ROOT / "reference"
 REFERENCE_MANIFEST = REFERENCE_ROOT / "reference-manifest.json"
@@ -32,10 +65,6 @@ KIT_FILES_NOT_COPIED = ("PERFORMANCE-ROADMAP.md", "README.md")
 # kit-manifest hashes but are not root contract files.
 REFERENCE_FILES = ("generate_fixture.py", "sql-validation.json", "validate_sql.py")
 REFERENCE_MANIFEST_NAME = "reference-manifest.json"
-
-
-class ContractError(ValueError):
-    pass
 
 
 class RequestTooLarge(ContractError):
@@ -419,7 +448,9 @@ def _check_root(path, label):
         if resolved == temporary or resolved.is_relative_to(temporary):
             raise UnsafePath(label + "_root_is_ephemeral: " + str(resolved))
     scripts = (ROOT / "scripts").resolve()
-    if resolved == scripts or resolved.is_relative_to(scripts):
+    harness_sources = {HERE.resolve(), scripts}
+    if any(resolved == source or resolved.is_relative_to(source)
+           for source in harness_sources):
         raise UnsafePath(label + "_root_inside_harness_sources")
     return resolved
 

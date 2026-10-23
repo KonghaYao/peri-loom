@@ -1,0 +1,23 @@
+# The build context is scripts/perf-reliability/ci, never the repository root.
+# Deny everything first so a future file cannot accidentally enter the image.
+*
+!Dockerfile
+!entrypoint.py
+
+# Defense in depth: even if the allowlist above grows, these never belong in an
+# image layer. The patterns also document why the root context is forbidden.
+**/.git
+**/.git/**
+**/target
+**/target/**
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.jks
+**/connection.json
+**/evidence
+**/evidence/**

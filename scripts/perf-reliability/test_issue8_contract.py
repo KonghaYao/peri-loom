@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -253,6 +254,69 @@ class ContractTests(unittest.TestCase):
         self.assertFalse((perf_contract.CONTRACT_ROOT / "derived-contract.json").exists())
         self.assertTrue(perf_contract.DERIVED_PATH.is_file())
         self.assertEqual(derived["request"]["truncation_allowed"], False)
+
+
+class RepositoryRootTests(unittest.TestCase):
+    def test_checkout_layout_resolves_to_repository_root(self):
+        checkout_root = Path(perf_contract.__file__).resolve().parents[2]
+        self.assertEqual(perf_contract.ROOT, checkout_root)
+        self.assertTrue((perf_contract.ROOT / "prototypes/p0/turso").is_dir())
+
+    def test_snapshot_layout_resolves_from_linked_prototypes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / "build"
+            harness = build / "perf-reliability"
+            harness.mkdir(parents=True)
+            (build / "prototypes").mkdir()
+            self.assertEqual(
+                perf_contract.resolve_repo_root(harness / "perf_contract.py", {}),
+                build.resolve())
+            nested = build / "scripts/perf-reliability"
+            nested.mkdir(parents=True)
+            self.assertEqual(
+                perf_contract.resolve_repo_root(nested / "perf_contract.py", {}),
+                build.resolve())
+
+    def test_missing_prototypes_is_an_explicit_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "perf-reliability/perf_contract.py"
+            module.parent.mkdir(parents=True)
+            with self.assertRaisesRegex(perf_contract.ContractError,
+                                        "repository_root_unresolved"):
+                perf_contract.resolve_repo_root(module, {})
+
+    def test_explicit_root_is_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module = root / "perf-reliability/perf_contract.py"
+            module.parent.mkdir(parents=True)
+            with self.assertRaisesRegex(perf_contract.ContractError,
+                                        "repository_root_env_missing_prototypes"):
+                perf_contract.resolve_repo_root(module, {"PERI_REPO_ROOT": str(root)})
+            (root / "prototypes").mkdir()
+            self.assertEqual(perf_contract.resolve_repo_root(
+                module, {"PERI_REPO_ROOT": str(root)}), root.resolve())
+            with self.assertRaisesRegex(perf_contract.ContractError,
+                                        "repository_root_env_must_be_absolute"):
+                perf_contract.resolve_repo_root(module, {"PERI_REPO_ROOT": "relative"})
+
+    def test_repository_identity_reads_the_turso_gitlink(self):
+        identity = perf_contract.repository_identity()
+        expected_root = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=perf_contract.ROOT, text=True).strip()
+        expected_turso = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=perf_contract.ROOT / "prototypes/p0/turso", text=True).strip()
+        self.assertEqual(identity,
+                         {"git_head": expected_root, "turso_head": expected_turso})
+        self.assertRegex(identity["turso_head"], r"^[0-9a-f]{40}$")
+
+    def test_harness_sources_are_not_valid_roots(self):
+        with self.assertRaisesRegex(perf_contract.UnsafePath,
+                                    "root_inside_harness_sources"):
+            perf_contract.validate_roots(perf_contract.HERE / "store",
+                                         perf_contract.HERE / "cache",
+                                         perf_contract.HERE / "evidence", "quick")
 
 
 if __name__ == "__main__":

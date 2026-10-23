@@ -1,0 +1,383 @@
+name: Issue 8 performance harness
+
+# Independent from the release gates in v1-baseline.yml / p0-gate.yml. This
+# workflow never changes their required checks, permissions or commands.
+#
+# - deterministic-container: GitHub-hosted, builds the image and runs the
+#   deterministic Python/Rust test set. Safe for fork pull requests: no secrets,
+#   no self-hosted runner and no pull_request_target.
+# - quick-native / formal-native: manual-only on an operator-provisioned native
+#   Linux runner with persistent disks. They are intentionally never triggered
+#   by pull_request/push and never publish an image.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/perf-reliability/**'
+      - 'prototypes/v1/src/**'
+      - 'prototypes/v1/tests/**'
+      - 'prototypes/v1/Cargo.toml'
+      - 'prototypes/v1/Cargo.lock'
+      - 'prototypes/p0/turso'
+      - '.gitmodules'
+      - '.github/workflows/issue8-perf.yml'
+  pull_request:
+    paths:
+      - 'scripts/perf-reliability/**'
+      - 'prototypes/v1/src/**'
+      - 'prototypes/v1/tests/**'
+      - 'prototypes/v1/Cargo.toml'
+      - 'prototypes/v1/Cargo.lock'
+      - 'prototypes/p0/turso'
+      - '.gitmodules'
+      - '.github/workflows/issue8-perf.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'test = deterministic container; quick/formal = native runner'
+        type: choice
+        options:
+          - test
+          - quick
+          - formal
+        default: test
+      run_id:
+        description: 'Unique performance run id (default: github run id-attempt)'
+        type: string
+        required: false
+        default: ''
+      perf_root:
+        description: 'Native runner directory containing persistent store/cache/build'
+        type: string
+        required: false
+        default: '/srv/peri-perf'
+      inputs_dir:
+        description: 'Directory with campaign/environment/host-attestation JSON'
+        type: string
+        required: false
+        default: '/srv/peri-perf/inputs'
+      artifacts_dir:
+        description: 'Directory with candidate/denominator release binaries'
+        type: string
+        required: false
+        default: '/srv/peri-perf/artifacts'
+      trust_dir:
+        description: 'Directory with the operator trusted-artifacts.json'
+        type: string
+        required: false
+        default: '/srv/peri-perf/trust'
+      image:
+        description: 'Prebuilt peri-loom:issue8-ci image tag or digest'
+        type: string
+        required: false
+        default: 'peri-loom:issue8-ci'
+      quick_cpuset:
+        description: 'CPUs pinned for the quick run'
+        type: string
+        required: false
+        default: '0-3'
+      quick_memory:
+        description: 'Memory limit for the quick run'
+        type: string
+        required: false
+        default: '8g'
+      formal_cpuset:
+        description: 'CPUs pinned for the formal run'
+        type: string
+        required: false
+        default: '0-7'
+      formal_memory:
+        description: 'Memory limit for the formal run'
+        type: string
+        required: false
+        default: '16g'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: issue8-perf-deterministic-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify the locked Turso gitlink
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(git ls-tree HEAD prototypes/p0/turso | awk '{print $3}')"
+          actual="$(git -C prototypes/p0/turso rev-parse HEAD)"
+          test -n "$expected"
+          test "$actual" = "$expected"
+          echo "turso gitlink: $actual"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Prepare the cargo registry cache
+        shell: bash
+        run: mkdir -p "$RUNNER_TEMP/issue8-cargo-registry"
+
+      - name: Restore the cargo registry cache (never release artifacts)
+        uses: actions/cache@v4
+        # Caching is an optimization: a cache outage must not hide the test
+        # result or turn into a release trust root.
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/issue8-cargo-registry
+          key: issue8-cargo-registry-${{ runner.os }}-${{ runner.arch }}-rust1.98.1-${{ hashFiles('prototypes/v1/Cargo.lock') }}
+
+      - name: Build the harness image (local load, never push)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache=(--cache-from "type=gha,scope=issue8-ci-amd64-rust1.98.1")
+          # Fork PRs get a read-only token; exporting cache would fail. They may
+          # consume the base-repository cache but must not write it.
+          if [ "${{ github.event_name }}" != "pull_request" ] || \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            cache+=(--cache-to "type=gha,scope=issue8-ci-amd64-rust1.98.1,mode=max")
+          fi
+          docker buildx build --platform linux/amd64 --load \
+            "${cache[@]}" \
+            -f scripts/perf-reliability/ci/Dockerfile \
+            -t peri-loom:issue8-ci scripts/perf-reliability/ci
+
+      - name: Record image identity and run the deterministic test set
+        id: run
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ROOT="$RUNNER_TEMP/issue8-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CARGO_REGISTRY="$RUNNER_TEMP/issue8-cargo-registry"
+          mkdir -p "$RUN_ROOT"/{cargo-target,build,reports} "$CARGO_REGISTRY"
+          chmod -R 0777 "$RUN_ROOT" "$CARGO_REGISTRY"
+          echo "reports=$RUN_ROOT/reports" >> "$GITHUB_OUTPUT"
+
+          docker image inspect peri-loom:issue8-ci \
+            --format 'image={{.Id}} user={{.Config.User}} platform={{.Os}}/{{.Architecture}} size={{.Size}}' \
+            | tee "$RUN_ROOT/reports/image-info.txt"
+          docker run --rm --entrypoint rustc peri-loom:issue8-ci --version \
+            | tee -a "$RUN_ROOT/reports/image-info.txt"
+          docker run --rm --entrypoint python3 peri-loom:issue8-ci --version \
+            | tee -a "$RUN_ROOT/reports/image-info.txt"
+          test "$(docker run --rm --entrypoint python3 peri-loom:issue8-ci \
+            -c 'import os; print(os.getuid())')" = "10001"
+          docker run --rm peri-loom:issue8-ci --help >/dev/null
+
+          docker run --rm --init --read-only \
+            --cap-drop=ALL --security-opt no-new-privileges --pids-limit=512 \
+            --cpus=2 --memory=8g --memory-swap=8g \
+            --env RUST_BACKTRACE=1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            --mount "type=bind,src=$CARGO_REGISTRY,dst=/cargo-cache" \
+            --mount "type=bind,src=$RUN_ROOT/cargo-target,dst=/cargo-target" \
+            --mount "type=bind,src=$RUN_ROOT/build,dst=/build" \
+            --mount "type=bind,src=$RUN_ROOT/reports,dst=/reports" \
+            peri-loom:issue8-ci test
+
+      - name: Upload sanitized deterministic reports
+        if: always() && steps.run.outputs.reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue8-deterministic-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.run.outputs.reports }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  quick-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'quick'
+    runs-on: [self-hosted, linux, peri-perf-native]
+    environment: peri-perf-native
+    timeout-minutes: 90
+    concurrency:
+      group: peri-perf-native-device
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Validate operator-provisioned inputs
+        shell: bash
+        env:
+          PERF_ROOT: ${{ inputs.perf_root }}
+          INPUTS_DIR: ${{ inputs.inputs_dir }}
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+          TRUST_DIR: ${{ inputs.trust_dir }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ inputs.run_id }}"
+          RUN_ID="${RUN_ID:-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          case "$RUN_ID" in
+            ''|.*|*..*|*[!A-Za-z0-9._-]*) echo "invalid run_id: $RUN_ID" >&2; exit 1 ;;
+          esac
+          RUN_ROOT="$PERF_ROOT/runs/$RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "RUN_ROOT=$RUN_ROOT" >> "$GITHUB_ENV"
+          for required in "$INPUTS_DIR/quick-campaign.json" \
+                          "$INPUTS_DIR/quick-environment.json" \
+                          "$TRUST_DIR/trusted-artifacts.json"; do
+            test -f "$required" || { echo "missing operator input: $required" >&2; exit 1; }
+          done
+          test -d "$ARTIFACTS_DIR"
+          docker image inspect "$IMAGE" >/dev/null
+          # Refuse to reuse any part of a previous run directory. The entrypoint
+          # independently requires empty evidence/metrics and a fresh gate report.
+          for directory in build store cache evidence metrics reports; do
+            if [ -d "$RUN_ROOT/$directory" ] && \
+               [ -n "$(ls -A "$RUN_ROOT/$directory" 2>/dev/null)" ]; then
+              echo "refusing reused run directory: $RUN_ROOT/$directory" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$RUN_ROOT"/{build,store,cache,evidence,metrics,reports}
+          # The container runs as UID 10001. The operator owns this directory;
+          # on a dedicated runner this makes the bind mounts writable without
+          # granting the container any host capability.
+          chmod -R 0777 "$RUN_ROOT"
+
+      - name: Run the quick phase in the hardened container
+        shell: bash
+        env:
+          INPUTS_DIR: ${{ inputs.inputs_dir }}
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+          TRUST_DIR: ${{ inputs.trust_dir }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --init --read-only --network=none \
+            --cap-drop=ALL --security-opt no-new-privileges --pids-limit=512 \
+            --cpuset-cpus "${{ inputs.quick_cpuset }}" \
+            --memory="${{ inputs.quick_memory }}" \
+            --memory-swap="${{ inputs.quick_memory }}" \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            --mount "type=bind,src=$RUN_ROOT/build,dst=/build" \
+            --mount "type=bind,src=$RUN_ROOT/store,dst=/perf/store" \
+            --mount "type=bind,src=$RUN_ROOT/cache,dst=/perf/cache" \
+            --mount "type=bind,src=$RUN_ROOT/evidence,dst=/perf/evidence" \
+            --mount "type=bind,src=$RUN_ROOT/metrics,dst=/perf/metrics" \
+            --mount "type=bind,src=$RUN_ROOT/reports,dst=/reports" \
+            --mount "type=bind,src=$INPUTS_DIR,dst=/inputs,readonly" \
+            --mount "type=bind,src=$ARTIFACTS_DIR,dst=/artifacts,readonly" \
+            --mount "type=bind,src=$TRUST_DIR,dst=/trust,readonly" \
+            "$IMAGE" quick \
+              --campaign /inputs/quick-campaign.json \
+              --environment /inputs/quick-environment.json \
+              --trusted-artifacts /trust/trusted-artifacts.json \
+              --artifacts /artifacts
+
+      - name: Upload quick reports (no store, cache or binaries)
+        if: always() && env.RUN_ROOT
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue8-quick-report-${{ env.RUN_ID || github.run_id }}
+          path: ${{ env.RUN_ROOT }}/reports
+          if-no-files-found: warn
+          retention-days: 14
+
+  formal-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'formal'
+    runs-on: [self-hosted, linux, peri-perf-native, peri-perf-exclusive]
+    environment: peri-perf-formal
+    timeout-minutes: 480
+    concurrency:
+      group: peri-perf-native-device
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Validate the formal environment contract
+        shell: bash
+        env:
+          PERF_ROOT: ${{ inputs.perf_root }}
+          INPUTS_DIR: ${{ inputs.inputs_dir }}
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+          TRUST_DIR: ${{ inputs.trust_dir }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ inputs.run_id }}"
+          RUN_ID="${RUN_ID:-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          case "$RUN_ID" in
+            ''|.*|*..*|*[!A-Za-z0-9._-]*) echo "invalid run_id: $RUN_ID" >&2; exit 1 ;;
+          esac
+          RUN_ROOT="$PERF_ROOT/runs/$RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+          echo "RUN_ROOT=$RUN_ROOT" >> "$GITHUB_ENV"
+          for required in "$INPUTS_DIR/formal-campaign.json" \
+                          "$INPUTS_DIR/formal-environment.json" \
+                          "$INPUTS_DIR/host-attestation.json" \
+                          "$TRUST_DIR/trusted-artifacts.json"; do
+            test -f "$required" || { echo "missing operator input: $required" >&2; exit 1; }
+          done
+          test -d "$ARTIFACTS_DIR"
+          docker image inspect "$IMAGE" >/dev/null
+          # Refuse to reuse evidence, metrics or a gate report from another run.
+          for directory in build store cache evidence metrics reports; do
+            if [ -d "$RUN_ROOT/$directory" ] && \
+               [ -n "$(ls -A "$RUN_ROOT/$directory" 2>/dev/null)" ]; then
+              echo "refusing reused run directory: $RUN_ROOT/$directory" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$RUN_ROOT"/{build,store,cache,evidence,metrics,reports}
+          chmod -R 0777 "$RUN_ROOT"
+
+      - name: Run the formal phase in the hardened container
+        shell: bash
+        env:
+          INPUTS_DIR: ${{ inputs.inputs_dir }}
+          ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+          TRUST_DIR: ${{ inputs.trust_dir }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --init --read-only --network=none \
+            --cap-drop=ALL --security-opt no-new-privileges --pids-limit=512 \
+            --cpuset-cpus "${{ inputs.formal_cpuset }}" \
+            --memory="${{ inputs.formal_memory }}" \
+            --memory-swap="${{ inputs.formal_memory }}" \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            --mount "type=bind,src=$RUN_ROOT/build,dst=/build" \
+            --mount "type=bind,src=$RUN_ROOT/store,dst=/perf/store" \
+            --mount "type=bind,src=$RUN_ROOT/cache,dst=/perf/cache" \
+            --mount "type=bind,src=$RUN_ROOT/evidence,dst=/perf/evidence" \
+            --mount "type=bind,src=$RUN_ROOT/metrics,dst=/perf/metrics" \
+            --mount "type=bind,src=$RUN_ROOT/reports,dst=/reports" \
+            --mount "type=bind,src=$INPUTS_DIR,dst=/inputs,readonly" \
+            --mount "type=bind,src=$ARTIFACTS_DIR,dst=/artifacts,readonly" \
+            --mount "type=bind,src=$TRUST_DIR,dst=/trust,readonly" \
+            "$IMAGE" formal \
+              --campaign /inputs/formal-campaign.json \
+              --environment /inputs/formal-environment.json \
+              --trusted-artifacts /trust/trusted-artifacts.json \
+              --artifacts /artifacts \
+              --host-attestation /inputs/host-attestation.json
+
+      - name: Upload sanitized formal evidence and reports
+        if: always() && env.RUN_ROOT
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue8-formal-report-${{ env.RUN_ID || github.run_id }}
+          path: |
+            ${{ env.RUN_ROOT }}/reports
+            ${{ env.RUN_ROOT }}/evidence
+            ${{ env.RUN_ROOT }}/metrics
+          if-no-files-found: warn
+          retention-days: 14

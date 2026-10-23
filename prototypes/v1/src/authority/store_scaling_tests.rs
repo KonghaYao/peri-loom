@@ -481,7 +481,9 @@ impl Growth {
 }
 
 fn scratch(case: &str) -> Result<std::path::PathBuf> {
-    let root = std::path::Path::new("/private/tmp/peri-perf/store").join(case);
+    // Honor TMPDIR: the CI container has a read-only root and only an explicit
+    // writable temp mount, so a hard-coded /private/tmp path cannot work there.
+    let root = std::env::temp_dir().join("peri-perf/store").join(case);
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root)?;
     Ok(root)

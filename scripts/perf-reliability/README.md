@@ -135,3 +135,191 @@ inversions, reordered records, and incomplete coverage.
 `generate_fixture.py`, `validate_sql.py`, and `sql-validation.json`, plus an
 independent `reference-manifest.json`. The harness never executes these files;
 `validate_sql.py` and `generate_fixture.py` are reference material only.
+
+## Issue 8 CI container
+
+`ci/Dockerfile` builds a pinned `rust:1.98.1-bookworm` toolchain image with
+Python 3.11, `git`, `procps`, `util-linux`, CA certificates and C/C++ build
+tools. It contains only `/opt/perf/entrypoint.py`; the repository, `.git`,
+Turso, cargo caches, evidence and credentials are never copied into the image.
+The default user is UID/GID 10001 and the default command is `test`.
+
+### Build and identity
+
+```bash
+docker buildx build --platform linux/amd64 --load \
+  -f scripts/perf-reliability/ci/Dockerfile \
+  -t peri-loom:issue8-ci scripts/perf-reliability/ci
+docker image inspect peri-loom:issue8-ci \
+  --format '{{.Id}} user={{.Config.User}} {{.Os}}/{{.Architecture}} {{.Size}}'
+docker run --rm --entrypoint python3 peri-loom:issue8-ci \
+  -c 'import os; print(os.getuid())'          # must print 10001
+docker run --rm peri-loom:issue8-ci --help
+```
+
+Build natively for the architecture under test (`linux/amd64` or
+`linux/arm64`). Do not use emulated binaries for performance evidence. The
+base tag is pinned by the repository toolchain; a registry digest is recorded
+by the consumer when one is available, never invented here.
+
+### Deterministic tests
+
+```bash
+SOURCE=$PWD
+RUN_ROOT=$(mktemp -d)
+mkdir -p "$RUN_ROOT"/{cargo-cache,cargo-target,build,reports}
+chmod -R 0777 "$RUN_ROOT"       # container UID 10001; ephemeral host dirs
+
+docker run --rm --init --read-only \
+  --cap-drop=ALL --security-opt no-new-privileges --pids-limit=512 \
+  --cpus=2 --memory=8g --memory-swap=8g \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+  --mount "type=bind,src=$SOURCE,dst=/workspace,readonly" \
+  --mount "type=bind,src=$RUN_ROOT/cargo-cache,dst=/cargo-cache" \
+  --mount "type=bind,src=$RUN_ROOT/cargo-target,dst=/cargo-target" \
+  --mount "type=bind,src=$RUN_ROOT/build,dst=/build" \
+  --mount "type=bind,src=$RUN_ROOT/reports,dst=/reports" \
+  peri-loom:issue8-ci test
+```
+
+The command above is complete: `test` needs no writable rustup volume, no
+`/private/tmp` mount and no other hidden mount. The only writable paths are the
+four bind mounts and the `/tmp` tmpfs, all shown here.
+
+`test` runs, in order: the Python harness unittest discovery, `cargo check
+--locked`, `cargo test --locked --lib -- --test-threads=1`, and
+`cargo test --locked --test local_provider_worker --test statement_worker`
+against `prototypes/v1/Cargo.toml`. It stops at the first failure. The summary
+at `/reports/test-summary.json` records the executed/passed/failed/skipped
+counts and the harness snapshot hash. This is not the P0 or SDK gate and does
+not run all integrations.
+
+The image installs `rustfmt` and `clippy` for 1.98.1 and sets
+`RUSTUP_TOOLCHAIN=1.98.1`; the entrypoint also pins it in every subprocess.
+The root filesystem can therefore stay read-only without a writable rustup
+volume, and rustup never follows the checkout's `rust-toolchain.toml`.
+`--test-threads=1` runs lib tests serially: the suite's lease tests use a
+20-second wall-clock window and still expired in 2 of 7 full runs with four
+threads on an emulated, CPU-capped runner. Serial execution changes test
+concurrency only; production lease and timeout checks are untouched. The cost
+is a longer deterministic job, not a weaker authority check.
+
+The Python suite runs from a hash-verified writable snapshot of
+`scripts/perf-reliability` under `/build`, not from the read-only mount: one
+contract test intentionally creates a temporary directory under the harness
+ROOT, and another test executes fake worker scripts. `/workspace` remains
+read-only; the snapshot copy is compared byte-for-byte before any test runs.
+The snapshot links `prototypes` and `.git` back to the read-only checkout so
+`runner.source_inventory` and the Git identity checks still see the real
+sources; process-scoped `safe.directory` entries cover both paths.
+`TMPDIR` points at `/build/tmp`, outside the snapshot root, so the harness
+temporary-root guard still exercises its real rule.
+
+### Quick and formal
+
+The `quick` and `formal` modes require the campaign/environment inputs, the
+operator trusted-artifacts manifest, the prebuilt binaries and (for formal) the
+host attestation. The container invokes the existing `campaign_cli.py` and
+`gate.py`; it does not implement SQL rules or alter the gate.
+
+Mount contract:
+
+| Path | Mode | Contents |
+|---|---|---|
+| `/workspace` | ro | full checkout including `.git` and the fixed Turso gitlink |
+| `/cargo-cache`, `/cargo-target` | rw | test mode only; never part of evidence |
+| `/build` | rw | temp files and logs |
+| `/perf/store` | rw | authoritative local object backend |
+| `/perf/cache` | rw | disposable worker cache |
+| `/perf/evidence` | rw | must be empty at start |
+| `/perf/metrics` | rw | must be empty at start; raw worker snapshots |
+| `/reports` | rw | gate JSON and entrypoint summary |
+| `/inputs` | ro | campaign, environment, host attestation |
+| `/artifacts` | ro | candidate/denominator release binaries |
+| `/trust` | ro | `trusted-artifacts.json` outside the evidence root |
+
+The environment JSON must set `store_root`, `cache_root`, `evidence_root` and
+`metrics_snapshot` to the container paths above and `tier` to `G1`/`G2`; a
+non-empty `profile_overrides` object is rejected so CI cannot shorten the fixed
+sampling. The campaign must match the quick (1 pair, `AB`, S1/C2) or formal
+(3 pairs, `AB,BA,AB`, S1/C2+C1, S2/C2) shape, and both arm binaries must hash
+to the operator trust manifest.
+
+Use `--network=none` for quick/formal; build and dependency download happen
+before the measurement window. The deterministic test run needs registry
+access and therefore keeps the default bridge network. Never mount the Docker
+socket, never add capabilities, and never pass host environment files.
+
+Example quick invocation (inside the hardened `docker run` above):
+
+```bash
+"$IMAGE" quick \
+  --campaign /inputs/quick-campaign.json \
+  --environment /inputs/quick-environment.json \
+  --trusted-artifacts /trust/trusted-artifacts.json \
+  --artifacts /artifacts
+```
+
+`formal` additionally requires `--host-attestation /inputs/host-attestation.json`
+and an exclusive lock on `/perf/store/.peri-perf.lock`; the entrypoint refuses
+to start without a flock, without an ext4/xfs mount for every performance root,
+without a native-Linux attestation, or when evidence/metrics are not empty.
+The attestation is an operator statement, not a cryptographic proof:
+
+```json
+{
+  "schema": 1,
+  "native_linux": true,
+  "arch": "amd64",
+  "persistent_disk": true,
+  "exclusive_window": true,
+  "provisioner": "operator-controlled perf profile",
+  "device": "nvme0n1"
+}
+```
+
+`--dry-run` prints the planned argument vectors without validating mounts or
+executing anything; it exists for unit tests and operator previews.
+
+### Exit codes and status semantics
+
+- `0`: the requested mode was accepted. For `test`, every step passed. For
+  `quick`, the gate reported `PHASE_PASS` with all four sections `PASS`, no
+  waivers, no evidence errors, a native/G1/quick identity and two complete
+  runs. For `formal`, the gate reported `PASS`/exit 0 with `formal_pass: true`
+  and eighteen complete runs.
+- `1`: a test, campaign or gate result was rejected. Raw output is preserved.
+- `2`: preflight/input validation failed (`NOT_RUN`); nothing was measured.
+
+`quick` can only ever return `PHASE_PASS`, and the gate exits 1 for it. The
+entrypoint accepts that exit code only together with `formal_pass: false`,
+`phase_only: true`, four `PASS` sections and an empty waiver list. A plain
+`PASS`/0 is accepted only by `formal`. Do not use `|| true`, do not translate a
+gate failure into a formal performance pass, and do not add
+`--allow-missing-attribution` or `--allow-foreign-environment` to either mode.
+
+### Known blocker: frozen denominator metrics
+
+The frozen denominator `v1.1.11 /
+f3c75622924d84189fa74f3069c209761ceeec31` has no W1 exit-snapshot export, so
+its required metrics snapshot cannot be produced without changing the
+denominator. The gate therefore reports attribution as `NOT_RUN` (and the
+overall status as `NOT_RUN`) for evidence containing that arm. Strict quick and
+formal acceptance is blocked by that attribution gap, not by the container.
+The entrypoint reports the blocker and returns nonzero; it does not fabricate
+snapshots, relax the gate, or claim a performance PASS. Fixing this requires a
+separately authorized denominator/observability decision.
+
+### CI workflow
+
+`.github/workflows/issue8-perf.yml` is independent of the release gates:
+
+- `deterministic-container` runs on PRs, pushes to `main` and manual dispatch
+  on a GitHub-hosted runner. It builds the image without pushing, runs `test`,
+  and uploads only the sanitized reports. Fork PRs get no secrets and never run
+  on the persistent self-hosted runners.
+- `quick-native` and `formal-native` are manual-only and require the protected
+  `peri-perf-native` / `peri-perf-formal` environments and native runners with
+  persistent disks. They do not publish images. Formal uploads only reports,
+  evidence and metrics; store, cache, build logs and binaries stay on the
+  runner.
