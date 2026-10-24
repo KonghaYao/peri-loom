@@ -407,7 +407,6 @@ impl BranchStore {
     fn extend_pin(
         &self,
         root: &mut CatalogRoot,
-        view: &View,
         generation: u64,
         entries: BTreeMap<String, ObjectEntry>,
     ) -> Result<BTreeMap<String, ObjectEntry>> {
@@ -419,7 +418,11 @@ impl BranchStore {
         let mut added = BTreeMap::new();
         let mut seen = BTreeSet::new();
         for (key, entry) in entries {
-            if !view.pinned.contains(&entry.blob) && seen.insert(entry.blob.clone()) {
+            // A publication retires the previous generation in the same transaction that
+            // writes this one, so an entry skipped here would lose its durable pin even
+            // though the session still reads it. Every entry adopted into the new
+            // generation must be present in `pin_entries` under that generation.
+            if seen.insert(entry.blob.clone()) {
                 let pin_key = pin_entry_key(&self.pin, generation, &entry.blob);
                 if let Some(previous) = root.pin_entries.get(&pin_key)? {
                     ensure!(previous == entry, "reader pin entry identity mutation");
@@ -522,6 +525,28 @@ impl BranchStore {
             "wal/index" => view.wal.clone(),
             _ => view.objects.get(key).cloned(),
         }
+    }
+
+    /// Read a branch pointer this session has not observed yet. A missing HEAD or WAL index
+    /// is a cache entry, not a fact about the store: the first HEAD publication can land
+    /// between this session's open and its read, and the loser of that conditional put needs
+    /// to see the winner's pointer rather than its own stale "absent". Pointers are branch
+    /// references, so adopting the current one needs no pin extension; only content reads
+    /// below extend the pin.
+    fn reload_pointer(&self, view: &mut View, key: &str) -> Result<Option<ObjectEntry>> {
+        let snapshot = self.authority.snapshot()?;
+        let branch = self.bound(&snapshot.root)?;
+        match key {
+            "HEAD" => view.head = branch.head.clone(),
+            "wal/index" => {
+                if view.wal.as_ref() != branch.wal.as_ref() {
+                    view.validated_wal = None;
+                }
+                view.wal = branch.wal.clone();
+            }
+            _ => anyhow::bail!("pointer reload requested for {key}"),
+        }
+        Ok(self.get_entry(key, view))
     }
 
     fn condition(current: Option<&ObjectEntry>, condition: &PutCondition) -> Result<()> {
@@ -738,7 +763,7 @@ impl BranchStore {
                 for (_, prefix) in &retired {
                     root.pin_entries.remove_prefix(prefix)?;
                 }
-                added = self.extend_pin(root, &view, next, entries)?;
+                added = self.extend_pin(root, next, entries)?;
                 generation = Some(next);
                 selected = Some(Self::selected(root, &self.branch)?);
                 Ok(())
@@ -844,7 +869,6 @@ impl BranchStore {
                     }
                     added = self.extend_pin(
                         root,
-                        &view,
                         next,
                         BTreeMap::from([
                             (chunk_key.clone(), chunk.clone()),
@@ -878,7 +902,7 @@ impl BranchStore {
                     // the in-memory view has not yet adopted the successful publication.
                     entries.retain(|_, entry| !publication_blobs.contains(&entry.blob));
                     let next = self.advance_generation(root, &view)?;
-                    pinned_entries = self.extend_pin(root, &view, next, entries)?;
+                    pinned_entries = self.extend_pin(root, next, entries)?;
                     generation = Some(next);
                     pinned_selected = Some(current);
                     Ok(())
@@ -928,7 +952,7 @@ impl ObjectStore for BranchStore {
         let entry = if let Some(entry) = self.get_entry(relative, &view) {
             Some(entry)
         } else if matches!(relative, "HEAD" | "wal/index") {
-            None
+            self.reload_pointer(&mut view, relative)?
         } else {
             let snapshot = self.authority.snapshot()?;
             self.bound(&snapshot.root)?;
@@ -943,7 +967,7 @@ impl ObjectStore for BranchStore {
                     selected = root.objects.get(relative)?;
                     if let Some(entry) = &selected {
                         let entries = accessible(&self.authority, root, relative, entry)?;
-                        added = self.extend_pin(root, &view, view.generation, entries)?;
+                        added = self.extend_pin(root, view.generation, entries)?;
                     }
                     Ok(())
                 })?;
@@ -1041,7 +1065,7 @@ impl ObjectStore for BranchStore {
                 for (_, prefix) in &retired {
                     root.pin_entries.remove_prefix(prefix)?;
                 }
-                added = self.extend_pin(root, &view, next, entries)?;
+                added = self.extend_pin(root, next, entries)?;
                 generation = Some(next);
                 selected = Some(Self::selected(root, &self.branch)?);
                 Ok(())
@@ -1123,7 +1147,7 @@ impl ObjectStore for BranchStore {
                 for (_, prefix) in &retired {
                     root.pin_entries.remove_prefix(prefix)?;
                 }
-                added = self.extend_pin(root, &view, next, entries)?;
+                added = self.extend_pin(root, next, entries)?;
                 generation = Some(next);
                 selected = Some(Self::selected(root, &self.branch)?);
                 Ok(())
@@ -1236,7 +1260,7 @@ impl ObjectStore for BranchStore {
                             candidates.extend(accessible(&self.authority, root, key, entry)?);
                         }
                     }
-                    added = self.extend_pin(root, &view, view.generation, candidates)?;
+                    added = self.extend_pin(root, view.generation, candidates)?;
                     Ok(())
                 })?;
             view.admit_map(&added);

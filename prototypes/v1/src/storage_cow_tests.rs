@@ -1,4 +1,5 @@
 use super::*;
+use crate::authority::Authority;
 use crate::object_store::MemoryObjectStore;
 use crate::object_store::StoredObject;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,6 +10,31 @@ fn storage(directory: &std::path::Path) -> Result<Arc<RemoteStorage>> {
         Namespace::new("tenant", "database")?,
         Arc::new(SegmentCache::new(directory, SEGMENT_SIZE, 0)?),
     )
+}
+
+/// Two sessions opened while HEAD is absent model the startup race between two processes on
+/// the same brand-new namespace: the loser's conditional HEAD put fails, and its follow-up
+/// read must resolve the winner's pointer instead of repeating its own stale "absent".
+#[test]
+fn open_after_a_peer_published_head_is_not_a_precondition_failure() -> Result<()> {
+    let store = Arc::new(MemoryObjectStore::default());
+    let namespace = Namespace::new("tenant", "database")?;
+    let first_authority = Authority::open(store.clone(), namespace.clone())?;
+    let second_authority = Authority::open(store.clone(), namespace.clone())?;
+    let first = first_authority.branch_store("main")?;
+    let second = second_authority.branch_store("main")?;
+    let (first_cache, second_cache) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    RemoteStorage::open(
+        first,
+        namespace.clone(),
+        Arc::new(SegmentCache::new(first_cache.path(), SEGMENT_SIZE, 0)?),
+    )?;
+    RemoteStorage::open(
+        second,
+        namespace,
+        Arc::new(SegmentCache::new(second_cache.path(), SEGMENT_SIZE, 0)?),
+    )?;
+    Ok(())
 }
 
 #[test]
