@@ -477,6 +477,43 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.13
+
+A concurrent open of an empty store no longer fails with `object store
+precondition failed`. When a conditional publication loses the create race,
+the losing session reloads HEAD, WAL and index pointers from a fresh authority
+snapshot and adopts the published branch; previously it reused a negative
+pointer cached in its session view. Branch references cover the pointers, so
+the reload does not extend a pin.
+
+Durable pin coverage now matches the in-memory view across pin-generation
+retirement. `extend_pin` writes an entry for every dependency into the new
+generation; it no longer skips a blob merely because an older generation still
+listed it in memory. Retiring that older generation in the same transaction
+had removed its entries, which allowed GC to reclaim a manifest or segment a
+live session still referenced. The previously failing
+`old_pinned_view_survives_writes_until_final_adapter_arc_drop` passes.
+
+A maintenance pre-suspend unit now checks the caller's request deadline before
+entering the exclusive truncate phase. When the passive backfill has completed
+but the drain's tighter pre-suspend budget expired, the unit reports a
+completed over-budget backfill instead of failing the first admission check as
+`timeout_unconfirmed`. Both ownership drain pre-tidy cases pass.
+
+Verification: `ownership_drain_maintenance` 7/7, `authority` 13/13, `gc` 6/6,
+`gc_bounded` 2/2, `ownership_view` 7/7 and the library suite 560 passed with 0
+failed (8 ignored); fmt and clippy pass. This is a correctness release and
+makes no new performance claim: the frozen denominator remains v1.1.11 (it has
+no W1 exit snapshot, so strict attribution stays `NOT_RUN`), G1's p99 target
+is not met on the available macOS host, G2 has not produced a PASS, and no
+capacity or throughput result is claimed. The release-to-normal-restart path
+after an isolation release is still not covered end to end; dirty restart
+remains denied; disaster recovery, live external S3 and HA are not certified.
+The official JS SDK matrix still declares 27 scripts and default-executes 26
+per round for 2 rounds (52 runs, 2 E1 skips); E1 remains a known gap and this
+is not a full Hrana compatibility claim. This is a preview, not a production
+release.
+
 ## v1.1.12
 
 Local-mode redo and commit now publish through the branch's WAL append path
