@@ -14,6 +14,7 @@ use crate::{
     object_store::{ObjectStore, PreconditionFailed, PutCondition, StoredObject},
     ownership::types::MutationStage,
     recovery::{validate_index_append, validate_index_state, ValidatedWal},
+    work_metrics::PublishOrigin,
 };
 use anyhow::{ensure, Context, Result};
 use std::{
@@ -165,7 +166,7 @@ impl Authority {
         semantic::validate_name(branch)?;
         let pin = unique_id()?;
         let mut selected = None;
-        self.transact(None, |root| {
+        self.transact_with_origin(None, PublishOrigin::BranchOpen, |root| {
             let reference = root.branches.get(branch).context("branch missing")?;
             let incarnation = reference.incarnation;
             let head = reference.head.clone();
@@ -499,13 +500,14 @@ impl BranchStore {
         if retired.is_empty() {
             return Ok(());
         }
-        self.authority.transact(None, |root| {
-            ensure!(root.pins.contains_key(&self.pin), "reader pin disappeared");
-            for (_, prefix) in &retired {
-                root.pin_entries.remove_prefix(prefix)?;
-            }
-            Ok(())
-        })?;
+        self.authority
+            .transact_with_origin(None, PublishOrigin::PinRelease, |root| {
+                ensure!(root.pins.contains_key(&self.pin), "reader pin disappeared");
+                for (_, prefix) in &retired {
+                    root.pin_entries.remove_prefix(prefix)?;
+                }
+                Ok(())
+            })?;
         let generations: Vec<u64> = retired
             .into_iter()
             .map(|(generation, _)| generation)
@@ -707,38 +709,40 @@ impl BranchStore {
             .checked_add(1)
             .context("reader pin generation exhausted")?;
         let retired = view.retire_prefixes(&self.pin, next_generation);
-        self.authority.transact_with_bodies(&bodies, |root| {
-            self.bound(root)?;
-            let mut entries = BTreeMap::new();
-            for (relative, entry, _) in &pages {
-                ensure!(
-                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
-                    "physical instance collision"
-                );
-                if let Some(existing) = root.objects.get(relative)? {
-                    // A retry or another writer of the same branch may have published this
-                    // content already; the key is its content address.
+        self.authority
+            .transact_with_bodies(PublishOrigin::WalPages, &bodies, |root| {
+                self.bound(root)?;
+                let mut entries = BTreeMap::new();
+                for (relative, entry, _) in &pages {
                     ensure!(
-                        existing.hash == entry.hash,
-                        "immutable receipt page conflict"
+                        !root.blobs.contains(&entry.blob)?
+                            && !root.tombstones.contains(&entry.blob)?,
+                        "physical instance collision"
                     );
-                    entries.insert(relative.clone(), existing);
-                    continue;
+                    if let Some(existing) = root.objects.get(relative)? {
+                        // A retry or another writer of the same branch may have published this
+                        // content already; the key is its content address.
+                        ensure!(
+                            existing.hash == entry.hash,
+                            "immutable receipt page conflict"
+                        );
+                        entries.insert(relative.clone(), existing);
+                        continue;
+                    }
+                    root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                    root.uploads.insert(entry.blob.clone(), entry.clone())?;
+                    root.objects.insert(relative.clone(), entry.clone())?;
+                    entries.insert(relative.clone(), entry.clone());
                 }
-                root.blobs.insert(entry.blob.clone(), entry.clone())?;
-                root.uploads.insert(entry.blob.clone(), entry.clone())?;
-                root.objects.insert(relative.clone(), entry.clone())?;
-                entries.insert(relative.clone(), entry.clone());
-            }
-            let next = self.advance_generation(root, &view)?;
-            for (_, prefix) in &retired {
-                root.pin_entries.remove_prefix(prefix)?;
-            }
-            added = self.extend_pin(root, &view, next, entries)?;
-            generation = Some(next);
-            selected = Some(Self::selected(root, &self.branch)?);
-            Ok(())
-        })?;
+                let next = self.advance_generation(root, &view)?;
+                for (_, prefix) in &retired {
+                    root.pin_entries.remove_prefix(prefix)?;
+                }
+                added = self.extend_pin(root, &view, next, entries)?;
+                generation = Some(next);
+                selected = Some(Self::selected(root, &self.branch)?);
+                Ok(())
+            })?;
         self.refresh(
             &mut view,
             selected.context("branch page publication view missing")?,
@@ -804,48 +808,52 @@ impl BranchStore {
             .checked_add(1)
             .context("reader pin generation exhausted")?;
         let retired = view.retire_prefixes(&self.pin, next_generation);
-        let published = self.authority.transact_with_bodies(&bodies, |root| {
-            attempt += 1;
-            Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
-            self.validate_publication(root, "wal/index", &index_bytes)?;
-            ensure!(!root.objects.contains(&chunk_key)?, PreconditionFailed);
-            for entry in [&chunk, &index] {
-                ensure!(
-                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
-                    "physical instance collision"
-                );
-                // The reservation lives only inside this revision: `prepare_uploads`
-                // discharges it in the transaction that makes the instance reachable,
-                // so the durable head never carries an intent whose bytes already
-                // landed with it.
-                root.blobs.insert(entry.blob.clone(), entry.clone())?;
-                root.uploads.insert(entry.blob.clone(), entry.clone())?;
-            }
-            root.objects.insert(chunk_key.clone(), chunk.clone())?;
-            let previous = if attempt == 1 {
-                previous.take().and_then(|(entry, state)| {
-                    (self.bound(root).ok()?.wal.as_ref() == Some(&entry)).then_some(state)
-                })
-            } else {
-                None
-            };
-            validated = Some(self.commit_point(root, &index_bytes, &index, previous, &bodies)?);
-            let next = self.advance_generation(root, &view)?;
-            for (_, prefix) in &retired {
-                root.pin_entries.remove_prefix(prefix)?;
-            }
-            added = self.extend_pin(
-                root,
-                &view,
-                next,
-                BTreeMap::from([
-                    (chunk_key.clone(), chunk.clone()),
-                    ("wal/index".into(), index.clone()),
-                ]),
-            )?;
-            generation = Some(next);
-            Ok(())
-        })?;
+        let published =
+            self.authority
+                .transact_with_bodies(PublishOrigin::Append, &bodies, |root| {
+                    attempt += 1;
+                    Self::condition(self.bound(root)?.wal.as_ref(), &condition)?;
+                    self.validate_publication(root, "wal/index", &index_bytes)?;
+                    ensure!(!root.objects.contains(&chunk_key)?, PreconditionFailed);
+                    for entry in [&chunk, &index] {
+                        ensure!(
+                            !root.blobs.contains(&entry.blob)?
+                                && !root.tombstones.contains(&entry.blob)?,
+                            "physical instance collision"
+                        );
+                        // The reservation lives only inside this revision: `prepare_uploads`
+                        // discharges it in the transaction that makes the instance reachable,
+                        // so the durable head never carries an intent whose bytes already
+                        // landed with it.
+                        root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                        root.uploads.insert(entry.blob.clone(), entry.clone())?;
+                    }
+                    root.objects.insert(chunk_key.clone(), chunk.clone())?;
+                    let previous = if attempt == 1 {
+                        previous.take().and_then(|(entry, state)| {
+                            (self.bound(root).ok()?.wal.as_ref() == Some(&entry)).then_some(state)
+                        })
+                    } else {
+                        None
+                    };
+                    validated =
+                        Some(self.commit_point(root, &index_bytes, &index, previous, &bodies)?);
+                    let next = self.advance_generation(root, &view)?;
+                    for (_, prefix) in &retired {
+                        root.pin_entries.remove_prefix(prefix)?;
+                    }
+                    added = self.extend_pin(
+                        root,
+                        &view,
+                        next,
+                        BTreeMap::from([
+                            (chunk_key.clone(), chunk.clone()),
+                            ("wal/index".into(), index.clone()),
+                        ]),
+                    )?;
+                    generation = Some(next);
+                    Ok(())
+                })?;
         let mut selected = Self::selected(&published.root, &self.branch)?;
         if selected.head != view.head || selected.wal.as_ref() != Some(&index) {
             // A lost acknowledgement can resolve to another writer's later point. Our
@@ -856,24 +864,25 @@ impl BranchStore {
                 added.values().map(|entry| entry.blob.clone()).collect();
             let mut pinned_selected = None;
             let mut pinned_entries = BTreeMap::new();
-            self.authority.transact(None, |root| {
-                self.bound(root)?;
-                let current = Self::selected(root, &self.branch)?;
-                let mut entries = referenced(
-                    &self.authority,
-                    root,
-                    current.head.as_ref(),
-                    current.wal.as_ref(),
-                )?;
-                // These entries are already durable in this session's pin, even though
-                // the in-memory view has not yet adopted the successful publication.
-                entries.retain(|_, entry| !publication_blobs.contains(&entry.blob));
-                let next = self.advance_generation(root, &view)?;
-                pinned_entries = self.extend_pin(root, &view, next, entries)?;
-                generation = Some(next);
-                pinned_selected = Some(current);
-                Ok(())
-            })?;
+            self.authority
+                .transact_with_origin(None, PublishOrigin::PinExtend, |root| {
+                    self.bound(root)?;
+                    let current = Self::selected(root, &self.branch)?;
+                    let mut entries = referenced(
+                        &self.authority,
+                        root,
+                        current.head.as_ref(),
+                        current.wal.as_ref(),
+                    )?;
+                    // These entries are already durable in this session's pin, even though
+                    // the in-memory view has not yet adopted the successful publication.
+                    entries.retain(|_, entry| !publication_blobs.contains(&entry.blob));
+                    let next = self.advance_generation(root, &view)?;
+                    pinned_entries = self.extend_pin(root, &view, next, entries)?;
+                    generation = Some(next);
+                    pinned_selected = Some(current);
+                    Ok(())
+                })?;
             selected = pinned_selected.context("branch refresh pin missing")?;
             added.extend(pinned_entries);
         }
@@ -928,15 +937,16 @@ impl ObjectStore for BranchStore {
             }
             let mut selected = None;
             let mut added = BTreeMap::new();
-            self.authority.transact(None, |root| {
-                self.bound(root)?;
-                selected = root.objects.get(relative)?;
-                if let Some(entry) = &selected {
-                    let entries = accessible(&self.authority, root, relative, entry)?;
-                    added = self.extend_pin(root, &view, view.generation, entries)?;
-                }
-                Ok(())
-            })?;
+            self.authority
+                .transact_with_origin(None, PublishOrigin::PinExtend, |root| {
+                    self.bound(root)?;
+                    selected = root.objects.get(relative)?;
+                    if let Some(entry) = &selected {
+                        let entries = accessible(&self.authority, root, relative, entry)?;
+                        added = self.extend_pin(root, &view, view.generation, entries)?;
+                    }
+                    Ok(())
+                })?;
             view.admit_map(&added);
             view.objects.extend(added);
             selected
@@ -986,43 +996,44 @@ impl ObjectStore for BranchStore {
             .checked_add(1)
             .context("reader pin generation exhausted")?;
         let retired = view.retire_prefixes(&self.pin, next_generation);
-        self.authority.transact(None, |root| {
-            let branch = self.bound(root)?;
-            let owned;
-            let current = match relative {
-                "HEAD" => branch.head.as_ref(),
-                "wal/index" => branch.wal.as_ref(),
-                _ => {
-                    owned = root.objects.get(relative)?;
-                    owned.as_ref()
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Put, |root| {
+                let branch = self.bound(root)?;
+                let owned;
+                let current = match relative {
+                    "HEAD" => branch.head.as_ref(),
+                    "wal/index" => branch.wal.as_ref(),
+                    _ => {
+                        owned = root.objects.get(relative)?;
+                        owned.as_ref()
+                    }
+                };
+                Self::condition(current, &condition)?;
+                self.validate_publication(root, relative, bytes)?;
+                match relative {
+                    "HEAD" => {
+                        root.branches
+                            .get_mut(&self.branch)
+                            .context("branch missing")?
+                            .head = Some(entry.clone())
+                    }
+                    "wal/index" => {
+                        self.commit_point(root, bytes, &entry, None, &[])?;
+                    }
+                    _ => {
+                        root.objects.insert(relative.to_owned(), entry.clone())?;
+                    }
                 }
-            };
-            Self::condition(current, &condition)?;
-            self.validate_publication(root, relative, bytes)?;
-            match relative {
-                "HEAD" => {
-                    root.branches
-                        .get_mut(&self.branch)
-                        .context("branch missing")?
-                        .head = Some(entry.clone())
+                let entries = accessible(&self.authority, root, relative, &entry)?;
+                let next = self.advance_generation(root, &view)?;
+                for (_, prefix) in &retired {
+                    root.pin_entries.remove_prefix(prefix)?;
                 }
-                "wal/index" => {
-                    self.commit_point(root, bytes, &entry, None, &[])?;
-                }
-                _ => {
-                    root.objects.insert(relative.to_owned(), entry.clone())?;
-                }
-            }
-            let entries = accessible(&self.authority, root, relative, &entry)?;
-            let next = self.advance_generation(root, &view)?;
-            for (_, prefix) in &retired {
-                root.pin_entries.remove_prefix(prefix)?;
-            }
-            added = self.extend_pin(root, &view, next, entries)?;
-            generation = Some(next);
-            selected = Some(Self::selected(root, &self.branch)?);
-            Ok(())
-        })?;
+                added = self.extend_pin(root, &view, next, entries)?;
+                generation = Some(next);
+                selected = Some(Self::selected(root, &self.branch)?);
+                Ok(())
+            })?;
         self.refresh(
             &mut view,
             selected.context("branch publication view missing")?,
@@ -1078,31 +1089,33 @@ impl ObjectStore for BranchStore {
             .checked_add(1)
             .context("reader pin generation exhausted")?;
         let retired = view.retire_prefixes(&self.pin, next_generation);
-        self.authority.transact_with_bodies(&bodies, |root| {
-            self.bound(root)?;
-            let mut entries = BTreeMap::new();
-            for (relative, entry, write) in &staged {
-                let current = root.objects.get(relative)?;
-                Self::condition(current.as_ref(), &write.condition)?;
-                self.validate_publication(root, relative, &write.bytes)?;
-                ensure!(
-                    !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
-                    "physical instance collision"
-                );
-                root.blobs.insert(entry.blob.clone(), entry.clone())?;
-                root.uploads.insert(entry.blob.clone(), entry.clone())?;
-                root.objects.insert(relative.clone(), entry.clone())?;
-                entries.insert(relative.clone(), entry.clone());
-            }
-            let next = self.advance_generation(root, &view)?;
-            for (_, prefix) in &retired {
-                root.pin_entries.remove_prefix(prefix)?;
-            }
-            added = self.extend_pin(root, &view, next, entries)?;
-            generation = Some(next);
-            selected = Some(Self::selected(root, &self.branch)?);
-            Ok(())
-        })?;
+        self.authority
+            .transact_with_bodies(PublishOrigin::PutGroup, &bodies, |root| {
+                self.bound(root)?;
+                let mut entries = BTreeMap::new();
+                for (relative, entry, write) in &staged {
+                    let current = root.objects.get(relative)?;
+                    Self::condition(current.as_ref(), &write.condition)?;
+                    self.validate_publication(root, relative, &write.bytes)?;
+                    ensure!(
+                        !root.blobs.contains(&entry.blob)?
+                            && !root.tombstones.contains(&entry.blob)?,
+                        "physical instance collision"
+                    );
+                    root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                    root.uploads.insert(entry.blob.clone(), entry.clone())?;
+                    root.objects.insert(relative.clone(), entry.clone())?;
+                    entries.insert(relative.clone(), entry.clone());
+                }
+                let next = self.advance_generation(root, &view)?;
+                for (_, prefix) in &retired {
+                    root.pin_entries.remove_prefix(prefix)?;
+                }
+                added = self.extend_pin(root, &view, next, entries)?;
+                generation = Some(next);
+                selected = Some(Self::selected(root, &self.branch)?);
+                Ok(())
+            })?;
         self.refresh(
             &mut view,
             selected.context("branch group publication view missing")?,
@@ -1126,44 +1139,45 @@ impl ObjectStore for BranchStore {
             .checked_add(1)
             .context("reader pin generation exhausted")?;
         let retired = view.retire_prefixes(&self.pin, next_generation);
-        self.authority.transact(None, |root| {
-            let branch = self.bound(root)?;
-            let owned;
-            let current = match relative {
-                "HEAD" => branch.head.as_ref(),
-                "wal/index" => branch.wal.as_ref(),
-                _ => {
-                    owned = root.objects.get(relative)?;
-                    owned.as_ref()
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Delete, |root| {
+                let branch = self.bound(root)?;
+                let owned;
+                let current = match relative {
+                    "HEAD" => branch.head.as_ref(),
+                    "wal/index" => branch.wal.as_ref(),
+                    _ => {
+                        owned = root.objects.get(relative)?;
+                        owned.as_ref()
+                    }
+                };
+                if let (Some(expected), Some(current)) = (expected, current) {
+                    ensure!(current.etag == expected, PreconditionFailed);
                 }
-            };
-            if let (Some(expected), Some(current)) = (expected, current) {
-                ensure!(current.etag == expected, PreconditionFailed);
-            }
-            match relative {
-                "HEAD" => {
-                    root.branches
-                        .get_mut(&self.branch)
-                        .context("branch missing")?
-                        .head = None
+                match relative {
+                    "HEAD" => {
+                        root.branches
+                            .get_mut(&self.branch)
+                            .context("branch missing")?
+                            .head = None
+                    }
+                    "wal/index" => {
+                        root.branches
+                            .get_mut(&self.branch)
+                            .context("branch missing")?
+                            .wal = None
+                    }
+                    _ => {
+                        root.objects.remove(relative)?;
+                    }
                 }
-                "wal/index" => {
-                    root.branches
-                        .get_mut(&self.branch)
-                        .context("branch missing")?
-                        .wal = None
+                generation = Some(self.advance_generation(root, &view)?);
+                for (_, prefix) in &retired {
+                    root.pin_entries.remove_prefix(prefix)?;
                 }
-                _ => {
-                    root.objects.remove(relative)?;
-                }
-            }
-            generation = Some(self.advance_generation(root, &view)?);
-            for (_, prefix) in &retired {
-                root.pin_entries.remove_prefix(prefix)?;
-            }
-            selected = Some(Self::selected(root, &self.branch)?);
-            Ok(())
-        })?;
+                selected = Some(Self::selected(root, &self.branch)?);
+                Ok(())
+            })?;
         self.refresh(
             &mut view,
             selected.context("branch deletion view missing")?,
@@ -1196,22 +1210,23 @@ impl ObjectStore for BranchStore {
             .any(|key| key.starts_with(relative) && !view.objects.contains_key(key))
         {
             let mut added = BTreeMap::new();
-            self.authority.transact(None, |root| {
-                self.bound(root)?;
-                let mut candidates = BTreeMap::new();
-                for (key, entry) in root
-                    .objects
-                    .entries()?
-                    .iter()
-                    .filter(|(key, _)| key.starts_with(relative))
-                {
-                    if !view.objects.contains_key(key) {
-                        candidates.extend(accessible(&self.authority, root, key, entry)?);
+            self.authority
+                .transact_with_origin(None, PublishOrigin::List, |root| {
+                    self.bound(root)?;
+                    let mut candidates = BTreeMap::new();
+                    for (key, entry) in root
+                        .objects
+                        .entries()?
+                        .iter()
+                        .filter(|(key, _)| key.starts_with(relative))
+                    {
+                        if !view.objects.contains_key(key) {
+                            candidates.extend(accessible(&self.authority, root, key, entry)?);
+                        }
                     }
-                }
-                added = self.extend_pin(root, &view, view.generation, candidates)?;
-                Ok(())
-            })?;
+                    added = self.extend_pin(root, &view, view.generation, candidates)?;
+                    Ok(())
+                })?;
             view.admit_map(&added);
             view.objects.extend(added);
         }
@@ -1260,7 +1275,7 @@ pub(super) fn release_pin_identity(authority: &Authority, pin: &str) -> Result<P
     if !snapshot.root.pins.contains_key(pin) {
         return Ok(stats);
     }
-    authority.transact(None, |root| {
+    authority.transact_with_origin(None, PublishOrigin::PinRelease, |root| {
         if !root.pins.contains_key(pin) {
             return Ok(());
         }
@@ -1296,7 +1311,7 @@ pub(super) fn release_pin_identity(authority: &Authority, pin: &str) -> Result<P
     for generation in generations {
         let prefix = format!("{pin}/{generation}/");
         let mut removed = None;
-        authority.transact(None, |root| {
+        authority.transact_with_origin(None, PublishOrigin::PinRelease, |root| {
             if !root.pins.contains_key(pin) {
                 return Ok(());
             }
@@ -1319,7 +1334,7 @@ pub(super) fn release_pin_identity(authority: &Authority, pin: &str) -> Result<P
             stats.batches = stats.batches.saturating_add(1);
         }
     }
-    authority.transact(None, |root| {
+    authority.transact_with_origin(None, PublishOrigin::PinRelease, |root| {
         if !root.pins.contains_key(pin) {
             return Ok(());
         }

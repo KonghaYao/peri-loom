@@ -218,6 +218,31 @@ class RunnerHelperTests(unittest.TestCase):
             with self.assertRaises(perf_contract.UnsafePath):
                 issue8_runner.prepare_metrics_outputs(base, 2)
 
+    def test_metrics_snapshot_with_group_aggregation_is_accepted(self):
+        document = fixtures.metrics_document(writes=7)
+        document["group_phases"] = {
+            "available": True,
+            "calls": 8,
+            "writes": {"1": 7, "2_4": 1, "5_16": 0, "17_plus": 0},
+            "class": {"wal": 1, "receipt": 0, "authority": 7, "other": 0},
+            "barrier_ns": 1,
+            "body_fsync_ns": 1,
+            "dir_flush_ns": 1,
+            "total_ns": 3,
+            "total_max_ns": 2,
+        }
+        document["counters"].extend([
+            {"name": "work.metadata.publish_origin.append.calls", "value": 7},
+            {"name": "work.metadata.publish_origin.pin_extend.calls", "value": 1},
+            {"name": "work.metadata.publish_outside_transact.migration.calls", "value": 0},
+            {"name": "work.group.calls", "value": 8},
+            {"name": "work.group.writes.5_16", "value": 0},
+        ])
+        reasons, counters = gate._validate_metrics_document(document)
+        self.assertEqual(reasons, [])
+        self.assertEqual(counters["work.group.calls"], 8)
+        self.assertEqual(counters["work.metadata.publish_origin.append.calls"], 7)
+
     def test_execute_run_produces_gate_passing_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

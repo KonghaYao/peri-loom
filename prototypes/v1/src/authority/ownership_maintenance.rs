@@ -7,6 +7,7 @@ use crate::{
     object_store::PreconditionFailed,
     ownership::types::validate_label,
     runtime::DatabaseId,
+    work_metrics::PublishOrigin,
 };
 use anyhow::{anyhow, ensure, Context, Result};
 use serde_json::{json, Value};
@@ -80,7 +81,7 @@ pub(super) fn run(
             crate::work_metrics::observe_gc_wait(waiting.elapsed());
             service.available()?;
             let exclusive = Instant::now();
-            let outcome = match authority.delete_tombstones(targets, revision) {
+            let outcome = match authority.delete_tombstones(targets, revision, PublishOrigin::Gc) {
                 Ok(outcome) => GcDelete::Complete(outcome),
                 Err(error) if error.is::<PreconditionFailed>() => GcDelete::Stale,
                 Err(error) => {
@@ -129,7 +130,7 @@ pub(super) fn run(
         }
         _ => {
             let mut result = None;
-            scoped.transact(None, |root| {
+            scoped.transact_with_origin(None, PublishOrigin::Lease, |root| {
                 let outcome = apply(scoped.as_ref(), root, &identifier.branch, &operation)?;
                 commands::insert_receipt(&service.authority, root, request_id, &payload, &outcome)?;
                 result = Some(outcome);

@@ -3,7 +3,7 @@ use crate::authority::{
 };
 use crate::object_store::PreconditionFailed;
 use crate::ownership::types::CommandReceipt;
-use crate::work_metrics;
+use crate::work_metrics::{self, PublishOrigin};
 use anyhow::{ensure, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -757,23 +757,24 @@ impl GarbageCollector {
         receipt: Option<(&str, &str, &Value)>,
     ) -> Result<()> {
         let marked_ms = now_ms()?;
-        self.authority.transact(Some(revision), |root| {
-            for (blob, entry) in &plan.candidates {
-                root.tombstones.insert(
-                    blob.clone(),
-                    Tombstone {
-                        entry: entry.clone(),
-                        marked_ms,
-                        deleted: false,
-                    },
-                )?;
-            }
-            root.gc = Some(cursor.clone());
-            if let Some((request_id, digest, result)) = receipt {
-                put_receipt(root, request_id, digest, result)?;
-            }
-            Ok(())
-        })?;
+        self.authority
+            .transact_with_origin(Some(revision), PublishOrigin::Gc, |root| {
+                for (blob, entry) in &plan.candidates {
+                    root.tombstones.insert(
+                        blob.clone(),
+                        Tombstone {
+                            entry: entry.clone(),
+                            marked_ms,
+                            deleted: false,
+                        },
+                    )?;
+                }
+                root.gc = Some(cursor.clone());
+                if let Some((request_id, digest, result)) = receipt {
+                    put_receipt(root, request_id, digest, result)?;
+                }
+                Ok(())
+            })?;
         Ok(())
     }
 
@@ -784,16 +785,17 @@ impl GarbageCollector {
         cursor: &GcCursor,
         receipt: Option<(&str, &str, &Value)>,
     ) -> Result<()> {
-        self.authority.transact(Some(revision), |root| {
-            for key in &plan.removals {
-                root.objects.remove(key)?;
-            }
-            root.gc = Some(cursor.clone());
-            if let Some((request_id, digest, result)) = receipt {
-                put_receipt(root, request_id, digest, result)?;
-            }
-            Ok(())
-        })?;
+        self.authority
+            .transact_with_origin(Some(revision), PublishOrigin::Gc, |root| {
+                for key in &plan.removals {
+                    root.objects.remove(key)?;
+                }
+                root.gc = Some(cursor.clone());
+                if let Some((request_id, digest, result)) = receipt {
+                    put_receipt(root, request_id, digest, result)?;
+                }
+                Ok(())
+            })?;
         Ok(())
     }
 
@@ -803,13 +805,14 @@ impl GarbageCollector {
         cursor: &GcCursor,
         receipt: Option<(&str, &str, &Value)>,
     ) -> Result<()> {
-        self.authority.transact(Some(revision), |root| {
-            root.gc = Some(cursor.clone());
-            if let Some((request_id, digest, result)) = receipt {
-                put_receipt(root, request_id, digest, result)?;
-            }
-            Ok(())
-        })?;
+        self.authority
+            .transact_with_origin(Some(revision), PublishOrigin::Gc, |root| {
+                root.gc = Some(cursor.clone());
+                if let Some((request_id, digest, result)) = receipt {
+                    put_receipt(root, request_id, digest, result)?;
+                }
+                Ok(())
+            })?;
         Ok(())
     }
 }
@@ -852,7 +855,7 @@ fn direct_delete(
     targets: &[(String, Tombstone)],
     revision: u64,
 ) -> Result<GcDelete> {
-    match authority.delete_tombstones(targets, revision) {
+    match authority.delete_tombstones(targets, revision, PublishOrigin::Gc) {
         Ok(outcome) => Ok(GcDelete::Complete(outcome)),
         Err(error) if error.is::<PreconditionFailed>() => Ok(GcDelete::Stale),
         Err(error) => {

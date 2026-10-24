@@ -27,7 +27,9 @@ pub use types::{
 };
 
 use crate::ownership::types::{CommandReceipt, MutationGuard, MutationStage};
-use crate::work_metrics::{PublishStage, PublishTimer, SnapshotStage, SnapshotTimer};
+use crate::work_metrics::{
+    PublishOrigin, PublishStage, PublishTimer, SnapshotStage, SnapshotTimer,
+};
 use crate::{
     namespace::Namespace,
     object_store::{ObjectStore, PreconditionFailed, PutCondition},
@@ -691,7 +693,21 @@ impl Authority {
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
-        self.transact_inner(expected_revision, mutation, &BTreeSet::new(), &[])
+        self.transact_with_origin(expected_revision, PublishOrigin::Other, mutation)
+    }
+
+    /// Publish with an explicit attribution for the origin counters. The mutation runs
+    /// identically to [`Self::transact`]; only the counter charged at the head CAS differs.
+    pub(crate) fn transact_with_origin<F>(
+        &self,
+        expected_revision: Option<u64>,
+        origin: PublishOrigin,
+        mutation: F,
+    ) -> Result<RootSnapshot>
+    where
+        F: FnMut(&mut CatalogRoot) -> Result<()>,
+    {
+        self.transact_inner(expected_revision, origin, mutation, &BTreeSet::new(), &[])
     }
 
     /// Publish a mutation whose group also carries new physical instances. The bodies
@@ -699,18 +715,20 @@ impl Authority {
     /// sees the bytes; see `PublicationBody` for why no intent precedes them.
     pub(super) fn transact_with_bodies<F>(
         &self,
+        origin: PublishOrigin,
         bodies: &[PublicationBody<'_>],
         mutation: F,
     ) -> Result<RootSnapshot>
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
-        self.transact_inner(None, mutation, &BTreeSet::new(), bodies)
+        self.transact_inner(None, origin, mutation, &BTreeSet::new(), bodies)
     }
 
     fn transact_inner<F>(
         &self,
         expected_revision: Option<u64>,
+        origin: PublishOrigin,
         mut mutation: F,
         deletions: &BTreeSet<String>,
         bodies: &[PublicationBody<'_>],
@@ -771,6 +789,7 @@ impl Authority {
             candidate.seal()?;
             publish.stage(PublishStage::Encode);
             let (encoded, digest) = encode_with_digest(&candidate)?;
+            crate::work_metrics::observe_publish_origin(origin);
             crate::work_metrics::observe_root_publish(
                 encoded.len(),
                 candidate.pin_entries.window_len(),
@@ -876,7 +895,7 @@ impl Authority {
     pub fn upload(&self, bytes: &[u8]) -> Result<ObjectEntry> {
         self.check(MutationStage::Upload)?;
         let entry = Self::upload_entry(bytes)?;
-        self.transact(None, |root| {
+        self.transact_with_origin(None, PublishOrigin::Put, |root| {
             ensure!(
                 !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
                 "physical instance collision"
@@ -904,7 +923,7 @@ impl Authority {
                 Self::upload_entry(segment)
             })
             .collect::<Result<Vec<_>>>()?;
-        self.transact(None, |root| {
+        self.transact_with_origin(None, PublishOrigin::Put, |root| {
             for entry in &entries {
                 ensure!(
                     !root.blobs.contains(&entry.blob)? && !root.tombstones.contains(&entry.blob)?,
@@ -933,7 +952,7 @@ impl Authority {
                 "invalid staged segment size"
             );
         }
-        self.transact(None, |root| {
+        self.transact_with_origin(None, PublishOrigin::Put, |root| {
             for entry in entries {
                 semantic::registered(root, entry)?;
                 let key = format!("segments/{}", entry.hash);
@@ -1117,7 +1136,7 @@ impl Authority {
         let mut registry =
             registry::Registry::inline_with_order(entries, paged_index::KeyOrder::Bucketed);
         registry.attach(self.store.clone(), self.namespace.clone());
-        self.transact(None, |root| {
+        self.transact_with_origin(None, PublishOrigin::PinUpgrade, |root| {
             ensure!(
                 root.pin_schema != Some(types::PIN_SCHEMA_VERSION),
                 "reader pin layout already upgraded"
@@ -1145,7 +1164,11 @@ impl Authority {
             .tombstones
             .get(blob)?
             .context("physical deletion requires persisted tombstone")?;
-        self.delete_tombstones(&[(blob.to_owned(), tombstone)], snapshot.root.revision)?;
+        self.delete_tombstones(
+            &[(blob.to_owned(), tombstone)],
+            snapshot.root.revision,
+            PublishOrigin::Gc,
+        )?;
         Ok(())
     }
 
@@ -1161,6 +1184,7 @@ impl Authority {
         &self,
         targets: &[(String, Tombstone)],
         expected_revision: u64,
+        origin: PublishOrigin,
     ) -> Result<TombstoneDeletion> {
         self.check(MutationStage::Delete)?;
         if targets.is_empty() {
@@ -1222,6 +1246,7 @@ impl Authority {
         let deletions: BTreeSet<String> = pending.iter().map(|(blob, _, _)| blob.clone()).collect();
         self.transact_inner(
             Some(expected_revision),
+            origin,
             |root| {
                 for (blob, expected, _) in &pending {
                     root.tombstones.update(blob, |tombstone| {

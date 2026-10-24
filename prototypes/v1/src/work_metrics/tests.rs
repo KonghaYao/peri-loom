@@ -138,6 +138,7 @@ fn armed_snapshot_timer_records_each_stage_and_the_read_total() {
 fn enabled_sinks_move_the_snapshot() {
     set_enabled(true);
     let before = snapshot().expect("enabled snapshot");
+    observe_publish_origin(PublishOrigin::Other);
     observe_root_publish(128, 3, 7);
     observe_root_publish_retry();
     observe_root_encoding(
@@ -177,6 +178,93 @@ fn enabled_sinks_move_the_snapshot() {
     assert!(after.metadata.max_inline_snapshots >= 2);
     assert!(after.metadata.max_inline_pin_identities >= 3);
     assert!(after.metadata.max_branch_history_points >= 11);
+}
+
+#[test]
+fn publish_origin_sums_exactly_to_publish_attempts() {
+    set_enabled(true);
+    for origin in [PublishOrigin::Append, PublishOrigin::PinExtend] {
+        observe_publish_origin(origin);
+        observe_root_publish(1, 0, 0);
+    }
+    observe_publish_outside_transact(OutsideTransactKind::Migration);
+
+    let after = snapshot().expect("enabled snapshot");
+    let origin = |name: &str| after.metadata.publish_origin[name].calls;
+    assert!(origin("append") >= 1);
+    assert!(origin("pin_extend") >= 1);
+    assert!(
+        after.metadata.publish_outside_transact["migration"].calls >= 1,
+        "outside-transaction publications must be attributed"
+    );
+    let attributed: u64 = after
+        .metadata
+        .publish_origin
+        .values()
+        .map(|count| count.calls)
+        .sum();
+    assert_eq!(
+        attributed, after.metadata.root_publish_attempts,
+        "every attempt must charge exactly one origin"
+    );
+    assert_eq!(
+        after.metadata.publish_origin.len(),
+        PublishOrigin::ALL.len()
+    );
+    assert_eq!(
+        after.metadata.publish_outside_transact.len(),
+        OutsideTransactKind::ALL.len()
+    );
+}
+
+#[test]
+fn group_sink_records_write_buckets_classes_and_timings() {
+    set_enabled(true);
+    let before = snapshot().expect("enabled snapshot");
+    for (writes, class) in [
+        (1, GroupClass::Authority),
+        (2, GroupClass::Wal),
+        (4, GroupClass::Receipt),
+        (5, GroupClass::Wal),
+        (16, GroupClass::Authority),
+        (17, GroupClass::Other),
+    ] {
+        observe_group(
+            writes,
+            class,
+            GroupTimings {
+                barrier_ns: 10,
+                body_fsync_ns: 20,
+                dir_flush_ns: 30,
+                total_ns: 40,
+            },
+        );
+    }
+    let after = snapshot().expect("enabled snapshot");
+    let bucket = |name: &str| match name {
+        "1" => after.group.writes.one,
+        "2_4" => after.group.writes.two_to_four,
+        "5_16" => after.group.writes.five_to_sixteen,
+        _ => after.group.writes.seventeen_plus,
+    };
+    assert!(after.group.calls - before.group.calls >= 6);
+    assert!(bucket("1") >= 1);
+    assert!(bucket("2_4") >= 2);
+    assert!(bucket("5_16") >= 2);
+    assert!(bucket("17_plus") >= 1);
+    for class in GroupClass::ALL {
+        assert!(
+            after.group.class[class.name()] >= 1,
+            "group class {} was not charged",
+            class.name()
+        );
+    }
+    assert!(after.group.barrier_ns - before.group.barrier_ns >= 60);
+    assert!(after.group.body_fsync_ns - before.group.body_fsync_ns >= 120);
+    assert!(after.group.dir_flush_ns - before.group.dir_flush_ns >= 180);
+    assert!(after.group.total_ns - before.group.total_ns >= 240);
+    assert!(after.group.total_max_ns >= 40);
+    assert!(group_phase_snapshot().is_some());
 }
 
 #[test]
@@ -287,7 +375,28 @@ fn exit_snapshot_is_written_atomically_with_the_expected_schema() {
     );
     assert!(value["process"]["version"].is_string());
     assert_eq!(value["work_metrics_enabled"], serde_json::json!(true));
-    assert_eq!(value["group_phases"]["available"], serde_json::json!(false));
+    assert_eq!(value["group_phases"]["available"], serde_json::json!(true));
+    for field in [
+        "calls",
+        "writes",
+        "class",
+        "barrier_ns",
+        "body_fsync_ns",
+        "dir_flush_ns",
+        "total_ns",
+        "total_max_ns",
+    ] {
+        assert!(
+            value["group_phases"].get(field).is_some(),
+            "missing group_phases.{field}"
+        );
+    }
+    for bucket in ["1", "2_4", "5_16", "17_plus"] {
+        assert!(
+            value["group_phases"]["writes"].get(bucket).is_some(),
+            "missing group_phases.writes.{bucket}"
+        );
+    }
 
     let phases = value["phases"].as_array().expect("phases array");
     assert_eq!(phases.len(), PublishStage::ALL.len());
@@ -386,6 +495,16 @@ fn exit_snapshot_counter_names_are_stable() {
         "work.wal_workload.append_position.not_covered",
         "work.metadata.root_publish_attempts",
         "work.metadata.root_publish_retries",
+        "work.metadata.publish_origin.append.calls",
+        "work.metadata.publish_origin.pin_extend.calls",
+        "work.metadata.publish_outside_transact.migration.calls",
+        "work.metadata.publish_outside_transact.other.calls",
+        "work.group.calls",
+        "work.group.writes.5_16",
+        "work.group.class.wal",
+        "work.group.barrier_ns",
+        "work.group.body_fsync_ns",
+        "work.group.total_max_ns",
         "work.metadata.publish_stage_calls.snapshot",
         "work.metadata.publish_stage_calls.group",
         "work.metadata.publish_stage_max_ns.recover",

@@ -51,8 +51,10 @@ requires the documented schema: `schema_version == 1`,
 `PublishStage` phases with non-negative `count/total_ns/max_ns`, and a non-empty
 `counters` list containing `work.wal_workload.append_calls`,
 `work.metadata.root_publish_attempts`, `object_store.put.total` and
-`object_store.wal_durability.total`. `group_phases.available == false` is the
-documented state and is accepted; no aggregate is required. A snapshot whose
+`object_store.wal_durability.total`. `group_phases.available` may be either
+boolean: `true` carries the local group aggregate documented in
+`prototypes/v1/docs/metrics-exit-snapshot.md`, `false` is accepted without an
+aggregate. A snapshot whose
 WAL append count is below the run's timed write ACKs is rejected. Missing,
 unparseable or structurally invalid snapshots make attribution `NOT_RUN`, which
 keeps the overall exit code nonzero.

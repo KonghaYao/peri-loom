@@ -73,17 +73,18 @@ fn stage_worker_count(writes: usize) -> usize {
 }
 
 /// Only the first relative component is inspected; the key itself is never emitted.
-fn group_class(writes: &[super::GroupWrite]) -> &'static str {
+fn group_class(writes: &[super::GroupWrite]) -> crate::work_metrics::GroupClass {
+    use crate::work_metrics::GroupClass;
     let key = writes.first().map_or("", |write| write.key.as_str());
     let relative = key.splitn(3, '/').nth(2).unwrap_or(key);
     if relative.starts_with("wal/receipt") || relative.starts_with("receipt") {
-        "receipt"
+        GroupClass::Receipt
     } else if relative == "wal" || relative.starts_with("wal/") {
-        "wal"
+        GroupClass::Wal
     } else if relative == "authority" || relative.starts_with("authority/") {
-        "authority"
+        GroupClass::Authority
     } else {
-        "other"
+        GroupClass::Other
     }
 }
 
@@ -93,10 +94,15 @@ fn elapsed_ns(started: Option<Instant>) -> u64 {
 
 #[derive(Default)]
 struct GroupPhase {
-    enabled: bool,
+    /// Timing is armed by either switch: the work counters need the same stage clocks the
+    /// stderr diagnostic already takes.
+    timed: bool,
+    /// The stderr line stays owned by `PERI_DIAG_GROUP_PHASE=1`; work metrics aggregate
+    /// silently into the exit snapshot.
+    stderr: bool,
     writes: usize,
     bytes: usize,
-    class: &'static str,
+    class: crate::work_metrics::GroupClass,
     unique: u64,
     reused: u64,
     stage_ns: u64,
@@ -121,13 +127,15 @@ struct GroupPhase {
 
 impl GroupPhase {
     fn start(writes: &[super::GroupWrite]) -> Self {
-        let enabled = group_phase_enabled();
+        let stderr = group_phase_enabled();
+        let timed = stderr || crate::work_metrics::enabled();
         let mut phase = Self {
-            enabled,
-            total_started: enabled.then(Instant::now),
+            timed,
+            stderr,
+            total_started: timed.then(Instant::now),
             ..Self::default()
         };
-        if enabled {
+        if timed {
             phase.writes = writes.len();
             phase.bytes = writes.iter().map(|write| write.bytes.len()).sum();
             phase.class = group_class(writes);
@@ -148,7 +156,20 @@ impl GroupPhase {
     }
 
     fn emit(&self) {
-        if !self.enabled {
+        let total_ns = elapsed_ns(self.total_started);
+        if self.timed {
+            crate::work_metrics::observe_group(
+                self.writes,
+                self.class,
+                crate::work_metrics::GroupTimings {
+                    barrier_ns: self.barrier_ns,
+                    body_fsync_ns: self.body_fsync_ns,
+                    dir_flush_ns: self.dir_flush_ns,
+                    total_ns,
+                },
+            );
+        }
+        if !self.stderr {
             return;
         }
         let _ = writeln!(
@@ -165,7 +186,7 @@ impl GroupPhase {
             self.bytes,
             self.unique,
             self.reused,
-            self.class,
+            self.class.name(),
             self.stage_ns,
             self.stage_max_ns,
             self.body_write_ns,
@@ -176,7 +197,7 @@ impl GroupPhase {
             self.rename_ns,
             self.dir_flush_ns,
             self.barrier_ns,
-            elapsed_ns(self.total_started),
+            total_ns,
             self.prep_ns,
             self.hash_ns,
             self.encode_ns,
@@ -375,7 +396,7 @@ impl LocalObjectStore {
         writes: &[super::GroupWrite],
         phase: &mut GroupPhase,
     ) -> Result<Vec<StagedBody>> {
-        let stage_started = phase.enabled.then(Instant::now);
+        let stage_started = phase.timed.then(Instant::now);
         for write in writes {
             if !matches!(write.condition, PutCondition::Any) {
                 check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
@@ -388,7 +409,7 @@ impl LocalObjectStore {
         // renames, the one directory flush and the one media barrier still happen in
         // publication order on this thread, after every body is durable.
         let workers = stage_worker_count(writes.len());
-        let diagnostics = phase.enabled;
+        let diagnostics = phase.timed;
         let mut spawn_ns = 0;
         let staged: Vec<Result<StagedBody>> = if workers == 1 {
             writes
@@ -421,7 +442,7 @@ impl LocalObjectStore {
                 staged.into_iter().map(|(_, result)| result).collect()
             })
         };
-        if phase.enabled {
+        if phase.timed {
             phase.workers = workers;
             phase.spawn_ns = spawn_ns;
         }
@@ -430,7 +451,7 @@ impl LocalObjectStore {
         for result in staged {
             match result {
                 Ok(body) => {
-                    if phase.enabled {
+                    if phase.timed {
                         phase.record_staged_body(&body.timing);
                     }
                     bodies.push(body);
@@ -442,7 +463,7 @@ impl LocalObjectStore {
             remove_temporaries(&bodies);
             return Err(error);
         }
-        if phase.enabled {
+        if phase.timed {
             phase.stage_ns = elapsed_ns(stage_started);
         }
         Ok(bodies)
@@ -487,13 +508,13 @@ impl LocalObjectStore {
         bodies: &[StagedBody],
         phase: &mut GroupPhase,
     ) -> Result<Vec<String>> {
-        let lock_started = phase.enabled.then(Instant::now);
+        let lock_started = phase.timed.then(Instant::now);
         let _guard = self.lock()?;
-        if phase.enabled {
+        if phase.timed {
             phase.lock_wait_ns = elapsed_ns(lock_started);
         }
         ensure!(writes.len() == bodies.len(), "staged group length mismatch");
-        let recheck_started = phase.enabled.then(Instant::now);
+        let recheck_started = phase.timed.then(Instant::now);
         let mut plans = Vec::with_capacity(bodies.len());
         let mut resolved_any: HashMap<&str, (usize, String)> = HashMap::new();
         for (index, (write, body)) in writes.iter().zip(bodies).enumerate() {
@@ -520,10 +541,10 @@ impl LocalObjectStore {
                 plans.push(StagedPlan::Rename);
             }
         }
-        if phase.enabled {
+        if phase.timed {
             phase.recheck_ns = elapsed_ns(recheck_started);
         }
-        let rename_started = phase.enabled.then(Instant::now);
+        let rename_started = phase.timed.then(Instant::now);
         let mut etags = Vec::with_capacity(bodies.len());
         let mut renamed = false;
         for (body, plan) in bodies.iter().zip(plans) {
@@ -532,7 +553,7 @@ impl LocalObjectStore {
                     if let Some(temporary) = &body.temporary {
                         let _ = fs::remove_file(temporary);
                     }
-                    if phase.enabled {
+                    if phase.timed {
                         phase.reused += 1;
                     }
                     etags.push(etag);
@@ -541,7 +562,7 @@ impl LocalObjectStore {
                     let temporary = body.temporary.as_ref().context("staged body missing")?;
                     fs::rename(temporary, &body.target)?;
                     renamed = true;
-                    if phase.enabled {
+                    if phase.timed {
                         phase.unique += 1;
                     }
                     etags.push(body.etag.clone());
@@ -551,14 +572,14 @@ impl LocalObjectStore {
                     fs::remove_file(&body.target)?;
                     fs::rename(temporary, &body.target)?;
                     renamed = true;
-                    if phase.enabled {
+                    if phase.timed {
                         phase.unique += 1;
                     }
                     etags.push(body.etag.clone());
                 }
             }
         }
-        if phase.enabled {
+        if phase.timed {
             phase.rename_ns = elapsed_ns(rename_started);
         }
         if renamed {
@@ -566,14 +587,14 @@ impl LocalObjectStore {
                 .iter()
                 .find_map(|body| body.file.as_ref())
                 .context("staged publication file missing")?;
-            let dir_started = phase.enabled.then(Instant::now);
+            let dir_started = phase.timed.then(Instant::now);
             flush_directory(&self.root)?;
-            if phase.enabled {
+            if phase.timed {
                 phase.dir_flush_ns = elapsed_ns(dir_started);
             }
-            let barrier_started = phase.enabled.then(Instant::now);
+            let barrier_started = phase.timed.then(Instant::now);
             publish_barrier(file)?;
-            if phase.enabled {
+            if phase.timed {
                 phase.barrier_ns = elapsed_ns(barrier_started);
             }
         }
@@ -962,6 +983,47 @@ mod group_tests {
     }
 
     #[test]
+    fn group_phase_aggregates_into_work_metrics() {
+        crate::work_metrics::set_enabled(true);
+        let before = crate::work_metrics::snapshot().expect("enabled snapshot");
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalObjectStore::open(directory.path().join("objects")).unwrap();
+
+        let single = [GroupWrite::new(
+            "tenant/db/authority/root",
+            b"root".to_vec(),
+            PutCondition::Any,
+        )];
+        store.put_group(&single).unwrap();
+        let batch: Vec<GroupWrite> = (0..5)
+            .map(|index| {
+                GroupWrite::new(
+                    format!("tenant/db/wal/chunks/{index}"),
+                    vec![index as u8; 32],
+                    PutCondition::Any,
+                )
+            })
+            .collect();
+        store.put_group(&batch).unwrap();
+
+        let after = crate::work_metrics::snapshot().expect("enabled snapshot");
+        assert!(after.group.calls - before.group.calls >= 2);
+        assert!(after.group.writes.one - before.group.writes.one >= 1);
+        assert!(
+            after.group.writes.five_to_sixteen - before.group.writes.five_to_sixteen >= 1,
+            "the five-write group must land in the 5_16 bucket"
+        );
+        assert!(
+            after.group.class["authority"] - before.group.class["authority"] >= 1,
+            "the head publication must charge the authority class"
+        );
+        assert!(
+            after.group.class["wal"] - before.group.class["wal"] >= 1,
+            "the chunk group must charge the wal class"
+        );
+    }
+
+    #[test]
     fn group_phase_helpers_aggregate_without_environment() {
         let mut phase = GroupPhase::default();
         phase.record_staged_body(&StageTiming {
@@ -990,7 +1052,7 @@ mod group_tests {
         assert_eq!(phase.stage_max_ns, 55);
         assert_eq!(phase.body_total_max_ns, 81);
 
-        let class = |key: &str| group_class(&[GroupWrite::absent(key, Vec::new())]);
+        let class = |key: &str| group_class(&[GroupWrite::absent(key, Vec::new())]).name();
         assert_eq!(class("tenant/db/wal/index"), "wal");
         assert_eq!(class("tenant/db/wal/receipt-pages/x"), "receipt");
         assert_eq!(class("tenant/db/authority/root"), "authority");

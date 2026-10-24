@@ -2,6 +2,7 @@ use crate::authority::{
     Authority, BranchRef, CatalogRoot, OutOfRetention, RecoveryPoint, RecoveryPointNotFound,
     RootSnapshot,
 };
+use crate::work_metrics::PublishOrigin;
 use anyhow::{ensure, Context, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -60,46 +61,54 @@ impl Capabilities {
     pub fn branch(&self, source: &str, new: &str) -> Result<RootSnapshot> {
         validate_name(source)?;
         validate_name(new)?;
-        self.authority.transact(None, |root| {
-            ensure!(
-                !root.branches.contains_key(new),
-                "branch already exists: {new}"
-            );
-            let mut branch = root
-                .branches
-                .get(source)
-                .context("source branch missing")?
-                .clone();
-            branch.incarnation = next_incarnation(root)?;
-            branch.timeline = branch.incarnation;
-            root.branches.insert(new.to_owned(), branch);
-            Ok(())
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                ensure!(
+                    !root.branches.contains_key(new),
+                    "branch already exists: {new}"
+                );
+                let mut branch = root
+                    .branches
+                    .get(source)
+                    .context("source branch missing")?
+                    .clone();
+                branch.incarnation = next_incarnation(root)?;
+                branch.timeline = branch.incarnation;
+                root.branches.insert(new.to_owned(), branch);
+                Ok(())
+            })
     }
 
     pub fn snapshot(&self, branch: &str, name: &str) -> Result<RecoveryPoint> {
         validate_name(branch)?;
         validate_name(name)?;
-        let snapshot = self.authority.transact(None, |root| {
-            ensure!(
-                !root.snapshots.contains_key(name),
-                "snapshot already exists: {name}"
-            );
-            let reference = root.branches.get(branch).context("branch missing")?;
-            let identifier =
-                serde_json::to_vec(&(&root.incarnation, root.revision, name, branch, reference))?;
-            let point = RecoveryPoint {
-                id: blake3::hash(&identifier).to_hex().to_string(),
-                branch: branch.to_owned(),
-                timeline: reference.timeline,
-                sequence: reference.current_sequence,
-                timestamp_ms: reference.current_commit_ms,
-                head: reference.head.clone(),
-                wal: reference.wal.clone(),
-            };
-            root.snapshots.insert(name.to_owned(), point);
-            Ok(())
-        })?;
+        let snapshot =
+            self.authority
+                .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                    ensure!(
+                        !root.snapshots.contains_key(name),
+                        "snapshot already exists: {name}"
+                    );
+                    let reference = root.branches.get(branch).context("branch missing")?;
+                    let identifier = serde_json::to_vec(&(
+                        &root.incarnation,
+                        root.revision,
+                        name,
+                        branch,
+                        reference,
+                    ))?;
+                    let point = RecoveryPoint {
+                        id: blake3::hash(&identifier).to_hex().to_string(),
+                        branch: branch.to_owned(),
+                        timeline: reference.timeline,
+                        sequence: reference.current_sequence,
+                        timestamp_ms: reference.current_commit_ms,
+                        head: reference.head.clone(),
+                        wal: reference.wal.clone(),
+                    };
+                    root.snapshots.insert(name.to_owned(), point);
+                    Ok(())
+                })?;
         snapshot
             .root
             .snapshots
@@ -111,61 +120,64 @@ impl Capabilities {
     pub fn clone(&self, snapshot: &str, new: &str) -> Result<RootSnapshot> {
         validate_name(snapshot)?;
         validate_name(new)?;
-        self.authority.transact(None, |root| {
-            ensure!(
-                !root.branches.contains_key(new),
-                "branch already exists: {new}"
-            );
-            let point = root
-                .snapshots
-                .get(snapshot)
-                .context("snapshot missing")?
-                .clone();
-            let history = if point.sequence == 0 {
-                Vec::new()
-            } else {
-                vec![point.clone()]
-            };
-            let recovery = Some(self.authority.build_recovery_index(&history)?);
-            let branch = BranchRef {
-                incarnation: next_incarnation(root)?,
-                timeline: next_incarnation(root)?,
-                sequence: point.sequence,
-                last_commit_ms: point.timestamp_ms,
-                current_sequence: point.sequence,
-                current_commit_ms: point.timestamp_ms,
-                head: point.head.clone(),
-                wal: point.wal.clone(),
-                history,
-                recovery,
-            };
-            root.branches.insert(new.to_owned(), branch);
-            Ok(())
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                ensure!(
+                    !root.branches.contains_key(new),
+                    "branch already exists: {new}"
+                );
+                let point = root
+                    .snapshots
+                    .get(snapshot)
+                    .context("snapshot missing")?
+                    .clone();
+                let history = if point.sequence == 0 {
+                    Vec::new()
+                } else {
+                    vec![point.clone()]
+                };
+                let recovery = Some(self.authority.build_recovery_index(&history)?);
+                let branch = BranchRef {
+                    incarnation: next_incarnation(root)?,
+                    timeline: next_incarnation(root)?,
+                    sequence: point.sequence,
+                    last_commit_ms: point.timestamp_ms,
+                    current_sequence: point.sequence,
+                    current_commit_ms: point.timestamp_ms,
+                    head: point.head.clone(),
+                    wal: point.wal.clone(),
+                    history,
+                    recovery,
+                };
+                root.branches.insert(new.to_owned(), branch);
+                Ok(())
+            })
     }
 
     pub fn restore(&self, branch: &str, snapshot: &str) -> Result<RootSnapshot> {
         validate_name(branch)?;
         validate_name(snapshot)?;
-        self.authority.transact(None, |root| {
-            let point = root
-                .snapshots
-                .get(snapshot)
-                .context("snapshot missing")?
-                .clone();
-            restore(root, branch, &point)
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                let point = root
+                    .snapshots
+                    .get(snapshot)
+                    .context("snapshot missing")?
+                    .clone();
+                restore(root, branch, &point)
+            })
     }
 
     pub fn restore_point(&self, branch: &str, point: &RecoveryPoint) -> Result<RootSnapshot> {
         validate_name(branch)?;
-        self.authority.transact(None, |root| {
-            ensure!(
-                reachable(self.authority.as_ref(), root, point)?,
-                "recovery point is no longer reachable"
-            );
-            restore(root, branch, point)
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                ensure!(
+                    reachable(self.authority.as_ref(), root, point)?,
+                    "recovery point is no longer reachable"
+                );
+                restore(root, branch, point)
+            })
     }
 
     pub fn pitr(&self, branch: &str, sequence: u64) -> Result<RecoveryPoint> {
@@ -245,28 +257,31 @@ impl Capabilities {
 
     pub fn delete_branch(&self, branch: &str) -> Result<RootSnapshot> {
         validate_name(branch)?;
-        self.authority.transact(None, |root| {
-            root.branches.remove(branch).context("branch missing")?;
-            Ok(())
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                root.branches.remove(branch).context("branch missing")?;
+                Ok(())
+            })
     }
 
     pub fn delete_snapshot(&self, snapshot: &str) -> Result<RootSnapshot> {
         validate_name(snapshot)?;
-        self.authority.transact(None, |root| {
-            root.snapshots
-                .remove(snapshot)
-                .context("snapshot missing")?;
-            Ok(())
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                root.snapshots
+                    .remove(snapshot)
+                    .context("snapshot missing")?;
+                Ok(())
+            })
     }
 
     pub fn retain_after(&self, branch: &str, min_sequence: u64) -> Result<RootSnapshot> {
         validate_name(branch)?;
-        self.authority.transact(None, |root| {
-            self.authority
-                .retain_recovery_after(root, branch, min_sequence)
-        })
+        self.authority
+            .transact_with_origin(None, PublishOrigin::Capability, |root| {
+                self.authority
+                    .retain_recovery_after(root, branch, min_sequence)
+            })
     }
 
     pub fn list(&self) -> Result<CapabilityList> {

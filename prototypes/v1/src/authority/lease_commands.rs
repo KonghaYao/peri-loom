@@ -1,5 +1,5 @@
 use super::{digest, same_lease, LiveLease, OwnershipAuthority, Permission, Service};
-use crate::{authority::CatalogRoot, ownership::types::*};
+use crate::{authority::CatalogRoot, ownership::types::*, work_metrics::PublishOrigin};
 use anyhow::{anyhow, ensure, Context, Result};
 
 pub(super) fn validate_intent(service: &Service, intent: &LeaseIntent) -> Result<()> {
@@ -83,7 +83,7 @@ pub(super) fn grant(authority: &OwnershipAuthority, request: GrantRequest) -> Re
     let scoped = service.scoped(Permission::Control {
         expires: Some(deadline.min(nonce_expiry)),
     });
-    scoped.transact(None, |root| {
+    scoped.transact_with_origin(None, PublishOrigin::Lease, |root| {
         let catalog = root.ownership.as_mut().context("ownership missing")?;
         let epoch = catalog
             .branches
@@ -164,7 +164,7 @@ pub(super) fn renew(authority: &OwnershipAuthority, request: RenewRequest) -> Re
     let scoped = service.scoped(Permission::Control {
         expires: Some(live.deadline.min(nonce_expiry).min(deadline)),
     });
-    scoped.transact(None, |root| {
+    scoped.transact_with_origin(None, PublishOrigin::Lease, |root| {
         super::live_binding(root, &request.intent.binding)?;
         let record = root
             .ownership
@@ -230,7 +230,7 @@ pub(super) fn revoke(
     let result = serde_json::to_value(&reply)?;
     service
         .scoped(Permission::Control { expires: None })
-        .transact(None, |root| {
+        .transact_with_origin(None, PublishOrigin::Lease, |root| {
             let record = root
                 .ownership
                 .as_mut()

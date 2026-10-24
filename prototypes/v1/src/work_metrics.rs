@@ -100,6 +100,40 @@ fn report<T: Copy>(
         .collect()
 }
 
+fn report_origin(
+    items: &[PublishOrigin],
+    name: impl Fn(PublishOrigin) -> &'static str,
+) -> BTreeMap<&'static str, PublishOriginCount> {
+    items
+        .iter()
+        .map(|origin| {
+            (
+                name(*origin),
+                PublishOriginCount {
+                    calls: load(&PUBLISH_ORIGIN_CALLS[origin.index()]),
+                },
+            )
+        })
+        .collect()
+}
+
+fn report_outside_transact(
+    items: &[OutsideTransactKind],
+    name: impl Fn(OutsideTransactKind) -> &'static str,
+) -> BTreeMap<&'static str, PublishOutsideTransactCount> {
+    items
+        .iter()
+        .map(|kind| {
+            (
+                name(*kind),
+                PublishOutsideTransactCount {
+                    calls: load(&PUBLISH_OUTSIDE_TRANSACT_CALLS[kind.index()]),
+                },
+            )
+        })
+        .collect()
+}
+
 // --- A. WAL workload ---------------------------------------------------------------------
 
 /// Why a verified prefix was dropped. Each reason names the mutation that made the prefix
@@ -289,6 +323,187 @@ pub(crate) fn observe_root_publish_retry() {
         return;
     }
     add(&ROOT_PUBLISH_RETRIES, 1);
+}
+
+/// Why a publication attempt ran. One attempt charges exactly one origin at the same point
+/// `observe_root_publish` charges the attempt, so the origin totals reconcile with
+/// `metadata.root_publish_attempts` without a second bookkeeping path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublishOrigin {
+    Append,
+    WalPages,
+    PinExtend,
+    BranchOpen,
+    PinRelease,
+    Put,
+    PutGroup,
+    Delete,
+    List,
+    Gc,
+    Capability,
+    Lease,
+    Migration,
+    PinUpgrade,
+    Recovery,
+    Other,
+}
+
+impl PublishOrigin {
+    pub(crate) const ALL: [Self; 16] = [
+        Self::Append,
+        Self::WalPages,
+        Self::PinExtend,
+        Self::BranchOpen,
+        Self::PinRelease,
+        Self::Put,
+        Self::PutGroup,
+        Self::Delete,
+        Self::List,
+        Self::Gc,
+        Self::Capability,
+        Self::Lease,
+        Self::Migration,
+        Self::PinUpgrade,
+        Self::Recovery,
+        Self::Other,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::WalPages => "wal_pages",
+            Self::PinExtend => "pin_extend",
+            Self::BranchOpen => "branch_open",
+            Self::PinRelease => "pin_release",
+            Self::Put => "put",
+            Self::PutGroup => "put_group",
+            Self::Delete => "delete",
+            Self::List => "list",
+            Self::Gc => "gc",
+            Self::Capability => "capability",
+            Self::Lease => "lease",
+            Self::Migration => "migration",
+            Self::PinUpgrade => "pin_upgrade",
+            Self::Recovery => "recovery",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Publications that bypass `transact_inner` because their group is assembled by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutsideTransactKind {
+    Migration,
+    Other,
+}
+
+impl OutsideTransactKind {
+    pub(crate) const ALL: [Self; 2] = [Self::Migration, Self::Other];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Migration => "migration",
+            Self::Other => "other",
+        }
+    }
+}
+
+static PUBLISH_ORIGIN_CALLS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static PUBLISH_OUTSIDE_TRANSACT_CALLS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+pub(crate) fn observe_publish_origin(origin: PublishOrigin) {
+    if !enabled() {
+        return;
+    }
+    add(&PUBLISH_ORIGIN_CALLS[origin.index()], 1);
+}
+
+pub(crate) fn observe_publish_outside_transact(kind: OutsideTransactKind) {
+    if !enabled() {
+        return;
+    }
+    add(&PUBLISH_OUTSIDE_TRANSACT_CALLS[kind.index()], 1);
+}
+
+/// Which half of the store a group published into. The bucket is decided from the first
+/// write's relative key, exactly as the stderr diagnostic already did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GroupClass {
+    Wal,
+    Receipt,
+    Authority,
+    #[default]
+    Other,
+}
+
+impl GroupClass {
+    pub(crate) const ALL: [Self; 4] = [Self::Wal, Self::Receipt, Self::Authority, Self::Other];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Wal => "wal",
+            Self::Receipt => "receipt",
+            Self::Authority => "authority",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// The stage timings one local group publication already measures. Passing them here keeps
+/// the aggregation free of a second set of clocks.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GroupTimings {
+    pub barrier_ns: u64,
+    pub body_fsync_ns: u64,
+    pub dir_flush_ns: u64,
+    pub total_ns: u64,
+}
+
+static GROUP_CALLS: AtomicU64 = AtomicU64::new(0);
+static GROUP_WRITES_ONE: AtomicU64 = AtomicU64::new(0);
+static GROUP_WRITES_TWO_TO_FOUR: AtomicU64 = AtomicU64::new(0);
+static GROUP_WRITES_FIVE_TO_SIXTEEN: AtomicU64 = AtomicU64::new(0);
+static GROUP_WRITES_SEVENTEEN_PLUS: AtomicU64 = AtomicU64::new(0);
+static GROUP_CLASS_CALLS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static GROUP_BARRIER_NS: AtomicU64 = AtomicU64::new(0);
+static GROUP_BODY_FSYNC_NS: AtomicU64 = AtomicU64::new(0);
+static GROUP_DIR_FLUSH_NS: AtomicU64 = AtomicU64::new(0);
+static GROUP_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+static GROUP_TOTAL_MAX_NS: AtomicU64 = AtomicU64::new(0);
+
+/// One successful local `put_group`. The write-count buckets exist because the same call
+/// covers a one-write head publication and a several-hundred-body receipt roll; a mean would
+/// hide which of the two dominates the tail.
+pub(crate) fn observe_group(writes: usize, class: GroupClass, timings: GroupTimings) {
+    if !enabled() {
+        return;
+    }
+    add(&GROUP_CALLS, 1);
+    let bucket = match writes {
+        0 | 1 => &GROUP_WRITES_ONE,
+        2..=4 => &GROUP_WRITES_TWO_TO_FOUR,
+        5..=16 => &GROUP_WRITES_FIVE_TO_SIXTEEN,
+        _ => &GROUP_WRITES_SEVENTEEN_PLUS,
+    };
+    add(bucket, 1);
+    add(&GROUP_CLASS_CALLS[class.index()], 1);
+    add(&GROUP_BARRIER_NS, timings.barrier_ns);
+    add(&GROUP_BODY_FSYNC_NS, timings.body_fsync_ns);
+    add(&GROUP_DIR_FLUSH_NS, timings.dir_flush_ns);
+    add(&GROUP_TOTAL_NS, timings.total_ns);
+    GROUP_TOTAL_MAX_NS.fetch_max(timings.total_ns, Ordering::Relaxed);
 }
 
 /// One encoded head document, measured at the point the publication CAS carries it. The
@@ -1282,6 +1497,16 @@ pub(crate) struct WalWorkload {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct PublishOriginCount {
+    pub calls: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct PublishOutsideTransactCount {
+    pub calls: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct MetadataWork {
     /// Encoded authority head documents built for a publication attempt.
     pub root_encoded_bytes: u64,
@@ -1289,6 +1514,11 @@ pub(crate) struct MetadataWork {
     pub root_publish_attempts: u64,
     /// Attempts that lost the head CAS and retried.
     pub root_publish_retries: u64,
+    /// Attempts per origin. Charged at the same point as `root_publish_attempts`, so the
+    /// sum of these calls equals that counter exactly.
+    pub publish_origin: BTreeMap<&'static str, PublishOriginCount>,
+    /// Successful publications whose group was assembled outside `transact_inner`.
+    pub publish_outside_transact: BTreeMap<&'static str, PublishOutsideTransactCount>,
     /// Inline reader-pin entries in the published documents; paged entries are excluded.
     pub inline_pin_refs: u64,
     /// Reader-pin releases that failed while a handle was being dropped.
@@ -1461,6 +1691,58 @@ pub(crate) struct ResultWork {
     pub json_bytes: u64,
 }
 
+/// Write-count histogram of successful local groups. The field names are the exported bucket
+/// names; `1` includes an empty group even though the local store returns before publishing one.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct GroupWrites {
+    #[serde(rename = "1")]
+    pub one: u64,
+    #[serde(rename = "2_4")]
+    pub two_to_four: u64,
+    #[serde(rename = "5_16")]
+    pub five_to_sixteen: u64,
+    #[serde(rename = "17_plus")]
+    pub seventeen_plus: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct GroupWork {
+    pub calls: u64,
+    pub writes: GroupWrites,
+    pub class: BTreeMap<&'static str, u64>,
+    pub barrier_ns: u64,
+    pub body_fsync_ns: u64,
+    pub dir_flush_ns: u64,
+    pub total_ns: u64,
+    pub total_max_ns: u64,
+}
+
+fn group_work() -> GroupWork {
+    GroupWork {
+        calls: load(&GROUP_CALLS),
+        writes: GroupWrites {
+            one: load(&GROUP_WRITES_ONE),
+            two_to_four: load(&GROUP_WRITES_TWO_TO_FOUR),
+            five_to_sixteen: load(&GROUP_WRITES_FIVE_TO_SIXTEEN),
+            seventeen_plus: load(&GROUP_WRITES_SEVENTEEN_PLUS),
+        },
+        class: report(&GroupClass::ALL, GroupClass::name, &GROUP_CLASS_CALLS),
+        barrier_ns: load(&GROUP_BARRIER_NS),
+        body_fsync_ns: load(&GROUP_BODY_FSYNC_NS),
+        dir_flush_ns: load(&GROUP_DIR_FLUSH_NS),
+        total_ns: load(&GROUP_TOTAL_NS),
+        total_max_ns: load(&GROUP_TOTAL_MAX_NS),
+    }
+}
+
+/// The `group_phases` section of the exit snapshot, or `None` while the counters are off.
+pub(crate) fn group_phase_snapshot() -> Option<GroupWork> {
+    if !enabled() {
+        return None;
+    }
+    Some(group_work())
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct WorkMetricsSnapshot {
     pub wal_workload: WalWorkload,
@@ -1471,6 +1753,7 @@ pub(crate) struct WorkMetricsSnapshot {
     pub results: ResultWork,
     pub maintenance: MaintenanceWork,
     pub gc: GcWork,
+    pub group: GroupWork,
 }
 
 fn units() -> BTreeMap<&'static str, UnitTotals> {
@@ -1557,6 +1840,11 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             root_encoded_bytes: load(&ROOT_ENCODED_BYTES),
             root_publish_attempts: load(&ROOT_PUBLISH_ATTEMPTS),
             root_publish_retries: load(&ROOT_PUBLISH_RETRIES),
+            publish_origin: report_origin(&PublishOrigin::ALL, PublishOrigin::name),
+            publish_outside_transact: report_outside_transact(
+                &OutsideTransactKind::ALL,
+                OutsideTransactKind::name,
+            ),
             inline_pin_refs: load(&INLINE_PIN_REFS),
             pin_release_failures: load(&PIN_RELEASE_FAILURES),
             root_receipts: load(&ROOT_RECEIPTS),
@@ -1674,6 +1962,7 @@ pub(crate) fn snapshot() -> Option<WorkMetricsSnapshot> {
             lease_remaining_ms: load(&LEASE_REMAINING_MS),
             lease_remaining_min_ms: lease_remaining_min(),
         },
+        group: group_phase_snapshot().unwrap_or_default(),
     })
 }
 
@@ -1699,8 +1988,7 @@ fn lease_remaining_min() -> u64 {
 
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
-const GROUP_PHASES_REASON: &str =
-    "PERI_DIAG_GROUP_PHASE writes one stderr line per group; no process aggregate is exported yet";
+const GROUP_PHASES_REASON: &str = "PERI_WORK_METRICS is off; no group aggregate was recorded";
 
 #[derive(Serialize)]
 struct ExitSnapshot {
@@ -1735,13 +2023,16 @@ struct ExitCounter {
     value: u64,
 }
 
-/// `GroupPhase` keeps no process aggregate and its storage lives in `object_store/local.rs`, so
-/// this snapshot reports why the data is absent instead of an empty array that could be read
-/// as "no group ran".
+/// The process aggregate of every successful local group. While the counters are off there is
+/// nothing to report, so the document keeps the explicit unavailable state instead of zeros
+/// that a reader could mistake for "no group ran".
 #[derive(Serialize)]
 struct ExitGroupPhases {
     available: bool,
-    reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+    #[serde(flatten)]
+    group: Option<GroupWork>,
 }
 
 /// Write the process-wide counters to `path`, atomically. Failure is returned to the caller and
@@ -1760,8 +2051,9 @@ pub(crate) fn write_exit_snapshot(path: &Path) -> Result<()> {
         phases: exit_phases(work.as_ref()),
         counters: exit_counters(work.as_ref())?,
         group_phases: ExitGroupPhases {
-            available: false,
-            reason: GROUP_PHASES_REASON,
+            available: work.is_some(),
+            reason: work.is_none().then_some(GROUP_PHASES_REASON),
+            group: work.as_ref().map(|work| work.group.clone()),
         },
     };
     let encoded = serde_json::to_vec(&document).context("serialize metrics exit snapshot")?;

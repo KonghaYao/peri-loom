@@ -5,6 +5,7 @@ use super::{
 };
 use crate::object_store::{PreconditionFailed, PutCondition};
 use crate::ownership::types::{AccessRole, GrantState, OwnerRecord};
+use crate::work_metrics::OutsideTransactKind;
 
 #[cfg(test)]
 #[path = "boot_admission_tests.rs"]
@@ -106,6 +107,12 @@ impl Authority {
             ));
             match self.store.put_group(&writes) {
                 Ok(etags) => {
+                    // This head bypasses `transact_inner`, so its publication is accounted
+                    // separately from the origin totals that reconcile with
+                    // `root_publish_attempts`.
+                    crate::work_metrics::observe_publish_outside_transact(
+                        OutsideTransactKind::Migration,
+                    );
                     let etag = etags
                         .last()
                         .cloned()

@@ -1642,3 +1642,46 @@ fn concurrent_refresh_release_and_gc_do_not_lose_objects() -> Result<()> {
     authority.reachable(&root)?;
     Ok(())
 }
+
+/// E1 attribution: every append publication charges one `append` origin, the receipt archive
+/// read after a roll shows up as `pin_extend`, and the origin totals reconcile exactly with
+/// `root_publish_attempts`.
+#[test]
+fn append_origin_reconciles_and_receipt_roll_extends_a_pin() -> Result<()> {
+    crate::work_metrics::set_enabled(true);
+    let (_store, _authority, branch, namespace) = fixture()?;
+    let before = crate::work_metrics::snapshot().expect("enabled snapshot");
+
+    let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
+    for ordinal in 1..=appends {
+        append(
+            &branch,
+            &namespace,
+            frame_batch(ordinal as u8),
+            None,
+            &format!("attribution-{ordinal}"),
+        )?;
+    }
+
+    let after = crate::work_metrics::snapshot().expect("enabled snapshot");
+    let origin = |name: &str| after.metadata.publish_origin[name].calls;
+    assert!(
+        origin("append") - before.metadata.publish_origin["append"].calls >= appends as u64,
+        "each append must charge the append origin"
+    );
+    assert!(
+        origin("pin_extend") > before.metadata.publish_origin["pin_extend"].calls,
+        "a receipt lookup after the first roll must extend the reader pin"
+    );
+    let attributed: u64 = after
+        .metadata
+        .publish_origin
+        .values()
+        .map(|count| count.calls)
+        .sum();
+    assert_eq!(
+        attributed, after.metadata.root_publish_attempts,
+        "sum(origin) must equal root_publish_attempts"
+    );
+    Ok(())
+}

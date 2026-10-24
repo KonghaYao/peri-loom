@@ -49,11 +49,23 @@ the workload has finished.
     {"name": "object_store.get.total", "value": 41},
     {"name": "object_store.put.total", "value": 120},
     {"name": "work.metadata.root_publish_attempts", "value": 7},
+    {"name": "work.metadata.publish_origin.append.calls", "value": 3},
+    {"name": "work.metadata.publish_origin.pin_extend.calls", "value": 4},
+    {"name": "work.metadata.publish_outside_transact.migration.calls", "value": 0},
+    {"name": "work.group.calls", "value": 7},
+    {"name": "work.group.writes.5_16", "value": 7},
     {"name": "work.wal_workload.append_calls", "value": 19}
   ],
   "group_phases": {
-    "available": false,
-    "reason": "PERI_DIAG_GROUP_PHASE writes one stderr line per group; no process aggregate is exported yet"
+    "available": true,
+    "calls": 7,
+    "writes": {"1": 0, "2_4": 0, "5_16": 7, "17_plus": 0},
+    "class": {"wal": 7, "receipt": 0, "authority": 0, "other": 0},
+    "barrier_ns": 1200000,
+    "body_fsync_ns": 900000,
+    "dir_flush_ns": 50000,
+    "total_ns": 3100000,
+    "total_max_ns": 900000
   }
 }
 ```
@@ -68,10 +80,24 @@ the workload has finished.
   is populated because the worker wraps its store in `MetricsObjectStore` while both switches
   are on; with only `PERI_WORK_METRICS=1` the wrapper is not installed and the export omits
   the object-store counters entirely.
-* `group_phases` is reported as unavailable, not as an empty array. `GroupPhase` currently
-  emits one stderr line per group from `object_store/local.rs` and keeps no process aggregate,
-  so file/directory fsync and barrier counts per group are not in this document. Their stderr
-  lines under `PERI_DIAG_GROUP_PHASE=1` remain the only source.
+* `work.metadata.publish_origin.<origin>.calls` attributes every authority publication
+  attempt to exactly one origin. The origins are `append`, `wal_pages`, `pin_extend`,
+  `branch_open`, `pin_release`, `put`, `put_group`, `delete`, `list`, `gc`, `capability`,
+  `lease`, `migration`, `pin_upgrade`, `recovery` and `other`. The counter is charged at the
+  same point as `root_publish_attempts`, so the sixteen values sum to that counter exactly.
+* `work.metadata.publish_outside_transact.<kind>.calls` covers publications whose durability
+  group is assembled without `transact_inner`; the kinds are `migration` and `other`. A
+  reconciliation is therefore `publications_total = root_publish_attempts +
+  publish_outside_transact.migration.calls + publish_outside_transact.other.calls`.
+* `work.group.*` and the top-level `group_phases` object report the same successful local
+  `put_group` aggregate. `calls` counts groups, `writes` buckets them by body count
+  (`1`, `2_4`, `5_16`, `17_plus`), and `class` splits the first-write namespace
+  (`wal`, `receipt`, `authority`, `other`). The stage fields are process sums except
+  `total_max_ns`, which is the longest single group. Group aggregation is armed by
+  `PERI_WORK_METRICS=1`; `PERI_DIAG_GROUP_PHASE=1` remains the independent stderr line.
+* `group_phases.available` is `true` while the counters are on and `false` otherwise. When it
+  is `false` the object carries a `reason` and no aggregate fields, so a reader can tell
+  "not measured" from "measured, no group ran".
 * Within one `schema_version`, existing field meanings do not change. A new field may be added;
   a semantic change requires a new `schema_version`.
 
