@@ -60,6 +60,10 @@ impl ObjectStore for LocalStore {
         self.inner.get(key)
     }
 
+    fn get_retained(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.inner.get_retained(key)
+    }
+
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
         self.inner.put(key, bytes, condition)
     }

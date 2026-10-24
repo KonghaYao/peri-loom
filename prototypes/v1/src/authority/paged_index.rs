@@ -96,11 +96,27 @@ pub(crate) struct PagedIndex<'a> {
     /// actually touched; the counter lives on the handle because completion paths create
     /// their own index and would otherwise pollute a process-wide total.
     reads: std::cell::Cell<usize>,
+    /// A read-only handle over a durable archive the caller declared unreclaimable. Page
+    /// reads must not extend a reader pin: GC never removes these pages.
+    retained: bool,
 }
 
 impl<'a> PagedIndex<'a> {
     pub(crate) fn new(store: &'a dyn ObjectStore, namespace: &'a Namespace) -> Self {
         Self::with_prefix(store, namespace, "authority/index-pages")
+    }
+
+    /// Open a reader over an archive whose pages survive GC. Only a store that can serve a
+    /// retained read may answer it; the handle is for lookups, not for writes.
+    pub(crate) fn retained_with_prefix(
+        store: &'a dyn ObjectStore,
+        namespace: &'a Namespace,
+        prefix: &'static str,
+    ) -> Self {
+        Self {
+            retained: true,
+            ..Self::with_prefix(store, namespace, prefix)
+        }
     }
 
     /// Some trees live outside the authority's private namespace: the WAL receipt archive is
@@ -127,6 +143,7 @@ impl<'a> PagedIndex<'a> {
             order,
             pending: None,
             reads: std::cell::Cell::new(0),
+            retained: false,
         }
     }
 
@@ -143,6 +160,7 @@ impl<'a> PagedIndex<'a> {
             order: self.order,
             pending: Some(pending),
             reads: std::cell::Cell::new(0),
+            retained: self.retained,
         }
     }
 
@@ -161,6 +179,7 @@ impl<'a> PagedIndex<'a> {
             order,
             pending: self.pending,
             reads: std::cell::Cell::new(0),
+            retained: self.retained,
         }
     }
 
@@ -604,11 +623,12 @@ impl<'a> PagedIndex<'a> {
             None => match request_reads::get_page(backend, &key) {
                 Some(bytes) => bytes,
                 None => {
-                    let bytes = self
-                        .store
-                        .get(&key)?
-                        .context("published index page missing")?
-                        .bytes;
+                    let object = if self.retained {
+                        self.store.get_retained(&key)?
+                    } else {
+                        self.store.get(&key)?
+                    };
+                    let bytes = object.context("published index page missing")?.bytes;
                     request_reads::remember_page(backend, key.clone(), &bytes);
                     bytes
                 }

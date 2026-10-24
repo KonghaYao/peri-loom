@@ -1148,6 +1148,34 @@ impl Authority {
         Ok(object.bytes)
     }
 
+    /// Read a content-addressed page the store has declared unreclaimable without taking a
+    /// reader pin.
+    ///
+    /// Archived WAL receipt pages are immutable and GC never removes their aliases, so a
+    /// branch reader does not need a pin to keep the page alive. The archive lookup runs on
+    /// every append once receipts start rolling; pinning each lookup turned one append into
+    /// extra root publications. The alias is still required: a page missing from the
+    /// registry fails closed here instead of being served from an unreferenced body.
+    pub(crate) fn read_retained_page(
+        &self,
+        key: &str,
+        hash: &str,
+    ) -> Result<Option<crate::object_store::StoredObject>> {
+        self.check(MutationStage::Read)?;
+        let snapshot = self.snapshot()?;
+        let Some(entry) = snapshot.root.objects.get(key)? else {
+            return Ok(None);
+        };
+        ensure!(
+            entry.hash == hash,
+            "retained page key does not name its content"
+        );
+        Ok(Some(crate::object_store::StoredObject {
+            bytes: self.read_blob(&entry)?,
+            etag: entry.etag,
+        }))
+    }
+
     fn read_metadata_blob(&self, entry: &ObjectEntry) -> Result<Vec<u8>> {
         #[cfg(test)]
         let _probe = scaling_probe::stage("ref_body", 0);

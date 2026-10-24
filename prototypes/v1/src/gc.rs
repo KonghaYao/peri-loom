@@ -662,6 +662,14 @@ impl GarbageCollector {
             plan.scanned_entries += 1;
             plan.scanned_bytes += key.len() + entry.hash.len() + entry.etag.len() + 32;
             plan.next_after = Some(key.clone());
+            // Archived WAL receipt pages are durable metadata. A branch reader may still be
+            // resolving an archived receipt through an index that has already advanced and
+            // retired the pin that once protected this page path, so GC must never prune the
+            // alias. Sweep never sees them: only prune creates the tombstone, and mark treats
+            // an alias as reachable.
+            if retained_archive_key(key) {
+                continue;
+            }
             if !reachable.contains(&entry.blob) || root.tombstones.contains(&entry.blob)? {
                 plan.removals.push(key.clone());
                 if plan.removals.len() >= self.budget.prune_objects {
@@ -1015,6 +1023,11 @@ fn record_prune_scan(plan: &PrunePlan) {
 
 fn record_sweep_scan(plan: &SweepPlan) {
     work_metrics::observe_gc_scan(plan.scanned_pages, plan.scanned_entries, plan.scanned_bytes);
+}
+
+fn retained_archive_key(key: &str) -> bool {
+    key.strip_prefix(crate::wal::WAL_RECEIPT_PAGE_PREFIX)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn now_ms() -> Result<u64> {

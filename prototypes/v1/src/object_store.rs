@@ -131,6 +131,17 @@ pub trait ObjectStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<StoredObject>>;
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String>;
 
+    /// Read an immutable archived page without taking a reader pin.
+    ///
+    /// The default is an ordinary read: a backend without reader pins serves the page
+    /// directly. A store that fronts a pinning session must override this and delegate to
+    /// the pinning store's retained read, otherwise the archive lookup would publish a pin
+    /// extension for every append. [`crate::authority::BranchStore`] is that store; it
+    /// enforces the archived-receipt prefix and fails closed for every other key.
+    fn get_retained(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.get(key)
+    }
+
     /// Publish several objects as a single durability group.
     ///
     /// Caller contract — a group is a *durability* unit, not a transaction:

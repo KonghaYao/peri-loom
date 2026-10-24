@@ -965,6 +965,18 @@ impl ObjectStore for BranchStore {
             .transpose()
     }
 
+    fn get_retained(&self, key: &str) -> Result<Option<StoredObject>> {
+        let relative = self.relative(key)?;
+        ensure!(
+            relative
+                .strip_prefix(crate::wal::WAL_RECEIPT_PAGE_PREFIX)
+                .is_some_and(|rest| rest.starts_with('/')),
+            "retained read outside the archived receipt pages"
+        );
+        let hash = relative.rsplit('/').next().unwrap_or_default();
+        self.authority.read_retained_page(relative, hash)
+    }
+
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
         let relative = self.relative(key)?;
         let mut view = self

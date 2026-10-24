@@ -617,6 +617,113 @@ fn migration_keeps_archived_and_new_inline_receipts_readable() -> Result<()> {
     Ok(())
 }
 
+/// A1 on a migrated v6 store: the WAL receipt archive written after migration is retained
+/// metadata too. GC must leave both the authority receipt pages (never in `root.objects`)
+/// and the branch's archived WAL pages readable, across a restart.
+#[test]
+fn migrated_v6_store_keeps_archived_wal_receipts_after_gc() -> Result<()> {
+    let store = Arc::new(ProbeStore::default());
+    let namespace = namespace("v6-gc-archive");
+    seed_v1_root(&store, &namespace, 1_000, Some(2))?;
+    let authority = Authority::open_local(store.clone(), namespace.clone())?;
+    assert_eq!(
+        authority.snapshot()?.root.version,
+        types::LOCAL_ROOT_VERSION
+    );
+    let migrated_receipt = format!("{:064x}", 7);
+    assert_eq!(authority.receipt(&migrated_receipt)?, Some(8));
+
+    let branch = authority.branch_store("main")?;
+    let wal = crate::wal::RemoteWal::new(branch.clone());
+    let request = |identity: &str, byte: u8| crate::wal::WalAppendRequest {
+        namespace: namespace.clone(),
+        epoch: 1,
+        batch: crate::wal::WalBatch {
+            operations: vec![crate::wal::WalOperation::Write {
+                offset: 0,
+                bytes: vec![byte; 8],
+            }],
+        },
+        position: None,
+        append_id: identity.to_owned(),
+        timestamp_millis: 5,
+    };
+    let mut publish = |encoded: &crate::wal::EncodedWalRecord,
+                       metadata: &crate::wal::WalMetadata,
+                       expected: Option<String>| {
+        branch.publish_wal_append(encoded, metadata, expected)
+    };
+    let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
+    for ordinal in 1..=appends {
+        assert_eq!(
+            wal.append_using(
+                &request(&format!("wal-{ordinal}"), ordinal as u8),
+                &mut publish
+            )?,
+            ordinal as u64
+        );
+    }
+    let old_root = wal
+        .metadata(&namespace)?
+        .receipt_index
+        .context("missing WAL receipt archive")?;
+    let archived_pages: BTreeMap<String, ObjectEntry> = authority
+        .snapshot()?
+        .root
+        .objects
+        .entries()?
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("wal/receipt-pages/"))
+        .collect();
+    assert!(!archived_pages.is_empty());
+
+    crate::gc::GarbageCollector::new(authority.clone(), std::time::Duration::ZERO).collect()?;
+
+    let root = authority.snapshot()?.root;
+    assert_eq!(root.version, types::LOCAL_ROOT_VERSION);
+    for key in archived_pages.keys() {
+        assert!(
+            root.objects.get(key)?.is_some(),
+            "GC removed a v6 archived WAL receipt page: {key}"
+        );
+    }
+    assert_eq!(authority.receipt(&migrated_receipt)?, Some(8));
+    let pages = crate::authority::paged_index::PagedIndex::retained_with_prefix(
+        branch.as_ref(),
+        &namespace,
+        crate::wal::WAL_RECEIPT_PAGE_PREFIX,
+    );
+    let archived: crate::wal::ArchivedReceipt = serde_json::from_value(
+        pages
+            .get(Some(&old_root), "wal-1")?
+            .context("old archive page missing after GC")?,
+    )?;
+    assert_eq!(archived.lsn, 1);
+    assert_eq!(wal.append_using(&request("wal-1", 1), &mut publish)?, 1);
+    assert_eq!(
+        wal.append_using(&request("after-gc", 0xfe), &mut publish)?,
+        appends as u64 + 1
+    );
+    drop(wal);
+    drop(branch);
+    drop(authority);
+
+    let reopened = Authority::open_local(store, namespace.clone())?;
+    assert_eq!(reopened.snapshot()?.root.version, types::LOCAL_ROOT_VERSION);
+    assert_eq!(reopened.receipt(&migrated_receipt)?, Some(8));
+    let branch = reopened.branch_store("main")?;
+    let wal = crate::wal::RemoteWal::new(branch.clone());
+    assert_eq!(
+        wal.append_using(&request("wal-1", 1), |encoded, metadata, expected| {
+            branch.publish_wal_append(encoded, metadata, expected)
+        })?,
+        1,
+        "a reopened v6 store must still answer the archived receipt"
+    );
+    assert_eq!(wal.metadata(&namespace)?.last_lsn, appends as u64 + 1);
+    Ok(())
+}
+
 #[test]
 fn migration_merges_a_non_empty_schema_one_pin_layout() -> Result<()> {
     let store = Arc::new(ProbeStore::default());

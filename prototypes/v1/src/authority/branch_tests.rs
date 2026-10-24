@@ -1643,13 +1643,13 @@ fn concurrent_refresh_release_and_gc_do_not_lose_objects() -> Result<()> {
     Ok(())
 }
 
-/// E1 attribution: every append publication charges one `append` origin, the receipt archive
-/// read after a roll shows up as `pin_extend`, and the origin totals reconcile exactly with
-/// `root_publish_attempts`.
+/// A1 attribution: every append publication charges one `append` origin, and the receipt
+/// archive lookup after a roll no longer extends the reader pin. Origin totals still
+/// reconcile exactly with `root_publish_attempts`.
 #[test]
-fn append_origin_reconciles_and_receipt_roll_extends_a_pin() -> Result<()> {
+fn append_origin_reconciles_and_receipt_roll_does_not_extend_a_pin() -> Result<()> {
     crate::work_metrics::set_enabled(true);
-    let (_store, _authority, branch, namespace) = fixture()?;
+    let (_store, authority, branch, namespace) = fixture()?;
     let before = crate::work_metrics::snapshot().expect("enabled snapshot");
 
     let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
@@ -1662,16 +1662,39 @@ fn append_origin_reconciles_and_receipt_roll_extends_a_pin() -> Result<()> {
             &format!("attribution-{ordinal}"),
         )?;
     }
+    assert!(
+        crate::wal::RemoteWal::new(branch.clone())
+            .metadata(&namespace)?
+            .receipt_index
+            .is_some(),
+        "the fixture must have rolled receipts into the archive"
+    );
+
+    // An archived duplicate is answered without an append publication and, crucially,
+    // without a pin extension: the page is served from the retained archive instead of
+    // being admitted into the branch view.
+    let revision = authority.snapshot()?.root.revision;
+    let pinned = branch.pinned_entries()?;
+    assert_eq!(
+        append(&branch, &namespace, frame_batch(1), None, "attribution-1")?,
+        1
+    );
+    assert_eq!(
+        authority.snapshot()?.root.revision,
+        revision,
+        "an archived receipt lookup must not publish"
+    );
+    assert_eq!(
+        branch.pinned_entries()?,
+        pinned,
+        "an archived receipt lookup must not extend the reader pin"
+    );
 
     let after = crate::work_metrics::snapshot().expect("enabled snapshot");
     let origin = |name: &str| after.metadata.publish_origin[name].calls;
     assert!(
         origin("append") - before.metadata.publish_origin["append"].calls >= appends as u64,
         "each append must charge the append origin"
-    );
-    assert!(
-        origin("pin_extend") > before.metadata.publish_origin["pin_extend"].calls,
-        "a receipt lookup after the first roll must extend the reader pin"
     );
     let attributed: u64 = after
         .metadata
@@ -1682,6 +1705,299 @@ fn append_origin_reconciles_and_receipt_roll_extends_a_pin() -> Result<()> {
     assert_eq!(
         attributed, after.metadata.root_publish_attempts,
         "sum(origin) must equal root_publish_attempts"
+    );
+    Ok(())
+}
+
+/// A1: archived WAL receipt pages are unreclaimable metadata. An append may advance the
+/// index and retire the pin that protected the old page path, then GC runs; a reader that
+/// still holds the old index must keep resolving archived receipts.
+#[test]
+fn archived_receipt_pages_survive_gc_and_old_index_readers() -> Result<()> {
+    crate::work_metrics::set_enabled(true);
+    let (_store, authority, branch, namespace) = fixture()?;
+    let wal = RemoteWal::new(branch.clone());
+    let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
+    for ordinal in 1..=appends {
+        append(
+            &branch,
+            &namespace,
+            frame_batch(ordinal as u8),
+            None,
+            &format!("retained-{ordinal}"),
+        )?;
+    }
+    let old_root = wal
+        .metadata(&namespace)?
+        .receipt_index
+        .context("missing first archive")?;
+    let old_pages = |root: &CatalogRoot| -> Result<BTreeMap<String, ObjectEntry>> {
+        Ok(root
+            .objects
+            .entries()?
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("wal/receipt-pages/"))
+            .collect())
+    };
+    let archived_pages = old_pages(&authority.snapshot()?.root)?;
+    assert!(!archived_pages.is_empty());
+
+    // Cross the next roll so the first archive stops being reachable from the branch head,
+    // and let the generation that pinned the old page path retire.
+    for ordinal in (appends + 1)..=(appends + crate::wal::WAL_RECEIPT_ROLL_BATCH + 2) {
+        append(
+            &branch,
+            &namespace,
+            frame_batch(ordinal as u8),
+            None,
+            &format!("retained-{ordinal}"),
+        )?;
+    }
+    let new_root = wal
+        .metadata(&namespace)?
+        .receipt_index
+        .context("missing second archive")?;
+    assert_ne!(new_root, old_root);
+
+    // The same GC still prunes an ordinary logical alias: retention is scoped to the
+    // archived receipt prefix, not a global freeze.
+    let session = authority.branch_store("main")?;
+    let orphan = vec![0x6b; crate::manifest::SEGMENT_SIZE];
+    let orphan_key = namespace.key(&format!("segments/{}", crate::manifest::digest(&orphan)))?;
+    session.put(
+        &orphan_key,
+        &orphan,
+        crate::object_store::PutCondition::Absent,
+    )?;
+    drop(session);
+
+    let before = crate::work_metrics::snapshot().expect("enabled snapshot");
+    let collected =
+        crate::gc::GarbageCollector::new(authority.clone(), std::time::Duration::ZERO).collect()?;
+    let after = crate::work_metrics::snapshot().expect("enabled snapshot");
+    assert!(
+        after.gc.scanned_entries > before.gc.scanned_entries,
+        "work.gc must observe the GC scan"
+    );
+    assert!(
+        collected.deleted >= 1,
+        "GC did not collect the ordinary orphan"
+    );
+
+    let root = authority.snapshot()?.root;
+    assert!(
+        root.objects.get(&orphan_key)?.is_none(),
+        "an ordinary alias survived GC"
+    );
+    for (key, entry) in &archived_pages {
+        assert!(
+            root.objects.get(key)?.is_some(),
+            "retained archive alias lost: {key}"
+        );
+        assert!(
+            root.blobs.get(&entry.blob)?.is_some(),
+            "retained archive blob lost: {key}"
+        );
+        authority
+            .read_blob(entry)
+            .with_context(|| format!("retained archive page unreadable: {key}"))?;
+    }
+
+    // An old index page path, advanced past and pruned-over, still answers.
+    let pages = crate::authority::paged_index::PagedIndex::retained_with_prefix(
+        branch.as_ref(),
+        &namespace,
+        crate::wal::WAL_RECEIPT_PAGE_PREFIX,
+    );
+    let archived: crate::wal::ArchivedReceipt = serde_json::from_value(
+        pages
+            .get(Some(&old_root), "retained-1")?
+            .context("old archive page missing")?,
+    )?;
+    assert_eq!(archived.lsn, 1);
+    let current = pages.entries(Some(&new_root))?;
+    assert!(!current.is_empty());
+    let (identity, value) = current.iter().next().context("second archive is empty")?;
+    let archived: crate::wal::ArchivedReceipt = serde_json::from_value(value.clone())?;
+    assert!(
+        archived.lsn > 0 && archived.lsn <= wal.metadata(&namespace)?.last_lsn,
+        "second archive value for {identity} is outside the WAL"
+    );
+
+    // The append gate itself keeps resolving old identities and accepts a new one.
+    assert_eq!(
+        append(&branch, &namespace, frame_batch(1), None, "retained-1")?,
+        1
+    );
+    let last = wal.metadata(&namespace)?.last_lsn;
+    assert_eq!(
+        append(&branch, &namespace, frame_batch(0xfe), None, "after-gc")?,
+        last + 1
+    );
+    Ok(())
+}
+
+/// A1 concurrency: GC may prune and publish while appends advance the index and resolve
+/// archived identities. Neither side may observe a missing receipt page.
+#[test]
+fn archived_receipt_reads_stay_available_while_gc_runs() -> Result<()> {
+    let (_store, authority, branch, namespace) = fixture()?;
+    let wal = RemoteWal::new(branch.clone());
+    let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
+    for ordinal in 1..=appends {
+        append(
+            &branch,
+            &namespace,
+            frame_batch(ordinal as u8),
+            None,
+            &format!("concurrent-retained-{ordinal}"),
+        )?;
+    }
+    let old_root = wal
+        .metadata(&namespace)?
+        .receipt_index
+        .context("missing archive")?;
+
+    let collector_authority = authority.clone();
+    let collector = std::thread::spawn(move || -> Result<()> {
+        for _ in 0..6 {
+            crate::gc::GarbageCollector::new(
+                collector_authority.clone(),
+                std::time::Duration::ZERO,
+            )
+            .collect()?;
+        }
+        Ok(())
+    });
+    for ordinal in 0..12 {
+        append(
+            &branch,
+            &namespace,
+            frame_batch(ordinal as u8),
+            None,
+            &format!("concurrent-writer-{ordinal}"),
+        )?;
+        assert_eq!(
+            append(
+                &branch,
+                &namespace,
+                frame_batch(1),
+                None,
+                "concurrent-retained-1"
+            )?,
+            1,
+            "an archived receipt stopped answering during GC"
+        );
+    }
+    collector.join().expect("collector panicked")?;
+
+    let root = authority.snapshot()?.root;
+    let pages = crate::authority::paged_index::PagedIndex::retained_with_prefix(
+        branch.as_ref(),
+        &namespace,
+        crate::wal::WAL_RECEIPT_PAGE_PREFIX,
+    );
+    let archived: crate::wal::ArchivedReceipt = serde_json::from_value(
+        pages
+            .get(Some(&old_root), "concurrent-retained-1")?
+            .context("archived page lost under GC")?,
+    )?;
+    assert_eq!(archived.lsn, 1);
+    assert!(
+        root.objects
+            .entries()?
+            .keys()
+            .any(|key| key.starts_with("wal/receipt-pages/")),
+        "GC removed every archived receipt page"
+    );
+    Ok(())
+}
+
+/// A1 lost acknowledgement and restart: a head write whose acknowledgement is lost still
+/// resolves through the inline receipt, archived identities keep answering, and a reopened
+/// authority resolves them through the retained archive without a pin.
+#[test]
+fn archived_receipt_reads_survive_lost_ack_and_reopen() -> Result<()> {
+    let (store, authority, branch, namespace) = fixture()?;
+    let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
+    for ordinal in 1..=appends {
+        append(
+            &branch,
+            &namespace,
+            frame_batch(ordinal as u8),
+            None,
+            &format!("reopen-retained-{ordinal}"),
+        )?;
+    }
+    let archived_pages = authority
+        .snapshot()?
+        .root
+        .objects
+        .entries()?
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("wal/receipt-pages/"))
+        .count();
+    assert!(archived_pages > 0);
+
+    store.root_fault.store(1, Ordering::SeqCst);
+    let lost = append(
+        &branch,
+        &namespace,
+        frame_batch(0xee),
+        None,
+        "lost-after-roll",
+    )?;
+    assert_eq!(lost, appends as u64 + 1);
+    assert_eq!(
+        append(
+            &branch,
+            &namespace,
+            frame_batch(0xee),
+            None,
+            "lost-after-roll"
+        )?,
+        lost,
+        "the inline receipt must resolve the retry"
+    );
+    assert_eq!(
+        append(
+            &branch,
+            &namespace,
+            frame_batch(1),
+            None,
+            "reopen-retained-1"
+        )?,
+        1
+    );
+
+    crate::gc::GarbageCollector::new(authority.clone(), std::time::Duration::ZERO).collect()?;
+    drop(branch);
+    drop(authority);
+
+    let reopened = Authority::open(store, namespace.clone())?;
+    let branch = reopened.branch_store("main")?;
+    let wal = RemoteWal::new(branch.clone());
+    assert_eq!(wal.metadata(&namespace)?.last_lsn, lost);
+    assert_eq!(
+        append(
+            &branch,
+            &namespace,
+            frame_batch(1),
+            None,
+            "reopen-retained-1"
+        )?,
+        1,
+        "a reopened authority must resolve the archived receipt"
+    );
+    assert!(
+        reopened
+            .snapshot()?
+            .root
+            .objects
+            .entries()?
+            .keys()
+            .any(|key| key.starts_with("wal/receipt-pages/")),
+        "archived receipt pages did not survive restart"
     );
     Ok(())
 }

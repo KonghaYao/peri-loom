@@ -283,6 +283,13 @@ impl ObjectStore for GatedWalStore {
         Ok(result)
     }
 
+    fn get_retained(&self, key: &str) -> Result<Option<StoredObject>> {
+        self.validate_session()?;
+        let result = self.inner.get_retained(key)?;
+        self.validate_session()?;
+        Ok(result)
+    }
+
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
         self.validate_session()?;
         let result = self.inner.put(key, bytes, condition)?;
