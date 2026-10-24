@@ -756,7 +756,7 @@ impl RemoteWal {
         }
         let pending =
             std::cell::RefCell::new(crate::authority::paged_index::PendingPages::default());
-        let pages = crate::authority::paged_index::PagedIndex::with_prefix(
+        let pages = crate::authority::paged_index::PagedIndex::retained_with_prefix(
             self.store.as_ref(),
             namespace,
             WAL_RECEIPT_PAGE_PREFIX,
