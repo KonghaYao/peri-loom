@@ -477,6 +477,37 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.12
+
+Local-mode redo and commit now publish through the branch's WAL append path
+instead of the chunk/index multi-root path. The local adapter binds the epoch
+from the open request and rejects an append whose namespace or epoch differs
+from that binding; branch publication validation stays in BranchStore. This is
+a local-backend path change, not a lease-fencing change, and it makes no
+throughput claim.
+
+The stdio worker can write one opt-in metrics snapshot on exit when
+`PERI_METRICS_SNAPSHOT_PATH` is set; `PERI_WORK_METRICS=1` adds the workload
+counters. The snapshot is written atomically with `schema_version=1`; a write
+failure is reported on stderr and does not change the close outcome. It is a
+diagnostic artifact: it is not fsynced and does not cover signal death or
+failures before the worker runtime starts.
+
+Issue 8's performance harness, gate and container are repository tooling and a
+separate CI workflow, not part of the release gate and not a performance
+result. The frozen denominator remains v1.1.11; it has no W1 exit snapshot, so
+the gate reports attribution and overall status `NOT_RUN` for evidence
+containing that arm. G2 has not produced a PASS, and this release claims no
+capacity or throughput result.
+
+Remaining gaps: the release-to-normal-restart path after an isolation release
+is still not covered by a full-stack end-to-end run; dirty restart remains
+denied; disaster recovery, live external S3 and HA are not certified. The
+official JS SDK matrix still declares 27 scripts and default-executes 26 per
+round for 2 rounds (52 runs, 2 E1 skips); E1 remains an explicit known gap, and
+this is not a full Hrana compatibility claim. The absence of an SP01 pass or a
+capacity result is unchanged. This is a preview, not a production release.
+
 ## v1.1.11
 
 A lost or canceled reply to a session `open` no longer turns the database
