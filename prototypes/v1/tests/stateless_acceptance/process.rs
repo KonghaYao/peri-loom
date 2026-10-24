@@ -87,11 +87,18 @@ impl Worker {
         })
     }
 
-    fn diagnostics(&self) -> String {
+    pub fn diagnostics(&self) -> String {
         String::from_utf8_lossy(&self.stderr.lock().unwrap()).into_owned()
     }
 
-    pub fn request(&mut self, mut request: Value) -> Result<Value> {
+    pub fn request(&mut self, request: Value) -> Result<Value> {
+        let identifier = self.send(request)?;
+        self.receive(&identifier)
+    }
+
+    /// Send a request without waiting for its response. Process-level concurrency tests use
+    /// this to put two workers into the same store operation before either reads an answer.
+    pub fn send(&mut self, mut request: Value) -> Result<String> {
         self.sequence += 1;
         let identifier = format!("request-{}", self.sequence);
         request["id"] = json!(identifier);
@@ -102,6 +109,10 @@ impl Worker {
             .context("worker stdin is closed")?
             .send(bytes)
             .context("worker input writer stopped")?;
+        Ok(identifier)
+    }
+
+    pub fn receive(&mut self, identifier: &str) -> Result<Value> {
         let response = self
             .output
             .recv_timeout(REQUEST_TIMEOUT)

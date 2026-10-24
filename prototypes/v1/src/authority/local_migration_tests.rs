@@ -8,9 +8,13 @@
 use super::*;
 use crate::{
     namespace::Namespace,
-    object_store::{GroupWrite, MemoryObjectStore, ObjectStore, PutCondition, StoredObject},
+    object_store::{
+        GroupWrite, LocalObjectStore, MemoryObjectStore, ObjectStore, PutCondition, StoredObject,
+    },
+    ownership::types::{AccessRole, GrantState, OwnerRecord, OwnershipCatalog},
 };
 use anyhow::bail;
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicU8, Ordering},
     Arc, Barrier, Mutex,
@@ -110,13 +114,16 @@ fn namespace(name: &str) -> Namespace {
 /// Publish a version-1 head that carries `receipts` inline receipts. Real appends are far
 /// too slow for the 8 MiB boundary, and the migration only cares about the representation,
 /// so the fixture writes the exact durable shape a long-lived v1 worker would have produced.
-fn seed_v1_root(
-    store: &Arc<ProbeStore>,
+fn seed_v1_root<S>(
+    store: &Arc<S>,
     namespace: &Namespace,
     receipts: usize,
     pin_schema: Option<u8>,
-) -> Result<u64> {
-    let authority = Authority::open(store.clone(), namespace.clone())?;
+) -> Result<u64>
+where
+    S: ObjectStore + 'static,
+{
+    let authority = Authority::open(store.clone() as Arc<dyn ObjectStore>, namespace.clone())?;
     let current = authority.snapshot()?;
     let mut root = current.root.clone();
     root.pin_schema = pin_schema;
@@ -139,6 +146,57 @@ fn stored_root(store: &ProbeStore, namespace: &Namespace) -> Result<CatalogRoot>
         .get(&namespace.key("authority/root")?)?
         .context("authority root missing")?;
     Ok((*codec::decode(&object.bytes)?).clone())
+}
+
+fn stored_root_bytes(store: &dyn ObjectStore, namespace: &Namespace) -> Result<Vec<u8>> {
+    Ok(store
+        .get(&namespace.key("authority/root")?)?
+        .context("authority root missing")?
+        .bytes)
+}
+
+fn bare_owner_record() -> OwnerRecord {
+    OwnerRecord {
+        epoch: 1,
+        branch_incarnation: 1,
+        worker_id: "unowned".into(),
+        lease_id: "unowned".into(),
+        grant_id: "unowned".into(),
+        renewal_sequence: 0,
+        state: GrantState::Revoked,
+        role: AccessRole::Writer,
+    }
+}
+
+/// Rewrite the fresh version-1 head into a platform-like version-2/4/5 head. The migration
+/// only has to observe the refusal, so the fixture writes exactly the durable shape that
+/// gets past decode and deep verification.
+fn seed_platform_root(
+    store: &Arc<ProbeStore>,
+    namespace: &Namespace,
+    version: u32,
+    catalog: OwnershipCatalog,
+    mutate: impl FnOnce(&mut CatalogRoot),
+) -> Result<()> {
+    let authority = Authority::open(store.clone(), namespace.clone())?;
+    let current = authority.snapshot()?;
+    let mut root = current.root.clone();
+    root.version = version;
+    root.ownership = Some(catalog);
+    mutate(&mut root);
+    store.put(
+        &namespace.key("authority/root")?,
+        &codec::encode(&root)?,
+        PutCondition::Match(current.etag),
+    )?;
+    Ok(())
+}
+
+fn empty_ownership() -> OwnershipCatalog {
+    OwnershipCatalog {
+        authority_term: 1,
+        ..OwnershipCatalog::default()
+    }
 }
 
 #[test]
@@ -176,13 +234,83 @@ fn v1_receipts_are_paged_and_read_back_after_restart() -> Result<()> {
 }
 
 #[test]
+fn local_migration_refuses_platform_ownership_records() -> Result<()> {
+    let store = Arc::new(ProbeStore::default());
+    let namespace = namespace("owns-records");
+    let catalog = OwnershipCatalog {
+        authority_term: 1,
+        branches: BTreeMap::from([("main".to_string(), bare_owner_record())]),
+        ..OwnershipCatalog::default()
+    };
+    seed_platform_root(&store, &namespace, 5, catalog, |_| {})?;
+
+    let error = Authority::open_local(store.clone(), namespace.clone())
+        .map(|_| ())
+        .expect_err("ownership records must not be dropped");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("ownership catalog"),
+        "unexpected refusal: {message}"
+    );
+    assert_eq!(
+        stored_root(&store, &namespace)?.version,
+        5,
+        "a refused migration must leave the platform head readable"
+    );
+    Ok(())
+}
+
+#[test]
+fn local_migration_refuses_platform_branch_state() -> Result<()> {
+    let store = Arc::new(ProbeStore::default());
+    let namespace = namespace("branch-state");
+    seed_platform_root(&store, &namespace, 5, empty_ownership(), |root| {
+        let branch = root.branches.get_mut("main").unwrap();
+        branch.sequence = 1;
+        branch.last_commit_ms = 1;
+    })?;
+
+    let error = Authority::open_local(store.clone(), namespace.clone())
+        .map(|_| ())
+        .expect_err("branch state must not be dropped");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("branch state"),
+        "unexpected refusal: {message}"
+    );
+    assert_eq!(stored_root(&store, &namespace)?.version, 5);
+    Ok(())
+}
+
+#[test]
+fn local_migration_refuses_every_non_v1_root() -> Result<()> {
+    let store = Arc::new(ProbeStore::default());
+    let namespace = namespace("only-v1");
+    // Even with no ownership records and a fresh branch identity, a platform version is
+    // not a local format and must not be converted.
+    seed_platform_root(&store, &namespace, 5, empty_ownership(), |_| {})?;
+
+    let error = Authority::open_local(store.clone(), namespace.clone())
+        .map(|_| ())
+        .expect_err("only version-1 roots may migrate");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("only supports version-1"),
+        "unexpected refusal: {message}"
+    );
+    assert_eq!(stored_root(&store, &namespace)?.version, 5);
+    Ok(())
+}
+
+#[test]
 fn migration_is_one_publication_charged_to_the_migration_origin() -> Result<()> {
     let store = Arc::new(ProbeStore::default());
     let namespace = namespace("origin");
     seed_v1_root(&store, &namespace, 600, Some(1))?;
-    crate::work_metrics::set_enabled(true);
-    let before = crate::work_metrics::snapshot().expect("enabled snapshot");
     let writes_before = store.root_versions.lock().unwrap().len();
+    // Thread-local capture: the global counters are shared with every parallel test, so
+    // this test observes only the publications its own thread performed.
+    crate::work_metrics::begin_test_publish_capture();
 
     let authority = Authority::open_local(store.clone(), namespace.clone())?;
     assert_eq!(
@@ -190,28 +318,24 @@ fn migration_is_one_publication_charged_to_the_migration_origin() -> Result<()> 
         types::LOCAL_ROOT_VERSION
     );
 
-    let after = crate::work_metrics::snapshot().expect("enabled snapshot");
-    let attempts = after.metadata.root_publish_attempts - before.metadata.root_publish_attempts;
-    let migration = after.metadata.publish_origin["migration"].calls
-        - before.metadata.publish_origin["migration"].calls;
-    let origin_sum: u64 = after
-        .metadata
-        .publish_origin
-        .values()
-        .map(|count| count.calls)
-        .sum::<u64>()
-        - before
-            .metadata
-            .publish_origin
-            .values()
-            .map(|count| count.calls)
-            .sum::<u64>();
-    assert_eq!(attempts, 1, "migration must publish exactly one head");
-    assert_eq!(migration, 1);
-    assert_eq!(origin_sum, attempts, "origin counters must reconcile");
+    let captured = crate::work_metrics::take_test_publish_capture()
+        .expect("publication capture was not installed");
     assert_eq!(
-        after.metadata.publish_outside_transact["migration"].calls,
-        before.metadata.publish_outside_transact["migration"].calls,
+        captured.attempts, 1,
+        "migration must publish exactly one head"
+    );
+    assert_eq!(
+        captured.origin(crate::work_metrics::PublishOrigin::Migration),
+        1
+    );
+    assert_eq!(
+        captured.origin_sum(),
+        captured.attempts,
+        "origin counters must reconcile"
+    );
+    assert_eq!(
+        captured.outside_transact(crate::work_metrics::OutsideTransactKind::Migration),
+        0,
         "a local migration must not bypass transact accounting"
     );
 
@@ -410,6 +534,130 @@ fn near_8mib_v1_root_migrates_with_a_bounded_head() -> Result<()> {
 }
 
 #[test]
+fn near_8mib_v1_root_migrates_on_a_real_local_store() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Arc::new(LocalObjectStore::open(directory.path())?);
+    let namespace = namespace("ceiling-local");
+    seed_v1_root(&store, &namespace, 103_000, Some(2))?;
+    let before = stored_root_bytes(store.as_ref(), &namespace)?;
+    assert!(
+        before.len() >= 7 * 1024 * 1024 && before.len() <= types::MAX_ROOT_BYTES,
+        "the boundary fixture is {} bytes",
+        before.len()
+    );
+
+    let authority = Authority::open_local(store.clone(), namespace.clone())?;
+    let root = authority.snapshot()?.root;
+    assert_eq!(root.version, types::LOCAL_ROOT_VERSION);
+    assert!(root.receipts.len() <= INLINE_RECEIPTS_MAX);
+    let after = stored_root_bytes(store.as_ref(), &namespace)?;
+    assert!(
+        after.len() <= 64 * 1024,
+        "real-store migrated head is {} bytes",
+        after.len()
+    );
+    let pages = store.list(&namespace.key("authority/index-pages")?)?;
+    assert!(
+        !pages.is_empty(),
+        "the receipt archive did not reach the real backend"
+    );
+    assert_eq!(
+        authority.receipt(&format!("{:064x}", 102_999))?,
+        Some(103_000)
+    );
+    drop(authority);
+    let reopened = Authority::open_local(store, namespace)?;
+    assert_eq!(
+        reopened.receipt(&format!("{:064x}", 102_999))?,
+        Some(103_000)
+    );
+    Ok(())
+}
+
+#[test]
+fn migration_keeps_archived_and_new_inline_receipts_readable() -> Result<()> {
+    let store = Arc::new(ProbeStore::default());
+    let namespace = namespace("mixed-receipts");
+    seed_v1_root(&store, &namespace, 1_000, Some(2))?;
+    let authority = Authority::open_local(store.clone(), namespace.clone())?;
+    // A fresh migration receipt stays inline while the 1,000 old ones are archived.
+    let root = authority.snapshot()?.root;
+    assert_eq!(root.version, types::LOCAL_ROOT_VERSION);
+    let (inline_id, inline_value) = root
+        .receipts
+        .iter()
+        .next()
+        .context("inline migration receipt missing")?;
+    let inline_id = inline_id.clone();
+    let inline_value = *inline_value;
+    assert_eq!(authority.receipt(&inline_id)?, Some(inline_value));
+    assert_eq!(authority.receipt(&format!("{:064x}", 7))?, Some(8));
+
+    // New publications append to the inline window; both representations must answer.
+    for _ in 0..8 {
+        authority.transact(None, |_| Ok(()))?;
+    }
+    let root = authority.snapshot()?.root;
+    assert!(root.receipts.len() > 1 && root.receipts.len() <= INLINE_RECEIPTS_MAX);
+    let (new_id, new_value) = root
+        .receipts
+        .iter()
+        .find(|(identifier, _)| **identifier != inline_id)
+        .context("new inline receipt missing")?;
+    let new_id = new_id.clone();
+    let new_value = *new_value;
+    assert_eq!(authority.receipt(&new_id)?, Some(new_value));
+    assert_eq!(authority.receipt(&inline_id)?, Some(inline_value));
+    assert_eq!(authority.receipt(&format!("{:064x}", 7))?, Some(8));
+    drop(authority);
+
+    let reopened = Authority::open_local(store, namespace)?;
+    assert_eq!(reopened.receipt(&new_id)?, Some(new_value));
+    assert_eq!(reopened.receipt(&format!("{:064x}", 7))?, Some(8));
+    Ok(())
+}
+
+#[test]
+fn migration_merges_a_non_empty_schema_one_pin_layout() -> Result<()> {
+    let store = Arc::new(ProbeStore::default());
+    let namespace = namespace("pin-merge");
+    let authority = Authority::open(store.clone(), namespace.clone())?;
+    let entry = authority.upload(b"pinned-segment")?;
+    let pin = blake3::hash(b"reader-pin").to_hex().to_string();
+    let current = authority.snapshot()?;
+    let mut root = current.root.clone();
+    root.pin_schema = Some(1);
+    root.pins.insert(pin.clone(), Vec::new());
+    root.pin_generations.clear();
+    // The pre-generation key form is what schema 1 wrote; the upgrade must rewrite it.
+    root.pin_entries = registry::Registry::inline_with_order(
+        BTreeMap::from([(format!("{pin}/{}", entry.blob), entry.clone())]),
+        paged_index::KeyOrder::Hashed,
+    );
+    store.put(
+        &namespace.key("authority/root")?,
+        &codec::encode(&root)?,
+        PutCondition::Match(current.etag),
+    )?;
+
+    let migrated = Authority::open_local(store.clone(), namespace.clone())?;
+    let root = migrated.snapshot()?.root;
+    assert_eq!(root.version, types::LOCAL_ROOT_VERSION);
+    assert_eq!(root.pin_schema, Some(types::PIN_SCHEMA_VERSION));
+    assert_eq!(root.pin_generations.get(&pin), Some(&0));
+    let entries = root.pin_entries.entries()?;
+    assert_eq!(
+        entries.get(&format!("{pin}/0/{}", entry.blob)),
+        Some(&entry),
+        "the pin entry was not rewritten into the generation layout"
+    );
+    assert!(entries
+        .keys()
+        .all(|key| types::pin_entry_parts(key).is_some_and(|parts| parts.generation == 0)));
+    Ok(())
+}
+
+#[test]
 fn a_version_6_head_with_ownership_is_rejected() -> Result<()> {
     let store = Arc::new(ProbeStore::default());
     let namespace = namespace("ownership");
@@ -486,7 +734,6 @@ fn a_pre_migration_root_copy_still_opens_with_the_platform_shape() -> Result<()>
 #[test]
 #[ignore = "10k publication experiment; run explicitly"]
 fn ten_thousand_publications_keep_the_local_head_bounded() -> Result<()> {
-    crate::work_metrics::set_enabled(true);
     let store = Arc::new(ProbeStore::default());
     let namespace = namespace("ten-thousand");
     let authority = Authority::open_local(store.clone(), namespace.clone())?;

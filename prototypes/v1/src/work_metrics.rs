@@ -300,6 +300,8 @@ static MAX_BRANCH_HISTORY_POINTS: AtomicU64 = AtomicU64::new(0);
 /// are deliberately not counted here; `metadata.inline_pin_refs` names the cost the head
 /// itself still carries.
 pub(crate) fn observe_root_publish(encoded_bytes: usize, inline_pin_refs: usize, receipts: usize) {
+    #[cfg(test)]
+    capture_root_publish();
     if !enabled() {
         return;
     }
@@ -419,7 +421,82 @@ impl OutsideTransactKind {
 static PUBLISH_ORIGIN_CALLS: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 static PUBLISH_OUTSIDE_TRANSACT_CALLS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
+/// Test-private publication capture. The process-wide counters are shared by every test
+/// thread, so a test that needs "exactly one publication happened" cannot read them while
+/// other tests publish. This capture is thread-local and independent of the global switch:
+/// a test begins it immediately before the code under test and reads only the calls that
+/// ran on its own thread.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TestPublishCapture {
+    pub attempts: u64,
+    pub origins: [u64; 16],
+    pub outside_transact: [u64; 2],
+}
+
+#[cfg(test)]
+impl TestPublishCapture {
+    pub(crate) fn origin(self, origin: PublishOrigin) -> u64 {
+        self.origins[origin.index()]
+    }
+
+    pub(crate) fn origin_sum(self) -> u64 {
+        self.origins.iter().sum()
+    }
+
+    pub(crate) fn outside_transact(self, kind: OutsideTransactKind) -> u64 {
+        self.outside_transact[kind.index()]
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PUBLISH_CAPTURE: std::cell::RefCell<Option<TestPublishCapture>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn begin_test_publish_capture() {
+    TEST_PUBLISH_CAPTURE.with(|capture| {
+        *capture.borrow_mut() = Some(TestPublishCapture::default());
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn take_test_publish_capture() -> Option<TestPublishCapture> {
+    TEST_PUBLISH_CAPTURE.with(|capture| capture.borrow_mut().take())
+}
+
+#[cfg(test)]
+fn capture_root_publish() {
+    TEST_PUBLISH_CAPTURE.with(|capture| {
+        if let Some(capture) = capture.borrow_mut().as_mut() {
+            capture.attempts += 1;
+        }
+    });
+}
+
+#[cfg(test)]
+fn capture_publish_origin(origin: PublishOrigin) {
+    TEST_PUBLISH_CAPTURE.with(|capture| {
+        if let Some(capture) = capture.borrow_mut().as_mut() {
+            capture.origins[origin.index()] += 1;
+        }
+    });
+}
+
+#[cfg(test)]
+fn capture_publish_outside_transact(kind: OutsideTransactKind) {
+    TEST_PUBLISH_CAPTURE.with(|capture| {
+        if let Some(capture) = capture.borrow_mut().as_mut() {
+            capture.outside_transact[kind.index()] += 1;
+        }
+    });
+}
+
 pub(crate) fn observe_publish_origin(origin: PublishOrigin) {
+    #[cfg(test)]
+    capture_publish_origin(origin);
     if !enabled() {
         return;
     }
@@ -427,6 +504,8 @@ pub(crate) fn observe_publish_origin(origin: PublishOrigin) {
 }
 
 pub(crate) fn observe_publish_outside_transact(kind: OutsideTransactKind) {
+    #[cfg(test)]
+    capture_publish_outside_transact(kind);
     if !enabled() {
         return;
     }

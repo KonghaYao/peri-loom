@@ -201,28 +201,39 @@ this stdin protocol as a production network service.
 
 Local (`worker`) stores use their own durable root schema, version 6. It carries
 no ownership catalog and bounds the receipt ledger: at most 128 receipts stay
-inline, older ones move to immutable pages addressed by `receipt_index`. The
-8 MiB head ceiling is unchanged and still fails the publication before its CAS.
+inline, older ones move to immutable pages addressed by `receipt_index`.
 
-A local worker that finds a version-1/2/4/5 head migrates it once, on open. The
-migration is a single durability group: receipt pages, pin-layout pages and the
-new head are published together, the head CAS is the last write, and the
-publication is charged to `publish_origin.migration` and
-`root_publish_attempts` (it does not bypass transaction accounting). The reader-pin
-schema upgrade is merged into the same publication, so a first open never
-publishes a pin-only intermediate head. Concurrent openers race on the same CAS:
-one publishes, the others re-read the version-6 head.
+`MAX_ROOT_BYTES` (8 MiB) is a **publication** ceiling enforced by the encoder
+before the CAS. Decoding does not reject a larger legacy head: an already
+oversized version-1 root stays readable and can be migrated into a bounded
+version-6 head, which is the recovery path for a store that reached the ceiling
+under an older binary. The constant therefore does not bound parse memory for a
+document already on disk; that pre-existing behaviour is deliberately unchanged.
+
+A local worker migrates a **version-1** head once, on open. The migration is a
+single durability group: receipt pages, pin-layout pages and the new head are
+published together, the head CAS is the last write, and the publication is
+charged to `publish_origin.migration` and `root_publish_attempts` (it does not
+bypass transaction accounting). The reader-pin schema upgrade is merged into the
+same publication, so a first open never publishes a pin-only intermediate head.
+Concurrent openers race on the same CAS: one publishes, the others re-read the
+version-6 head.
+
+Only version 1 is a local format. Version-2/4/5 roots belong to the platform
+ownership schema; local migration refuses them instead of dropping lease, grant,
+branch or command-receipt state. A version-2/4/5 root with a non-empty ownership
+catalog fails with an `ownership catalog` error; one with branch state fails with
+a `branch state` error; any other non-version-1 head fails because local
+migration only supports version-1 roots. Local stores must not be shared with
+the platform ownership commands.
 
 The migration is **one-way**. A v1.1.12 (or older) binary rejects a version-6
 root at decode with `unsupported authority root version` and fails closed; it
 cannot read, rewrite or downgrade the store. The current platform ownership boot
 also refuses to convert a version-6 head back to an ownership schema. Take a
 backup of the store before upgrading if a rollback to the previous release is a
-requirement; the backup is the pre-migration version-1/2/4/5 head and its
-referenced objects. Local stores are not shared with the platform ownership
-commands: a version-6 head has no leases, and a root whose ownership catalog
-still carries command receipts is refused by the migration instead of silently
-discarding them.
+requirement; the backup is the pre-migration version-1 head and its referenced
+objects.
 
 A failed migration leaves the previously published head readable and the worker
 fails closed; retrying the open is safe because pages are content-addressed and

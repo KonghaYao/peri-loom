@@ -488,7 +488,9 @@ impl Authority {
         // `upgrade_pin_layout` is intentionally not used here: its publication is merged
         // with the schema migration so a first open can only publish one head.
         if !Self::is_local_root(&root) {
-            authority.migrate_local_root()?;
+            authority
+                .migrate_local_root()
+                .context("local root migration failed")?;
         }
         Ok(authority)
     }
@@ -500,6 +502,15 @@ impl Authority {
         root.version == types::LOCAL_ROOT_VERSION
             && root.ownership.is_none()
             && root.pin_schema == Some(types::PIN_SCHEMA_VERSION)
+    }
+
+    /// Whether a non-local root carries branch state that a local migration would drop.
+    /// The fresh shape (`main` at `BranchRef::default`) is the only branch identity a
+    /// version-2/4/5 root may carry for the refusal path to name the ownership check.
+    fn root_has_branch_state(root: &CatalogRoot) -> bool {
+        root.branches
+            .iter()
+            .any(|(name, branch)| name != "main" || branch != &BranchRef::default())
     }
 
     pub(crate) fn from_loaded(
@@ -1246,20 +1257,36 @@ impl Authority {
             PublishOrigin::Migration,
             PublicationScope::LocalMigration,
             |root, index| {
-                ensure!(
-                    matches!(root.version, 1 | 2 | 4 | 5 | types::LOCAL_ROOT_VERSION),
-                    "unsupported authority root version for local migration"
-                );
-                if let Some(catalog) = &root.ownership {
-                    // Dropping an ownership catalog loses the platform's idempotency
-                    // answers. Local mode never creates one, so a non-empty ledger means
-                    // this store belongs to the platform and must not be migrated.
-                    ensure!(
-                        catalog.commands.is_empty(),
-                        "local migration cannot discard ownership command receipts"
-                    );
+                match root.version {
+                    // Only the legacy local shape is migrated. Platform schemas 2/4/5 are
+                    // not local formats: dropping their ownership or branch state would
+                    // silently discard fencing metadata, so they are refused rather than
+                    // converted.
+                    1 | types::LOCAL_ROOT_VERSION => {}
+                    version => {
+                        if let Some(catalog) = &root.ownership {
+                            ensure!(
+                                catalog.branches.is_empty()
+                                    && catalog.commands.is_empty()
+                                    && catalog.command_index.is_none(),
+                                "local migration refuses version-{version} ownership catalog; \
+                                 local mode only supports version-1 roots"
+                            );
+                        }
+                        ensure!(
+                            !Self::root_has_branch_state(root),
+                            "local migration refuses version-{version} branch state; \
+                             local mode only supports version-1 roots"
+                        );
+                        anyhow::bail!(
+                            "local migration only supports version-1 roots; found version {version}"
+                        );
+                    }
                 }
-                root.ownership = None;
+                ensure!(
+                    root.ownership.is_none(),
+                    "local migration root unexpectedly carries ownership"
+                );
                 if !types::supports_paged_receipts(root.version) {
                     ensure!(
                         root.receipt_index.is_none(),
