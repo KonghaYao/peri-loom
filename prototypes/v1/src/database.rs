@@ -601,7 +601,11 @@ impl RemoteDatabase {
         // The backfill is complete and no reader blocked it. Do not start the exclusive
         // phase after the unit's time budget elapsed: the truncate is bounded cheaply, but
         // a forced unit must still not hold the operations gate for an unbounded window.
-        if started.elapsed() >= budget.max_time {
+        // The caller's request deadline can be tighter than the unit budget (a drain's
+        // pre-suspend budget is); once it passed, the same rule applies and the completed
+        // backfill is reported instead of failing the exclusive phase's first admission
+        // check.
+        if started.elapsed() >= budget.max_time || deadline.check().is_err() {
             return Ok(MaintenanceUnitReport {
                 scanned_pages: pages,
                 backfilled_bytes: self.frames_to_bytes(pages),
