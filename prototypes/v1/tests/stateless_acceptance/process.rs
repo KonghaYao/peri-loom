@@ -21,7 +21,14 @@ pub struct Worker {
 
 impl Worker {
     pub fn spawn(store: &Path, cache: &Path) -> Result<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_peri-loom-v1"))
+        Self::spawn_binary(Path::new(env!("CARGO_BIN_EXE_peri-loom-v1")), store, cache)
+    }
+
+    /// Spawn a specific worker binary. The upgrade tests use this to drive the previous
+    /// release against the same store, so a durable-format change is verified against the
+    /// binary it actually breaks instead of a copied whitelist.
+    pub fn spawn_binary(binary: &Path, store: &Path, cache: &Path) -> Result<Self> {
+        let mut child = Command::new(binary)
             .arg("worker")
             .arg(store)
             .arg(cache)

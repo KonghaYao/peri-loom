@@ -4,6 +4,8 @@ mod codec;
 mod decode_cache;
 #[cfg(test)]
 mod identity_scale_tests;
+#[cfg(test)]
+mod local_migration_tests;
 pub(crate) mod local_store;
 mod migration;
 pub mod ownership;
@@ -61,6 +63,15 @@ pub struct Authority {
     /// policy it was published with: a configuration change may extend a future window, but
     /// it must never shorten one this branch already promised.
     recovery_retention: RecoveryRetention,
+}
+
+/// Which mutation rules a publication must satisfy. Routine statements keep the head's
+/// version, ownership and receipt representation fixed; the one-way local migration is the
+/// single path allowed to rewrite them, and it does so in one durability group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicationScope {
+    Statement,
+    LocalMigration,
 }
 
 /// Pin-side lifecycle observed by the authority. Session lifecycle (S01) keeps its own
@@ -412,6 +423,85 @@ impl Authority {
         })
     }
 
+    /// Open a local authority. Local stores are single-writer by construction and carry no
+    /// ownership catalog, so they use their own root version instead of the platform schema.
+    /// A version-1/2/4/5 head is migrated once, in the same publication that upgrades the
+    /// reader-pin layout; there is never an intermediate pin-only publication.
+    pub(crate) fn open_local(
+        store: Arc<dyn ObjectStore>,
+        namespace: Namespace,
+    ) -> Result<Arc<Self>> {
+        Self::open_local_with_retention(store, namespace, RecoveryRetention::default())
+    }
+
+    pub(crate) fn open_local_with_retention(
+        store: Arc<dyn ObjectStore>,
+        namespace: Namespace,
+        recovery_retention: RecoveryRetention,
+    ) -> Result<Arc<Self>> {
+        recovery_retention.validate()?;
+        let namespace = Namespace::new(namespace.tenant, namespace.database)?;
+        let object = match Self::open_root(store.as_ref(), &namespace)? {
+            Some(object) => object,
+            None => Self::claim_absent_local_root(store.as_ref(), &namespace)?,
+        };
+        Self::from_loaded_local(store, namespace, object, recovery_retention)
+    }
+
+    pub(crate) fn claim_absent_local_root(
+        store: &dyn ObjectStore,
+        namespace: &Namespace,
+    ) -> Result<crate::object_store::StoredObject> {
+        let key = namespace.key("authority/root")?;
+        let root = CatalogRoot::local_empty(namespace.clone(), unique_id()?);
+        let result = store.put(&key, &encode(&root)?, PutCondition::Absent);
+        store.get(&key)?.ok_or_else(|| {
+            result
+                .err()
+                .unwrap_or_else(|| anyhow::anyhow!("authority root missing after initialization"))
+        })
+    }
+
+    fn from_loaded_local(
+        store: Arc<dyn ObjectStore>,
+        namespace: Namespace,
+        object: crate::object_store::StoredObject,
+        recovery_retention: RecoveryRetention,
+    ) -> Result<Arc<Self>> {
+        let key = namespace.key("authority/root")?;
+        let (root, digest) = decode_head_with_digest(&store, &namespace, &object.bytes)?;
+        ensure!(
+            root.namespace == namespace,
+            "authority root namespace mismatch"
+        );
+        let authority = Arc::new(Self {
+            store,
+            namespace,
+            incarnation: root.incarnation.clone(),
+            guard: None,
+            live_pins: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            recovery_retention,
+        });
+        authority.verify_deep(&root)?;
+        authority.verify_recovery_indexes(&root)?;
+        authority.remember(&key, &root, &digest);
+        // `upgrade_pin_layout` is intentionally not used here: its publication is merged
+        // with the schema migration so a first open can only publish one head.
+        if !Self::is_local_root(&root) {
+            authority.migrate_local_root()?;
+        }
+        Ok(authority)
+    }
+
+    /// Whether the head already has the local durable shape. The pin marker is included
+    /// because a v6 head can still carry a pre-split pin tree; the migration upgrades both
+    /// representations in one publication.
+    fn is_local_root(root: &CatalogRoot) -> bool {
+        root.version == types::LOCAL_ROOT_VERSION
+            && root.ownership.is_none()
+            && root.pin_schema == Some(types::PIN_SCHEMA_VERSION)
+    }
+
     pub(crate) fn from_loaded(
         store: Arc<dyn ObjectStore>,
         namespace: Namespace,
@@ -537,7 +627,7 @@ impl Authority {
         if let Some(revision) = root.receipts.get(operation) {
             return Ok(Some(*revision));
         }
-        if root.version >= 4 {
+        if types::supports_paged_receipts(root.version) {
             let value = paged_index::PagedIndex::new(self.store.as_ref(), &self.namespace)
                 .get(root.receipt_index.as_deref(), operation)?;
             value
@@ -560,7 +650,9 @@ impl Authority {
         index: &paged_index::PagedIndex<'_>,
     ) -> Result<()> {
         root.receipts.insert(operation, root.revision);
-        if root.version < 4 || root.receipts.len() <= INLINE_RECEIPTS_MAX {
+        if !types::supports_paged_receipts(root.version)
+            || root.receipts.len() <= INLINE_RECEIPTS_MAX
+        {
             return Ok(());
         }
         let mut oldest: Vec<_> = root
@@ -592,7 +684,9 @@ impl Authority {
         root: &mut CatalogRoot,
         index: &paged_index::PagedIndex<'_>,
     ) -> Result<()> {
-        if root.version < 5 {
+        // Paged command receipts belong to the version-5 ownership schema. A local v6 root
+        // has no ownership catalog, so there is nothing to archive.
+        if root.version != 5 {
             return Ok(());
         }
         let Some(catalog) = root.ownership.as_mut() else {
@@ -736,6 +830,28 @@ impl Authority {
     where
         F: FnMut(&mut CatalogRoot) -> Result<()>,
     {
+        self.transact_inner_scoped(
+            expected_revision,
+            origin,
+            PublicationScope::Statement,
+            |root, _| mutation(root),
+            deletions,
+            bodies,
+        )
+    }
+
+    fn transact_inner_scoped<F>(
+        &self,
+        expected_revision: Option<u64>,
+        origin: PublishOrigin,
+        scope: PublicationScope,
+        mut mutation: F,
+        deletions: &BTreeSet<String>,
+        bodies: &[PublicationBody<'_>],
+    ) -> Result<RootSnapshot>
+    where
+        F: FnMut(&mut CatalogRoot, &paged_index::PagedIndex<'_>) -> Result<()>,
+    {
         #[cfg(test)]
         let _probe = scaling_probe::stage("transact", 0);
         let _reads = request_reads::Scope::enter();
@@ -746,6 +862,12 @@ impl Authority {
             let current = self.snapshot()?;
             if let Some(revision) = expected_revision {
                 ensure!(current.root.revision == revision, PreconditionFailed);
+            }
+            // A concurrent local opener may have completed the migration while this
+            // attempt was between its own check and this snapshot. The loser must adopt the
+            // published v6 head, not publish a second migration head of its own.
+            if scope == PublicationScope::LocalMigration && Self::is_local_root(&current.root) {
+                return Ok(current);
             }
             // One durability group per attempt: the immutable in-flight page bodies are
             // buffered here and the head CAS joins them as the last write, so the store
@@ -762,9 +884,9 @@ impl Authority {
                 current.root.clone()
             };
             publish.stage(PublishStage::Mutate);
-            mutation(&mut candidate)?;
+            mutation(&mut candidate, &publishing)?;
             publish.stage(PublishStage::Prepare);
-            self.prepare(&current.root, &mut candidate, deletions, bodies)?;
+            self.prepare_with(&current.root, &mut candidate, deletions, bodies, scope)?;
             let ownership_changed = candidate.ownership != current.root.ownership;
             candidate.revision = current
                 .root
@@ -1107,6 +1229,61 @@ impl Authority {
         Ok(releases.len())
     }
 
+    /// One-way migration of a local store to the version-6 shape. It runs as a normal
+    /// publication: immutable receipt/pin page bodies and the head CAS share one durability
+    /// group, the retry loop resolves an unknown acknowledgement through the migration
+    /// receipt, and the origin counter charges [`PublishOrigin::Migration`] at the same
+    /// point as `root_publish_attempts`.
+    ///
+    /// The reader-pin layout upgrade is merged into this mutation. Doing it in a separate
+    /// publication would expose two failure windows during a first open; the merged version
+    /// is idempotent because every page is content-addressed and the operation receipt
+    /// identifies an acknowledged attempt.
+    fn migrate_local_root(&self) -> Result<RootSnapshot> {
+        let empty = BTreeSet::new();
+        self.transact_inner_scoped(
+            None,
+            PublishOrigin::Migration,
+            PublicationScope::LocalMigration,
+            |root, index| {
+                ensure!(
+                    matches!(root.version, 1 | 2 | 4 | 5 | types::LOCAL_ROOT_VERSION),
+                    "unsupported authority root version for local migration"
+                );
+                if let Some(catalog) = &root.ownership {
+                    // Dropping an ownership catalog loses the platform's idempotency
+                    // answers. Local mode never creates one, so a non-empty ledger means
+                    // this store belongs to the platform and must not be migrated.
+                    ensure!(
+                        catalog.commands.is_empty(),
+                        "local migration cannot discard ownership command receipts"
+                    );
+                }
+                root.ownership = None;
+                if !types::supports_paged_receipts(root.version) {
+                    ensure!(
+                        root.receipt_index.is_none(),
+                        "legacy root already carries a receipt archive"
+                    );
+                    let entries = std::mem::take(&mut root.receipts)
+                        .into_iter()
+                        .map(|(identifier, revision)| (identifier, serde_json::json!(revision)))
+                        .collect();
+                    root.receipt_index = index.build(entries)?;
+                }
+                root.version = types::LOCAL_ROOT_VERSION;
+                self.apply_pin_upgrade(root)?;
+                ensure!(
+                    root.receipts.len() <= INLINE_RECEIPTS_MAX,
+                    "inline receipt window exceeded during local migration"
+                );
+                Ok(())
+            },
+            &empty,
+            &[],
+        )
+    }
+
     /// One-time move from the hash-ordered schema-1 pin tree to the raw-ordered schema-2
     /// layout. Every existing entry becomes generation zero; the generation tables are
     /// filled so a later release can address one pin's range directly.
@@ -1115,6 +1292,23 @@ impl Authority {
     /// re-read and re-validate every branch reference at boot, which is exactly the extra
     /// remote read the load budget cannot afford.
     fn upgrade_pin_layout(&self, root: &CatalogRoot) -> Result<()> {
+        if root.pin_schema == Some(types::PIN_SCHEMA_VERSION) {
+            return Ok(());
+        }
+        self.transact_with_origin(None, PublishOrigin::PinUpgrade, |root| {
+            ensure!(
+                root.pin_schema != Some(types::PIN_SCHEMA_VERSION),
+                "reader pin layout already upgraded"
+            );
+            self.apply_pin_upgrade(root)
+        })?;
+        Ok(())
+    }
+
+    /// Rewrite the pin registry into the bucketed generation layout. Runs inside an
+    /// enclosing publication so its pages join that group; the caller decides whether the
+    /// publication is the standalone pin upgrade or the merged local migration.
+    fn apply_pin_upgrade(&self, root: &mut CatalogRoot) -> Result<()> {
         if root.pin_schema == Some(types::PIN_SCHEMA_VERSION) {
             return Ok(());
         }
@@ -1136,16 +1330,9 @@ impl Authority {
         let mut registry =
             registry::Registry::inline_with_order(entries, paged_index::KeyOrder::Bucketed);
         registry.attach(self.store.clone(), self.namespace.clone());
-        self.transact_with_origin(None, PublishOrigin::PinUpgrade, |root| {
-            ensure!(
-                root.pin_schema != Some(types::PIN_SCHEMA_VERSION),
-                "reader pin layout already upgraded"
-            );
-            root.pin_entries = registry.clone();
-            root.pin_generations = generations.clone();
-            root.pin_schema = Some(types::PIN_SCHEMA_VERSION);
-            Ok(())
-        })?;
+        root.pin_entries = registry;
+        root.pin_generations = generations;
+        root.pin_schema = Some(types::PIN_SCHEMA_VERSION);
         Ok(())
     }
 

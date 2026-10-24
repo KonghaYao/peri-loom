@@ -104,15 +104,14 @@ fn parse(bytes: &[u8]) -> Result<(CatalogRoot, String)> {
         }
     }
     ensure!(
-        matches!(root.version, 1 | 2 | 4 | 5),
+        matches!(
+            root.version,
+            1 | 2 | 4 | 5 | super::types::LOCAL_ROOT_VERSION
+        ),
         "unsupported authority root version"
     );
     ensure!(
-        if root.version == 1 {
-            root.ownership.is_none()
-        } else {
-            root.ownership.is_some()
-        },
+        root.ownership.is_some() == super::types::requires_ownership(root.version),
         "authority ownership schema version mismatch"
     );
     // The decoder is the one path every reader shares, including ownership views that do

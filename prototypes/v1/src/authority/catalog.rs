@@ -7,22 +7,30 @@ impl Authority {
     /// entry on every statement: each `Registry` records the keys this transaction
     /// touched, so only those keys are re-checked against the previous head while the
     /// rest of the registry stays covered by the validation that admitted it.
-    pub(super) fn prepare(
+    pub(super) fn prepare_with(
         &self,
         previous: &CatalogRoot,
         next: &mut CatalogRoot,
         deletions: &BTreeSet<String>,
         bodies: &[super::PublicationBody<'_>],
+        scope: super::PublicationScope,
     ) -> Result<()> {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("prepare", 0);
+        let local_migration = scope == super::PublicationScope::LocalMigration;
         // Schema 1 is upgraded once, when the authority opens. The upgrade replaces the
         // pin registry base (a hash-ordered tree becomes a raw-ordered one), which no
         // ordinary statement may do; every other publication must keep the same base.
         let pin_upgrade = previous.pin_schema != Some(super::types::PIN_SCHEMA_VERSION)
             && next.pin_schema == Some(super::types::PIN_SCHEMA_VERSION);
+        // A local migration is the only publication allowed to move the durable version.
+        // It may only move forward, and only to the local schema; a statement can never
+        // take this branch because it passes `Statement`.
+        let version_change = local_migration
+            && next.version == super::types::LOCAL_ROOT_VERSION
+            && (previous.version == next.version || matches!(previous.version, 1 | 2 | 4 | 5));
         ensure!(
-            next.version == previous.version
+            (next.version == previous.version || version_change)
                 && next.namespace == previous.namespace
                 && next.incarnation == previous.incarnation
                 && next.revision == previous.revision
@@ -30,11 +38,11 @@ impl Authority {
             "authority root identity or revision mutation forbidden"
         );
         ensure!(
-            next.receipts == previous.receipts,
+            local_migration || next.receipts == previous.receipts,
             "authority receipts cannot be mutated"
         );
         ensure!(
-            next.receipt_index == previous.receipt_index,
+            local_migration || next.receipt_index == previous.receipt_index,
             "authority receipt index cannot be mutated"
         );
         // Collection progress is durable state: a publication may advance it, but it may not
@@ -83,7 +91,9 @@ impl Authority {
                 "reader pin release marker cannot be dropped while the pin survives"
             );
         }
-        super::ownership::catalog_rules::prepare(self, previous, next)?;
+        if !local_migration {
+            super::ownership::catalog_rules::prepare(self, previous, next)?;
+        }
         for (name, branch) in &mut next.branches {
             if let Some(old) = previous.branches.get(name) {
                 ensure!(

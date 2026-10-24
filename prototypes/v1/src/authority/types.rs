@@ -728,6 +728,26 @@ pub const MAX_INLINE_BRANCH_HISTORY: usize = 8192;
 /// candidate that would exceed it fails before the CAS and leaves no published state.
 pub const MAX_ROOT_BYTES: usize = 8 * 1024 * 1024;
 
+/// Local authority roots use their own durable schema. They carry no ownership catalog and
+/// page their receipts exactly like version 4, but the distinct version marks the one-way
+/// migration and lets a binary that predates it reject the head instead of misreading it.
+///
+/// Platform roots stay on versions 2/4/5: ownership is part of their fencing contract.
+pub const LOCAL_ROOT_VERSION: u32 = 6;
+
+/// Versions whose receipt ledger is bounded: `receipts` is an inline window and older
+/// entries live in the page tree addressed by `receipt_index`.
+pub(super) const fn supports_paged_receipts(version: u32) -> bool {
+    matches!(version, 4 | 5 | LOCAL_ROOT_VERSION)
+}
+
+/// Versions that require an ownership catalog. Version 6 is deliberately absent: a local
+/// root has no leases, epochs or command ledger, so accepting one with ownership would give
+/// two authorities different beliefs about the same head.
+pub(super) const fn requires_ownership(version: u32) -> bool {
+    matches!(version, 2 | 4 | 5)
+}
+
 /// In-memory authority head. Identity state (branches, snapshots, reader pin identities,
 /// receipt window) stays inline because it is bounded by distinct identities, while volume
 /// state is held by `Registry` handles that page themselves once they outgrow the inline
@@ -791,6 +811,15 @@ impl CatalogRoot {
             tombstones: Registry::inline(BTreeMap::new()),
             gc: None,
         }
+    }
+
+    /// Absent-root claim for the local authority. `empty` stays the platform shape because
+    /// `Authority::open` and the ownership boot still start from version 1; local mode pins
+    /// the durable schema at creation so a fresh store never needs a migration publication.
+    pub(super) fn local_empty(namespace: Namespace, incarnation: String) -> Self {
+        let mut root = Self::empty(namespace, incarnation);
+        root.version = LOCAL_ROOT_VERSION;
+        root
     }
 
     pub(super) fn attach(

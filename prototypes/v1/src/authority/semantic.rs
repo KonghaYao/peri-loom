@@ -178,8 +178,10 @@ impl Authority {
         #[cfg(test)]
         let _probe = super::scaling_probe::stage("validate", 0);
         ensure!(
-            matches!(root.version, 1 | 2 | 4 | 5)
-                && root.revision >= 1
+            matches!(
+                root.version,
+                1 | 2 | 4 | 5 | super::types::LOCAL_ROOT_VERSION
+            ) && root.revision >= 1
                 && root.namespace == self.namespace
                 && root.incarnation == self.incarnation
                 && valid_hash(&root.incarnation)
@@ -194,7 +196,7 @@ impl Authority {
             Some(pending) => index.deferring(pending),
             None => index,
         };
-        if root.version >= 4 {
+        if super::types::supports_paged_receipts(root.version) {
             ensure!(
                 root.receipts.len() <= super::INLINE_RECEIPTS_MAX,
                 "inline receipt window exceeded"
@@ -206,7 +208,10 @@ impl Authority {
                 "paged receipts in legacy root"
             );
         }
-        if root.version >= 5 {
+        // Paged command receipts exist only in the version-5 ownership catalog. Versions
+        // 2/4 may carry ownership but must keep their command ledger inline; version 6 is
+        // local and carries no ownership at all (enforced by the decoder).
+        if root.version == 5 {
             let catalog = root.ownership.as_ref().context("ownership missing")?;
             index.verify_root(catalog.command_index.as_deref())?;
             ensure!(

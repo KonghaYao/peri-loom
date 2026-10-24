@@ -19,7 +19,7 @@ impl LocalAuthorityProvider {
 impl DatabaseProvider for LocalAuthorityProvider {
     fn open_store(&self, identifier: &DatabaseId, epoch: u64) -> Result<Arc<dyn ObjectStore>> {
         identifier.validate()?;
-        let authority = Authority::open(self.store.clone(), identifier.namespace.clone())?;
+        let authority = Authority::open_local(self.store.clone(), identifier.namespace.clone())?;
         Ok(Arc::new(LocalStore::new(
             authority.branch_store(&identifier.branch)?,
             identifier.namespace.clone(),

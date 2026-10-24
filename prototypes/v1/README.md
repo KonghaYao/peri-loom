@@ -39,6 +39,17 @@ and `PERI_S3_TEST_ENDPOINT`, `PERI_S3_TEST_ACCESS_KEY`,
 cargo test --manifest-path prototypes/v1/Cargo.toml --locked --test minio -- --ignored --test-threads=1
 ```
 
+The previous-release upgrade check is also ignored by default because it needs a
+v1.1.12 release binary. It creates a real SQL store with that binary, upgrades
+it, verifies the oracle across a restart, and then proves the old binary rejects
+the version-6 head:
+
+```sh
+PERI_V112_BINARY=/path/to/v1.1.12/release/peri-loom-v1 \
+  cargo test --manifest-path prototypes/v1/Cargo.toml --locked \
+  --test local_v6_upgrade -- --ignored --test-threads=1
+```
+
 These tests create uniquely named buckets and normally delete their own objects
 and buckets on exit, including when a test fails. For first-failure forensics,
 set `PERI_S3_TEST_RETAIN=1` before running: every bucket created by that run is
@@ -185,6 +196,38 @@ loaded instance, not a distributed ownership grant. It retains access to the
 configured storage backend. P4 must put credentials behind the authenticated
 storage authority and enforce grants at every durable boundary; do not expose
 this stdin protocol as a production network service.
+
+### Local authority root version 6
+
+Local (`worker`) stores use their own durable root schema, version 6. It carries
+no ownership catalog and bounds the receipt ledger: at most 128 receipts stay
+inline, older ones move to immutable pages addressed by `receipt_index`. The
+8 MiB head ceiling is unchanged and still fails the publication before its CAS.
+
+A local worker that finds a version-1/2/4/5 head migrates it once, on open. The
+migration is a single durability group: receipt pages, pin-layout pages and the
+new head are published together, the head CAS is the last write, and the
+publication is charged to `publish_origin.migration` and
+`root_publish_attempts` (it does not bypass transaction accounting). The reader-pin
+schema upgrade is merged into the same publication, so a first open never
+publishes a pin-only intermediate head. Concurrent openers race on the same CAS:
+one publishes, the others re-read the version-6 head.
+
+The migration is **one-way**. A v1.1.12 (or older) binary rejects a version-6
+root at decode with `unsupported authority root version` and fails closed; it
+cannot read, rewrite or downgrade the store. The current platform ownership boot
+also refuses to convert a version-6 head back to an ownership schema. Take a
+backup of the store before upgrading if a rollback to the previous release is a
+requirement; the backup is the pre-migration version-1/2/4/5 head and its
+referenced objects. Local stores are not shared with the platform ownership
+commands: a version-6 head has no leases, and a root whose ownership catalog
+still carries command receipts is refused by the migration instead of silently
+discarding them.
+
+A failed migration leaves the previously published head readable and the worker
+fails closed; retrying the open is safe because pages are content-addressed and
+an acknowledged publication is identified by its migration receipt. There is no
+claim here that local capacity or latency has passed performance acceptance.
 
 ## P4 ownership services
 

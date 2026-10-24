@@ -33,6 +33,13 @@ impl Authority {
         let key = self.namespace.key("authority/root")?;
         for _ in 0..128 {
             let previous = self.snapshot()?;
+            // Local v6 is a one-way format. Boot must not revive ownership on it: that
+            // would be a silent downgrade back to a schema a local worker cannot own.
+            if previous.root.version == super::types::LOCAL_ROOT_VERSION {
+                return Err(BootFailure::Read(anyhow::anyhow!(
+                    "local v6 authority root cannot be booted into an ownership schema"
+                )));
+            }
             let mut candidate = previous.root.clone();
             let mut catalog = candidate.ownership.clone().unwrap_or_default();
             catalog.authority_term = catalog
@@ -147,11 +154,7 @@ impl Authority {
 
 pub(super) fn validate(root: &CatalogRoot) -> Result<()> {
     ensure!(
-        if root.version == 1 {
-            root.ownership.is_none()
-        } else {
-            root.ownership.is_some()
-        },
+        root.ownership.is_some() == super::types::requires_ownership(root.version),
         "ownership schema mismatch"
     );
     if let Some(catalog) = &root.ownership {
@@ -182,7 +185,7 @@ pub(super) fn validate(root: &CatalogRoot) -> Result<()> {
             );
         }
         if let Some(pointer) = &catalog.command_index {
-            ensure!(root.version >= 5, "paged commands in legacy root");
+            ensure!(root.version == 5, "paged commands in legacy root");
             ensure!(
                 crate::manifest::valid_hash(pointer),
                 "invalid command archive pointer"
