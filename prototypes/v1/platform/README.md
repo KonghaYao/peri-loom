@@ -477,6 +477,27 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.14
+
+Concurrent Hrana session closes no longer collide on a single project-wide
+close permit. The close lane now admits up to the project's `max_concurrent`
+quota; closes beyond it still fail with `close_lane_busy`, but a refused close
+no longer leaks the session seat. A v2 pipeline that opens a session without a
+baton and then fails before the baton reaches the client (close refusal, an
+unknown execute step, a `store_sql` limit, or an encoding failure) now retires
+that session through the existing bounded cleanup path. Previously the session
+was invisible to both the native idle reaper, which skips Hrana sessions, and
+the Hrana stream timer, which only covers registered batons.
+
+Verification: `go test ./... -count=1` passes (platform 137.5s plus
+`cmd/peri`, `sdk/go` and `sqlcontract`). A local stack replays 100 rounds of
+two concurrent `[execute, close]` pipelines with 200/200 responses, 100 serial
+`batch(10)` pipelines all 200, and `sessions`, `unknown_held_permits` and
+`control_active` return to zero. Unknown outcomes raised by a dispatched close
+are unchanged and still require the documented recovery path. This is a
+correctness release: no new performance or capacity claim is made, and the
+experimental Hrana gaps remain as documented.
+
 ## v1.1.13
 
 A concurrent open of an empty store no longer fails with `object store
