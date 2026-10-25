@@ -26,13 +26,22 @@ func TestWriterAdmissionGeneralCannotConsumeOwnerReserve(test *testing.T) {
 	if _, reason := gate.reserveWriter("project", quota, true); reason == rejectionNone {
 		test.Fatal("multiple owners exceeded bounded reserve")
 	}
-	closePermit, reason := gate.reserve("project", quota, false, true)
-	if reason != rejectionNone {
-		test.Fatal("close control was blocked by SQL slots")
+	// Close is a control lane bounded by MaxConcurrent, not by one independent
+	// slot: every close within the quota is admitted, and only the next one is
+	// refused.
+	closePermits := make([]*admissionPermit, 0, quota.MaxConcurrent)
+	for count := 0; count < quota.MaxConcurrent; count++ {
+		closePermit, reason := gate.reserve("project", quota, false, true)
+		if reason != rejectionNone {
+			test.Fatalf("close %d was blocked below MaxConcurrent: %q", count+1, reason)
+		}
+		closePermits = append(closePermits, closePermit)
 	}
-	defer closePermit.finish()
-	if _, reason := gate.reserve("project", quota, false, true); reason == rejectionNone {
-		test.Fatal("close exceeded independent control bound")
+	if _, reason := gate.reserve("project", quota, false, true); reason != rejectionCloseLane {
+		test.Fatal("close exceeded the concurrency quota")
+	}
+	for _, permit := range closePermits {
+		permit.finish()
 	}
 }
 

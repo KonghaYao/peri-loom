@@ -137,13 +137,45 @@ func TestAdmissionRefusalReasonsPerLane(test *testing.T) {
 	test.Run("close lane", func(test *testing.T) {
 		gate := &gatewayAdmission{projects: map[string]*projectAdmission{}}
 		quota := refusalReasonQuota()
-		closePermit, reason := gate.reserve("project", quota, false, true)
-		admitted(test, closePermit, reason)
-		defer closePermit.finish()
+		for count := 0; count < quota.MaxConcurrent; count++ {
+			closePermit, reason := gate.reserve("project", quota, false, true)
+			admitted(test, closePermit, reason)
+			defer closePermit.finish()
+		}
 		if _, reason := gate.reserve("project", quota, false, true); reason != rejectionCloseLane {
 			test.Fatalf("session-close lane: %q", reason)
 		}
 	})
+}
+
+// TestAdmissionCloseLaneFollowsConcurrencyQuota pins the close lane's capacity to
+// Quotas.MaxConcurrent. A single close lane refused every concurrent close after
+// the first, and a refused close left its Hrana session with no owner. Capacity
+// must track the configured quota and return when a close finishes.
+func TestAdmissionCloseLaneFollowsConcurrencyQuota(test *testing.T) {
+	gate := &gatewayAdmission{projects: map[string]*projectAdmission{}}
+	quota := refusalReasonQuota()
+	quota.MaxConcurrent = 2
+	held := make([]*admissionPermit, 0, quota.MaxConcurrent)
+	for count := 0; count < quota.MaxConcurrent; count++ {
+		permit, reason := gate.reserve("project", quota, false, true)
+		if reason != rejectionNone || permit == nil {
+			test.Fatalf("close %d refused below MaxConcurrent: %q", count+1, reason)
+		}
+		held = append(held, permit)
+	}
+	if _, reason := gate.reserve("project", quota, false, true); reason != rejectionCloseLane {
+		test.Fatalf("close above MaxConcurrent: %q", reason)
+	}
+	held[0].finish()
+	if permit, reason := gate.reserve("project", quota, false, true); reason != rejectionNone || permit == nil {
+		test.Fatalf("released close capacity was not restored: %q", reason)
+	} else {
+		permit.finish()
+	}
+	for _, permit := range held[1:] {
+		permit.finish()
+	}
 }
 
 // TestGatewayRefusalReasonsAtTheRefusalSite drives each layer through the gateway

@@ -6,10 +6,30 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	controller "peri-loom/controller"
 )
+
+// holdCloseLane saturates the project's session-close capacity so the pipeline's
+// own close is refused before dispatch.
+func holdCloseLane(test *testing.T, fixture *gatewayFixture) {
+	test.Helper()
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	quota := state.Projects["project-a"].Quotas
+	for count := 0; count < max(1, quota.MaxConcurrent); count++ {
+		permit, reason := fixture.gateway.admission.reserve("project-a", quota, false, true)
+		if reason != rejectionNone {
+			test.Fatal(reason)
+		}
+		test.Cleanup(permit.finish)
+	}
+}
 
 func TestHranaPipelineCloseKeepsFirstFailure(t *testing.T) {
 	for _, entry := range []string{
@@ -38,15 +58,7 @@ func TestHranaPipelineCloseKeepsFirstFailure(t *testing.T) {
 					t.Fatal("未建立隔离前置条件")
 				}
 				if closeFails {
-					state, err := fixture.state.Snapshot()
-					if err != nil {
-						t.Fatal(err)
-					}
-					permit, reason := fixture.gateway.admission.reserve("project-a", state.Projects["project-a"].Quotas, false, true)
-					if reason != rejectionNone {
-						t.Fatal(reason)
-					}
-					defer permit.finish()
+					holdCloseLane(t, fixture)
 				}
 				body, err := json.Marshal(map[string]any{"baton": baton, "requests": []any{json.RawMessage(entry), map[string]any{"type": "close"}}})
 				if err != nil {
@@ -86,15 +98,7 @@ func TestHranaPipelineLocalFailureSurvivesCloseFailure(t *testing.T) {
 				opened := hranaV3JSONCall(handler, fixture.tokenA, path, "application/json", `{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}}]}`)
 				baton := hranaV3JSONDocument(t, opened)["baton"]
 				if closeFails {
-					state, err := fixture.state.Snapshot()
-					if err != nil {
-						t.Fatal(err)
-					}
-					permit, reason := fixture.gateway.admission.reserve("project-a", state.Projects["project-a"].Quotas, false, true)
-					if reason != rejectionNone {
-						t.Fatal(reason)
-					}
-					defer permit.finish()
+					holdCloseLane(t, fixture)
 				}
 				body, err := json.Marshal(map[string]any{"baton": baton, "requests": []any{entry, map[string]any{"type": "close"}}})
 				if err != nil {
@@ -124,6 +128,138 @@ func TestHranaPipelineLocalFailureSurvivesCloseFailure(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func gatewaySessionCount(gateway *Gateway) int {
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	return len(gateway.sessions)
+}
+
+// TestHranaConcurrentClosePipelinesStayWithinQuota reproduces the first half of
+// issue #9: two pipelines that each close their own new stream collided on a
+// single close lane, so one close was refused and its session leaked. Both
+// closes must finish inside the project's MaxConcurrent quota.
+func TestHranaConcurrentClosePipelinesStayWithinQuota(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	handler := newHranaHTTP(fixture.gateway)
+	arrived := make(chan struct{}, 2)
+	released := make(chan struct{})
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] != "close_session" {
+			return nil, nil
+		}
+		// Hold both closes inside the worker call so their control permits
+		// overlap; a single close lane refuses the second one before this point.
+		arrived <- struct{}{}
+		select {
+		case <-released:
+		case <-time.After(5 * time.Second):
+		}
+		return nil, nil
+	})
+	go func() {
+		deadline := time.After(5 * time.Second)
+		for count := 0; count < 2; count++ {
+			select {
+			case <-arrived:
+			case <-deadline:
+			}
+		}
+		close(released)
+	}()
+	var responses [2]*httptest.ResponseRecorder
+	var calls sync.WaitGroup
+	calls.Add(2)
+	for index := range responses {
+		go func(index int) {
+			defer calls.Done()
+			responses[index] = hranaV3JSONCall(handler, fixture.tokenA, "/db/tenant-a/db-a/main/v2/pipeline", "application/json", `{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}},{"type":"close"}]}`)
+		}(index)
+	}
+	calls.Wait()
+	for index, response := range responses {
+		document := hranaV3JSONDocument(test, response)
+		if response.Code != http.StatusOK || document["baton"] != nil || document["error"] != nil {
+			test.Fatalf("concurrent close %d: %d %s", index, response.Code, response.Body.String())
+		}
+	}
+	if sessions, seats := gatewaySessionCount(fixture.gateway), projectSessions(fixture, "project-a"); sessions != 0 || seats != 0 {
+		test.Fatalf("concurrent closes leaked a session: registered=%d seats=%d", sessions, seats)
+	}
+	if counts := gatewayMetricCounts(test, fixture.gateway, "rejection_reasons_total"); counts[string(rejectionCloseLane)] != 0 {
+		test.Fatalf("concurrent closes were refused: %v", counts)
+	}
+	if closes := fixture.upstream.count("close_session"); closes != 2 {
+		test.Fatalf("concurrent closes dispatched %d close_session calls", closes)
+	}
+}
+
+// TestHranaRejectedCloseReclaimsUnattachedSession reproduces the second half of
+// issue #9: a new stream whose close is refused never registers a baton, so the
+// platform must retire the session it opened. The quota admits one close and the
+// test holds that slot, so the close is refused; the deferred cleanup must
+// reclaim the session once the slot is free.
+func TestHranaRejectedCloseReclaimsUnattachedSession(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	gatewayQuota(test, fixture, "project-a", func(quota *Quotas) { quota.MaxConcurrent = 1 })
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	held, reason := fixture.gateway.admission.reserve("project-a", state.Projects["project-a"].Quotas, false, true)
+	if reason != rejectionNone || held == nil {
+		test.Fatalf("close slot unavailable: %q", reason)
+	}
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	response := hranaV3JSONCall(handler, fixture.tokenA, "/db/tenant-a/db-a/main/v2/pipeline", "application/json", `{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}},{"type":"close"}]}`)
+	document := hranaV3JSONDocument(test, response)
+	failure, _ := document["error"].(map[string]any)
+	if response.Code != http.StatusTooManyRequests || failure["code"] != "quota_exceeded" || failure["outcome_unknown"] != false {
+		test.Fatalf("refused close changed its contract: %d %s", response.Code, response.Body.String())
+	}
+	handler.mu.Lock()
+	streams := len(handler.streams)
+	handler.mu.Unlock()
+	if streams != 0 {
+		test.Fatal("refused close registered a baton")
+	}
+	held.finish()
+	deadline := time.Now().Add(5 * time.Second)
+	for (gatewaySessionCount(fixture.gateway) != 0 || projectSessions(fixture, "project-a") != 0) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if sessions, seats := gatewaySessionCount(fixture.gateway), projectSessions(fixture, "project-a"); sessions != 0 || seats != 0 {
+		test.Fatalf("reclaimed session leaked: registered=%d seats=%d", sessions, seats)
+	}
+	if opens, closes := fixture.upstream.count("open_session"), fixture.upstream.count("close_session"); opens != 1 || closes != 1 {
+		test.Fatalf("reclaim dispatched opens=%d closes=%d", opens, closes)
+	}
+}
+
+// TestHranaDeliveredBatonKeepsItsSession guards the boundary of the deferred
+// cleanup: it belongs only to a new stream that failed before its baton reached
+// the client. A stream that returned a baton keeps both the registered stream
+// and its native session.
+func TestHranaDeliveredBatonKeepsItsSession(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	response := hranaV3JSONCall(handler, fixture.tokenA, "/db/tenant-a/db-a/main/v2/pipeline", "application/json", `{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1"}}]}`)
+	document := hranaV3JSONDocument(test, response)
+	baton, _ := document["baton"].(string)
+	if response.Code != http.StatusOK || baton == "" {
+		test.Fatalf("pipeline did not return a baton: %d %s", response.Code, response.Body.String())
+	}
+	handler.mu.Lock()
+	registered := handler.streams[baton]
+	handler.mu.Unlock()
+	if registered == nil || gatewaySessionCount(fixture.gateway) != 1 || projectSessions(fixture, "project-a") != 1 {
+		test.Fatalf("delivered baton lost its owners: stream=%t sessions=%d seats=%d", registered != nil, gatewaySessionCount(fixture.gateway), projectSessions(fixture, "project-a"))
+	}
+	closed := hranaV3JSONCall(handler, fixture.tokenA, "/db/tenant-a/db-a/main/v2/pipeline", "application/json", `{"baton":"`+baton+`","requests":[{"type":"close"}]}`)
+	if closed.Code != http.StatusOK || gatewaySessionCount(fixture.gateway) != 0 {
+		test.Fatalf("delivered stream did not close: %d %s", closed.Code, closed.Body.String())
 	}
 }
 

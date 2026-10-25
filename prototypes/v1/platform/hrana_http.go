@@ -191,6 +191,19 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			handler.mu.Unlock()
 		}()
 	}
+	// A new stream that fails before its baton reaches the client owns a native
+	// session nobody can address again: the stream is not registered, no idle
+	// timer runs for it, and the native sweeper skips Hrana sessions. One
+	// deferred account covers every early return after the session exists; only
+	// a response carrying the baton disarms it.
+	batonDelivered := false
+	defer func() {
+		if !newStream || stream.session == "" || batonDelivered {
+			return
+		}
+		handler.detachStream(pipeline.Baton, stream)
+		go handler.cleanupRetiredSession(stream.session, 0)
+	}()
 	response := hranaResponse{Results: make([]any, 0, len(pipeline.Requests))}
 	if stream.storedSQL == nil {
 		stream.storedSQL = make(map[int]string)
@@ -239,17 +252,6 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 	}
 	limitFailure := func(status int, code string) {
-		if newStream && stream.session != "" {
-			if pipeline.Baton != "" {
-				handler.mu.Lock()
-				delete(handler.streams, pipeline.Baton)
-				handler.mu.Unlock()
-				if stream.timer != nil {
-					stream.timer.Stop()
-				}
-			}
-			go handler.cleanupRetiredSession(stream.session, 0)
-		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(status)
 		_ = json.NewEncoder(writer).Encode(map[string]any{
@@ -274,7 +276,17 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			var opened struct {
 				Session string `json:"session"`
 			}
-			if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
+			if json.Unmarshal(reply.result, &opened) != nil {
+				hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
+				return
+			}
+			if !publicSessionID(opened.Session) {
+				// The reply named a session the public id cannot address, so the
+				// deferred account of a valid id cannot retire it: schedule that
+				// cleanup from the parsed value while it is still known.
+				if opened.Session != "" {
+					go handler.cleanupRetiredSession(opened.Session, 0)
+				}
 				hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
 				return
 			}
@@ -488,8 +500,31 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	writer.Header().Set("Content-Type", "application/json")
-	_, _ = writer.Write(encoded)
+	if _, err := writer.Write(encoded); err != nil {
+		// A write that failed before the baton could reach the client leaves the
+		// stream unaddressable; the deferred account retires its session.
+		return
+	}
+	batonDelivered = true
 	_, _ = writer.Write([]byte("\n"))
+}
+
+// detachStream removes a registered stream whose baton never reached the client
+// and stops its idle timer. The caller retires the stream's session itself, so
+// the timer must not keep a second claim on it.
+func (handler *hranaHTTP) detachStream(baton string, stream *hranaStream) {
+	if baton == "" {
+		return
+	}
+	handler.mu.Lock()
+	registered := handler.streams[baton] == stream
+	if registered {
+		delete(handler.streams, baton)
+	}
+	handler.mu.Unlock()
+	if registered && stream.timer != nil {
+		stream.timer.Stop()
+	}
 }
 
 func hranaValidCondition(raw json.RawMessage, step int) bool {

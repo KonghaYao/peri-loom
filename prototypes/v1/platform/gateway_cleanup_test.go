@@ -60,8 +60,8 @@ func expireRetryWindow(session *gatewaySession) {
 }
 
 // sweepRetirements drives the expiry sweep the way its own ticker does: the
-// session-close lane admits one close of a project at a time, so a second due
-// session retires on a later tick instead of in the same pass.
+// session-close lane is bounded by the project's concurrency quota, so a due
+// session the pass could not admit retires on a later tick instead.
 func sweepRetirements(fixture *gatewayFixture, want int, test *testing.T) {
 	test.Helper()
 	for range 8 {
