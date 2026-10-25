@@ -321,7 +321,16 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		var opened struct {
 			Session string `json:"session"`
 		}
-		if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
+		if json.Unmarshal(reply.result, &opened) != nil {
+			http.Error(writer, "cursor session outcome unknown", 502)
+			return
+		}
+		if !publicSessionID(opened.Session) {
+			// A parsed session the public id cannot address is still the only
+			// handle for retiring it; keep the reply unchanged but retire it.
+			if opened.Session != "" {
+				handler.cleanupRetiredSession(opened.Session, 0)
+			}
 			http.Error(writer, "cursor session outcome unknown", 502)
 			return
 		}

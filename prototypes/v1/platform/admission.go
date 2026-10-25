@@ -36,7 +36,10 @@ const (
 	// rejectionClassifyLimit is the bound on concurrent read-only classification
 	// calls of one project.
 	rejectionClassifyLimit rejectionReason = "classify_limit"
-	// rejectionCloseLane is the single session-close lane of a project.
+	// rejectionCloseLane is the project's session-close capacity
+	// (Quotas.MaxConcurrent). Close is a control lane: it carries no SQL, so it
+	// does not consume a SQL lane, but its concurrency is still bounded by the
+	// project's configured concurrency rather than by a second hard-coded bound.
 	rejectionCloseLane rejectionReason = "close_lane_busy"
 	// rejectionQuarantine is a namespace isolated by an unresolved outcome.
 	rejectionQuarantine rejectionReason = "quarantine"
@@ -179,7 +182,12 @@ func (gate *gatewayAdmission) reserveLane(project string, quota Quotas, session,
 		state.profile = profile
 	}
 	if control {
-		if state.control >= 1 {
+		// A close is admitted by the same concurrency quota as SQL but on its own
+		// account: it never occupies a SQL lane, and a single close lane made
+		// concurrent closes of one project fail with a refusal no client can act
+		// on. max(1, ...) keeps a misconfigured zero quota from refusing every
+		// close, which would leave sessions and their seats owed forever.
+		if state.control >= max(1, quota.MaxConcurrent) {
 			return nil, rejectionCloseLane
 		}
 		state.control++
