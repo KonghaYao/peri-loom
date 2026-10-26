@@ -1,0 +1,469 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "issue11-environment",
+  "title": "Issue 11 Hrana performance environment contract",
+  "description": "Fields that identify the measured stack. Formal eligibility is decided by issue11/environment.py; this schema fixes the shape only.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "schema_version",
+    "evidence_class",
+    "source",
+    "image",
+    "runtime",
+    "host",
+    "limits",
+    "storage",
+    "backend",
+    "encryption",
+    "tls",
+    "quotas",
+    "mounts",
+    "diagnostics",
+    "recording"
+  ],
+  "properties": {
+    "schema": {
+      "const": "issue11-environment"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "evidence_class": {
+      "enum": [
+        "formal",
+        "diagnostic",
+        "test"
+      ],
+      "description": "formal may reach PASS; diagnostic and test are capped at PHASE_PASS."
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "commit",
+        "branch",
+        "dirty",
+        "turso_gitlink",
+        "sdk"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "turso_gitlink": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sdk": {
+          "type": "object",
+          "required": [
+            "package",
+            "version",
+            "lock_sha256"
+          ],
+          "properties": {
+            "package": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "lock_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "digest",
+        "tag",
+        "os",
+        "arch",
+        "arch_native",
+        "built_from_commit"
+      ],
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "enum": [
+            "amd64",
+            "x86_64",
+            "arm64",
+            "aarch64"
+          ]
+        },
+        "arch_native": {
+          "type": "boolean"
+        },
+        "built_from_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "python",
+        "gateway_binary_sha256",
+        "worker_binary_sha256",
+        "worker_arch",
+        "gateway_arch"
+      ],
+      "properties": {
+        "python": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gateway_binary_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "worker_binary_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "worker_arch": {
+          "enum": [
+            "amd64",
+            "x86_64",
+            "arm64",
+            "aarch64"
+          ]
+        },
+        "gateway_arch": {
+          "enum": [
+            "amd64",
+            "x86_64",
+            "arm64",
+            "aarch64"
+          ]
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "required": [
+        "os",
+        "arch",
+        "kernel",
+        "machine",
+        "virtualization"
+      ],
+      "properties": {
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kernel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "machine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "virtualization": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "cpu_cores",
+        "memory_bytes",
+        "pids"
+      ],
+      "properties": {
+        "cpu_cores": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": [
+        "root_type",
+        "persistent",
+        "durable",
+        "retention",
+        "store_root",
+        "cache_root",
+        "evidence_root",
+        "metrics_snapshot"
+      ],
+      "properties": {
+        "root_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "persistent": {
+          "type": "boolean"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "retention": {
+          "type": "string",
+          "minLength": 1
+        },
+        "store_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cache_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metrics_snapshot": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "required": [
+        "kind",
+        "durability",
+        "root"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "local",
+            "s3"
+          ]
+        },
+        "durability": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "encryption": {
+      "type": "object",
+      "required": [
+        "at_rest",
+        "key_broker"
+      ],
+      "properties": {
+        "at_rest": {
+          "type": "boolean"
+        },
+        "key_broker": {
+          "type": "boolean"
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "verified",
+        "ca_sha256"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "ca_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "quotas": {
+      "type": "object",
+      "required": [
+        "max_result_bytes",
+        "max_streams",
+        "max_pipeline_steps"
+      ],
+      "properties": {
+        "max_result_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_streams": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_pipeline_steps": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "mounts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "type",
+          "readonly"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "readonly": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "diagnostic_processes": {
+      "type": "object",
+      "description": "W0-B 实际 Worker/Authority 进程观察到的开关；不能以 launcher 设置代替进程证据",
+      "additionalProperties": false,
+      "properties": {
+        "worker": {"type": "object", "required": ["pid", "observed_switches"], "properties": {"pid": {"type": "integer", "minimum": 1}, "observed_switches": {"$ref": "#/properties/diagnostics"}}},
+        "authority": {"type": "object", "required": ["pid", "observed_switches"], "properties": {"pid": {"type": "integer", "minimum": 1}, "observed_switches": {"$ref": "#/properties/diagnostics"}}}
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [{
+        "if": {"anyOf": [
+          {"required": ["sql_open_observer"], "properties": {"sql_open_observer": {"const": true}}},
+          {"required": ["PERI_SQL_OPEN_OBSERVER"], "properties": {"PERI_SQL_OPEN_OBSERVER": {"const": true}}}
+        ]},
+        "then": {"properties": {
+          "PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS": {"const": 20},
+          "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE": {"const": 1000}
+        }}
+      }],
+      "required": [
+        "PERI_WORK_METRICS",
+        "PERI_DIAG_GROUP_PHASE",
+        "PERI_ADMISSION_TRACE",
+        "PERI_MAINTENANCE_SCHEDULE",
+        "sql_open_observer",
+        "PERI_SQL_OPEN_OBSERVER",
+        "PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS",
+        "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE"
+      ],
+      "properties": {
+        "PERI_WORK_METRICS": {
+          "type": "boolean"
+        },
+        "PERI_DIAG_GROUP_PHASE": {
+          "type": "boolean"
+        },
+        "PERI_ADMISSION_TRACE": {
+          "type": "boolean"
+        },
+        "PERI_MAINTENANCE_SCHEDULE": {
+          "type": "boolean"
+        },
+        "PERI_SQL_OPEN_OBSERVER": {"type": "boolean"},
+        "PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS": {"type": "integer", "minimum": 0},
+        "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "sql_open_observer": {
+          "type": "boolean"
+        }
+      }
+    },
+    "recording": {
+      "type": "object",
+      "required": [
+        "started_at_unix_ms",
+        "runner_sha256",
+        "contract_sha256",
+        "endpoint",
+        "authorization"
+      ],
+      "properties": {
+        "started_at_unix_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runner_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization": {
+          "const": "Bearer <REDACTED>"
+        }
+      }
+    },
+    "synthetic_test_fixture": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

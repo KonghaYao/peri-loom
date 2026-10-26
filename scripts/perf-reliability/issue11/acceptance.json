@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "schema": "issue11-hrana-acceptance",
+  "status": "DESIGN_TARGETS_NOT_MEASURED",
+  "target_status": "TARGET_NOT_MEASURED",
+  "measured": false,
+  "measurement_statement": "W0-A 未产出正式性能数据，不代表 W0 完成。目标不是测量结果。",
+  "baseline_commit": "933494b5b37fdb4833eb7ff9df2b138bb4034d80",
+  "turso_commit": "24a3a4609683b73935888f8bc30b47727d100aa8",
+  "contract": {
+    "manifest": "SHA256SUMS.json",
+    "files": ["README.md", "acceptance.json", "workloads.json", "environment.schema.json", "attribution/schema.json", "sql/00-schema.sql", "sql/01-fixture-1000.sql", "sql/02-fixture-100000.sql", "sql/10-select-one.sql", "sql/11-point-read.sql", "sql/12-update.sql", "sql/13-insert-readback.sql", "sql/14-range-read.sql", "sql/15-explicit-transfer.sql"],
+    "issue8_is_frozen": true
+  },
+  "protocol": {"path": "/db/{tenant}/{database}/{branch}/v2/pipeline", "method": "POST", "content_type": "application/json", "transport": "https", "tls_verification_default": true, "plaintext_only_for_loopback_diagnostic": true, "sdk_assumption_forbidden": true, "sql_auto_retry": false, "parameter_binding_required": true},
+  "sampling": {
+    "warmup_min": 200,
+    "latency_denominator": "all_recorded_requests",
+    "operation_denominator": "all_timed_operations_including_failure_unknown_rejected",
+    "quick": {"samples_min": 2000, "warmup_min": 200, "pass_capable": false, "max_status": "PHASE_PASS"},
+    "formal": {"samples_min": 10000, "warmup_min": 200, "pairs_min": 5, "pair_order": ["AB", "BA", "AB", "BA", "AB"], "states": ["fresh", "aged"], "aged_min_seconds": 3600, "maintenance_cycles_min": 3, "required_scenarios": ["H1", "H2", "H3", "H4", "H5", "H6", "H7"], "arms": {"A": "baseline", "B": "candidate"}, "pair_by": ["scenario", "state", "pair_index"], "concurrency": 1}
+  },
+  "metrics": ["p50_ms", "p95_ms", "p99_ms", "success_latency", "all_request_latency", "failure", "rejected", "outcome_unknown", "goodput_per_second", "queue_wait", "rejection_ratio", "correctness", "http_requests", "connections_created", "connection_reuse_ratio"],
+  "targets": {
+    "target_status": "TARGET_NOT_MEASURED", "targets_are_targets_not_measurements": true,
+    "H1": {"kind": "persistent_select_one", "gate_enforced": true, "p50_regression_max": 0.05, "p95_regression_max": 0.05},
+    "H2": {"kind": "persistent_read", "gate_enforced": true, "p50_regression_max": 0.05, "p95_regression_max": 0.05},
+    "H3": {"kind": "persistent_update", "gate_enforced": false, "reason": "§4 没有单次 UPDATE 的绝对或改善目标；保留可靠性及报告"},
+    "H4": {"kind": "persistent_insert_read", "gate_enforced": true, "p50_ms_max": 20, "p99_ms_exclusive_max": 100, "p50_reduction_min": 0.20, "p99_regression_max": 0.0},
+    "H5": {"kind": "churn_read_close", "gate_enforced": true, "p50_regression_max": 0.05, "p95_regression_max": 0.05, "aspirational_p50_ms": 20},
+    "H6": {"kind": "churn_insert_read_close", "gate_enforced": true, "p50_ms_max": 35, "p99_ms_exclusive_max": 100, "p50_reduction_min": 0.20, "p99_regression_max": 0.0},
+    "H7": {"kind": "pipeline_write_read", "gate_enforced": false, "reason": "§4 无独立 pipeline 数值目标，不能替代 H4"},
+    "H8": {"available_in_w0_a": false, "gate_enforced": false, "formal_eligible": false},
+    "H9": {"available_in_w0_a": false, "gate_enforced": false, "formal_eligible": false},
+    "H10": {"available_in_w0_a": false, "gate_enforced": false, "formal_eligible": false},
+    "N1": {"available_in_w0_a": false, "gate_enforced": false, "formal_eligible": false}
+  },
+  "round_stability": {"metric": "p50_ms", "max_ratio": 1.25, "applies_to": "同 scenario/state 的候选轮次；不挑最好一轮", "gate_enforced_for": ["H4", "H6"]},
+  "attribution": {
+    "unattributed_ratio_max": 0.1, "coverage_min": 0.95, "slowest_fraction": 0.01,
+    "required_spans": ["client.encode", "client.connect", "client.write", "client.wait", "client.read", "client.decode", "client.classify", "client.validate"],
+    "server_span_processes": ["gateway", "worker", "authority", "object_store"],
+    "nested_child_subtracted": true, "cross_process_timestamp_subtraction": false, "phase_p99_sum_forbidden": true, "required_for_formal": true,
+    "coverage_denominator": "每进程 root 独立；client 使用请求总耗时；server root 使用本进程 duration，root 容器必须有阶段子 span",
+    "retention": {"short": "all_requests_and_events", "formal": "all_client_latencies; sampled_server_success; all_slow_and_exceptional"},
+    "w0_a_state": "client_spans_only", "w0_a_note": "服务端阶段字段是设计要求，不是现有指标。"
+  },
+  "diagnostics": {
+    "required_values": {"PERI_WORK_METRICS": true, "PERI_DIAG_GROUP_PHASE": true, "PERI_ADMISSION_TRACE": true, "PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS": 20, "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE": 1000},
+    "launcher": "--sql-open-observer", "direct_platform": "PERI_SQL_OPEN_OBSERVER=1", "processes": ["worker", "authority"], "propagation_evidence_required": true,
+    "snapshot_note": "PERI_METRICS_SNAPSHOT_PATH 仅 stdio Worker 退出快照，不是 HTTP 全栈归因。"
+  },
+  "environment": {"formal_required": true, "native_arch_required": true, "reject_root_types": ["overlay", "overlay2", "tmpfs", "ramfs", "devtmpfs"], "reject_markers": ["orbstack", "docker-desktop", "colima"], "diagnostic_max_status": "PHASE_PASS", "diagnostics_must_be_paired": true},
+  "correctness": {"readback_all_values": true, "update_value_delta": 1, "transaction_balance_invariant": true, "transaction_atomicity": "H8 unavailable; do not claim implemented", "close_ack_required": true, "sql_auto_retry": false, "unknown_resolution": "record_outcome_unknown_and_stop", "verification_failure": "FAIL", "normal_outcome_unknown_max": 0, "normal_failure_max": 0, "normal_rejected_max": 0, "permit_residual_max": 0, "acked_writes_recoverable": true},
+  "extended_evidence": {
+    "capacity": {"available_in_w0_a": false, "arrival_fractions": [0.25, 0.50, 0.75, 0.90], "required_fields": ["offered_rps", "successful_rps", "concurrency", "duration_seconds", "arrival_fraction_of_capacity"]},
+    "queueing": {"available_in_w0_a": false, "required_fields": ["wait_p50_ms", "wait_p95_ms", "wait_p99_ms", "queue_depth_max"]},
+    "overload": {"available_in_w0_a": false, "execution_concurrency": 8, "quota_max_concurrent": 4, "rejection_before_execution_required": true, "required_fields": ["offered", "completed", "rejected_before_execution", "rejection_ratio", "all_request_p50_ms", "all_request_p95_ms", "all_request_p99_ms", "failure", "outcome_unknown"]},
+    "quotas": {"available_in_w0_a": false, "max_concurrent": 4, "overload_concurrency": 8, "required_fields": ["configured", "observed", "violations"]},
+    "confidence_intervals": {"available_in_w0_a": false, "required_fields": ["method", "confidence", "p50_lower", "p50_upper", "p99_lower", "p99_upper", "paired_p50_difference_lower_ms", "paired_p50_difference_upper_ms", "paired_p99_difference_lower_ms", "paired_p99_difference_upper_ms"]}
+  },
+  "status_rules": {
+    "missing_evidence": "NOT_RUN", "contract_hash_mismatch": "FAIL", "evidence_hash_mismatch": "FAIL", "invalid_environment": "FAIL", "diagnostic_environment": "PHASE_PASS", "insufficient_samples": "INCOMPLETE", "missing_server_attribution": "INCOMPLETE", "missing_periodic_events": "INCOMPLETE", "missing_metrics_snapshot": "INCOMPLETE", "missing_product_resources": "INCOMPLETE", "missing_pairs": "INCOMPLETE", "missing_aged_state": "INCOMPLETE", "threshold_failure": "FAIL", "unknown_without_terminal_record": "FAIL", "close_unconfirmed_counted_success": "FAIL", "duplicate_span": "FAIL", "unknown_request_id": "FAIL", "cross_request_stitch": "FAIL", "missing_correlation": "FAIL", "unpaired_diagnostic_switch": "FAIL", "retry_observed": "FAIL", "synthetic": "INCOMPLETE", "statuses": ["PASS", "PHASE_PASS", "INCOMPLETE", "NOT_RUN", "FAIL"], "pass_exit_code": 0, "summary_never_read": true, "any_not_pass_exit_nonzero": true,
+    "formal_pass_requires": ["formal_environment", "non_synthetic", "contract_verified", "evidence_verified", "warmup", "samples", "pairs", "fresh_and_aged", "H1-H7", "paired_targets", "server_attribution", "periodic_events", "metrics_snapshot", "product_resources", "oracle_clean", "recovery_proof", "permit_residual_zero", "attribution_coverage", "targets", "round_stability", "diagnostics_paired", "extended_evidence"]
+  },
+  "w0_b_dependencies": {"declared_not_implemented": true, "items": [
+    {"id": "go-intent-span", "owner": "W0-B Go", "requirement": "分别记录 guarded 判定调用、requires_intent durable intent 注册、正式执行调用；不得混计 Worker 执行"},
+    {"id": "rust-admission-success-wait", "owner": "W0-B Rust", "requirement": "admission wait 四类：success、timeout、closed、isolated；全部路径留等待 duration"},
+    {"id": "hrana-dispatch-correlation", "owner": "W0-B Go", "requirement": "外层 pipeline correlation/step 传播到 dispatch/Worker；每个内部动作保留独立 operation_id/request_id，不用外层 ID 替代"},
+    {"id": "authority-object-store-spans", "owner": "W0-B Rust", "requirement": "Authority append/wal_pages/pin_extend/lease/publish/CAS；ObjectStore 新对象/复用/字节/body fsync/目录刷新/锁等待；本进程单调时钟 duration"},
+    {"id": "periodic-events", "owner": "W0-B Go/Rust", "requirement": "audit head/journal compact/receipt roll/checkpoint/index compact 开始结束"}
+  ]}
+}

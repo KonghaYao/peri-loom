@@ -1,0 +1,16 @@
+{
+  "README.md": "d0b5ab4f464670d86986a042a62e176729b74ca8c2b9bdd8290f43f92853894f",
+  "acceptance.json": "47ea79c35ad26bc422be69ca50c87045669da61b88546c0935c2efe238a92208",
+  "workloads.json": "1fdc968ae16dcd3605664cf1ac2a2e1fb0a8ffd1fc3130a174fd6dfa83d21c49",
+  "environment.schema.json": "c13a98915411c1efb1dd24461c9d658208ce6aae54a1dff287ef69ab3b80682e",
+  "attribution/schema.json": "0be28b40fffdf7cdcea2d54f4a02958f3a1780d7fe13fc37cda537a99c8f758e",
+  "sql/00-schema.sql": "3a70ea7fe80f27b8c85661169145d8d36345eeccd20da85ecae5e68a3bb2801d",
+  "sql/01-fixture-1000.sql": "7a7e06d560a2a489c7f1394c27c2c445deed1cc065a2e7b81b1cc74bd36cbf46",
+  "sql/02-fixture-100000.sql": "2ee60ab5b0f205f4cea6561ba146a1680026c49c0692b3f840da447177d13ed6",
+  "sql/10-select-one.sql": "b4e0497804e46e0a0b0b8c31975b062152d551bac49c3c2e80932567b4085dcd",
+  "sql/11-point-read.sql": "cf3e50db5edbbb4decf3e9cbcee6ff78e2725ec2ace0c386f1820b925cdfcfaf",
+  "sql/12-update.sql": "532d939e328ef96abc2cac27a3d0904d82c1891a13c1abe645b823c75528c578",
+  "sql/13-insert-readback.sql": "8d4eaa27aea2da1bd950d7e19f72d5746c9fa5d8f7a6a11e57962041d4a8d4e0",
+  "sql/14-range-read.sql": "035dff38ac154081e714c0410c11d1e3d7e53f8d4f274bebe2f3603922b791e9",
+  "sql/15-explicit-transfer.sql": "f9a108496af35b275d900eeb2c64c315211010a3c76fcb4fb41dbd95a7d1a69b"
+}
