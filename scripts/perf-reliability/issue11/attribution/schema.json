@@ -1,0 +1,354 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "issue11-attribution",
+  "schema": "issue11-attribution",
+  "schema_version": 1,
+  "design_requirement": true,
+  "available_in_w0_a": [
+    "client"
+  ],
+  "clock_rule": "each process measures its own monotonic durations; never subtract timestamps across process_id or clock_id",
+  "root_rule": ".root 为计时容器，未解释余量不算阶段；每进程每请求的全部 root 必须各自未归因<=10%，至少95%请求满足；跨进程 parent 只关联不相减",
+  "record_types": {
+    "request": "one record per real HTTP request, with inline spans",
+    "span": "one process-local phase interval; nested children are subtracted from the parent",
+    "periodic_event": "start/end pairs for audit head, journal compact, receipt roll, checkpoint, index compact"
+  },
+  "title": "Issue 11 request, step and phase attribution",
+  "description": "W0-A writes only client spans. Gateway, worker, authority and object store phases are a declared W0-B design requirement and are not present in current product output.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "schema_version",
+    "design_requirement",
+    "available_in_w0_a",
+    "clock_rule",
+    "record_types",
+    "process_phases",
+    "periodic_event_kinds"
+  ],
+  "properties": {
+    "schema": {
+      "const": "issue11-attribution"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "design_requirement": {
+      "const": true
+    },
+    "available_in_w0_a": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Only these fields are produced by W0-A. Everything else is a contract for W0-B and later."
+    },
+    "clock_rule": {
+      "const": "each process measures its own monotonic durations; never subtract timestamps across process_id or clock_id"
+    },
+    "record_types": {
+      "type": "object",
+      "required": [
+        "request",
+        "span",
+        "periodic_event"
+      ],
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": [
+            "record_type",
+            "schema_version",
+            "request_id",
+            "pipeline_correlation_id",
+            "scenario",
+            "phase",
+            "total_ns",
+            "spans",
+            "process_coverage"
+          ],
+          "properties": {
+            "record_type": {
+              "const": "request"
+            },
+            "schema_version": {
+              "const": 1
+            },
+            "request_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pipeline_correlation_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scenario": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sample_index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "phase": {
+              "enum": [
+                "setup",
+                "warmup",
+                "timed",
+                "cleanup"
+              ]
+            },
+            "step_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "total_ns": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "spans": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/span"
+              }
+            },
+            "process_coverage": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "server_evidence": {
+              "type": "boolean",
+              "description": "仅展示；gate 忽略自报值，按实际 gateway/worker/authority/object_store spans 推导"
+            }
+          }
+        },
+        "span": {
+          "$ref": "#/definitions/span"
+        },
+        "periodic_event": {
+          "$ref": "#/definitions/periodic_event"
+        }
+      }
+    },
+    "process_phases_placeholder": {
+      "type": "object",
+      "description": "The authoritative phase list is the top-level process_phases object."
+    },
+    "periodic_event_kinds_placeholder": {
+      "type": "array",
+      "description": "The authoritative event list is the top-level periodic_event_kinds array."
+    }
+  },
+  "process_phases": {
+    "client": [
+      "client.encode",
+      "client.connect",
+      "client.write",
+      "client.wait",
+      "client.read",
+      "client.decode",
+      "client.classify",
+      "client.validate"
+    ],
+    "gateway": [
+      "gateway.auth",
+      "gateway.route",
+      "gateway.classify",
+      "gateway.guarded",
+      "gateway.intent",
+      "gateway.worker",
+      "gateway.native",
+      "gateway.terminal",
+      "gateway.audit",
+      "gateway.respond",
+      "gateway.encode"
+    ],
+    "worker": [
+      "worker.lane",
+      "worker.admission_enqueue",
+      "worker.admission_wait",
+      "worker.admission_admit",
+      "worker.prepare",
+      "worker.reprepare",
+      "worker.engine",
+      "worker.io"
+    ],
+    "authority": [
+      "authority.append",
+      "authority.wal_pages",
+      "authority.pin_extend",
+      "authority.lease",
+      "authority.publish_stage",
+      "authority.cas"
+    ],
+    "object_store": [
+      "object_store.object_new",
+      "object_store.object_reuse",
+      "object_store.bytes",
+      "object_store.body_fsync",
+      "object_store.duration",
+      "object_store.dir_flush",
+      "object_store.lock_wait"
+    ]
+  },
+  "periodic_event_kinds": [
+    "audit_head",
+    "journal_compact",
+    "receipt_roll",
+    "checkpoint",
+    "index_compact"
+  ],
+  "definitions": {
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "span_id",
+        "process",
+        "phase",
+        "clock_id",
+        "duration_ns",
+        "outcome"
+      ],
+      "properties": {
+        "span_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_span_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "process": {
+          "enum": [
+            "client",
+            "gateway",
+            "worker",
+            "authority",
+            "object_store"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clock_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "process identity plus boot identity; duration is valid only within one clock_id"
+        },
+        "duration_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "started_monotonic_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nested": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "error",
+            "rejected",
+            "outcome_unknown"
+          ]
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "periodic_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_type",
+        "schema_version",
+        "event_id",
+        "process",
+        "clock_id",
+        "kind",
+        "event_phase",
+        "started_monotonic_ns",
+        "duration_ns",
+        "outcome"
+      ],
+      "properties": {
+        "record_type": {
+          "const": "periodic_event"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "process": {
+          "enum": [
+            "gateway",
+            "worker",
+            "authority",
+            "object_store"
+          ]
+        },
+        "clock_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_phase": {
+          "enum": [
+            "start",
+            "end",
+            "instant"
+          ]
+        },
+        "pair_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_monotonic_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "error",
+            "rejected",
+            "outcome_unknown",
+            "running"
+          ]
+        },
+        "refs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

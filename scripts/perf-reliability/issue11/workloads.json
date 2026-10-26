@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "schema": "issue11-hrana-workloads",
+  "baseline_commit": "933494b5b37fdb4833eb7ff9df2b138bb4034d80",
+  "turso_commit": "24a3a4609683b73935888f8bc30b47727d100aa8",
+  "seed": 20261026,
+  "payload_bytes": 256,
+  "fixture_scales": [1000, 100000],
+  "fixture": {
+    "schema": "sql/00-schema.sql",
+    "scales": {"1000": "sql/01-fixture-1000.sql", "100000": "sql/02-fixture-100000.sql"},
+    "tables": ["perf_kv", "perf_events"],
+    "deterministic": true,
+    "online_data_forbidden": true,
+    "generation": "id=1..scale; value=0; ASCII payload from id and zero padding",
+    "payload_pattern": "r%08d: + 246 zero characters",
+    "oracle": "fixed fixture digest plus all touched values verified; full initial content verification required for formal"
+  },
+  "phases": {
+    "R0": "SELECT 1;",
+    "R1": "SELECT value, payload FROM perf_kv WHERE id = ?;",
+    "W0": "UPDATE perf_kv SET value = value + 1 WHERE id = ?;",
+    "W1": "INSERT INTO perf_events(id, value, payload) VALUES (?, ?, ?); SELECT value, payload FROM perf_events WHERE id = ?;",
+    "R2": "SELECT id, value FROM perf_kv WHERE id >= ? ORDER BY id LIMIT 100;"
+  },
+  "sql": {
+    "10-select-one.sql": "SELECT 1",
+    "11-point-read.sql": "SELECT value, payload FROM perf_kv WHERE id = ?",
+    "12-update.sql": "UPDATE perf_kv SET value = value + 1 WHERE id = ?",
+    "13-insert-readback.sql": "INSERT INTO perf_events(id, value, payload) VALUES (?, ?, ?)",
+    "14-range-read.sql": "SELECT id, value FROM perf_kv WHERE id >= ? ORDER BY id LIMIT 100",
+    "15-explicit-transfer.sql": ["UPDATE perf_kv SET value = value - ? WHERE id = ?", "UPDATE perf_kv SET value = value + ? WHERE id = ?"]
+  },
+  "parameter_binding": {"required": true, "literal_ids_allowed": false},
+  "scenarios": {
+    "H1": {"kind": "persistent_select_one", "description": "持久连接 SELECT 1", "workflow": "persistent_select_one", "sql": ["sql/10-select-one.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H2": {"kind": "persistent_read", "description": "持久连接 by-id 读", "workflow": "persistent_read", "sql": ["sql/11-point-read.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H3": {"kind": "persistent_update", "description": "持久连接 UPDATE；验证读取不计入写耗时", "workflow": "persistent_write_verify", "sql": ["sql/12-update.sql", "sql/11-point-read.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H4": {"kind": "persistent_insert_read", "description": "持久连接 INSERT 后独立 SELECT；分别记录两个 HTTP 动作及合计场景耗时", "workflow": "persistent_insert_read", "sql": ["sql/13-insert-readback.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H5": {"kind": "churn_read_close", "description": "open → SELECT 1 → close", "workflow": "churn_read_close", "sql": ["sql/10-select-one.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H6": {"kind": "churn_insert_read_close", "description": "open → INSERT → 独立 SELECT → close", "workflow": "churn_insert_read_close", "sql": ["sql/13-insert-readback.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H7": {"kind": "pipeline_write_read", "description": "同一 pipeline 写与读；不替代 H4", "workflow": "pipeline_write_read", "sql": ["sql/13-insert-readback.sql"], "transport": "reused_connection", "available_in_w0_a": true, "formal_eligible": true, "warmup_min": 200, "quick_samples_min": 2000, "formal_samples_min": 10000, "states": ["fresh", "aged"]},
+    "H8": {"kind": "explicit_transaction", "description": "显式事务 10/100 条写，单列 rows/s；两账户转账校验余额和及原子性", "reserved": true, "available_in_w0_a": false, "formal_eligible": false, "writes_per_transaction": [10, 100]},
+    "H9": {"kind": "concurrency_multi_database", "description": "同库并发与多库混合", "reserved": true, "available_in_w0_a": false, "formal_eligible": false},
+    "H10": {"kind": "sustained_maintenance", "description": "持续运行与维护边界", "reserved": true, "available_in_w0_a": false, "formal_eligible": false},
+    "N1": {"kind": "native_baseline", "description": "native 对应读写；保留 issue8 独立口径", "reserved": true, "available_in_w0_a": false, "formal_eligible": false}
+  },
+  "driver_rules": {"sql_auto_retry": false, "unknown_terminal": true, "close_ack_required": true, "idempotency_ids": "仅关联及恢复，不授权自动重试", "concurrency": 1}
+}
