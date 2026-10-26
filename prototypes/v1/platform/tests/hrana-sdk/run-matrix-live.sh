@@ -11,30 +11,60 @@ if [[ ! "$rounds" =~ ^[1-5]$ || ! -x "$rust_binary" || ! -x "$platform_binary" ]
   exit 2
 fi
 
-fixture="$(mktemp -d "${TMPDIR:-/tmp}/peri-hrana-matrix-XXXXXX")"
-log="$fixture/matrix.log"
-port="$(python3 - <<'PY'
+free_port() {
+  python3 - <<'PY'
 import socket
 with socket.socket() as listener:
     listener.bind(('127.0.0.1', 0))
     print(listener.getsockname()[1])
 PY
-)"
-printf 'Fixture: %s\nLog: %s\n' "$fixture" "$log"
-PERI_HRANA_EXPERIMENTAL=1 PERI_PLATFORM_BINARY="$platform_binary" PERI_RUST_BINARY="$rust_binary" \
-  python3 "$repo/prototypes/v1/platform/dev.py" --tls --no-build --listen "127.0.0.1:$port" --run-dir "$fixture" > "$fixture/launcher.log" 2>&1 &
-launcher=$!
-trap 'kill "$launcher" 2>/dev/null || true; wait "$launcher" 2>/dev/null || true' EXIT
-for ((attempt = 0; attempt < 120; attempt++)); do
-  if [[ -f "$fixture/connection.json" ]]; then break; fi
-  if ! kill -0 "$launcher" 2>/dev/null; then
-    printf 'Launcher stopped before readiness; see %s\n' "$fixture/launcher.log" >&2
-    exit 1
+}
+
+launcher=""
+trap 'if [[ -n "${launcher:-}" ]]; then kill "$launcher" 2>/dev/null || true; wait "$launcher" 2>/dev/null || true; fi' EXIT
+
+# The launcher preflights every listen address before writing state. A port can be
+# claimed between that check and bind; only this pre-startup failure is retried, with
+# a fresh fixture and port. No SQL request has run while the launcher is not ready.
+start_launcher_attempt() {
+  fixture="$(mktemp -d "${TMPDIR:-/tmp}/peri-hrana-matrix-XXXXXX")"
+  log="$fixture/matrix.log"
+  local port
+  port="$(free_port)"
+  printf 'Fixture: %s\nLog: %s\n' "$fixture" "$log"
+  PERI_HRANA_EXPERIMENTAL=1 PERI_PLATFORM_BINARY="$platform_binary" PERI_RUST_BINARY="$rust_binary" \
+    python3 "$repo/prototypes/v1/platform/dev.py" --tls --no-build --listen "127.0.0.1:$port" --run-dir "$fixture" > "$fixture/launcher.log" 2>&1 &
+  launcher=$!
+}
+
+ready=0
+for start_attempt in 1 2 3; do
+  start_launcher_attempt
+  outcome=timeout
+  for ((attempt = 0; attempt < 120; attempt++)); do
+    if [[ -f "$fixture/connection.json" ]]; then outcome=ready; break; fi
+    if ! kill -0 "$launcher" 2>/dev/null; then outcome=stopped; break; fi
+    sleep 0.2
+  done
+  if [[ "$outcome" == stopped ]]; then
+    wait "$launcher" 2>/dev/null || true
+    launcher=""
   fi
-  sleep 0.2
+  if [[ "$outcome" == ready ]]; then ready=1; break; fi
+  if [[ "$outcome" == stopped ]] && (( start_attempt < 3 )) \
+     && grep -q 'listener unavailable before startup' "$fixture/launcher.log"; then
+    printf 'Launcher pre-startup listener collision; retrying with a fresh fixture (attempt %s/3)\n' "$((start_attempt + 1))" >&2
+    continue
+  fi
+  if [[ "$outcome" == stopped ]]; then
+    printf 'Launcher stopped before readiness; see %s\n' "$fixture/launcher.log" >&2
+  else
+    printf 'Launcher readiness timed out; see %s\n' "$fixture/launcher.log" >&2
+  fi
+  exit 1
 done
-if [[ ! -f "$fixture/connection.json" ]]; then
-  printf 'Launcher readiness timed out; see %s\n' "$fixture/launcher.log" >&2
+if [[ "$ready" != 1 ]]; then
+  printf 'Launcher did not become ready after 3 attempts\n' >&2
   exit 1
 fi
 export NODE_EXTRA_CA_CERTS="$(node -e 'console.log(require(process.argv[1]).ca_file)' "$fixture/connection.json")"
