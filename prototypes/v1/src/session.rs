@@ -43,6 +43,11 @@ pub struct WriteCursorPage {
     pub last_insert_rowid: Option<i64>,
 }
 
+pub struct CursorFirstPage {
+    pub cols: Vec<StatementColumn>,
+    pub page: WriteCursorPage,
+}
+
 pub struct DescribeResult {
     pub params: Vec<Option<String>>,
     pub cols: Vec<StatementColumn>,
@@ -52,12 +57,19 @@ pub struct DescribeResult {
 
 /// The answer of one guarded read-only dispatch. `Executed` carries the result
 /// of the statement the worker proved non-writing on every step it ran;
-/// `RequiresIntent` means the engine classified the statement as writing before
-/// its first instruction, so nothing executed and the caller has to take the
-/// committing path.
+/// `RequiresIntent` refuses execution before a writing instruction runs. Its
+/// reason distinguishes an engine verdict from connection state: only the
+/// former is safe to remember across sessions as a conservative write hint.
 pub enum GuardedStatementOutcome {
     Executed(StatementResult),
-    RequiresIntent,
+    RequiresIntent(GuardedIntentReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuardedIntentReason {
+    EngineWritable,
+    TransactionContext,
+    ConnectionControl,
 }
 
 pub struct RemoteSession {
@@ -117,6 +129,27 @@ impl RemoteSession {
 
     pub fn close_read_cursor(&self) -> Result<()> {
         self.lane.close_read_cursor(self.lane.database()?.as_ref())
+    }
+
+    pub fn open_cursor_first(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        page_size: usize,
+        writing: bool,
+    ) -> Result<CursorFirstPage> {
+        let mut budget = Budget::trusted_default();
+        budget.max_query_duration = budget.max_query_duration.max(Duration::from_secs(30));
+        self.lane.open_cursor_first(
+            self.lane.database()?.as_ref(),
+            sql,
+            args,
+            named_args,
+            page_size,
+            writing,
+            &budget,
+        )
     }
 
     pub fn open_write_cursor(

@@ -225,10 +225,14 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	// switch produces, so no later branch may rewrite a field the digest covers.
 	command := map[string]any{"command": action, "session": session.upstream}
 	switch action {
-	case "cursor_open":
+	case "cursor_open", "cursor_start":
 		command["command"] = "open_read_cursor"
 		if request.WriteCursor {
 			command["command"] = "open_write_cursor"
+		}
+		if action == "cursor_start" {
+			command["command"] = command["command"].(string) + "_first"
+			command["max_rows"] = request.MaxRows
 		}
 		args := request.Args
 		if args == nil {
@@ -274,18 +278,22 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	stage := "tool_rpc"
 	if action == "close" {
 		stage = "close_session"
-	} else if action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open" {
+	} else if action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open" || action == "cursor_start" {
 		command["sql"] = request.SQL
 	}
 	frozen, err := freezeCommand(command)
 	if err != nil {
 		return operationAdmissionFailure(err)
 	}
-	// A statement is classified and executed by one worker call: the engine's
-	// read-only verdict is re-checked on the same prepared statement before every
-	// step, so the execution cannot outgrow the proof that removed its intent.
+	// A remembered write only adds an intent; it never grants permission to
+	// skip one. Every other statement still proves read-only admission on the
+	// same prepared statement before each step, including automatic reprepare.
 	if action == "statement" {
-		return gateway.guardedStatement(ctx, session, currentBinding, requestID, stage, command, frozen, permit, quota)
+		key := committingStatementKey{worker: session.worker.ID, digest: digestHex([]byte(request.SQL))}
+		if gateway.committingStatements.remembered(key) {
+			return gateway.committingStatement(ctx, session, currentBinding, requestID, stage, frozen, permit, quota)
+		}
+		return gateway.guardedStatement(ctx, session, currentBinding, requestID, stage, key, command, frozen, permit, quota)
 	}
 	// A platform probe cannot commit and is not a client action, so it takes no
 	// operation record; the client request that needed the answer records its
@@ -339,7 +347,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		}
 		return gatewayResult{value: reply, dispatched: true}
 	}
-	if action == "cursor_fetch" {
+	if action == "cursor_fetch" || action == "cursor_start" {
 		var reply json.RawMessage
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			result := gateway.upstreamFailure(err, session, permit)
@@ -348,7 +356,11 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			}
 			return result
 		}
-		if len(reply) > quota.MaxResultBytes || !validCursorFetchResponse(reply, request.MaxRows, request.WriteCursor) {
+		valid := validCursorFetchResponse(reply, request.MaxRows, request.WriteCursor)
+		if action == "cursor_start" {
+			valid = validCursorFirstResponse(reply, request.MaxRows, request.WriteCursor)
+		}
+		if len(reply) > quota.MaxResultBytes || !valid {
 			failure := gateway.unknown(session, permit)
 			if request.WriteCursor {
 				failure.cursorNativeOutcome = cursorOutcomeUnknown
@@ -356,6 +368,9 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return failure
 		}
 		if request.WriteCursor {
+			if action == "cursor_start" {
+				session.writeCursorOpen, session.writeCursorCommitted = true, false
+			}
 			var page struct {
 				Done bool `json:"done"`
 			}

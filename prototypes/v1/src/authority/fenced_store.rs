@@ -93,11 +93,11 @@ impl ObjectStore for FencedStore {
         });
         let lsn = crate::wal::RemoteWal::new(store).append_using(
             request,
-            |encoded, metadata, expected| {
+            |encoded, metadata, expected, pages| {
                 self.inner
                     .as_ref()
                     .unwrap()
-                    .publish_wal_append(encoded, metadata, expected)
+                    .publish_wal_append(encoded, metadata, expected, pages)
             },
         )?;
         self.service.live(&self.binding)?;

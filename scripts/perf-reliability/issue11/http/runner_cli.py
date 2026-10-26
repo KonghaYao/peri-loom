@@ -166,6 +166,7 @@ def main(argv=None):
             "scenario": arguments.scenario, "arm": arguments.arm_label,
             "pair_index": arguments.pair_index, "state": arguments.state,
             "profile": arguments.profile, "diagnostics": diagnostics, "concurrency": 1,
+            "evidence_extension_version": 2, "database": database,
         })
         _ensure_campaign_headers(root, arguments, acceptance, run_id)
         writers = {

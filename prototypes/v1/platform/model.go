@@ -102,6 +102,7 @@ type State struct {
 	Version                 uint32                        `json:"version"`
 	Revision                uint64                        `json:"revision"`
 	OperationStorageVersion uint32                        `json:"operation_storage_version,omitempty"`
+	CompletionGenesis       string                        `json:"completion_genesis,omitempty"`
 	Organizations           map[string]Organization       `json:"organizations"`
 	Projects                map[string]Project            `json:"projects"`
 	Databases               map[string]Database           `json:"databases"`

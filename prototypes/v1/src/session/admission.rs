@@ -37,6 +37,33 @@ fn queued_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
 
+// Record the entire queued episode on every exit, including successful admission.
+// In particular, maintenance may have ended by the time the writer is admitted.
+struct WaitObservation {
+    started: Option<Instant>,
+    maintenance_blocked: bool,
+    queue_depth: usize,
+}
+
+impl WaitObservation {
+    fn observe(&mut self, state: &State) {
+        self.maintenance_blocked |= state.maintenance;
+        self.queue_depth = self.queue_depth.max(state.queue.len());
+    }
+}
+
+impl Drop for WaitObservation {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            crate::work_metrics::note_admission_wait(AdmissionWait {
+                waited_ns: queued_ns(started),
+                maintenance_blocked: self.maintenance_blocked,
+                queue_depth: self.queue_depth,
+            });
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UnsettledSqlOutcome;
 
@@ -236,7 +263,11 @@ impl WriterAdmission {
             return Err(AdmissionError::QueueFull.into());
         }
         state.queue.push_back(control.id);
-        let queued_at = crate::work_metrics::enabled().then(Instant::now);
+        let mut wait_observation = WaitObservation {
+            started: crate::work_metrics::enabled().then(Instant::now),
+            maintenance_blocked: state.maintenance,
+            queue_depth: state.queue.len(),
+        };
         self.observe("enqueue", control.id, state.owner);
         drop(state);
         let mut ticket = Ticket {
@@ -246,24 +277,11 @@ impl WriterAdmission {
         };
         loop {
             if let Err(error) = check() {
-                let Some(started) = queued_at else {
-                    self.cancel(control.id);
-                    return Err(error);
-                };
-                let blocked = self
-                    .state
-                    .lock()
-                    .map(|state| (state.maintenance, state.queue.len()))
-                    .unwrap_or((false, 0));
                 self.cancel(control.id);
-                crate::work_metrics::note_admission_wait(AdmissionWait {
-                    waited_ns: queued_ns(started),
-                    maintenance_blocked: blocked.0,
-                    queue_depth: blocked.1,
-                });
                 return Err(error);
             }
             let mut state = self.lock()?;
+            wait_observation.observe(&state);
             if state.quarantined || control.closing.load(Ordering::Acquire) {
                 if state.queue.contains(&control.id) {
                     self.observe("cancel", control.id, state.owner);

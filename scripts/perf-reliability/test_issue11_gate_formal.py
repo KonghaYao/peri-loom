@@ -39,6 +39,8 @@ def complete_contract_campaign(root):
                         relative = source.relative_to(templates[arm])
                         if source.is_dir():
                             (path / relative).mkdir()
+                        elif source.name == "oracle.json":
+                            oracle = json.loads(source.read_text())
                         elif source.name not in {"run.json", "SHA256SUMS.json", "MANIFEST.json"}:
                             os.link(source, path / relative)
                     metadata = json.loads((templates[arm] / "run.json").read_text())
@@ -46,6 +48,11 @@ def complete_contract_campaign(root):
                     metadata.update(pair_index=pair, state=state,
                                     started_at_unix_ms=start, completed_at_unix_ms=start + 3_900_000)
                     evidence_io.write_json(path / "run.json", metadata)
+                    oracle["recovery"].update(run_id=run_id)
+                    oracle["recovery"]["restart"].update(
+                        stopped_at_unix_ms=metadata["completed_at_unix_ms"] + 1,
+                        verified_at_unix_ms=metadata["completed_at_unix_ms"] + 2)
+                    evidence_io.write_json(path / "oracle.json", oracle)
                     evidence_io.write_manifests(path, run_id)
                 metadata = json.loads((path / "run.json").read_text())
                 record = _ledger(run_id, scenario=scenario, profile="formal", arm=arm,

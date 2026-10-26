@@ -233,7 +233,7 @@ func nonCommittingOperation(action string, writeCursor bool) bool {
 	switch action {
 	case "describe", "session_state":
 		return true
-	case "cursor_open", "cursor_fetch", "cursor_close":
+	case "cursor_open", "cursor_start", "cursor_fetch", "cursor_close":
 		return !writeCursor
 	}
 	return false
@@ -332,6 +332,12 @@ func verifyNonCommittingAdmission(store StateStore, database controller.Database
 // that cannot commit. The record is created already settled, so the request
 // pays one sidecar commit instead of a registration plus a settlement.
 func settleNonCommittingOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, change func(*OperationRecord)) (string, error) {
+	return settleNonCommittingOperationUsing(store, database, requestID, source, action, stage, worker, session, digest, change, func(edit func(*operationEdit) error) error {
+		return updateOperationRecords(store, edit)
+	})
+}
+
+func settleNonCommittingOperationUsing(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, change func(*OperationRecord), persist func(func(*operationEdit) error) error) (string, error) {
 	operationID, err := controller.RandomID()
 	if err != nil {
 		return "", err
@@ -341,7 +347,7 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 	}
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
-	err = updateOperationRecords(store, func(edit *operationEdit) error {
+	err = persist(func(edit *operationEdit) error {
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
@@ -425,10 +431,10 @@ func finishOperation(store StateStore, database controller.DatabaseID, requestID
 
 func validateOperationRecord(record OperationRecord, key string, databases map[string]Database) error {
 	validStage := record.Stage == "open_session" || record.Stage == "tool_rpc" || record.Stage == "close_session"
-	validAction := record.Source == "management" && nativeDiagnosticAction("/v1/databases/"+record.Action) != "" || record.Source == "gateway" && (record.Action == "open" || record.Action == "execute" || record.Action == "query" || record.Action == "statement" || record.Action == "describe" || record.Action == "session_state" || record.Action == "cursor_open" || record.Action == "cursor_fetch" || record.Action == "cursor_close" || record.Action == "close")
+	validAction := record.Source == "management" && nativeDiagnosticAction("/v1/databases/"+record.Action) != "" || record.Source == "gateway" && (record.Action == "open" || record.Action == "execute" || record.Action == "query" || record.Action == "statement" || record.Action == "describe" || record.Action == "session_state" || record.Action == "cursor_open" || record.Action == "cursor_start" || record.Action == "cursor_fetch" || record.Action == "cursor_close" || record.Action == "close")
 	validBusiness := record.BusinessOutcome == "not_proven" || record.BusinessOutcome == "unknown" || record.BusinessOutcome == "completed" || record.BusinessOutcome == "not_executed" || record.BusinessOutcome == "not_applicable"
 	validCleanup := record.CleanupOutcome == "not_applicable" || record.CleanupOutcome == "pending" || record.CleanupOutcome == "unknown" || record.CleanupOutcome == "completed"
-	cursorAction := record.Source == "gateway" && (record.Action == "cursor_fetch" || record.Action == "cursor_close")
+	cursorAction := record.Source == "gateway" && (record.Action == "cursor_start" || record.Action == "cursor_fetch" || record.Action == "cursor_close")
 	validCursorOutcome := record.CursorNativeOutcome == "" || record.CursorNativeOutcome == cursorOutcomeRolledBack || record.CursorNativeOutcome == cursorOutcomeCommitted || record.CursorNativeOutcome == cursorOutcomeUnknown
 	validCursorStop := !record.CursorClientStopped && !record.CursorDispatchStopped || record.Source == "gateway" && record.Action == "cursor_close" && (!record.CursorClientStopped || record.CursorDispatchStopped)
 	validCursorState := record.CursorNativeOutcome != cursorOutcomeUnknown || record.State == "quarantined"

@@ -151,10 +151,8 @@ func TestHranaV3JSONCursorNDJSONAndBaton(t *testing.T) {
 		switch command["command"] {
 		case "describe":
 			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "answer", "decltype": "INTEGER"}}, "is_readonly": true, "is_explain": false}, nil
-		case "open_read_cursor":
-			return map[string]any{"cols": []any{map[string]any{"name": "answer", "decltype": "INTEGER"}}}, nil
-		case "fetch_read_cursor":
-			return map[string]any{"rows": [][]any{{int64(42)}}, "done": true}, nil
+		case "open_read_cursor_first":
+			return map[string]any{"cols": []any{map[string]any{"name": "answer", "decltype": "INTEGER"}}, "rows": [][]any{{int64(42)}}, "done": true}, nil
 		}
 		return nil, nil
 	})
@@ -167,7 +165,7 @@ func TestHranaV3JSONCursorNDJSONAndBaton(t *testing.T) {
 			t.Fatalf("unauthorized cursor accepted: %d %s", denied.Code, denied.Body.String())
 		}
 	}
-	if fixture.upstream.count("open_read_cursor") != 0 {
+	if fixture.upstream.count("open_read_cursor_first") != 0 {
 		t.Fatal("unauthorized cursor opened upstream")
 	}
 	response := hranaV3JSONCall(handler, fixture.tokenA, path, "application/json", body)
@@ -211,7 +209,7 @@ func TestHranaV3JSONCursorNDJSONAndBaton(t *testing.T) {
 	if closed.Code != http.StatusOK || hranaV3JSONDocument(t, closed)["baton"] != nil {
 		t.Fatalf("cursor baton cannot be closed via pipeline: %d %s", closed.Code, closed.Body.String())
 	}
-	if fixture.upstream.count("open_read_cursor") != 1 || fixture.upstream.count("fetch_read_cursor") != 1 || fixture.upstream.count("statement") != 0 {
+	if fixture.upstream.count("open_read_cursor_first") != 1 || fixture.upstream.count("open_read_cursor") != 0 || fixture.upstream.count("fetch_read_cursor") != 0 || fixture.upstream.count("statement") != 0 {
 		t.Fatal("cursor bypassed native read cursor or executed twice")
 	}
 }
@@ -224,15 +222,17 @@ func TestHranaV3JSONLargeResultUsesNativePages(t *testing.T) {
 		switch command["command"] {
 		case "describe":
 			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": true}, nil
-		case "open_read_cursor":
-			return map[string]any{"cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}}, nil
-		case "fetch_read_cursor":
+		case "open_read_cursor_first", "fetch_read_cursor":
 			rows := make([][]any, 0, 256)
 			for len(rows) < 256 && produced < total {
 				produced++
 				rows = append(rows, []any{produced})
 			}
-			return map[string]any{"rows": rows, "done": produced == total}, nil
+			page := map[string]any{"rows": rows, "done": produced == total}
+			if command["command"] == "open_read_cursor_first" {
+				page["cols"] = []any{map[string]any{"name": "id", "decltype": "INTEGER"}}
+			}
+			return page, nil
 		case "close_read_cursor":
 			return map[string]bool{"closed": true}, nil
 		case "autocommit":
@@ -242,8 +242,8 @@ func TestHranaV3JSONLargeResultUsesNativePages(t *testing.T) {
 	})
 	request := `{"baton":null,"batch":{"steps":[{"stmt":{"sql":"SELECT id FROM records","args":[],"named_args":[],"want_rows":true}},{"condition":{"type":"is_autocommit"},"stmt":{"sql":"SELECT 1","want_rows":false}}]}}`
 	response := hranaV3JSONCall(newHranaHTTP(fixture.gateway), fixture.tokenA, hranaV3JSONPath+"/cursor", "application/json", request)
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"row"`) != total || fixture.upstream.count("fetch_read_cursor") < 40 || fixture.upstream.count("open_read_cursor") != 1 {
-		t.Fatalf("v3 JSON cursor did not page %d rows: status=%d rows=%d fetches=%d opens=%d", total, response.Code, strings.Count(response.Body.String(), `"type":"row"`), fixture.upstream.count("fetch_read_cursor"), fixture.upstream.count("open_read_cursor"))
+	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"row"`) != total || fixture.upstream.count("fetch_read_cursor") != 39 || fixture.upstream.count("open_read_cursor_first") != 1 {
+		t.Fatalf("v3 JSON cursor did not page %d rows: status=%d rows=%d fetches=%d starts=%d", total, response.Code, strings.Count(response.Body.String(), `"type":"row"`), fixture.upstream.count("fetch_read_cursor"), fixture.upstream.count("open_read_cursor_first"))
 	}
 }
 

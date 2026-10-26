@@ -447,6 +447,20 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			_ = encoder.Encode(map[string]any{"type": "error", "error": map[string]any{"message": message, "code": "outcome_unknown"}})
 		}
 	}
+	nativeFailure := func(reply hranaReply) bool {
+		if reply.failure == nil || reply.failure.OperationID() == "" {
+			return false
+		}
+		failed = true
+		if !started {
+			// A fused first page can already have committed before the first
+			// Hrana frame. Keep its durable query handle in this response too.
+			hranaPipelineFailure(writer, identifier, true, reply)
+		} else {
+			_ = encoder.Encode(map[string]any{"type": "error", "error": hranaFailureFields(reply, true)})
+		}
+		return true
+	}
 	results, failures := make([]any, len(steps)), make([]any, len(steps))
 	for index, step := range steps {
 		if request.Context().Err() != nil {
@@ -517,8 +531,24 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			namedArgs[position] = namedSQLArgument{Name: argument.Name, Value: sqlArgument{Type: argument.Value.Type, Value: argument.Value.Value, Base64: argument.Value.Base64}}
 		}
 		writing := !readonly
-		reply := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writing})
+		reply := handler.startCursor(request, credential, map[string]any{"session": stream.session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "write_cursor": writing, "max_rows": 256})
 		if reply.code != "" || reply.status != http.StatusOK {
+			if reply.unknown {
+				if !nativeFailure(reply) {
+					fatal("cursor first page failed: " + reply.code)
+				}
+				return
+			}
+			if reply.failure != nil && reply.failure.Executed() {
+				// The first fetch still ends the batch on a stepped SQL error.
+				// No successful metadata was returned, so send the protocol's
+				// global cursor error after its header, retaining the native proof.
+				failed = true
+				if start() {
+					_ = encoder.Encode(map[string]any{"type": "error", "error": hranaSettledFailureFields(reply, true)})
+				}
+				return
+			}
 			if reply.code != "" && !reply.unknown {
 				failures[index] = true
 				if !write(map[string]any{"type": "step_error", "step": index, "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}}) {
@@ -529,42 +559,40 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			fatal("cursor open failed: " + reply.code)
 			return
 		}
-		active, activeWrite = true, writing
-		if writing {
-			writeCommitted = false
-		}
 		var metadata struct {
 			Cols []json.RawMessage `json:"cols"`
+			Done bool              `json:"done"`
 		}
 		if json.Unmarshal(reply.result, &metadata) != nil || metadata.Cols == nil {
 			fatal("invalid cursor metadata")
 			return
 		}
+		active, activeWrite = !metadata.Done, writing
+		if writing {
+			writeCommitted = metadata.Done
+		}
 		if !write(map[string]any{"type": "step_begin", "step": index, "cols": metadata.Cols}) {
 			return
 		}
+		firstPage := true
 		for {
 			if request.Context().Err() != nil {
 				clientStopped = true
 				failed = true
 				return
 			}
-			reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
+			if !firstPage {
+				reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
+			}
+			firstPage = false
 			if reply.code != "" || reply.status != http.StatusOK {
 				if request.Context().Err() != nil {
 					clientStopped = true
 				}
-				if reply.failure != nil && reply.failure.OperationID() != "" {
+				if nativeFailure(reply) {
 					// The stream can no longer promise a settled write. Publish the
 					// platform's operation so the client can query what is owed
 					// instead of retrying.
-					failed = true
-					entry := map[string]any{"type": "error", "error": hranaFailureFields(reply, true)}
-					if !started {
-						http.Error(writer, "cursor outcome unknown: "+reply.code, http.StatusBadGateway)
-					} else {
-						_ = encoder.Encode(entry)
-					}
 					return
 				}
 				fatal("cursor fetch failed: " + reply.code)

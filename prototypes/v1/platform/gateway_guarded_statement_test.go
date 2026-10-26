@@ -83,7 +83,7 @@ func TestGuardedStatementRequiresIntentPersistsIntentBeforeStatement(test *testi
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		switch command["command"] {
 		case "guarded_readonly_statement":
-			return map[string]any{"requires_intent": true}, nil
+			return map[string]any{"requires_intent": true, "reason": "engine_writable"}, nil
 		case "statement":
 			state, err := store.Snapshot()
 			if err != nil {
@@ -165,9 +165,13 @@ func TestGuardedStatementTimeoutNeverFallsBackToStatement(test *testing.T) {
 // path. Anything else is an unusable classification and stays unknown.
 func TestGuardedStatementMalformedReplyIsUnknownAndNeverReplayed(test *testing.T) {
 	for name, reply := range map[string]any{
-		"flag-not-bool":   map[string]any{"requires_intent": "true"},
-		"flag-with-extra": map[string]any{"requires_intent": true, "autocommit": true},
-		"statement-shape": map[string]any{"cols": []any{}, "rows": []any{}},
+		"flag-not-bool":     map[string]any{"requires_intent": "true", "reason": "engine_writable"},
+		"flag-false":        map[string]any{"requires_intent": false, "reason": "engine_writable"},
+		"reason-missing":    map[string]any{"requires_intent": true},
+		"reason-unknown":    map[string]any{"requires_intent": true, "reason": "future_reason"},
+		"reason-not-string": map[string]any{"requires_intent": true, "reason": true},
+		"flag-with-extra":   map[string]any{"requires_intent": true, "reason": "engine_writable", "autocommit": true},
+		"statement-shape":   map[string]any{"cols": []any{}, "rows": []any{}},
 	} {
 		test.Run(name, func(test *testing.T) {
 			fixture := newGatewayFixture(test)

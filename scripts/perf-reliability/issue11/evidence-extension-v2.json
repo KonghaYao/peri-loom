@@ -1,0 +1,22 @@
+{
+  "schema": "issue11-evidence-extension",
+  "version": 2,
+  "frozen_contract": "acceptance.json version 1, unchanged",
+  "status": "IMPLEMENTED_VALIDATION_NOT_PERFORMANCE",
+  "recovery": {
+    "raw_write_identity": ["op_id", "request_id", "kind", "table", "id", "value", "payload_sha256"],
+    "phases": ["warmup", "timed"],
+    "proof": ["schema", "run_id", "database", "acknowledged_operations_sha256", "acked_writes", "recovered_writes", "rows", "restart"],
+    "rows": "Exact sorted final values derived from the complete acknowledged write sequence",
+    "restart": "Different supervisor-attested instances; stop and verification after run completion; explicit fault model"
+  },
+  "extended_semantics": {
+    "healthy_errors": "failure=Unknown=quota violations=0",
+    "overload_completed": "Successfully completed requests; exclusive of rejected, failed, and unknown requests",
+    "accounting": "offered=completed+rejected_before_execution+failure+outcome_unknown",
+    "quotas_observed": "Maximum observed concurrent executions, not a request total",
+    "overload_offered_concurrency": "Must match frozen execution_concurrency=8; configured max_concurrent stays 4",
+    "confidence": "Bounds ordered; calculation provenance remains an independent evidence requirement"
+  },
+  "legacy_evidence": "Missing version 2 identity evidence remains INCOMPLETE; counts alone never prove recovery"
+}

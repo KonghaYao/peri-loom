@@ -51,12 +51,20 @@ type operationCommit struct {
 // caller holds the state lock for the view it passes, so the chain order and the view order
 // are the same order. It never waits for the file: only the committer does.
 func (journal *operationJournal) submit(view State, delta operationDelta) (*operationCommit, error) {
+	return journal.submitAudit(view, delta, nil, false)
+}
+
+func (journal *operationJournal) submitAudit(view State, delta operationDelta, event *AuditEvent, reserved bool) (*operationCommit, error) {
 	journal.mutex.Lock()
 	defer journal.mutex.Unlock()
 	if err := journal.available(); err != nil {
 		return nil, err
 	}
-	if len(journal.commits) >= operationJournalQueueMaximum {
+	queueMaximum := operationJournalQueueMaximum
+	if reserved && journal.completion != nil {
+		queueMaximum += completionReservedMaximum
+	}
+	if len(journal.commits) >= queueMaximum {
 		return nil, ErrOperationQueueFull
 	}
 	// The chain position is the last append admitted, which stays fixed even after its
@@ -71,6 +79,20 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 		return nil, ErrOperationCapacity
 	}
 	mutation := journalMutation{Version: operationJournalVersion, Revision: revision + 1, BaseRevision: view.Revision, Previous: previous, Sequence: view.OperationSequence, Evictions: view.OperationEvictions, Set: delta.Set, Remove: delta.Remove}
+	if journal.completion != nil {
+		mutation.Version = completionJournalVersion
+	}
+	if event != nil {
+		if journal.completion == nil || validateAudit(*event) != nil || journal.orderedAudit.Sequence == ^uint64(0) {
+			return nil, errors.New("invalid completion audit")
+		}
+		payload := auditPayload{Version: 1, Sequence: journal.orderedAudit.Sequence + 1, Previous: journal.orderedAudit.Hash, Event: *event}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		mutation.Audit = &auditRecord{Payload: payload, Hash: digestHex(body)}
+	}
 	encodeStarted := time.Now()
 	encoded, err := json.Marshal(mutation)
 	if err != nil || len(encoded) > operationJournalMaximumRecordBytes {
@@ -81,9 +103,28 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 	if err != nil {
 		return nil, errors.New("invalid operation mutation")
 	}
+	if journal.completion != nil {
+		maximum := completionRetentionSoftBytes
+		activeMaximum := int64(operationJournalMaximumBytes)
+		if reserved {
+			maximum = completionRetentionMaximumBytes
+			activeMaximum = completionActiveMaximumBytes
+		}
+		queueBytes := int64(completionQueueMaximumBytes)
+		if reserved {
+			queueBytes += completionReservedMaximum * completionRecordReservationBytes
+		}
+		if journal.queuedBytes+int64(len(line)+1) > queueBytes || journal.retainedBytes+journal.queuedBytes+int64(len(line)+1) > maximum || journal.size+journal.queuedBytes+int64(len(line)+1) > activeMaximum {
+			return nil, ErrOperationQueueFull
+		}
+	}
 	journal.encodeNS += uint64(time.Since(encodeStarted))
 	commit := &operationCommit{revision: mutation.Revision, payload: mutation, line: append(line, '\n'), hash: hash, settled: make(chan struct{})}
 	journal.commits = append(journal.commits, commit)
+	journal.queuedBytes += int64(len(commit.line))
+	if mutation.Audit != nil {
+		journal.orderedAudit = auditHead{Version: 1, Sequence: mutation.Audit.Payload.Sequence, Hash: mutation.Audit.Hash}
+	}
 	journal.orderedTail = commit
 	journal.ordered++
 	if len(journal.commits) > journal.queueMaximum {
@@ -160,6 +201,9 @@ func (journal *operationJournal) flush() {
 		journal.syncNS += timings.sync
 		journal.witnessNS += timings.witness
 		journal.writing = false
+		for _, commit := range batch {
+			journal.queuedBytes -= int64(len(commit.line))
+		}
 		if err == nil {
 			journal.recordBatchLocked(batch)
 		} else if !errors.Is(err, ErrStateClosed) {
@@ -236,6 +280,9 @@ func (journal *operationJournal) writeBatchAt(batch []*operationCommit, offset i
 		return timings, ErrStateUncertain
 	}
 	timings.write = uint64(time.Since(started))
+	if journal.testSyncGate != nil {
+		journal.testSyncGate()
+	}
 	started = time.Now()
 	if err := journal.file.Sync(); err != nil {
 		timings.sync = uint64(time.Since(started))
@@ -255,9 +302,13 @@ func (journal *operationJournal) recordBatchLocked(batch []*operationCommit) {
 	journal.coalesced += uint64(len(batch) - 1)
 	for _, commit := range batch {
 		journal.size += int64(len(commit.line))
+		journal.retainedBytes += int64(len(commit.line))
 		journal.revision = commit.revision
 		journal.digest = commit.hash
 		journal.records = append(journal.records, journalEntry{Payload: commit.payload, Hash: commit.hash})
+		if commit.payload.Audit != nil {
+			journal.auditHead = auditHead{Version: 1, Sequence: commit.payload.Audit.Payload.Sequence, Hash: commit.payload.Audit.Hash}
+		}
 	}
 	journal.appends += uint64(len(batch))
 	journal.appendsTotal += uint64(len(batch))

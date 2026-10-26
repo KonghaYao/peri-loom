@@ -6,7 +6,8 @@ use crate::database::RemoteDatabase;
 use crate::namespace::Namespace;
 use crate::object_store::MemoryObjectStore;
 use crate::session::{
-    AdmissionError, Budget, GuardedStatementOutcome, RequestDeadline, SqlEvidence,
+    AdmissionError, Budget, GuardedIntentReason, GuardedStatementOutcome, RequestDeadline,
+    SqlEvidence,
 };
 use anyhow::Result;
 
@@ -121,7 +122,10 @@ fn guarded_write_returns_requires_intent_before_executing() -> Result<()> {
     session.execute("CREATE TABLE items(value INTEGER)")?;
     let outcome =
         session.guarded_readonly_statement("INSERT INTO items VALUES (1)", &[], &[], true)?;
-    assert!(matches!(outcome, GuardedStatementOutcome::RequiresIntent));
+    assert!(matches!(
+        outcome,
+        GuardedStatementOutcome::RequiresIntent(GuardedIntentReason::EngineWritable)
+    ));
     assert_eq!(
         session.query("SELECT count(*) FROM items")?[0][0].to_string(),
         "0"
@@ -143,7 +147,10 @@ fn guarded_trigger_side_effects_are_refused_before_the_insert() -> Result<()> {
     )?;
     let outcome =
         session.guarded_readonly_statement("INSERT INTO source VALUES (9)", &[], &[], true)?;
-    assert!(matches!(outcome, GuardedStatementOutcome::RequiresIntent));
+    assert!(matches!(
+        outcome,
+        GuardedStatementOutcome::RequiresIntent(GuardedIntentReason::EngineWritable)
+    ));
     assert_eq!(
         session.query("SELECT count(*) FROM source")?[0][0].to_string(),
         "0"
@@ -171,12 +178,36 @@ fn guarded_transaction_control_and_pragma_keep_the_original_path() -> Result<()>
     ] {
         let outcome = session.guarded_readonly_statement(sql, &[], &[], true)?;
         assert!(
-            matches!(outcome, GuardedStatementOutcome::RequiresIntent),
+            matches!(
+                outcome,
+                GuardedStatementOutcome::RequiresIntent(GuardedIntentReason::ConnectionControl)
+            ),
             "{sql} took the guarded path"
         );
     }
     assert!(session.autocommit(&Budget::trusted_default())?);
     assert_eq!(session.query("PRAGMA user_version")?[0][0].to_string(), "0");
+    Ok(())
+}
+
+#[test]
+fn guarded_transaction_context_is_not_an_engine_write_verdict() -> Result<()> {
+    let _serial = guarded_test_lock();
+    let (_cache, session) = guarded_session("transaction_context")?;
+    session.execute("BEGIN")?;
+    let outcome = session.guarded_readonly_statement("SELECT 7", &[], &[], true)?;
+    assert!(matches!(
+        outcome,
+        GuardedStatementOutcome::RequiresIntent(GuardedIntentReason::TransactionContext)
+    ));
+    assert!(!session.autocommit(&Budget::trusted_default())?);
+    session.execute("ROLLBACK")?;
+    let outcome = session.guarded_readonly_statement("SELECT 7", &[], &[], true)?;
+    let GuardedStatementOutcome::Executed(result) = outcome else {
+        panic!("transaction state contaminated a later read-only statement");
+    };
+    assert_eq!(result.rows[0][0].to_string(), "7");
+    assert!(result.autocommit);
     Ok(())
 }
 

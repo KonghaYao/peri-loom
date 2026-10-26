@@ -353,6 +353,7 @@ def write_run(run_directory, timed, warmup=200, formal=False,
     evidence_io.write_json(run_directory / "run.json", {
         "scenario": scenario, "arm": arm, "pair_index": pair_index,
         "state": state, "profile": "formal" if formal else "quick", "concurrency": 1,
+        "evidence_extension_version": 2, "database": "tenant/db/main",
         "started_at_unix_ms": 1_000_000_000 + pair_index * 10_000_000
         + contract.load_acceptance()["sampling"]["formal"]["pair_order"][pair_index].index(arm) * 4_000_000,
         "completed_at_unix_ms": 1_003_900_000 + pair_index * 10_000_000
@@ -496,6 +497,9 @@ def write_run(run_directory, timed, warmup=200, formal=False,
                 split_requests.append(req)
                 split_attribution.append(doc)
         operations, requests, attribution = split_operations, split_requests, split_attribution
+    from test_issue11_v2_support import recovery_fixture, extended_fixture
+    recovery = recovery_fixture(run_directory.name, scenario, operations, requests,
+                                evidence_io.read_json(run_directory / "run.json"))
     write_jsonl(run_directory / "operations.jsonl", operations)
     write_jsonl(run_directory / "requests.jsonl", requests)
     write_jsonl(run_directory / "request-attribution.jsonl", attribution)
@@ -566,13 +570,7 @@ def write_run(run_directory, timed, warmup=200, formal=False,
         }],
         "product_processes_accounted": True,
         "permit_residual": 0,
-        "extended_evidence": {
-            name: {field: ("contract-test" if field == "method" else
-                           {"max_streams": 256} if field == "configured" else
-                           0.95 if field == "confidence" else 0)
-                   for field in rule["required_fields"]}
-            for name, rule in contract.load_acceptance()["extended_evidence"].items()
-        },
+        "extended_evidence": extended_fixture(),
         "failure": None,
     })
     evidence_io.write_json(run_directory / "oracle.json", {
@@ -583,7 +581,7 @@ def write_run(run_directory, timed, warmup=200, formal=False,
         "initial_content_sha256": contract.fixture_digest(1000),
         "setup_executed": False,
         "verified_operations": timed,
-        "recovery": {"acked_writes": timed, "recovered_writes": timed, "mismatches": 0},
+        "recovery": recovery,
         "mismatches": [],
     })
     evidence_io.write_json(run_directory / "summary.json", summary or {

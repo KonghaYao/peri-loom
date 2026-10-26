@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::manifest::WalPosition;
 use crate::namespace::Namespace;
-use crate::object_store::{ObjectStore, PutCondition};
+use crate::object_store::{GroupWrite, ObjectStore, PutCondition};
+
+#[cfg(test)]
+#[path = "wal_append_pages_tests.rs"]
+mod append_pages_tests;
 
 pub trait DurableWal: Send + Sync {
     fn append(&self, namespace: &Namespace, epoch: u64, batch: WalBatch) -> Result<u64>;
@@ -269,15 +273,28 @@ struct AppendReceipt {
 }
 
 #[derive(Debug)]
-struct ChunkUploadFailure(anyhow::Error);
+struct AppendUploadFailure(anyhow::Error);
 
-impl std::fmt::Display for ChunkUploadFailure {
+impl std::fmt::Display for AppendUploadFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
     }
 }
 
-impl std::error::Error for ChunkUploadFailure {}
+impl std::error::Error for AppendUploadFailure {}
+
+/// The final authority snapshot changed which immutable pages already exist. This
+/// attempt has not committed an append head; rebuilding its storage plan is safe.
+#[derive(Debug)]
+pub(crate) struct AppendPagesChanged;
+
+impl std::fmt::Display for AppendPagesChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("WAL append page registrations changed")
+    }
+}
+
+impl std::error::Error for AppendPagesChanged {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -322,6 +339,20 @@ pub(crate) const WAL_RECEIPT_INLINE_LIMIT: usize = 256;
 /// Slack left after a roll. Archiving one receipt per append would make every append a roll
 /// and pay the archive validation walk each time; a batch amortises that cost.
 pub(crate) const WAL_RECEIPT_ROLL_BATCH: usize = 64;
+
+/// Bound the extra immutable bodies carried by one append publication. Imported heads
+/// can contain a much larger inline tail than a current writer produces; those bodies
+/// are safely prewritten in bounded groups before the append publishes their root.
+pub(crate) const MAX_APPEND_STAGED_PAGES: usize = 512;
+pub(crate) const MAX_APPEND_STAGED_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) fn append_pages_fit(writes: &[GroupWrite]) -> bool {
+    writes.len() <= MAX_APPEND_STAGED_PAGES
+        && writes
+            .iter()
+            .try_fold(0usize, |total, write| total.checked_add(write.bytes.len()))
+            .is_some_and(|total| total <= MAX_APPEND_STAGED_BYTES)
+}
 
 impl WalAppendRequest {
     fn record(&self, lsn: u64) -> WalRecord {
@@ -706,19 +737,36 @@ impl RemoteWal {
         entries: Vec<Entry>,
         previous: Option<String>,
     ) -> Result<String> {
+        let (hash, write) = Self::stage_index_segment(namespace, entries, previous)?;
+        self.publish_immutable(&write)?;
+        Ok(hash)
+    }
+
+    fn stage_index_segment(
+        namespace: &Namespace,
+        entries: Vec<Entry>,
+        previous: Option<String>,
+    ) -> Result<(String, GroupWrite)> {
         let (hash, bytes) = WalIndexSegment::encode(previous, entries)?;
         let key = namespace.key(&format!("wal/index-segments/{hash}"))?;
-        if let Err(error) = self.store.put(&key, &bytes, PutCondition::Absent) {
+        Ok((hash, GroupWrite::absent(key, bytes)))
+    }
+
+    fn publish_immutable(&self, write: &GroupWrite) -> Result<()> {
+        if let Err(error) = self
+            .store
+            .put(&write.key, &write.bytes, PutCondition::Absent)
+        {
             let existing = self
                 .store
-                .get(&key)?
-                .context("WAL index segment upload failed")?;
+                .get(&write.key)?
+                .context("immutable WAL page upload unresolved")?;
             ensure!(
-                existing.bytes == bytes,
-                "immutable WAL index segment conflict: {error}"
+                existing.bytes == write.bytes,
+                "immutable WAL page conflict: {error}"
             );
         }
-        Ok(hash)
+        Ok(())
     }
 
     /// Moves the oldest digested receipts into the page archive before the head CAS.
@@ -733,12 +781,24 @@ impl RemoteWal {
         index: &mut WalMetadata,
         appended: Option<&str>,
     ) -> Result<()> {
+        let writes = self.stage_receipts(namespace, index, appended)?;
+        self.publish_append_pages(namespace, &writes)
+    }
+
+    /// Builds the archive without making it visible. The append publisher registers and
+    /// pins these pages in the same transaction as the chunk and WAL head.
+    fn stage_receipts(
+        &self,
+        namespace: &Namespace,
+        index: &mut WalMetadata,
+        appended: Option<&str>,
+    ) -> Result<Vec<GroupWrite>> {
         let excess = index
             .receipts
             .len()
             .saturating_sub(WAL_RECEIPT_INLINE_LIMIT);
         if excess == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let target = excess.saturating_add(WAL_RECEIPT_ROLL_BATCH);
         let mut candidates = index
@@ -752,7 +812,7 @@ impl RemoteWal {
         candidates.sort();
         candidates.truncate(target.min(candidates.len()));
         if candidates.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let pending =
             std::cell::RefCell::new(crate::authority::paged_index::PendingPages::default());
@@ -781,34 +841,58 @@ impl RemoteWal {
             }
             root = Some(pages.insert_many(root.as_deref(), updates)?);
         }
-        // One durability group for the whole roll when the store can publish pages in
-        // batch; the per-page path below is what every other store keeps doing. Publishing
-        // the pages before the head that references them is the ordering that makes a lost
-        // head harmless.
-        let staged = pending.borrow();
-        if !self.store.publish_pages(staged.writes())? {
-            for write in staged.writes() {
-                if let Err(error) = self
-                    .store
-                    .put(&write.key, &write.bytes, PutCondition::Absent)
-                {
-                    let existing = self
-                        .store
-                        .get(&write.key)?
-                        .context("index page upload unresolved")?;
-                    ensure!(
-                        existing.bytes == write.bytes,
-                        "immutable index page conflict: {error}"
-                    );
-                }
-            }
-        }
-        drop(staged);
         for (_, identity) in &candidates {
             index.receipts.remove(identity);
             index.receipt_digests.remove(identity);
         }
         index.receipt_index = root;
+        let writes = pending.borrow().writes().to_vec();
+        Ok(writes)
+    }
+
+    /// Raw stores and oversized imported heads keep the prewrite-before-head ordering.
+    /// Receipt pages retain their independent batching hook for truncate and callers
+    /// that do not offer an atomic append publication.
+    fn publish_append_pages(&self, namespace: &Namespace, writes: &[GroupWrite]) -> Result<()> {
+        let receipt_prefix = format!("{}/", namespace.key(WAL_RECEIPT_PAGE_PREFIX)?);
+        let mut offset = 0;
+        while offset < writes.len() {
+            if !writes[offset].key.starts_with(&receipt_prefix) {
+                self.publish_immutable(&writes[offset])?;
+                offset += 1;
+                continue;
+            }
+            let start = offset;
+            let mut bytes = 0usize;
+            while offset < writes.len()
+                && writes[offset].key.starts_with(&receipt_prefix)
+                && offset - start < MAX_APPEND_STAGED_PAGES
+                && bytes.saturating_add(writes[offset].bytes.len()) <= MAX_APPEND_STAGED_BYTES
+            {
+                bytes += writes[offset].bytes.len();
+                offset += 1;
+            }
+            if start == offset {
+                self.publish_immutable(&writes[offset])?;
+                offset += 1;
+            } else if !self.store.publish_pages(&writes[start..offset])? {
+                for write in &writes[start..offset] {
+                    self.publish_immutable(write)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn prewrite_oversized_pages(
+        &self,
+        namespace: &Namespace,
+        pages: &mut Vec<GroupWrite>,
+    ) -> Result<()> {
+        if !append_pages_fit(pages) {
+            self.publish_append_pages(namespace, pages)?;
+            pages.clear();
+        }
         Ok(())
     }
 
@@ -951,9 +1035,11 @@ impl RemoteWal {
     }
 
     pub(crate) fn append_local(&self, request: &WalAppendRequest) -> Result<u64> {
-        self.append_using(request, |encoded, index, etag| {
+        self.append_using(request, |encoded, index, etag, pages| {
+            self.publish_append_pages(&encoded.record().namespace, pages)
+                .map_err(|error| anyhow::Error::new(AppendUploadFailure(error)))?;
             self.chunk(encoded)
-                .map_err(|error| anyhow::Error::new(ChunkUploadFailure(error)))?;
+                .map_err(|error| anyhow::Error::new(AppendUploadFailure(error)))?;
             self.commit(&encoded.record().namespace, index, etag)
         })
     }
@@ -964,7 +1050,8 @@ impl RemoteWal {
         mut publish: Publish,
     ) -> Result<u64>
     where
-        Publish: FnMut(&EncodedWalRecord, &WalMetadata, Option<String>) -> Result<()>,
+        Publish:
+            FnMut(&EncodedWalRecord, &WalMetadata, Option<String>, &[GroupWrite]) -> Result<()>,
     {
         let WalAppendRequest {
             namespace,
@@ -981,17 +1068,20 @@ impl RemoteWal {
             }
             let lsn = index.last_lsn.checked_add(1).context("WAL LSN exhausted")?;
             let encoded = EncodedWalRecord::new(request.record(lsn))?;
+            let mut pages = Vec::new();
             let entry = Entry {
                 lsn,
                 hash: encoded.hash().to_owned(),
             };
             if index.entries.len() >= WAL_INDEX_SEGMENT_LIMIT {
                 for entries in std::mem::take(&mut index.entries).chunks(WAL_INDEX_SEGMENT_LIMIT) {
-                    index.entry_index = Some(self.index_segment(
+                    let (hash, write) = Self::stage_index_segment(
                         namespace,
                         entries.to_vec(),
                         index.entry_index.clone(),
-                    )?);
+                    )?;
+                    index.entry_index = Some(hash);
+                    pages.push(write);
                 }
             }
             index.entries.push(entry);
@@ -1006,26 +1096,27 @@ impl RemoteWal {
             index
                 .receipt_digests
                 .insert(append_id.clone(), encoded.hash().to_owned());
-            self.roll_receipts(namespace, &mut index, Some(append_id))?;
+            pages.extend(self.stage_receipts(namespace, &mut index, Some(append_id))?);
+            self.prewrite_oversized_pages(namespace, &mut pages)?;
             index.last_lsn = lsn;
             index.epoch = *epoch;
             index.commit = encoded.record().commit;
-            match publish(&encoded, &index, etag.clone()) {
+            match publish(&encoded, &index, etag.clone(), &pages) {
                 Ok(()) => return Ok(lsn),
                 Err(error) => {
-                    if error.is::<ChunkUploadFailure>() {
-                        return Err(error.downcast::<ChunkUploadFailure>().unwrap().0);
+                    if error.is::<AppendUploadFailure>() {
+                        return Err(error.downcast::<AppendUploadFailure>().unwrap().0);
                     }
                     let (current, current_etag) = self.index(namespace)?;
                     ensure!(*epoch >= current.epoch, "stale WAL epoch");
                     if let Some(receipt) = self.receipt(namespace, &current, append_id)? {
                         return self.verified_receipt(request, &current, receipt);
                     }
-                    if current_etag == etag {
+                    if current_etag == etag && !error.is::<AppendPagesChanged>() {
                         return Err(error);
                     }
-                    // The conditional write lost to another appender, so this attempt is
-                    // rebuilt from the index that won.
+                    // Another publication changed the WAL or its immutable page
+                    // registrations. Rebuild storage publication only, never user SQL.
                     crate::work_metrics::observe_wal_index_retry();
                     crate::slow_diagnostics::retry();
                 }
@@ -1465,7 +1556,7 @@ mod receipt_tests {
                 let original = request()?;
                 let mut competing = original.clone();
                 change(&mut competing, field);
-                let result = wal.append_using(&original, |_, _, _| {
+                let result = wal.append_using(&original, |_, _, _, _| {
                     wal.append_local(&competing)?;
                     if legacy {
                         let (mut index, etag) = wal.index(&original.namespace)?;

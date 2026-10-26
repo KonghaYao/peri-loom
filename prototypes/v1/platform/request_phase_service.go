@@ -24,17 +24,19 @@ const requestPhaseFileName = "request-phase-observation.jsonl"
 const requestPhaseDrainBatch = 64
 
 type serviceRequestPhaseRecord struct {
-	Stream        string                `json:"stream"`
-	RequestID     string                `json:"request_id"`
-	Action        string                `json:"action"`
-	Outcome       string                `json:"outcome"`
-	Status        int                   `json:"status"`
-	Window        uint64                `json:"window"`
-	TotalNS       uint64                `json:"total_ns"`
-	AccountedNS   uint64                `json:"accounted_ns"`
-	UnaccountedNS uint64                `json:"unaccounted_ns"`
-	Truncated     bool                  `json:"truncated"`
-	Spans         []requestPhaseSegment `json:"spans"`
+	Stream         string                `json:"stream"`
+	RequestID      string                `json:"request_id"`
+	OuterRequestID string                `json:"outer_request_id,omitempty"`
+	HranaStep      uint64                `json:"hrana_step,omitempty"`
+	Action         string                `json:"action"`
+	Outcome        string                `json:"outcome"`
+	Status         int                   `json:"status"`
+	Window         uint64                `json:"window"`
+	TotalNS        uint64                `json:"total_ns"`
+	AccountedNS    uint64                `json:"accounted_ns"`
+	UnaccountedNS  uint64                `json:"unaccounted_ns"`
+	Truncated      bool                  `json:"truncated"`
+	Spans          []requestPhaseSegment `json:"spans"`
 	// A bounded observer that stopped early says so instead of looking complete.
 	Complete bool `json:"complete"`
 }
@@ -139,7 +141,11 @@ func (sink *serviceRequestPhaseSink) consume(ctx context.Context, output io.Writ
 			if failure != nil {
 				continue
 			}
-			projected := serviceRequestPhaseRecord{Stream: sink.stream, RequestID: record.RequestID, Action: record.Action, Outcome: record.Outcome, Status: record.Status, Window: record.Window, TotalNS: record.TotalNS, AccountedNS: record.AccountedNS, UnaccountedNS: record.UnaccountedNS, Truncated: record.Truncated, Spans: record.Spans}
+			projected := serviceRequestPhaseRecord{Stream: sink.stream, RequestID: record.RequestID,
+				OuterRequestID: record.OuterRequestID, HranaStep: record.HranaStep,
+				Action: record.Action, Outcome: record.Outcome, Status: record.Status, Window: record.Window,
+				TotalNS: record.TotalNS, AccountedNS: record.AccountedNS, UnaccountedNS: record.UnaccountedNS,
+				Truncated: record.Truncated, Spans: record.Spans}
 			if failure = encoder.Encode(projected); failure != nil {
 				break
 			}

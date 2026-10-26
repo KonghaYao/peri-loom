@@ -65,7 +65,20 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
-	defer state.Close()
+	defer func() {
+		result = joinServiceResult(result, runServiceTeardown(budget, []stopStep{
+			{name: "state close", run: func(context.Context) error { return state.Close() }},
+		}))
+	}()
+	completionEnabled, err := completionServiceEnabled()
+	if err != nil {
+		return err
+	}
+	audit, err := OpenCompletionAudit(state, config.AuditPath, completionEnabled)
+	if err != nil {
+		return err
+	}
+	defer func() { result = joinServiceResult(result, closeAuditWithin(budget, audit)) }()
 	if config.OwnedStopProof != nil {
 		if err := bindOwnedRunGeneration(state, *config.OwnedStopProof); err != nil {
 			return err
@@ -96,11 +109,6 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 		return err
 	}
 	defer metadata.Close()
-	audit, err := OpenAudit(config.AuditPath)
-	if err != nil {
-		return err
-	}
-	defer func() { result = joinServiceResult(result, closeAuditWithin(budget, audit)) }()
 	master, err := NewLocalKMS(config.KMSKeyring)
 	if err != nil {
 		return err
@@ -193,6 +201,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	defer func() {
 		result = joinServiceResult(result, runServiceTeardown(budget, []stopStep{
 			{name: "gateway drain", run: gateway.Close},
+			{name: "audit tail", run: func(context.Context) error { return audit.Close() }},
 			{name: "operation checkpoint", run: func(context.Context) error { return CheckpointOperations(state) }},
 		}))
 	}()

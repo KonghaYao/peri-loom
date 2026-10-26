@@ -61,8 +61,9 @@ pub enum WorkerCommand {
     },
     // One statement prepared, bound and stepped with the engine's read-only
     // verdict required before every step. A statement the engine classifies as
-    // writing before it runs answers `requires_intent`; it is never stepped on
-    // this path.
+    // writing before it runs answers `requires_intent` with an engine verdict;
+    // transaction/context refusals have distinct reasons and cannot seed a
+    // cross-session write hint. No writing instruction runs on this path.
     GuardedReadonlyStatement {
         session: String,
         sql: String,
@@ -81,6 +82,15 @@ pub enum WorkerCommand {
         #[serde(default)]
         named_args: Vec<NamedStatementArg>,
     },
+    OpenReadCursorFirst {
+        session: String,
+        sql: String,
+        #[serde(default)]
+        args: Vec<StatementArg>,
+        #[serde(default)]
+        named_args: Vec<NamedStatementArg>,
+        max_rows: usize,
+    },
     FetchReadCursor {
         session: String,
         max_rows: usize,
@@ -95,6 +105,15 @@ pub enum WorkerCommand {
         args: Vec<StatementArg>,
         #[serde(default)]
         named_args: Vec<NamedStatementArg>,
+    },
+    OpenWriteCursorFirst {
+        session: String,
+        sql: String,
+        #[serde(default)]
+        args: Vec<StatementArg>,
+        #[serde(default)]
+        named_args: Vec<NamedStatementArg>,
+        max_rows: usize,
     },
     FetchWriteCursor {
         session: String,

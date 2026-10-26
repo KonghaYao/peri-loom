@@ -90,6 +90,9 @@ func gatewayAction(path string) string {
 func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	started := time.Now()
 	action := gatewayAction(request.URL.Path)
+	if action == "cursor_open" && request.Context().Value(hranaCursorStartContextKey{}) != nil {
+		action = "cursor_start"
+	}
 	identifier, err := controller.RandomID()
 	if err != nil {
 		http.Error(writer, "request unavailable", 503)
@@ -123,17 +126,19 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		identifier = correlationValues[0]
 	}
 	defer func() {
+		needsOperation := result.operationPending || result.operationDeferred != nil && result.code == "outcome_unknown"
+		unified := needsOperation && unifiedCompletionReservation(completion) && (!hranaProbeRequest(ctx, action) || result.code != "")
 		if result.finish != nil {
 			defer result.finish()
 		}
 		if permit != nil {
 			defer permit.finish()
 		}
-		if result.operationPending {
+		if result.operationPending && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
 			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
 			leaveTerminal()
-		} else if result.operationDeferred != nil {
+		} else if result.operationDeferred != nil && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
 			gateway.settlePendingOperation(result.operationDeferred, &result, permit)
 			leaveTerminal()
@@ -154,7 +159,21 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				event.Database = result.session.database.Key()
 			}
 			leaveAudit := requestPhaseSpan(ctx, requestPhaseAudit)
-			auditErr := gateway.recordAuditEvent(event, completion, principal, &result)
+			var auditErr error
+			if unified {
+				reservation := completion.(*auditReservation)
+				persist := func(change func(*operationEdit) error) error {
+					return reservation.RecordOperation(event, change)
+				}
+				if result.operationPending {
+					auditErr = gateway.settleOperationUsing(result.operationDatabase, result.operationID, result.operationStage, &result, permit, persist)
+				} else {
+					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, persist)
+				}
+				completion.Release()
+			} else {
+				auditErr = gateway.recordAuditEvent(event, completion, principal, &result)
+			}
 			completion = nil
 			leaveAudit()
 			if auditErr != nil {
@@ -328,7 +347,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		identifier = parsed.RequestID
 	}
-	if (action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open") && (len(parsed.SQL) == 0 || len(parsed.SQL) > project.Quotas.MaxSQLBytes) {
+	if (action == "execute" || action == "query" || action == "statement" || action == "describe" || action == "cursor_open" || action == "cursor_start") && (len(parsed.SQL) == 0 || len(parsed.SQL) > project.Quotas.MaxSQLBytes) {
 		result = gatewayRefusal(413, "sql_limit", rejectionSQLBytes)
 		return
 	}
@@ -354,7 +373,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	switch action {
 	case "open":
 		result = gateway.open(ctx, principal, *parsed.Database, identifier, permit, project.Quotas)
-	case "execute", "query", "statement", "describe", "close", "cursor_open", "cursor_fetch", "cursor_close", "session_state":
+	case "execute", "query", "statement", "describe", "close", "cursor_open", "cursor_start", "cursor_fetch", "cursor_close", "session_state":
 		result = gateway.dispatch(ctx, principal, parsed, identifier, action, project.Quotas, permit, strings.Contains(request.Header.Get("Accept"), "application/x-ndjson"))
 		if result.permit != nil {
 			permit = result.permit
@@ -405,18 +424,21 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 	switch action {
 	case "open":
 		allowed["database"] = true
-	case "execute", "query", "statement", "describe", "cursor_open":
+	case "execute", "query", "statement", "describe", "cursor_open", "cursor_start":
 		allowed["session"] = true
 		allowed["sql"] = true
-		if action == "statement" || action == "cursor_open" {
+		if action == "statement" || action == "cursor_open" || action == "cursor_start" {
 			allowed["args"] = true
 			allowed["named_args"] = true
 		}
 		if action == "statement" {
 			allowed["want_rows"] = true
 		}
-		if action == "cursor_open" {
+		if action == "cursor_open" || action == "cursor_start" {
 			allowed["write_cursor"] = true
+		}
+		if action == "cursor_start" {
+			allowed["max_rows"] = true
 		}
 	case "session_state":
 		allowed["session"] = true
@@ -445,13 +467,13 @@ func decodeGatewayRequest(ctx context.Context, body []byte, action string) (gate
 	if action == "open" {
 		return request, request.Database != nil && request.Database.Validate() == nil
 	}
-	if action == "cursor_fetch" && (request.MaxRows < 1 || request.MaxRows > 256) {
+	if (action == "cursor_fetch" || action == "cursor_start") && (request.MaxRows < 1 || request.MaxRows > 256) {
 		return request, false
 	}
 	if (request.CursorClientStopped || request.CursorDispatchStopped) && (action != "cursor_close" || !request.WriteCursor || request.CursorClientStopped && !request.CursorDispatchStopped) {
 		return request, false
 	}
-	if (action == "statement" || action == "cursor_open") && (!validSQLArguments(request.Args) || len(request.NamedArgs) > 999 || len(request.Args)+len(request.NamedArgs) > 999) {
+	if (action == "statement" || action == "cursor_open" || action == "cursor_start") && (!validSQLArguments(request.Args) || len(request.NamedArgs) > 999 || len(request.Args)+len(request.NamedArgs) > 999) {
 		return request, false
 	}
 	for _, argument := range request.NamedArgs {
@@ -541,6 +563,17 @@ func hranaFailureFields(reply hranaReply, dispatched bool) map[string]any {
 		failure["retry_allowed"] = reply.failure.RetryAllowed()
 		failure["possible_commit"] = reply.failure.MayHaveCommitted()
 		failure["execution_proven"] = reply.failure.ExecutionProven()
+	}
+	return failure
+}
+
+// A fused cursor can fail after stepping before any metadata was returned.
+// Keep its native verdict in the same failure writer as the other protocols;
+// the Hrana adapter only selects the global-error frame and ends its batch.
+func hranaSettledFailureFields(reply hranaReply, dispatched bool) map[string]any {
+	failure := hranaFailureFields(reply, dispatched)
+	if reply.failure != nil && reply.failure.Executed() {
+		sqlExecutionVerdict(failure, true, reply.failure.MayHaveCommitted())
 	}
 	return failure
 }

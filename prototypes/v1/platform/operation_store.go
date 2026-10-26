@@ -8,7 +8,7 @@ import (
 
 func openOperationDisk(directory string, registry *durableFile, state *State) (*operationJournal, error) {
 	path := filepath.Join(directory, "operations", "journal")
-	if state.OperationStorageVersion == 1 {
+	if state.OperationStorageVersion >= 1 {
 		if _, err := os.Lstat(path + ".lock"); err != nil {
 			return nil, errors.New("required operation storage missing")
 		}
@@ -16,6 +16,14 @@ func openOperationDisk(directory string, registry *durableFile, state *State) (*
 	journal, err := openOperationJournal(filepath.Join(directory, "operations"))
 	if err != nil {
 		return nil, err
+	}
+	if (state.OperationStorageVersion == completionJournalVersion) != (journal.completion != nil) {
+		journal.close()
+		return nil, errors.New("completion format transition incomplete; restore the consistent pre-migration copy")
+	}
+	if journal.completion != nil && journal.completion.Seal != state.CompletionGenesis {
+		journal.close()
+		return nil, errors.New("completion genesis does not match registry")
 	}
 	ok := false
 	defer func() {
@@ -43,6 +51,15 @@ func openOperationDisk(directory string, registry *durableFile, state *State) (*
 	journal.applyView(state.Revision, state)
 	if err := validateState(*state, nil); err != nil {
 		return nil, err
+	}
+	if journal.completion != nil && len(journal.records) > 0 && journal.records[0].Payload.Revision <= journal.archivedRevision {
+		// Recovery has proved every overlapping byte against the immutable
+		// archives. Finish an interrupted archive/snapshot/truncate cycle before
+		// accepting more entries; otherwise the same prefix could be archived
+		// again under another range on the next compaction.
+		if err := journal.compact(*state); err != nil {
+			return nil, err
+		}
 	}
 	ok = true
 	return journal, nil
@@ -153,6 +170,10 @@ func (store *stateStore) readOperations(visit func(State) error) error {
 // barrier itself runs outside that lock, so a flush no longer blocks authentication and the
 // other narrow reads that never look at operations.
 func (store *stateStore) updateOperations(change func(*operationEdit) error) error {
+	return store.updateOperationsAudit(change, nil, false)
+}
+
+func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool) error {
 	unlock := store.lockState()
 	if err := store.disk.available(); err != nil {
 		unlock()
@@ -166,11 +187,11 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 		unlock()
 		return ErrStateFrozen
 	}
-	if change == nil {
+	if change == nil && event == nil {
 		unlock()
 		return errors.New("operation mutation required")
 	}
-	if store.state.OperationStorageVersion != 1 {
+	if store.state.OperationStorageVersion != 1 && store.state.OperationStorageVersion != completionJournalVersion {
 		unlock()
 		return errors.New("operation storage identity unavailable")
 	}
@@ -183,10 +204,12 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 		store.cost.observeIndexRebuild(len(store.operationsIndex.records))
 	}
 	edit := newOperationEdit(&store.state, store.operationsIndex)
-	if err := change(edit); err != nil {
-		edit.revert()
-		unlock()
-		return err
+	if change != nil {
+		if err := change(edit); err != nil {
+			edit.revert()
+			unlock()
+			return err
+		}
 	}
 	if err := edit.settleRetention(); err != nil {
 		edit.revert()
@@ -199,12 +222,12 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 		return err
 	}
 	delta := edit.delta()
-	if delta.empty() && store.state.OperationSequence == edit.priorSequence && store.state.OperationEvictions == edit.evictions {
+	if event == nil && delta.empty() && store.state.OperationSequence == edit.priorSequence && store.state.OperationEvictions == edit.evictions {
 		// A mutation that changed nothing needs no barrier at all.
 		unlock()
 		return nil
 	}
-	commit, err := store.operations.submit(store.state, delta)
+	commit, err := store.operations.submitAudit(store.state, delta, event, reserved)
 	if err != nil {
 		// A full queue is a refusal this change introduced before any write, so it poisons
 		// nothing; every other registration refusal keeps the base behaviour of failing the
@@ -225,7 +248,11 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 	// the outcome definite either way.
 	settleErr := store.settleOperations()
 	if settleErr == nil {
-		settleErr = store.compactOperationsLocked()
+		if store.operations.completion != nil {
+			store.scheduleCompletionMaintenanceLocked()
+		} else {
+			settleErr = store.compactOperationsLocked()
+		}
 	}
 	poisoned := store.disk.poisoned
 	unlock()

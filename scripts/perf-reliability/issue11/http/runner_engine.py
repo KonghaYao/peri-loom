@@ -143,6 +143,7 @@ class ScenarioRunner(Workflows):
 
     def _operation(self, phase, sample_index):
         self.write_window = None
+        self.write_effect = None
         started = monotonic_ns()
         if self.scenario["workflow"] == "persistent_select_one":
             result = self._persistent_select_one(sample_index)
@@ -188,6 +189,8 @@ class ScenarioRunner(Workflows):
         record["step_ids"] = [
             step_id for attempt in attempts for step_id in attempt.step_ids
         ]
+        if self.write_effect is not None:
+            record["write_effect"] = self.write_effect
         expected_rejections = sum(1 for attempt in attempts if attempt.expected)
         if expected_rejections:
             record["expected_rejections"] = expected_rejections
@@ -204,6 +207,8 @@ class ScenarioRunner(Workflows):
         if self.scenario_id == "H4":
             for action, attempt in zip(("insert", "select"), attempts):
                 action_record = dict(record)
+                if action == "select":
+                    action_record.pop("write_effect", None)
                 action_record.update(
                     op_id=uuid.uuid4().hex, action=action,
                     issued_ns=attempt.started_ns, completed_ns=attempt.completed_ns,

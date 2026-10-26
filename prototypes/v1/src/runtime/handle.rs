@@ -1,7 +1,7 @@
 use super::{registry::Instance, DatabaseId, WorkerRuntime};
 use crate::session::{
-    DescribeResult, GuardedStatementOutcome, SessionWriterState, StatementColumn, StatementResult,
-    WriteCursorPage,
+    CursorFirstPage, DescribeResult, GuardedStatementOutcome, SessionWriterState, StatementColumn,
+    StatementResult, WriteCursorPage,
 };
 use crate::{resources::ResourceUsage, session::RemoteSession};
 use anyhow::{ensure, Result};
@@ -78,6 +78,19 @@ impl DatabaseHandle {
     }
     pub fn fetch_write_cursor(&self, page_size: usize) -> Result<WriteCursorPage> {
         self.session.as_ref().unwrap().fetch_write_cursor(page_size)
+    }
+    pub fn open_cursor_first(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        page_size: usize,
+        writing: bool,
+    ) -> Result<CursorFirstPage> {
+        self.session
+            .as_ref()
+            .unwrap()
+            .open_cursor_first(sql, args, named_args, page_size, writing)
     }
     pub fn close_write_cursor(&self) -> Result<bool> {
         self.session.as_ref().unwrap().close_write_cursor()

@@ -1,3 +1,6 @@
+#[path = "statement_worker/cursor_first.rs"]
+mod cursor_first;
+
 #[allow(dead_code)]
 #[path = "p4_runtime_helpers/clock_gate.rs"]
 mod clock_gate;

@@ -7,8 +7,8 @@ use super::types::LeaseBinding;
 use crate::resources::ResourceUsage;
 use crate::runtime::DatabaseHandle;
 use crate::session::{
-    DescribeResult, GuardedStatementOutcome, SessionWriterState, StatementColumn, StatementResult,
-    WriteCursorPage,
+    CursorFirstPage, DescribeResult, GuardedStatementOutcome, SessionWriterState, StatementColumn,
+    StatementResult, WriteCursorPage,
 };
 
 use super::context::LeaseContext;
@@ -91,6 +91,27 @@ impl OwnedHandle {
             return Err(error);
         }
         self.handle.as_ref().unwrap().fetch_write_cursor(page_size)
+    }
+    pub fn open_cursor_first(
+        &self,
+        sql: &str,
+        args: &[Value],
+        named_args: &[(String, Value)],
+        page_size: usize,
+        writing: bool,
+    ) -> Result<CursorFirstPage> {
+        self.context
+            .check(if writing { Some(false) } else { None })?;
+        if writing {
+            anyhow::ensure!(
+                !self.handle.as_ref().unwrap().is_readonly()?,
+                "write cursor requires writer access"
+            );
+        }
+        self.handle
+            .as_ref()
+            .unwrap()
+            .open_cursor_first(sql, args, named_args, page_size, writing)
     }
     pub fn close_write_cursor(&self) -> Result<bool> {
         self.handle.as_ref().unwrap().close_write_cursor()

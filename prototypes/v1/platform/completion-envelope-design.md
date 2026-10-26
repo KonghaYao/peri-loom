@@ -1,5 +1,8 @@
 # Completion envelope: one durable barrier for terminal result and audit
 
+> Historical v1 proposal. The opt-in implementation and current format contract
+> are documented in [completion-journal-v2.md](completion-journal-v2.md).
+
 Date: 2026-10-20. Status: **design only; no production durable format changed**.
 Base: `913a20b`, branch `fix/v1.1.10-audit-20261020`. Directed fault-matrix
 tests and a local cost fixture are implemented; the frozen-stack attribution and the

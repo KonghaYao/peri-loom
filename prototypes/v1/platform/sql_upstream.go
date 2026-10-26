@@ -161,7 +161,7 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 	}
 	switch operation {
-	case "open_session", "execute", "query", "statement", "describe", "close_session", "open_read_cursor", "fetch_read_cursor", "close_read_cursor", "open_write_cursor", "fetch_write_cursor", "close_write_cursor", "guarded_readonly_statement":
+	case "open_session", "execute", "query", "statement", "describe", "close_session", "open_read_cursor", "open_read_cursor_first", "fetch_read_cursor", "close_read_cursor", "open_write_cursor", "open_write_cursor_first", "fetch_write_cursor", "close_write_cursor", "guarded_readonly_statement":
 		if version == 2 && !writerCommandValid(operation, encoded, fields) {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}
@@ -170,8 +170,12 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}
 	case "checkpoint", "compact", "diagnostics", "session_autocommit":
+		// SessionAutocommit is a stateful SQL-protocol read: the Rust v2
+		// handler returns its session writer state just like describe/query.
+		// Maintenance capabilities remain private v1 commands.
+		allowedVersion := version == 1 || operation == "session_autocommit" && version == 2
 		var session string
-		if version != 1 || len(fields) != 2 || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) || sqlJSONValue(ctx, json.NewDecoder(bytes.NewReader(encoded)), 0) != nil {
+		if !allowedVersion || len(fields) != 2 || json.Unmarshal(fields["session"], &session) != nil || !upstreamSessionID(session) || sqlJSONValue(ctx, json.NewDecoder(bytes.NewReader(encoded)), 0) != nil {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}
 	default:

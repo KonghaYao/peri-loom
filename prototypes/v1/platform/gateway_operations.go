@@ -83,6 +83,12 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 }
 
 func (gateway *Gateway) settleOperation(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit) {
+	_ = gateway.settleOperationUsing(database, operationID, stage, result, permit, func(change func(*operationEdit) error) error {
+		return updateOperationRecords(gateway.config.State, change)
+	})
+}
+
+func (gateway *Gateway) settleOperationUsing(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error) error {
 	unlock := lockOperationNamespace(database.Namespace)
 	defer unlock()
 	result.operationID, result.operationStage = operationID, stage
@@ -90,7 +96,7 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	// quote; the edit below only exposes a value copy, and the reply is written
 	// after this function returns. It is request-local, so no lock is shared.
 	var observed *OperationStatus
-	err := updateOperationRecords(gateway.config.State, func(edit *operationEdit) error {
+	err := persist(func(edit *operationEdit) error {
 		key := operationKey(database, operationID)
 		record, exists := edit.record(key)
 		if !exists || record.State != "in_flight" {
@@ -124,6 +130,7 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 	if result.code == "outcome_unknown" {
 		gateway.holdOperation(database, operationID, permit)
 	}
+	return err
 }
 
 // beginDispatchOperation records the durable intent for one worker call. An
@@ -166,12 +173,18 @@ func pendingDispatchOperation(session *gatewaySession, action, stage, requestID 
 // its reply. An uncertain outcome is the exception: the record is what lets recovery
 // and admission isolate the namespace, so it is still written and quarantined.
 func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit) {
-	if result.code != "outcome_unknown" {
-		return
-	}
-	operationID, err := settleNonCommittingOperation(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(record *OperationRecord) {
-		applyOperationOutcome(record, *result, pending.stage)
+	_ = gateway.settlePendingOperationUsing(pending, result, permit, func(change func(*operationEdit) error) error {
+		return updateOperationRecords(gateway.config.State, change)
 	})
+}
+
+func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error) error {
+	if result.code != "outcome_unknown" {
+		return nil
+	}
+	operationID, err := settleNonCommittingOperationUsing(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(record *OperationRecord) {
+		applyOperationOutcome(record, *result, pending.stage)
+	}, persist)
 	result.operationID, result.operationStage = operationID, pending.stage
 	if err != nil {
 		finish := result.finish
@@ -179,6 +192,7 @@ func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result
 		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, pending.stage, pending.database
 	}
 	gateway.holdOperation(pending.database, operationID, permit)
+	return err
 }
 
 // applyOperationOutcome derives the durable record of a dispatched operation

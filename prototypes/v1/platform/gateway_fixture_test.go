@@ -173,7 +173,8 @@ func (upstream *gatewayTestUpstream) Call(ctx context.Context, worker controller
 			// The default fixture worker refuses before executing, which is the
 			// conservative answer: the gateway then takes its committing path. A
 			// test that models a read-only worker answers with a statement result.
-			value = map[string]any{"requires_intent": true}
+			// This generic refusal does not claim an engine verdict and is not cached.
+			value = map[string]any{"requires_intent": true, "reason": "connection_control"}
 		default:
 			return errors.New("unknown fixture action")
 		}

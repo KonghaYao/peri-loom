@@ -263,7 +263,7 @@ fn wal_receipt_archive_round_trips_through_the_session_rpc() -> Result<()> {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
     }
     let raw = Arc::new(MemoryObjectStore::default());
-    let ownership = OwnershipAuthority::new(raw, Arc::new(SystemLeaseClock));
+    let ownership = OwnershipAuthority::new(raw.clone(), Arc::new(SystemLeaseClock));
     let control_token = "a".repeat(64);
     let worker_token = "b".repeat(64);
     let auth = AuthConfig::new(
@@ -333,10 +333,17 @@ fn wal_receipt_archive_round_trips_through_the_session_rpc() -> Result<()> {
     assert_eq!(wal.metadata(&namespace)?.last_lsn, 2);
 
     let remote = provider.open_store(&database, 1)?;
+    let authority = Authority::open(raw, namespace.clone())?;
     for ordinal in 3..=258 {
+        let before = authority.snapshot()?.root.revision;
         assert_eq!(
             remote.append_wal(&request(&format!("segmented-{ordinal}"), &[ordinal as u8]))?,
             Some(ordinal)
+        );
+        assert_eq!(
+            authority.snapshot()?.root.revision,
+            before + 1,
+            "remote append {ordinal} must include any receipt/segment roll"
         );
     }
     let segmented = crate::wal::RemoteWal::new(remote);

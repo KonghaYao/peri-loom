@@ -1084,11 +1084,14 @@ fn append_wal_one_rpc_and_lost_receipt_never_falls_back_or_replays() -> Result<(
 #[test]
 fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Result<()> {
     // The append publishes the pair, its registrations and the head CAS as one group,
-    // so a commit has two body writes and one root write. There is no reservation
-    // revision to hold, which is what these phases pin down.
+    // so a commit has two body writes and one root write. S3's existing group contract
+    // uploads independent bodies concurrently and serializes only the final root. A
+    // response ordinal therefore does not identify the chunk versus index. Holding
+    // either response must prevent the root and keep retirement/takeover blocked,
+    // even after its sibling has reached the backend terminal.
     for (target, ordinal, stage) in [
-        (Target::Blob, 1, "chunk-blob"),
-        (Target::Blob, 2, "index-blob"),
+        (Target::Blob, 1, "body-response-1"),
+        (Target::Blob, 2, "body-response-2"),
         (Target::Root, 1, "head-cas"),
     ] {
         let mut fixture = Fixture::new(false)?;
@@ -1109,35 +1112,54 @@ fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Res
             });
             let held = entered.recv_timeout(Duration::from_secs(5))?;
             assert_eq!(held.ordinal, ordinal);
+            let bodies_deadline = Instant::now() + Duration::from_secs(5);
+            let mut physical = loop {
+                let physical = fixture.backend.statistics();
+                let started = physical["PUT/blob"]["started"].as_u64().unwrap_or(0);
+                let terminal = physical["PUT/blob"]["backend_terminal"]
+                    .as_u64()
+                    .unwrap_or(0);
+                assert!(started <= 2, "unexpected append body dispatch: {physical}");
+                assert!(terminal <= started, "invalid backend counters: {physical}");
+                if terminal == 2 {
+                    break physical;
+                }
+                ensure!(
+                    Instant::now() < bodies_deadline,
+                    "append sibling did not reach the physical terminal: {physical}"
+                );
+                thread::sleep(Duration::from_millis(1));
+            };
+            assert_eq!(physical["PUT/blob"]["started"], 2);
+            assert_eq!(physical["PUT/blob"]["backend_terminal"], 2);
             let during = fixture.ledger("append-physical-response-held")?;
             identity(&during, &lease.binding)?;
-            let physical = fixture.backend.statistics();
-            let category = match target {
-                Target::Blob => "PUT/blob",
-                Target::Root => "PUT/root",
-                _ => unreachable!(),
-            };
-            assert_eq!(physical[category]["backend_terminal"], ordinal);
             // An append reserves nothing in a revision that outlives it: the intent that
             // `prepare_blobs` demands is inserted and discharged inside the group.
             assert!(during.uploads.is_empty());
             if stage == "head-cas" {
                 // The CAS that ends the group is the commit, and both bodies were written
                 // before it, so the durable head already names them.
-                assert_eq!(physical["PUT/blob"]["backend_terminal"], 2);
+                assert_eq!(physical["PUT/root"]["started"], 1);
+                assert_eq!(physical["PUT/root"]["backend_terminal"], 1);
                 assert_ne!(
                     during.branches["main"].wal.as_ref().unwrap().hash,
                     before.branches["main"].wal.as_ref().unwrap().hash
                 );
             } else {
-                // A held body is still in the group buffer and the group is written in
-                // order, so nothing of this commit is durable and the CAS has not started.
+                // Both immutable bodies can already be durable, but one response is
+                // unconfirmed. The visible root must not be dispatched before both ACKs.
                 assert!(physical["PUT/root"].is_null());
                 assert_eq!(
                     during.branches["main"].wal.as_ref().unwrap().hash,
                     before.branches["main"].wal.as_ref().unwrap().hash
                 );
             }
+            // On body phases, catch the eventual root separately. This gives an exact
+            // two-body/one-root snapshot before retirement and grant are free to publish
+            // their own roots, instead of conflating those later writes with the append.
+            let committed_root =
+                matches!(target, Target::Blob).then(|| fixture.backend.arm(Target::Root));
             let rpc_before = fixture.rpc.statistics();
             let close_started_before = rpc_before["retire_session/none"]["started"]
                 .as_u64()
@@ -1179,6 +1201,31 @@ fn append_wal_blob_and_root_holds_block_scope_retirement_and_next_grant() -> Res
                 .recv_timeout(Duration::from_millis(50))
                 .is_err());
             held.release(true)?;
+            if let Some(committed_root) = committed_root {
+                let committed = committed_root.recv_timeout(Duration::from_secs(5))?;
+                assert_eq!(committed.ordinal, 1);
+                physical = fixture.backend.statistics();
+                assert_eq!(physical["PUT/blob"]["started"], 2);
+                assert_eq!(physical["PUT/blob"]["backend_terminal"], 2);
+                assert_eq!(physical["PUT/root"]["started"], 1);
+                assert_eq!(physical["PUT/root"]["backend_terminal"], 1);
+                let committed_ledger = fixture.ledger("append-root-terminal-response-held")?;
+                identity(&committed_ledger, &lease.binding)?;
+                assert!(committed_ledger.uploads.is_empty());
+                assert_ne!(
+                    committed_ledger.branches["main"].wal.as_ref().unwrap().hash,
+                    before.branches["main"].wal.as_ref().unwrap().hash
+                );
+                assert!(matches!(
+                    closed_receiver.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+                assert!(matches!(
+                    grant_receiver.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+                committed.release(true)?;
+            }
             let append_result = appended.join().unwrap();
             assert!(
                 append_result.is_ok()

@@ -15,6 +15,7 @@ import shutil
 import signal
 import stat
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -96,6 +97,66 @@ def decode_local_envelope(envelope, key):
         return None
 
 
+def read_local_payload(candidate, key, blake3):
+    """Read one live alias, never discover keys by scanning a pack's directory.
+
+    Pack bodies can contain a deleted key while another alias keeps the inode
+    alive. Only that key's canonical filename proves that the object is live.
+    Without BLAKE3 that proof is unavailable, so pack evidence fails closed.
+    """
+    if candidate.is_symlink() or candidate.stat().st_size > LOCAL_ENVELOPE_LIMIT_BYTES:
+        raise ValueError("invalid local object file")
+    raw = candidate.read_bytes()
+    if raw.startswith(b"PLPACK1\0"):
+        if blake3 is None or candidate.name != blake3.blake3(key.encode()).hexdigest() + ".obj":
+            raise ValueError("pack live alias cannot be verified")
+        if len(raw) < 52:
+            raise ValueError("truncated local pack")
+        directory_length, payload_length = struct.unpack_from("<IQ", raw, 8)
+        if not 0 < directory_length <= 64 * 1024 or payload_length > 256 * 1024:
+            raise ValueError("local pack limit")
+        payload_start = 52 + directory_length
+        if len(raw) != payload_start + payload_length:
+            raise ValueError("local pack length mismatch")
+        directory_raw = raw[52:payload_start]
+        if raw[20:52] != blake3.blake3(directory_raw).digest():
+            raise ValueError("local pack directory checksum mismatch")
+        directory = json.loads(directory_raw, object_pairs_hook=unique_object)
+        if (not isinstance(directory, dict) or set(directory) != {"version", "entries"}
+                or type(directory.get("version")) is not int or directory["version"] != 1):
+            raise ValueError("unsupported local pack")
+        entries = directory.get("entries")
+        if not isinstance(entries, list) or not 0 < len(entries) <= 32:
+            raise ValueError("local pack directory limit")
+        found, seen, end = None, set(), 0
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {"key", "etag", "checksum", "offset", "length"}:
+                raise ValueError("invalid local pack entry")
+            entry_key, offset, length = entry.get("key"), entry.get("offset"), entry.get("length")
+            checksum, etag = entry.get("checksum"), entry.get("etag")
+            if (not isinstance(entry_key, str) or not 0 < len(entry_key) <= 1024 or entry_key in seen
+                    or any(part in ("", ".", "..") or re.fullmatch(r"[A-Za-z0-9_.~-]+", part) is None
+                           for part in entry_key.split("/"))
+                    or type(offset) is not int or type(length) is not int or offset != end or not 0 <= length <= 32 * 1024
+                    or offset + length > payload_length or not isinstance(etag, str) or not 0 < len(etag.encode()) <= 256
+                    or not isinstance(checksum, str) or LOCAL_CHECKSUM_PATTERN.fullmatch(checksum) is None):
+                raise ValueError("invalid local pack entry")
+            seen.add(entry_key)
+            end = offset + length
+            if entry_key == key:
+                found = raw[payload_start + offset:payload_start + end]
+                if checksum != blake3.blake3(found).hexdigest():
+                    raise ValueError("local pack object checksum mismatch")
+        if end != payload_length or found is None:
+            raise ValueError("local pack key or length mismatch")
+        return found
+    envelope = json.loads(raw, object_pairs_hook=unique_object)
+    payload = decode_local_envelope(envelope, key)
+    if payload is None or (blake3 is not None and envelope["checksum"] != blake3.blake3(payload).hexdigest()):
+        raise ValueError("invalid local object envelope")
+    return payload
+
+
 def local_object_path(backend_directory, key):
     """Return (path, reliable) for a local object envelope.
 
@@ -117,13 +178,8 @@ def local_object_path(backend_directory, key):
         if not candidate.is_file():
             return None, True
         try:
-            if candidate.stat().st_size > LOCAL_ENVELOPE_LIMIT_BYTES:
-                return None, False
-            envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
+            payload = read_local_payload(candidate, key, blake3)
         except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
-            return None, False
-        payload = decode_local_envelope(envelope, key)
-        if payload is None or envelope["checksum"] != blake3.blake3(payload).hexdigest():
             return None, False
         if validate_local_seal_payload(payload) is None:
             return None, False
@@ -184,13 +240,8 @@ def local_object_any(backend_directory, key):
     if not candidate.is_file():
         return None, None, True
     try:
-        if candidate.stat().st_size > LOCAL_ENVELOPE_LIMIT_BYTES:
-            return None, None, False
-        envelope = json.loads(candidate.read_bytes(), object_pairs_hook=unique_object)
+        payload = read_local_payload(candidate, key, blake3)
     except (OSError, ValueError, TypeError, UnicodeError, RuntimeError):
-        return None, None, False
-    payload = decode_local_envelope(envelope, key)
-    if payload is None or envelope["checksum"] != blake3.blake3(payload).hexdigest():
         return None, None, False
     return candidate, payload, True
 
@@ -206,7 +257,8 @@ def normalize_launch(value):
         raise RuntimeError("launch configuration must be an object")
     defaults = {"writer_admission": False, "worker_max_request_bytes": 512 * 1024,
                 "dev_sql_timeout_seconds": 30, "sql_max_duration_ms": 5000,
-                "wal_replay_bytes": 0, "sql_open_observer": False}
+                "wal_replay_bytes": 0, "sql_open_observer": False,
+                "local_object_pack": False, "completion_journal": False}
     normalized = {**defaults, **value}
     for name, default in defaults.items():
         if type(normalized[name]) is not type(default):
@@ -227,6 +279,28 @@ def storage_identity(backend):
     if backend != "s3":
         return {"backend": "local"}
     return {"backend": "s3", "endpoint": os.environ["S3_ENDPOINT"], "bucket": os.environ["S3_BUCKET"], "region": os.environ.get("S3_REGION", "us-east-1")}
+
+
+PERFORMANCE_FORMAT_SWITCHES = {"local_object_pack": "PERI_LOCAL_OBJECT_PACK",
+                              "completion_journal": "PERI_COMPLETION_JOURNAL"}
+
+
+def performance_format_profile(existing=None):
+    profile = {}
+    for field, name in PERFORMANCE_FORMAT_SWITCHES.items():
+        value = os.environ.get(name)
+        if value is not None and value not in ("0", "1"):
+            raise RuntimeError(name + " must be 0 or 1")
+        enabled = existing.get(field, False) if existing is not None else value == "1"
+        if existing is not None and value is not None and (value == "1") != enabled:
+            raise RuntimeError("existing durable format profile cannot be silently rebound: " + name)
+        profile[field] = enabled
+    if profile["local_object_pack"]:
+        try:
+            import blake3
+        except ImportError as error:
+            raise RuntimeError("local pack clean-restart proofs require the Python blake3 package") from error
+    return profile
 
 
 def unique_object(pairs):
@@ -519,7 +593,7 @@ def require_materialized_operation_view(state):
     unresolved records; only the shutdown checkpoint writes the field, and a version-0
     payload predates the sidecar and carries its whole operation view itself."""
     version = state.get("operation_storage_version", 0)
-    if type(version) is not int or version not in (0, 1):
+    if type(version) is not int or version not in (0, 1, 2):
         raise OperationViewNotMaterialized("platform operation storage identity unrecognized; clean restart requires the reviewed format")
     if version == 0:
         return
@@ -1911,6 +1985,7 @@ class Project:
         if launch_path.exists():
             self.restart_attempt = True
             self.launch = normalize_launch(json.loads(launch_path.read_text(), object_pairs_hook=unique_object))
+            performance_format_profile(self.launch)
             if self.launch.get("sql_open_observer", False) != observer:
                 raise RuntimeError("SQL open observer profile cannot be silently rebound")
             if self.launch["backend"] != self.arguments.backend or self.launch["listen"] != self.arguments.listen or self.launch["tls"] != self.arguments.tls:
@@ -1964,6 +2039,9 @@ class Project:
         authority = free_address()
         broker = free_address()
         self.launch = {"backend": self.arguments.backend, "storage_identity": storage_identity(self.arguments.backend), "listen": self.arguments.listen, "tls": self.arguments.tls, "authority": authority, "workers": {}}
+        self.launch.update(performance_format_profile())
+        if self.launch["local_object_pack"] and self.arguments.backend != "local":
+            raise RuntimeError("local pack format requires the local backend")
         self.launch["writer_admission"] = self.arguments.writer_admission
         self.launch["worker_max_request_bytes"] = worker_request_bytes
         self.launch["dev_sql_timeout_seconds"] = request_timeout_seconds
@@ -2234,6 +2312,7 @@ class Project:
         """
         authority_environment = safe_environment(capacity_trace=True)
         experimental_environment(authority_environment)
+        authority_environment["PERI_LOCAL_OBJECT_PACK"] = "1" if self.launch.get("local_object_pack", False) else "0"
         authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
         backend = str(self.directory / "backend")
         if self.arguments.backend == "s3":
@@ -2244,6 +2323,7 @@ class Project:
             authority_environment.update({name: value for name, value in os.environ.items() if name.startswith("S3_")})
         self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
         platform_environment = safe_environment()
+        platform_environment["PERI_COMPLETION_JOURNAL"] = "1" if self.launch.get("completion_journal", False) else "0"
         if self.launch["dev_sql_timeout_seconds"] != 30:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "0"
@@ -2283,6 +2363,7 @@ class Project:
         prepare_slow_diagnostic_directory()
         authority_environment = safe_environment(capacity_trace=True)
         experimental_environment(authority_environment)
+        authority_environment["PERI_LOCAL_OBJECT_PACK"] = "1" if self.launch.get("local_object_pack", False) else "0"
         authority_environment.update({"PERI_AUTHORITY_CONTROL_TOKEN": self.config["controller"]["authority_token"], "PERI_AUTHORITY_WORKERS_FILE": str(self.directory / "authority-workers.json")})
         backend = str(self.directory / "backend")
         if self.arguments.backend == "s3":
@@ -2293,6 +2374,7 @@ class Project:
             authority_environment.update({name: value for name, value in os.environ.items() if name.startswith("S3_")})
         self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
         platform_environment = safe_environment()
+        platform_environment["PERI_COMPLETION_JOURNAL"] = "1" if self.launch.get("completion_journal", False) else "0"
         if self.launch["dev_sql_timeout_seconds"] != 30:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"

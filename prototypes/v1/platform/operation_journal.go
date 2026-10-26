@@ -37,6 +37,7 @@ type journalMutation struct {
 	Evictions    uint64                     `json:"evictions"`
 	Set          map[string]OperationRecord `json:"set,omitempty"`
 	Remove       []string                   `json:"remove,omitempty"`
+	Audit        *auditRecord               `json:"audit,omitempty"`
 }
 
 type journalEntry struct {
@@ -91,6 +92,7 @@ type operationSnapshot struct {
 	Records         map[string]OperationRecord `json:"records"`
 	ContentDigest   string                     `json:"content_digest"`
 	Origin          string                     `json:"snapshot_origin"`
+	CompletionAudit *auditHead                 `json:"completion_audit,omitempty"`
 }
 
 // contentDigest is the single canonical encoding of a snapshot: the writer and the
@@ -101,7 +103,7 @@ type operationSnapshot struct {
 // payload is derived from the record structs, so changing their encoded shape changes
 // the canonical payload and needs a new envelope version, not a silent edit here.
 func (snapshot operationSnapshot) contentDigest() (string, error) {
-	payload, err := json.Marshal(map[string]any{
+	content := map[string]any{
 		"envelope_version": snapshot.EnvelopeVersion,
 		"scope":            snapshot.Scope,
 		"version":          snapshot.Version,
@@ -111,7 +113,11 @@ func (snapshot operationSnapshot) contentDigest() (string, error) {
 		"sequence":         snapshot.Sequence,
 		"evictions":        snapshot.Evictions,
 		"records":          snapshot.Records,
-	})
+	}
+	if snapshot.CompletionAudit != nil {
+		content["completion_audit"] = snapshot.CompletionAudit
+	}
+	payload, err := json.Marshal(content)
 	if err != nil {
 		return "", errors.New("invalid operation snapshot")
 	}
@@ -136,7 +142,7 @@ func sealSnapshot(snapshot *operationSnapshot, origin string) error {
 // verifySnapshotEnvelope checks a decoded snapshot against its own envelope before
 // replay trusts a single record from it.
 func verifySnapshotEnvelope(snapshot operationSnapshot) error {
-	if snapshot.Version != operationJournalVersion || snapshot.Revision == 0 || len(snapshot.Digest) != 64 || snapshot.Records == nil {
+	if (snapshot.Version != operationJournalVersion && snapshot.Version != completionJournalVersion) || snapshot.Revision == 0 || len(snapshot.Digest) != 64 || snapshot.Records == nil {
 		return errors.New("invalid operation snapshot")
 	}
 	if snapshot.EnvelopeVersion == 0 {
@@ -201,23 +207,30 @@ func operationDeltaBetween(previous, next map[string]OperationRecord) operationD
 }
 
 type operationJournal struct {
-	mutex        sync.Mutex
-	path         string
-	lock         *os.File
-	file         *os.File
-	revision     uint64
-	digest       string
-	size         int64
-	records      []journalEntry
-	snapshot     *operationSnapshot
-	appends      uint64
-	appendsTotal uint64
-	ordered      uint64
-	syncs        uint64
-	compactions  uint64
-	compactionNS uint64
-	closed       bool
-	poisoned     bool
+	mutex              sync.Mutex
+	path               string
+	lock               *os.File
+	file               *os.File
+	revision           uint64
+	digest             string
+	size               int64
+	records            []journalEntry
+	snapshot           *operationSnapshot
+	appends            uint64
+	appendsTotal       uint64
+	ordered            uint64
+	syncs              uint64
+	compactions        uint64
+	compactionNS       uint64
+	closed             bool
+	poisoned           bool
+	completion         *completionGenesis
+	auditHead          auditHead
+	orderedAudit       auditHead
+	retainedBytes      int64
+	archivedRevision   uint64
+	queuedBytes        int64
+	maintenancePending bool
 
 	// The ordered commit queue. The queue lock covers bookkeeping only, so a submitter
 	// never queues behind a barrier; write serializes the file itself and is held by the
@@ -248,6 +261,7 @@ type operationJournal struct {
 	// leaves both nil; no request path observes them.
 	testPopGate   func()
 	testWriteGate func()
+	testSyncGate  func()
 }
 
 func journalWitnessLine(revision uint64, digest string) []byte {
@@ -302,7 +316,7 @@ func allowedJournalFile(entry os.DirEntry) bool {
 	if strings.HasPrefix(name, ".private-") && strings.HasSuffix(name, ".tmp") {
 		return entry.Type().IsRegular()
 	}
-	return (name == "journal" || name == "journal.lock" || name == "snapshot") && entry.Type().IsRegular()
+	return (name == "journal" || name == "journal.lock" || name == "snapshot" || name == "completion.genesis" || completionArchiveName(name)) && entry.Type().IsRegular()
 }
 
 // openOperationJournal opens and replays the append log. Recovery only accepts a
@@ -352,6 +366,9 @@ func openOperationJournal(directory string) (*operationJournal, error) {
 		return nil, err
 	}
 	journal.file = os.NewFile(uintptr(descriptor), path)
+	if err := journal.loadCompletionGenesis(); err != nil {
+		return nil, err
+	}
 	if err := journal.replay(); err != nil {
 		return nil, err
 	}
@@ -360,7 +377,11 @@ func openOperationJournal(directory string) (*operationJournal, error) {
 }
 
 func (journal *operationJournal) replay() error {
-	encoded, err := readOperationJournalBytes(journal.path, operationJournalMaximumBytes)
+	maximum := int64(operationJournalMaximumBytes)
+	if journal.completion != nil {
+		maximum = completionActiveMaximumBytes
+	}
+	encoded, err := readOperationJournalBytes(journal.path, maximum)
 	if err != nil {
 		return err
 	}
@@ -370,11 +391,16 @@ func (journal *operationJournal) replay() error {
 	}
 	entries, consumed := journal.parse(encoded[operationJournalWitnessBytes:])
 	journal.size = operationJournalWitnessBytes + consumed
+	if journal.completion != nil && journal.size != int64(len(encoded)) && bytes.IndexByte(encoded[journal.size:], '\n') >= 0 {
+		return errors.New("corrupt complete completion record")
+	}
 	if journal.size != int64(len(encoded)) {
 		// The unverifiable tail is an append that never returned success; drop it
 		// instead of refusing to start after an ordinary crash.
-		if err := journal.file.Truncate(journal.size); err != nil {
-			return err
+		if journal.completion == nil {
+			if err := journal.file.Truncate(journal.size); err != nil {
+				return err
+			}
 		}
 	}
 	if len(entries) > 0 {
@@ -395,7 +421,16 @@ func (journal *operationJournal) replay() error {
 	}
 	// Only a snapshot whose position just verified is re-sealed; a refused one never
 	// reaches this point, so unproven content is never stamped as bound content.
-	return journal.resealLegacySnapshot()
+	if err := journal.resealLegacySnapshot(); err != nil {
+		return err
+	}
+	if err := journal.verifyCompletionHistory(); err != nil {
+		return err
+	}
+	if journal.completion != nil && journal.size != int64(len(encoded)) {
+		return journal.file.Truncate(journal.size)
+	}
+	return nil
 }
 
 func readOperationJournalBytes(path string, maximum int64) ([]byte, error) {
@@ -439,11 +474,16 @@ func (journal *operationJournal) parse(encoded []byte) ([]journalEntry, int64) {
 		line := encoded[:end]
 		encoded = encoded[end+1:]
 		var entry journalEntry
-		if len(line) > operationJournalMaximumRecordBytes || strictDecode(line, &entry) != nil {
+		maximum := operationJournalMaximumRecordBytes
+		if journal.completion != nil {
+			maximum = completionRecordReservationBytes
+		}
+		if len(line) > maximum || strictDecode(line, &entry) != nil {
 			break
 		}
 		body, err := json.Marshal(entry.Payload)
-		if err != nil || entry.Payload.Version != operationJournalVersion || entry.Hash != digestHex(body) {
+		validVersion := entry.Payload.Version == operationJournalVersion || journal.completion != nil && entry.Payload.Version == completionJournalVersion
+		if err != nil || len(body) > operationJournalMaximumRecordBytes || !validVersion || entry.Hash != digestHex(body) || entry.Payload.Audit != nil && entry.Payload.Version != completionJournalVersion {
 			break
 		}
 		continuous := entry.Payload.Revision == previousRevision+1 && entry.Payload.Previous == previousHash
@@ -453,6 +493,13 @@ func (journal *operationJournal) parse(encoded []byte) ([]journalEntry, int64) {
 			continuous = entry.Payload.Revision == 1 && entry.Payload.Previous == ""
 			if journal.snapshot != nil {
 				continuous = entry.Payload.Revision == journal.snapshot.Revision+1 && entry.Payload.Previous == journal.snapshot.Digest
+				if journal.completion != nil && entry.Payload.Revision <= journal.snapshot.Revision {
+					// An archived prefix may still be active when a crash lands
+					// between the snapshot rename and the log truncation. Its
+					// first position is proved against the retained archives by
+					// verifyCompletionHistory, never trusted on position alone.
+					continuous = entry.Payload.Revision == 1 && entry.Payload.Previous == "" || entry.Payload.Revision > 1 && len(entry.Payload.Previous) == 64
+				}
 			}
 		}
 		if !continuous {
@@ -615,6 +662,14 @@ func (journal *operationJournal) compact(view State) error {
 	started := time.Now()
 	defer func() { journal.compactionNS += uint64(time.Since(started)) }()
 	snapshot := operationSnapshot{Version: operationJournalVersion, BaseRevision: view.Revision, Revision: journal.revision, Digest: journal.digest, Sequence: view.OperationSequence, Evictions: view.OperationEvictions, Records: view.Operations}
+	if journal.completion != nil {
+		snapshot.Version = completionJournalVersion
+		head := journal.auditHead
+		snapshot.CompletionAudit = &head
+		if err := journal.archiveCompletionPrefix(); err != nil {
+			return err
+		}
+	}
 	// A materialization keeps the origin of the view it materializes: content that once
 	// needed the pre-envelope acceptance path is still the same content here, so the
 	// artifact must not start describing itself as natively bound.
@@ -637,6 +692,9 @@ func (journal *operationJournal) compact(view State) error {
 	}
 	if err := journal.file.Truncate(operationJournalWitnessBytes); err != nil {
 		return err
+	}
+	if journal.completion != nil {
+		journal.retainedBytes -= journal.size - operationJournalWitnessBytes
 	}
 	journal.size = operationJournalWitnessBytes
 	journal.records = nil

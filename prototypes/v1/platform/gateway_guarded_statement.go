@@ -19,7 +19,7 @@ import (
 // program the engine classified as writing, so the platform writes the durable
 // intent only then. A transport error is not that proof: it keeps the existing
 // unknown/operation semantics and is never replayed as a statement.
-func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID, stage string, command map[string]any, frozen frozenCommand, permit *admissionPermit, quota Quotas) gatewayResult {
+func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID, stage string, key committingStatementKey, command map[string]any, frozen frozenCommand, permit *admissionPermit, quota Quotas) gatewayResult {
 	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
 		return operationAdmissionFailure(err)
 	}
@@ -52,16 +52,14 @@ func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySe
 	if len(reply) > quota.MaxResultBytes {
 		return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget, operationDeferred: pending}
 	}
-	requiresIntent, statementResult := guardedStatementReply(reply)
-	if requiresIntent {
-		operationID, _, err := gateway.beginDispatchOperation(session, "statement", stage, requestID, false, frozen, nil)
-		if err != nil {
-			return operationAdmissionFailure(err)
+	reason, statementResult := guardedStatementReply(reply)
+	if reason != "" {
+		// SELECT inside a transaction needs an intent for that session only.
+		// Remembering that refusal would make every other session pay for it.
+		if reason == guardedEngineWritable {
+			gateway.committingStatements.remember(key)
 		}
-		result := gateway.dispatchStatement(ctx, session, binding, requestID, frozen, quota, permit)
-		result.operationID, result.operationStage, result.operationDatabase = operationID, stage, session.database
-		result.operationPending = operationID != ""
-		return result
+		return gateway.committingStatement(ctx, session, binding, requestID, stage, frozen, permit, quota)
 	}
 	if !statementResult {
 		result := gateway.unknown(session, permit)
@@ -71,19 +69,48 @@ func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySe
 	return gatewayResult{value: reply, dispatched: true, operationDeferred: pending}
 }
 
-// guardedStatementReply separates the only two replies the guarded call may
-// return. A requires_intent reply must be exactly that flag: an unexpected
-// field could be a statement result we failed to understand, and guessing would
-// let a write through without its durable intent.
-func guardedStatementReply(reply json.RawMessage) (requiresIntent, statementResult bool) {
+type guardedIntentReason string
+
+const (
+	guardedEngineWritable     guardedIntentReason = "engine_writable"
+	guardedTransactionContext guardedIntentReason = "transaction_context"
+	guardedConnectionControl  guardedIntentReason = "connection_control"
+)
+
+// A refusal needs both the exact flag and a known reason. An old, partial or
+// extended reply is not proof that SQL never ran, so it cannot be replayed.
+func guardedStatementReply(reply json.RawMessage) (reason guardedIntentReason, statementResult bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(reply, &fields) != nil {
-		return false, false
+		return "", false
 	}
 	if raw, exists := fields["requires_intent"]; exists {
-		return len(fields) == 1 && string(raw) == "true", false
+		if len(fields) != 2 || string(raw) != "true" || json.Unmarshal(fields["reason"], &reason) != nil {
+			return "", false
+		}
+		switch reason {
+		case guardedEngineWritable, guardedTransactionContext, guardedConnectionControl:
+			return reason, false
+		default:
+			return "", false
+		}
 	}
-	return false, validStatementResult(reply)
+	return "", validStatementResult(reply)
+}
+
+// Cached and freshly proven writes share the same intent-before-dispatch
+// boundary. Cache hits must not skip durable registration or outcome tracking.
+func (gateway *Gateway) committingStatement(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID, stage string, frozen frozenCommand, permit *admissionPermit, quota Quotas) gatewayResult {
+	leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
+	operationID, _, err := gateway.beginDispatchOperation(session, "statement", stage, requestID, false, frozen, nil)
+	leaveIntent()
+	if err != nil {
+		return operationAdmissionFailure(err)
+	}
+	result := gateway.dispatchStatement(ctx, session, binding, requestID, frozen, quota, permit)
+	result.operationID, result.operationStage, result.operationDatabase = operationID, stage, session.database
+	result.operationPending = operationID != ""
+	return result
 }
 
 // dispatchStatement sends the frozen committing statement and validates its

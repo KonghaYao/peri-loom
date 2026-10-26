@@ -41,8 +41,9 @@ impl ObjectStore for LocalStore {
         // dispatch to this hook again. All publication validation remains in BranchStore.
         let lsn = RemoteWal::new(self.inner.clone()).append_using(
             request,
-            |encoded, metadata, expected| {
-                self.inner.publish_wal_append(encoded, metadata, expected)
+            |encoded, metadata, expected, pages| {
+                self.inner
+                    .publish_wal_append(encoded, metadata, expected, pages)
             },
         )?;
         Ok(Some(lsn))

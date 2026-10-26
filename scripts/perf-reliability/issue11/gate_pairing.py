@@ -1,6 +1,8 @@
 """配对目标、冻结状态与补充证据的 fail-closed 检查。"""
 from issue11 import contract
 from issue11.gate_common import _is_int, _is_number
+from issue11.recovery_v2 import validate_recovery
+from issue11.extended_v2 import validate_extended
 
 
 def synthetic(value):
@@ -56,6 +58,8 @@ def reliability_and_extended(view, acceptance, problems):
                     valid = _is_number(value) and value >= 0
                 if not valid:
                     problems.append(("FAIL", "extended_evidence_invalid: " + name + "." + field))
+    validate_recovery(view, problems)
+    validate_extended(evidence, problems, acceptance)
 
 
 def paired_problems(runs, views, acceptance):

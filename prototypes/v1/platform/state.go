@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 
 	controller "peri-loom/controller"
 )
@@ -22,7 +23,9 @@ type stateStore struct {
 	// The edits applied to the view whose appended deltas are not durable yet, oldest
 	// first. Only the view lock touches it, so it is exactly the journal's queue and
 	// in-flight batches in the order they were applied.
-	unconfirmed []operationPendingEdit
+	unconfirmed        []operationPendingEdit
+	maintenance        sync.WaitGroup
+	maintenanceClosing bool
 }
 
 func OpenStateStore(directory string) (StateStore, error) {
@@ -144,7 +147,7 @@ func (store *stateStore) checkpointOperations() error {
 	if store.checkpointed {
 		return errors.New("operation checkpoint already recorded")
 	}
-	if store.state.OperationStorageVersion != 1 {
+	if store.state.OperationStorageVersion != 1 && store.state.OperationStorageVersion != completionJournalVersion {
 		return errors.New("operation storage identity unavailable")
 	}
 	// The view can carry edits whose appended delta is not durable yet: the commit queue
@@ -153,6 +156,10 @@ func (store *stateStore) checkpointOperations() error {
 	// Joining the in-flight commits first makes the clone exactly what the durable log
 	// holds; an append whose barrier refused it fails this checkpoint closed instead.
 	if err := store.settleOperations(); err != nil {
+		return err
+	}
+	if err := store.operations.checkpointCompletionTail(); err != nil {
+		store.disk.poisoned = true
 		return err
 	}
 	candidate, err := cloneState(store.state)
@@ -320,8 +327,12 @@ func (store *stateStore) commitLocked(candidate State) error {
 // settles what is left, so the final view keeps every confirmed record and drops only the
 // appends whose barrier refused them.
 func (store *stateStore) Close() error {
-	operations := store.operations.close()
 	unlock := store.lockState()
+	store.maintenanceClosing = true
+	unlock()
+	store.maintenance.Wait()
+	operations := store.operations.close()
+	unlock = store.lockState()
 	settled := store.settleOperations()
 	unlock()
 	return errors.Join(operations, settled, store.disk.close())
