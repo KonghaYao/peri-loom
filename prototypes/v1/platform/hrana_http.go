@@ -89,6 +89,7 @@ func newHranaHTTP(gateway *Gateway) http.Handler {
 }
 
 func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	request = beginHranaCorrelation(request, handler.gateway.config.OpenObserver.requestPhases())
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	if serveHranaWS(writer, request, handler) {
@@ -796,7 +797,7 @@ func (handler *hranaHTTP) probe(request *http.Request, credential, path string, 
 
 func (handler *hranaHTTP) dispatch(request *http.Request, credential, path string, input any, probe bool) hranaReply {
 	encoded, _ := json.Marshal(input)
-	ctx := context.WithValue(request.Context(), hranaSessionContextKey{}, true)
+	ctx := context.WithValue(nextHranaStep(request.Context()), hranaSessionContextKey{}, true)
 	if probe {
 		ctx = context.WithValue(ctx, hranaProbeContextKey{}, true)
 	}

@@ -53,7 +53,42 @@ impl Drop for Held {
     }
 }
 
-type HttpStatistics = Arc<Mutex<BTreeMap<String, (u64, u64, u64)>>>;
+#[derive(Default)]
+struct Statistics {
+    generation: u64,
+    operations: BTreeMap<String, (u64, u64, u64)>,
+}
+
+impl Statistics {
+    fn begin(&mut self, category: &str) -> u64 {
+        self.operations.entry(category.into()).or_default().0 += 1;
+        self.generation
+    }
+
+    fn finish(&mut self, category: &str, generation: u64, elapsed_micros: u64) {
+        // A reset defines a new request-start window. A background request that
+        // began earlier must neither panic on a cleared entry nor charge its
+        // completion to a new request of the same category.
+        if generation == self.generation {
+            let counts = self
+                .operations
+                .get_mut(category)
+                .expect("started HTTP request missing");
+            counts.1 += 1;
+            counts.2 += elapsed_micros;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("HTTP statistics generation exhausted");
+        self.operations.clear();
+    }
+}
+
+type HttpStatistics = Arc<Mutex<Statistics>>;
 
 pub struct Edge {
     pub endpoint: String,
@@ -86,7 +121,7 @@ impl Edge {
         let backend = Arc::new(backend);
         let delay_ms = Arc::new(AtomicU64::new(0));
         let latency = delay_ms.clone();
-        let statistics = Arc::new(Mutex::new(BTreeMap::<String, (u64, u64, u64)>::new()));
+        let statistics = Arc::new(Mutex::new(Statistics::default()));
         let counters = statistics.clone();
         let (shutdown, stopped) = mpsc::channel();
         let task = thread::spawn(move || {
@@ -124,7 +159,7 @@ impl Edge {
                         } else if operation == "backend" {
                             format!("{}/{}", request.method, if request.path.contains("/authority/root") { "root" } else if request.path.contains("/authority/blobs/") { "blob" } else { "other" })
                         } else { operation.clone() };
-                    counters.lock().unwrap().entry(category.clone()).or_default().0 += 1;
+                    let generation = counters.lock().unwrap().begin(&category);
                     let selected = {
                         let mut armed = capture.lock().unwrap();
                         let matches = armed.as_ref().is_some_and(|armed| match armed.target {
@@ -174,12 +209,7 @@ impl Edge {
                         Backend::Local(store) => local(store, &request)?,
                         Backend::Forward(endpoint) => forward(&client, endpoint, &request)?,
                     };
-                    {
-                        let mut counters = counters.lock().unwrap();
-                            let counter = counters.get_mut(&category).unwrap();
-                            counter.1 += 1;
-                            counter.2 += started.elapsed().as_micros() as u64;
-                    }
+                    counters.lock().unwrap().finish(&category, generation, started.elapsed().as_micros() as u64);
                     if trace {
                         eprintln!("P4_HTTP_BACKEND_TERMINAL trace_id={trace_id} method={} path={} operation={operation} status={} elapsed_us={}", request.method, request.path, response.status, started.elapsed().as_micros());
                     }
@@ -248,11 +278,11 @@ impl Edge {
     }
 
     pub fn reset_statistics(&self) {
-        self.statistics.lock().unwrap().clear();
+        self.statistics.lock().unwrap().reset();
     }
 
     pub fn statistics(&self) -> serde_json::Value {
-        serde_json::json!(self.statistics.lock().unwrap().iter().map(|(operation, counts)| (operation.clone(), serde_json::json!({"started": counts.0, "backend_terminal": counts.1, "elapsed_us_sum": counts.2}))).collect::<BTreeMap<_, _>>())
+        serde_json::json!(self.statistics.lock().unwrap().operations.iter().map(|(operation, counts)| (operation.clone(), serde_json::json!({"started": counts.0, "backend_terminal": counts.1, "elapsed_us_sum": counts.2}))).collect::<BTreeMap<_, _>>())
     }
 
     pub fn stop(&mut self) -> Result<()> {
@@ -268,6 +298,20 @@ impl Edge {
         }
         Ok(())
     }
+}
+
+#[test]
+fn reset_statistics_does_not_adopt_an_earlier_request_completion() {
+    let mut statistics = Statistics::default();
+    let old = statistics.begin("PUT/blob");
+    statistics.reset();
+    statistics.finish("PUT/blob", old, 1);
+    assert!(statistics.operations.is_empty());
+    let current = statistics.begin("PUT/blob");
+    statistics.finish("PUT/blob", old, 2);
+    assert_eq!(statistics.operations["PUT/blob"], (1, 0, 0));
+    statistics.finish("PUT/blob", current, 3);
+    assert_eq!(statistics.operations["PUT/blob"], (1, 1, 3));
 }
 
 impl Drop for Edge {

@@ -72,11 +72,13 @@ type auditRotation struct {
 }
 
 type auditRequest struct {
-	event    AuditEvent
-	class    AuditClass
-	bytes    int
-	enqueued time.Time
-	done     chan error
+	event           AuditEvent
+	class           AuditClass
+	bytes           int
+	enqueued        time.Time
+	done            chan error
+	operationChange func(*operationEdit) error
+	failure         error
 }
 
 // auditReservation moves one completion slot from the reserve into the queue.
@@ -121,8 +123,9 @@ func (witness *auditWitness) verify() error {
 }
 
 type fileAudit struct {
-	queueMutex sync.Mutex
-	pending    []*auditRequest
+	completionStore *stateStore
+	queueMutex      sync.Mutex
+	pending         []*auditRequest
 	// writing is the batch the single writer is currently persisting. It keeps
 	// its admission charge, and its age is reported too, because a stalled
 	// barrier is exactly when the queue age matters.
@@ -263,6 +266,10 @@ func (audit *fileAudit) ReserveCompletion() (AuditReservation, error) {
 		return nil, ErrStateClosed
 	}
 	completionCount := audit.admitted[AuditClassCompletion] + audit.reservedCompletion
+	if audit.completionStore != nil && (completionCount >= completionReservedMaximum || !audit.completionStore.operations.completionAdmissionAvailable()) {
+		audit.refuseLocked(AuditClassCompletion)
+		return nil, ErrAuditOverloaded
+	}
 	completionBytes := audit.admittedBytes[AuditClassCompletion] + audit.reservedCompletionBytes
 	if completionCount+1 > auditCompletionMaximum || completionBytes+auditCompletionSlotBytes > auditCompletionBytes ||
 		audit.admittedCountLocked()+1 > auditQueueMaximum || audit.admittedBytesLocked()+auditCompletionSlotBytes > auditQueueBytes {
@@ -279,12 +286,16 @@ func (audit *fileAudit) ReserveCompletion() (AuditReservation, error) {
 // capacity. Admission of the SQL depended on this capacity, so settling it may
 // not be refused by traffic that arrived after the reservation.
 func (audit *fileAudit) recordCompletion(event AuditEvent, reservation *auditReservation) error {
+	return audit.recordCompletionOperation(event, reservation, nil)
+}
+
+func (audit *fileAudit) recordCompletionOperation(event AuditEvent, reservation *auditReservation, change func(*operationEdit) error) error {
 	if err := validateAudit(event); err != nil {
 		reservation.Release()
 		return err
 	}
 	bytes := min(auditEventBytes(event), reservation.charged)
-	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, enqueued: time.Now(), done: make(chan error, 1)}
+	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, enqueued: time.Now(), done: make(chan error, 1), operationChange: change}
 	audit.queueMutex.Lock()
 	if !reservation.active {
 		audit.queueMutex.Unlock()
@@ -588,7 +599,7 @@ func (audit *fileAudit) drain() {
 		audit.writing = nil
 		audit.queueMutex.Unlock()
 		for _, request := range batch {
-			request.done <- err
+			request.done <- errors.Join(err, request.failure)
 		}
 	}
 }
@@ -659,6 +670,14 @@ func (audit *fileAudit) AuditStatus() map[string]any {
 		"dropped_semantics":           "records refused before admission; accepted records are never dropped",
 	}
 	audit.queueMutex.Unlock()
+	status["durability_source"] = "audit_file_v1"
+	status["fsync_scope"] = "audit_file"
+	if audit.completionStore != nil {
+		status["durability_source"] = "completion_journal_v2"
+		status["fsync_scope"] = "immutable_legacy_audit_prefix"
+		status["limits"].(map[string]any)["completion_slots"] = completionReservedMaximum
+		status["completion_journal"] = audit.completionStore.operations.completionStatus()
+	}
 	return status
 }
 
@@ -675,6 +694,9 @@ func (audit *fileAudit) recordSyncDuration(elapsed time.Duration) {
 }
 
 func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
+	if audit.completionStore != nil {
+		return audit.recordUnifiedBatch(batch)
+	}
 	audit.mutex.Lock()
 	defer audit.mutex.Unlock()
 	if audit.closed {

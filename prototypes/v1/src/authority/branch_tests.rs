@@ -229,8 +229,8 @@ fn append(
         append_id: append_id.to_owned(),
         timestamp_millis: 1,
     };
-    RemoteWal::new(branch.clone()).append_using(&request, |encoded, metadata, expected| {
-        branch.publish_wal_append(encoded, metadata, expected)
+    RemoteWal::new(branch.clone()).append_using(&request, |encoded, metadata, expected, pages| {
+        branch.publish_wal_append(encoded, metadata, expected, pages)
     })
 }
 
@@ -762,16 +762,16 @@ fn truncation_archives_receipts_into_pages_the_gc_walk_reaches() -> Result<()> {
     };
     let archived = request("archived-receipt", &[1, 2, 3]);
     assert_eq!(
-        wal.append_using(&archived, |encoded, metadata, expected| {
-            branch.publish_wal_append(encoded, metadata, expected)
+        wal.append_using(&archived, |encoded, metadata, expected, pages| {
+            branch.publish_wal_append(encoded, metadata, expected, pages)
         })?,
         1
     );
     assert_eq!(
         wal.append_using(
             &request("kept-receipt", &[4]),
-            |encoded, metadata, expected| {
-                branch.publish_wal_append(encoded, metadata, expected)
+            |encoded, metadata, expected, pages| {
+                branch.publish_wal_append(encoded, metadata, expected, pages)
             }
         )?,
         2
@@ -794,8 +794,8 @@ fn truncation_archives_receipts_into_pages_the_gc_walk_reaches() -> Result<()> {
 
     // A duplicate append is answered from the archive without a second record.
     assert_eq!(
-        wal.append_using(&archived, |encoded, metadata, expected| {
-            branch.publish_wal_append(encoded, metadata, expected)
+        wal.append_using(&archived, |encoded, metadata, expected, pages| {
+            branch.publish_wal_append(encoded, metadata, expected, pages)
         })?,
         1
     );

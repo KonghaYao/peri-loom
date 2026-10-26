@@ -16,6 +16,9 @@ use super::{DescribeResult, GuardedStatementOutcome, StatementResult, WriteCurso
 use crate::database::RemoteDatabase;
 use crate::work_metrics::{GateDomain, LaneWait};
 
+#[path = "cursor_start.rs"]
+mod cursor_start;
+
 pub(crate) struct SessionLane {
     pub control: Arc<SessionControl>,
     pub(crate) connection: Mutex<Option<Arc<Connection>>>,
@@ -439,15 +442,27 @@ impl SessionLane {
         self.check(database)?;
         database.storage().store().validate_local()?;
         let native = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
-        let mut cursor = self
+        let cursor = self
             .read_cursor
             .lock()
             .map_err(|_| AdmissionError::Quarantine)?
             .take()
             .ok_or_else(|| anyhow::anyhow!("read cursor not open"))?;
+        let result = self.step_read_cursor(database, native, cursor, page_size);
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    fn step_read_cursor(
+        &self,
+        database: &RemoteDatabase,
+        native: &Arc<Connection>,
+        mut cursor: ReadCursor,
+        page_size: usize,
+    ) -> Result<(Vec<Vec<Value>>, bool)> {
         let result =
             execution::fetch_read_cursor(database, native, &self.control, &mut cursor, page_size);
-        let result = match result {
+        match result {
             Ok((rows, true)) => {
                 drop(cursor);
                 database.admission().settle(
@@ -478,9 +493,7 @@ impl SessionLane {
                     Err(error.context(super::SqlEvidence::Settled))
                 }
             }
-        };
-        drop(connection);
-        self.finish_call(database, result)
+        }
     }
 
     pub fn close_read_cursor(&self, database: &RemoteDatabase) -> Result<()> {
@@ -562,12 +575,24 @@ impl SessionLane {
             error.context(UnsettledSqlOutcome)
         })?;
         let native = connection.as_ref().ok_or(AdmissionError::Quarantine)?;
-        let mut cursor = self
+        let cursor = self
             .write_cursor
             .lock()
             .map_err(|_| AdmissionError::Quarantine)?
             .take()
             .ok_or_else(|| anyhow::anyhow!("write cursor not open"))?;
+        let result = self.step_write_cursor(database, native, cursor, page_size);
+        drop(connection);
+        self.finish_call(database, result)
+    }
+
+    fn step_write_cursor(
+        &self,
+        database: &RemoteDatabase,
+        native: &Arc<Connection>,
+        mut cursor: WriteCursor,
+        page_size: usize,
+    ) -> Result<WriteCursorPage> {
         let result = self
             .check(database)
             .and_then(|()| database.storage().store().validate_local())
@@ -580,7 +605,7 @@ impl SessionLane {
                     page_size,
                 )
             });
-        let result = match result {
+        match result {
             Ok(page) if page.done => {
                 if let Err(error) =
                     execution::settle_write_cursor(database, native, &self.control, cursor)
@@ -616,9 +641,7 @@ impl SessionLane {
                     Err(error.context(super::SqlEvidence::Settled))
                 }
             }
-        };
-        drop(connection);
-        self.finish_call(database, result)
+        }
     }
 
     /// Closes the write cursor and reports whether a live cursor was actually

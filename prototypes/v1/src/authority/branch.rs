@@ -783,6 +783,7 @@ impl BranchStore {
         encoded: &crate::wal::EncodedWalRecord,
         metadata: &crate::wal::WalMetadata,
         expected: Option<String>,
+        pages: &[crate::object_store::GroupWrite],
     ) -> Result<()> {
         let record = encoded.record();
         ensure!(
@@ -791,6 +792,47 @@ impl BranchStore {
                 && metadata.last_lsn == record.lsn,
             "WAL publication identity mismatch"
         );
+        ensure!(
+            crate::wal::append_pages_fit(pages),
+            "WAL append page budget exceeded"
+        );
+        let page_snapshot = if pages.is_empty() {
+            None
+        } else {
+            let snapshot = self.authority.snapshot()?;
+            self.bound(&snapshot.root)?;
+            Some(snapshot)
+        };
+        let mut staged = Vec::with_capacity(pages.len());
+        let mut keys = BTreeSet::new();
+        for write in pages {
+            let relative = self.relative(&write.key)?;
+            let hash = relative
+                .strip_prefix("wal/index-segments/")
+                .or_else(|| relative.strip_prefix("wal/receipt-pages/"))
+                .filter(|hash| crate::wal::valid_entry_index(hash))
+                .context("staged WAL page outside the immutable page namespace")?;
+            ensure!(
+                matches!(write.condition, PutCondition::Absent | PutCondition::Any),
+                "staged WAL page must be immutable"
+            );
+            ensure!(
+                blake3::hash(&write.bytes).to_hex().as_str() == hash,
+                "staged WAL page checksum mismatch"
+            );
+            if keys.insert(relative.to_owned()) {
+                let existing = page_snapshot.as_ref().unwrap().root.objects.get(relative)?;
+                let fresh = existing.is_none();
+                let entry = match existing {
+                    Some(entry) => {
+                        ensure!(entry.hash == hash, "immutable WAL page conflict");
+                        entry
+                    }
+                    None => Authority::upload_entry(&write.bytes)?,
+                };
+                staged.push((relative.to_owned(), entry, write, fresh));
+            }
+        }
         let chunk_bytes = encoded.bytes();
         let hash = encoded.hash();
         let chunk_key = format!("wal/chunks/{hash}");
@@ -800,15 +842,13 @@ impl BranchStore {
             .view
             .lock()
             .map_err(|_| anyhow::anyhow!("branch session lock poisoned"))?;
-        // Both instances of the pair ride in the publication group below: the group
-        // carries the bodies, the registrations that reach them and the head CAS, so a
-        // commit publishes the head once instead of reserving an intent in one revision
-        // and uploading the bodies between that revision and the next. The keys are
-        // fixed here, before the first attempt, so a retry rewrites the same bytes.
+        // The chunk, index, new index segments and receipt pages ride in one publication.
+        // Its body registrations and pin extensions land with the head CAS. Fixed keys
+        // make retries of this publication idempotent; no SQL is executed here.
         self.authority.check(MutationStage::Upload)?;
         let chunk = Authority::upload_entry(chunk_bytes)?;
         let index = Authority::upload_entry(&index_bytes)?;
-        let bodies = [
+        let mut bodies = vec![
             PublicationBody {
                 entry: &chunk,
                 bytes: chunk_bytes,
@@ -818,6 +858,12 @@ impl BranchStore {
                 bytes: &index_bytes,
             },
         ];
+        bodies.extend(staged.iter().filter_map(|(_, entry, write, fresh)| {
+            fresh.then_some(PublicationBody {
+                entry,
+                bytes: &write.bytes,
+            })
+        }));
         let mut added = BTreeMap::new();
         let mut validated = None;
         let mut generation = None;
@@ -833,7 +879,7 @@ impl BranchStore {
             .checked_add(1)
             .context("reader pin generation exhausted")?;
         let retired = view.retire_prefixes(&self.pin, next_generation);
-        let published =
+        let publication =
             self.authority
                 .transact_with_bodies(PublishOrigin::Append, &bodies, |root| {
                     attempt += 1;
@@ -854,6 +900,31 @@ impl BranchStore {
                         root.uploads.insert(entry.blob.clone(), entry.clone())?;
                     }
                     root.objects.insert(chunk_key.clone(), chunk.clone())?;
+                    let mut entries = BTreeMap::from([
+                        (chunk_key.clone(), chunk.clone()),
+                        ("wal/index".into(), index.clone()),
+                    ]);
+                    for (relative, entry, _, fresh) in &staged {
+                        if let Some(existing) = root.objects.get(relative)? {
+                            ensure!(existing.hash == entry.hash, "immutable WAL page conflict");
+                            // Another publication may have registered this logical page
+                            // after the planning snapshot. Rebuild before writing bodies:
+                            // otherwise this group's unused instance would be an orphan.
+                            ensure!(existing == *entry, crate::wal::AppendPagesChanged);
+                            entries.insert(relative.clone(), existing);
+                            continue;
+                        }
+                        ensure!(*fresh, crate::wal::AppendPagesChanged);
+                        ensure!(
+                            !root.blobs.contains(&entry.blob)?
+                                && !root.tombstones.contains(&entry.blob)?,
+                            "physical instance collision"
+                        );
+                        root.blobs.insert(entry.blob.clone(), entry.clone())?;
+                        root.uploads.insert(entry.blob.clone(), entry.clone())?;
+                        root.objects.insert(relative.clone(), entry.clone())?;
+                        entries.insert(relative.clone(), entry.clone());
+                    }
                     let previous = if attempt == 1 {
                         previous.take().and_then(|(entry, state)| {
                             (self.bound(root).ok()?.wal.as_ref() == Some(&entry)).then_some(state)
@@ -867,17 +938,22 @@ impl BranchStore {
                     for (_, prefix) in &retired {
                         root.pin_entries.remove_prefix(prefix)?;
                     }
-                    added = self.extend_pin(
-                        root,
-                        next,
-                        BTreeMap::from([
-                            (chunk_key.clone(), chunk.clone()),
-                            ("wal/index".into(), index.clone()),
-                        ]),
-                    )?;
+                    added = self.extend_pin(root, next, entries)?;
                     generation = Some(next);
                     Ok(())
-                })?;
+                });
+        let published = match publication {
+            Ok(published) => published,
+            Err(error) => {
+                if error.is::<PreconditionFailed>() {
+                    // A competing session has its own pointer cache. The append loop
+                    // must observe the winning WAL before deciding whether to rebuild;
+                    // reading this session's old cached etag would hide a real CAS loss.
+                    self.reload_pointer(&mut view, "wal/index")?;
+                }
+                return Err(error);
+            }
+        };
         let mut selected = Self::selected(&published.root, &self.branch)?;
         if selected.head != view.head || selected.wal.as_ref() != Some(&index) {
             // A lost acknowledgement can resolve to another writer's later point. Our

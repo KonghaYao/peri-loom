@@ -89,6 +89,13 @@ func cursorWriteHook(fixture *gatewayFixture, fetch func() (any, error), close f
 			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": false}, nil
 		case "open_write_cursor":
 			return map[string]any{"cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}}, nil
+		case "open_write_cursor_first":
+			page, err := fetch()
+			if err != nil {
+				return nil, err
+			}
+			page.(map[string]any)["cols"] = []any{map[string]any{"name": "id", "decltype": "INTEGER"}}
+			return page, nil
 		case "fetch_write_cursor":
 			return fetch()
 		case "close_write_cursor":
@@ -284,7 +291,7 @@ func TestHranaV3JSONWriteCursorAbortProvesRollback(t *testing.T) {
 	cursorWriteHook(fixture, func() (any, error) {
 		fetches++
 		cancel()
-		return map[string]any{"rows": []any{}, "done": false, "affected_row_count": nil, "last_insert_rowid": nil}, nil
+		return map[string]any{"rows": [][]any{{1}}, "done": false, "affected_row_count": nil, "last_insert_rowid": nil}, nil
 	}, func() (any, error) {
 		return map[string]any{"closed": true, "abort_proven": true}, nil
 	})

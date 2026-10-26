@@ -16,8 +16,12 @@ use std::{
     time::Instant,
 };
 
+mod pack;
+
 pub struct LocalObjectStore {
     root: PathBuf,
+    packed: bool,
+    physical: pack::Counters,
 }
 
 /// One body staged for a group publication. `file` is `None` when staging found an
@@ -260,22 +264,58 @@ fn encode_envelope(envelope: &EnvelopeRef<'_>, payload_len: usize) -> Result<Vec
 
 impl LocalObjectStore {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root.as_ref();
+        let requested = match std::env::var("PERI_LOCAL_OBJECT_PACK") {
+            Ok(value) if value == "1" => true,
+            Ok(value) if value == "0" || value.is_empty() => false,
+            Ok(_) => anyhow::bail!("PERI_LOCAL_OBJECT_PACK must be 0 or 1"),
+            Err(std::env::VarError::NotPresent) => false,
+            Err(error) => return Err(error.into()),
+        };
+        Self::open_layout(root.as_ref(), requested)
+    }
+
+    /// Opt in on a new, empty volume. Existing packed volumes retain their format
+    /// even when the environment opt-in is no longer present.
+    pub fn open_packed(root: impl AsRef<Path>) -> Result<Self> {
+        Self::open_layout(root.as_ref(), true)
+    }
+
+    fn open_layout(root: &Path, requested: bool) -> Result<Self> {
         fs::create_dir_all(root)?;
         ensure!(
             !fs::symlink_metadata(root)?.file_type().is_symlink(),
             "symlink store root rejected"
         );
-        let store = Self {
+        let mut store = Self {
             root: root.canonicalize()?,
+            packed: false,
+            physical: pack::Counters::default(),
         };
         let _guard = store.lock()?;
+        store.packed = pack::open(&store, requested)?;
         flush_directory(&store.root)?;
         if let Some(parent) = store.root.parent() {
             flush_directory(parent)?;
         }
         publish_directory_barrier(&store.root)?;
         Ok(store)
+    }
+
+    /// Physical calls, including maintenance, rather than logical group counts.
+    pub fn local_storage_metrics(&self) -> serde_json::Value {
+        self.physical.snapshot(self.packed)
+    }
+
+    fn flush_body(&self, file: &File) -> std::io::Result<()> {
+        self.physical.body_syncs.fetch_add(1, Ordering::Relaxed);
+        flush_file(file)
+    }
+
+    fn flush_objects_directory(&self) -> Result<()> {
+        self.physical
+            .directory_syncs
+            .fetch_add(1, Ordering::Relaxed);
+        flush_directory(&self.root)
     }
 
     /// A per-attempt staging name. `etag` alone is not enough now that staging runs
@@ -360,7 +400,7 @@ impl LocalObjectStore {
             return Err(error.into());
         }
         let fsync_started = diagnostics.then(Instant::now);
-        let fsync_result = flush_file(&file);
+        let fsync_result = self.flush_body(&file);
         let fsync_ns = elapsed_ns(fsync_started);
         if let Err(error) = fsync_result {
             drop(file);
@@ -408,7 +448,13 @@ impl LocalObjectStore {
         // the bodies are staged on a bounded set of threads to overlap that I/O; the
         // renames, the one directory flush and the one media barrier still happen in
         // publication order on this thread, after every body is durable.
-        let workers = stage_worker_count(writes.len());
+        let workers = if self.packed {
+            // Duplicate-key packed groups retain the legacy staging semantics,
+            // including under diagnostics, but not an override above four workers.
+            stage_worker_count(writes.len()).min(4)
+        } else {
+            stage_worker_count(writes.len())
+        };
         let diagnostics = phase.timed;
         let mut spawn_ns = 0;
         let staged: Vec<Result<StagedBody>> = if workers == 1 {
@@ -513,6 +559,7 @@ impl LocalObjectStore {
         if phase.timed {
             phase.lock_wait_ns = elapsed_ns(lock_started);
         }
+        pack::validate_layout(self)?;
         ensure!(writes.len() == bodies.len(), "staged group length mismatch");
         let recheck_started = phase.timed.then(Instant::now);
         let mut plans = Vec::with_capacity(bodies.len());
@@ -560,6 +607,19 @@ impl LocalObjectStore {
                 }
                 StagedPlan::Rename => {
                     let temporary = body.temporary.as_ref().context("staged body missing")?;
+                    if self.packed {
+                        pack::prepare_replacement(self, &body.target)?;
+                    }
+                    if self.packed && etags.len() + 1 == bodies.len() && bodies.len() > 1 {
+                        // An adopted alias may have been renamed by an earlier
+                        // attempt whose directory sync failed. Its presence is
+                        // not proof of durability: fence every dependency before
+                        // publishing the last alias, including an all-adopt retry.
+                        pack::fault("before_dependencies_sync")?;
+                        self.flush_objects_directory()?;
+                        publish_directory_barrier(&self.root)?;
+                        pack::fault("after_dependencies_sync")?;
+                    }
                     fs::rename(temporary, &body.target)?;
                     renamed = true;
                     if phase.timed {
@@ -569,7 +629,12 @@ impl LocalObjectStore {
                 }
                 StagedPlan::Replace => {
                     let temporary = body.temporary.as_ref().context("staged body missing")?;
-                    fs::remove_file(&body.target)?;
+                    if self.packed && etags.len() + 1 == bodies.len() && bodies.len() > 1 {
+                        pack::fault("before_dependencies_sync")?;
+                        self.flush_objects_directory()?;
+                        publish_directory_barrier(&self.root)?;
+                        pack::fault("after_dependencies_sync")?;
+                    }
                     fs::rename(temporary, &body.target)?;
                     renamed = true;
                     if phase.timed {
@@ -588,12 +653,30 @@ impl LocalObjectStore {
                 .find_map(|body| body.file.as_ref())
                 .context("staged publication file missing")?;
             let dir_started = phase.timed.then(Instant::now);
-            flush_directory(&self.root)?;
+            if self.packed {
+                pack::fault("after_root_rename")?;
+            }
+            self.flush_objects_directory()?;
             if phase.timed {
                 phase.dir_flush_ns = elapsed_ns(dir_started);
             }
             let barrier_started = phase.timed.then(Instant::now);
             publish_barrier(file)?;
+            if phase.timed {
+                phase.barrier_ns = elapsed_ns(barrier_started);
+            }
+        } else if self.packed && !bodies.is_empty() {
+            // A whole immutable group can be an all-adopt retry after its last
+            // rename succeeded but the directory sync failed. Preserve the
+            // stored etags and avoid body writes, while completing durability
+            // before reporting success for that group.
+            let dir_started = phase.timed.then(Instant::now);
+            self.flush_objects_directory()?;
+            if phase.timed {
+                phase.dir_flush_ns = elapsed_ns(dir_started);
+            }
+            let barrier_started = phase.timed.then(Instant::now);
+            publish_directory_barrier(&self.root)?;
             if phase.timed {
                 phase.barrier_ns = elapsed_ns(barrier_started);
             }
@@ -669,6 +752,9 @@ impl LocalObjectStore {
     fn read(&self, key: &str) -> Result<Option<StoredObject>> {
         let started = std::time::Instant::now();
         let path = self.path(key);
+        if self.packed {
+            return pack::read(self, &path, key);
+        }
         reject_symlink(&path)?;
         let encoded = match fs::read(path) {
             Ok(encoded) => encoded,
@@ -737,10 +823,10 @@ fn flush_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The one hardware barrier a publication pays, after every write and rename it
-/// flushed. `F_FULLFSYNC` is device-wide on macOS, so one call covers the whole
-/// publication: without this split a group of N objects pays N media flushes, which
-/// is what made one committing statement cost tens of milliseconds of pure barrier.
+/// A hardware barrier after the phase's writes and renames have been flushed.
+/// `F_FULLFSYNC` is device-wide on macOS, so one call covers all preceding body
+/// flushes. Legacy groups use the final barrier; packed groups also order durable
+/// dependencies before publishing their last alias.
 fn publish_barrier(file: &File) -> std::io::Result<()> {
     note_barrier();
     barrier::durable(file)
@@ -835,9 +921,13 @@ impl ObjectStore for LocalObjectStore {
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if self.packed {
+            return pack::put(self, key, bytes, condition);
+        }
         let started = std::time::Instant::now();
         validate_key(key)?;
         let _guard = self.lock()?;
+        pack::validate_layout(self)?;
         // `Any` imposes no condition, so the existing object cannot change the outcome and
         // reading it would only decode and checksum bytes the publication overwrites.
         if !matches!(condition, PutCondition::Any) {
@@ -869,9 +959,9 @@ impl ObjectStore for LocalObjectStore {
                 );
             }
             file.write_all(&encoded)?;
-            flush_file(&file)?;
+            self.flush_body(&file)?;
             fs::rename(&temporary, self.path(key))?;
-            flush_directory(&self.root)?;
+            self.flush_objects_directory()?;
             publish_barrier(&file)?;
             Ok(())
         })();
@@ -890,14 +980,14 @@ impl ObjectStore for LocalObjectStore {
         Ok(etag)
     }
 
-    /// Group publish that reaches media with one barrier.
+    /// Group publication with the final alias ordered after its dependencies.
     ///
     /// Bodies and the root are encoded and flushed to temporary files outside the
     /// group lock. Under the lock every condition is rechecked, the temporary files
-    /// are renamed in publication order, and one directory flush plus one media
-    /// barrier cover the group: `F_FULLFSYNC` is device-wide, so it covers every body
-    /// and rename the group already flushed. Barrier count: at most 1, whatever the
-    /// group size; a group that only adopts existing bodies publishes nothing.
+    /// are renamed in publication order. Legacy groups use one final directory
+    /// flush and media barrier. Packed groups also make the dependencies durable
+    /// before their last alias is published; even an all-adopt packed retry must
+    /// complete directory durability before returning success.
     fn put_group(&self, writes: &[super::GroupWrite]) -> Result<Vec<String>> {
         if writes.is_empty() {
             return Ok(Vec::new());
@@ -907,7 +997,11 @@ impl ObjectStore for LocalObjectStore {
             for write in writes {
                 validate_key(&write.key)?;
             }
-            let staged = self.stage_group_with_phase(writes, &mut phase)?;
+            let staged = if self.packed {
+                pack::stage_group(self, writes, &mut phase)?
+            } else {
+                self.stage_group_with_phase(writes, &mut phase)?
+            };
             self.publish_staged_with_phase(writes, staged, &mut phase)
         })();
         if result.is_ok() {
@@ -919,14 +1013,28 @@ impl ObjectStore for LocalObjectStore {
     fn delete(&self, key: &str, expected: Option<&str>) -> Result<()> {
         validate_key(key)?;
         let _guard = self.lock()?;
+        pack::validate_layout(self)?;
         let Some(current) = self.read(key)? else {
+            if self.packed {
+                // The missing alias may be from an earlier unlink whose
+                // directory sync failed. Complete that idempotent deletion's
+                // durability before returning success on the same handle.
+                self.flush_objects_directory()?;
+                publish_directory_barrier(&self.root)?;
+            }
             return Ok(());
         };
         if let Some(expected) = expected {
             ensure!(current.etag == expected, PreconditionFailed);
         }
+        if self.packed {
+            pack::prepare_replacement(self, &self.path(key))?;
+        }
         fs::remove_file(self.path(key))?;
-        flush_directory(&self.root)?;
+        if self.packed {
+            pack::fault("after_alias_delete")?;
+        }
+        self.flush_objects_directory()?;
         publish_directory_barrier(&self.root)?;
         Ok(())
     }
@@ -943,6 +1051,13 @@ impl ObjectStore for LocalObjectStore {
                 .is_some_and(|extension| extension == "obj")
             {
                 reject_symlink(&entry.path())?;
+                if self.packed {
+                    let key = pack::key_for_alias(self, &entry.path())?;
+                    if key.starts_with(prefix) {
+                        keys.push(key);
+                    }
+                    continue;
+                }
                 let envelope: Envelope = serde_json::from_slice(&fs::read(entry.path())?)?;
                 validate_key(&envelope.key)?;
                 ensure!(

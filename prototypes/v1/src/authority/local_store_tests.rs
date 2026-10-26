@@ -9,7 +9,7 @@ use crate::{
         recovery_observations, reset_recovery_observations, WAL_HEADER,
     },
     runtime::{DatabaseId, DatabaseProvider},
-    wal::{WalBatch, WalOperation, MAX_APPEND_OPERATIONS, MAX_APPEND_PAYLOAD_BYTES},
+    wal::{DurableWal, WalBatch, WalOperation, MAX_APPEND_OPERATIONS, MAX_APPEND_PAYLOAD_BYTES},
 };
 use anyhow::{bail, Context};
 use std::sync::{
@@ -22,8 +22,10 @@ struct Probe {
     inner: MemoryObjectStore,
     roots: AtomicUsize,
     groups: AtomicUsize,
+    bodies: AtomicUsize,
     fault: AtomicU8,
     before_root: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    after_root_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     after_root: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -31,6 +33,7 @@ impl Probe {
     fn reset(&self) {
         self.roots.store(0, Ordering::SeqCst);
         self.groups.store(0, Ordering::SeqCst);
+        self.bodies.store(0, Ordering::SeqCst);
     }
 
     fn roots(&self) -> usize {
@@ -40,10 +43,20 @@ impl Probe {
 
 impl ObjectStore for Probe {
     fn get(&self, key: &str) -> Result<Option<StoredObject>> {
-        self.inner.get(key)
+        let value = self.inner.get(key)?;
+        if key.ends_with("/authority/root") {
+            let hook = self.after_root_read.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        Ok(value)
     }
 
     fn put(&self, key: &str, bytes: &[u8], condition: PutCondition) -> Result<String> {
+        if key.contains("/authority/blobs/") {
+            self.bodies.fetch_add(1, Ordering::SeqCst);
+        }
         let root = key.ends_with("/authority/root");
         if root {
             let hook = self.before_root.lock().unwrap().take();
@@ -79,6 +92,13 @@ impl ObjectStore for Probe {
         assert!(writes[..writes.len() - 1]
             .iter()
             .all(|write| !write.key.ends_with("/authority/root")));
+        if self.fault.load(Ordering::SeqCst) == 3 {
+            self.fault.store(0, Ordering::SeqCst);
+            for write in &writes[..writes.len() / 2] {
+                self.put(&write.key, &write.bytes, write.condition.clone())?;
+            }
+            bail!("injected torn publication before root");
+        }
         writes
             .iter()
             .map(|write| self.put(&write.key, &write.bytes, write.condition.clone()))
@@ -266,12 +286,34 @@ fn local_lost_ack_resolves_receipt_and_uncommitted_failure_is_not_retried() -> R
 }
 
 #[test]
-fn local_receipt_roll_keeps_archived_identity_and_conflict_checks() -> Result<()> {
+fn local_wal_boundaries_publish_once_and_keep_archived_identity() -> Result<()> {
     let (probe, store, namespace) = fixture(0)?;
     let original = request(&namespace, 0, "append-0");
-    for index in 0..=crate::wal::WAL_RECEIPT_INLINE_LIMIT {
+    for index in 0..=(2 * crate::wal::WAL_INDEX_SEGMENT_LIMIT) {
+        let boundary = match index {
+            256 => Some((true, true)),
+            321 => Some((false, true)),
+            512 => Some((true, false)),
+            _ => None,
+        };
+        let before = boundary
+            .map(|_| RemoteWal::new(store.clone()).metadata(&namespace))
+            .transpose()?;
+        probe.reset();
         let request = request(&namespace, 0, &format!("append-{index}"));
         assert_eq!(store.append_wal(&request)?, Some(index as u64 + 1));
+        assert_eq!(probe.roots(), 1, "append {}", index + 1);
+        assert_eq!(
+            probe.groups.load(Ordering::SeqCst),
+            1,
+            "append {}",
+            index + 1
+        );
+        if let (Some((segment, receipt)), Some(before)) = (boundary, before) {
+            let after = RemoteWal::new(store.clone()).metadata(&namespace)?;
+            assert_eq!(before.entry_index != after.entry_index, segment);
+            assert_eq!(before.receipt_index != after.receipt_index, receipt);
+        }
     }
     let index = RemoteWal::new(store.clone()).metadata(&namespace)?;
     assert!(index.receipt_index.is_some());
@@ -290,6 +332,228 @@ fn local_receipt_roll_keeps_archived_identity_and_conflict_checks() -> Result<()
         .to_string()
         .contains("conflict"));
     assert_eq!(probe.roots(), 0);
+    Ok(())
+}
+
+#[test]
+fn local_wal_boundary_faults_do_not_publish_missing_pages_or_replay() -> Result<()> {
+    let (probe, store, namespace) = fixture(0)?;
+    for index in 0..crate::wal::WAL_INDEX_SEGMENT_LIMIT {
+        store.append_wal(&request(&namespace, 0, &format!("seed-{index}")))?;
+    }
+    let boundary = request(&namespace, 0, "boundary");
+    let before = store.get(&namespace.key("wal/index")?)?.unwrap();
+    for fault in [3, 2] {
+        probe.reset();
+        probe.fault.store(fault, Ordering::SeqCst);
+        assert!(store.append_wal(&boundary).is_err());
+        assert_eq!(probe.roots(), 0);
+        assert_eq!(
+            probe.groups.load(Ordering::SeqCst),
+            1,
+            "no automatic replay"
+        );
+        let after = store.get(&namespace.key("wal/index")?)?.unwrap();
+        assert_eq!(after.etag, before.etag);
+        assert_eq!(after.bytes, before.bytes);
+        let authority = Authority::open(probe.clone(), namespace.clone())?;
+        let root = authority.snapshot()?.root;
+        assert!(!root.objects.entries()?.keys().any(|key| {
+            key.starts_with("wal/index-segments/") || key.starts_with("wal/receipt-pages/")
+        }));
+        authority.verify_deep(&root)?;
+    }
+    probe.reset();
+    probe.fault.store(1, Ordering::SeqCst);
+    assert_eq!(store.append_wal(&boundary)?, Some(257));
+    assert_eq!(
+        probe.roots(),
+        1,
+        "a lost ACK resolves the original publication"
+    );
+    assert_eq!(probe.groups.load(Ordering::SeqCst), 1);
+    let metadata = RemoteWal::new(store.clone()).metadata(&namespace)?;
+    assert!(metadata.entry_index.is_some() && metadata.receipt_index.is_some());
+    let cold = LocalAuthorityProvider::new(probe.clone())
+        .open_store(&DatabaseId::new(namespace.clone(), "main")?, 0)?;
+    probe.reset();
+    assert_eq!(cold.append_wal(&boundary)?, Some(257));
+    assert_eq!(cold.append_wal(&request(&namespace, 0, "seed-0"))?, Some(1));
+    assert_eq!(probe.roots(), 0);
+    assert_eq!(RemoteWal::new(cold).read(&namespace, 0)?.len(), 257);
+    Ok(())
+}
+
+#[test]
+fn local_wal_boundary_cas_conflict_rebuilds_only_the_publication() -> Result<()> {
+    let (probe, store, namespace) = fixture(0)?;
+    for index in 0..crate::wal::WAL_INDEX_SEGMENT_LIMIT {
+        store.append_wal(&request(&namespace, 0, &format!("seed-{index}")))?;
+    }
+    let competitor = LocalAuthorityProvider::new(probe.clone())
+        .open_store(&DatabaseId::new(namespace.clone(), "main")?, 0)?;
+    let competing_request = request(&namespace, 0, "competitor");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let called = calls.clone();
+    *probe.before_root.lock().unwrap() = Some(Box::new(move || {
+        called.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            competitor.append_wal(&competing_request).unwrap(),
+            Some(257)
+        );
+    }));
+    let original = request(&namespace, 0, "original");
+    assert_eq!(store.append_wal(&original)?, Some(258));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let cold = LocalAuthorityProvider::new(probe.clone())
+        .open_store(&DatabaseId::new(namespace.clone(), "main")?, 0)?;
+    probe.reset();
+    assert_eq!(cold.append_wal(&original)?, Some(258));
+    assert_eq!(cold.append_wal(&request(&namespace, 0, "seed-0"))?, Some(1));
+    assert_eq!(
+        cold.append_wal(&request(&namespace, 0, "competitor"))?,
+        Some(257)
+    );
+    assert_eq!(probe.roots(), 0);
+    let records = RemoteWal::new(cold).read(&namespace, 0)?;
+    assert_eq!(records.len(), 258);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.append_id == "original")
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn local_wal_boundary_reuses_preloaded_pages_without_unregistered_instances() -> Result<()> {
+    let (probe, store, namespace) = fixture(0)?;
+    for index in 0..crate::wal::WAL_INDEX_SEGMENT_LIMIT {
+        store.append_wal(&request(&namespace, 0, &format!("seed-{index}")))?;
+    }
+    let authority = Authority::open(probe.clone(), namespace.clone())?;
+    let branch = authority.branch_store("main")?;
+    let wal = RemoteWal::new(branch.clone());
+    assert_eq!(
+        wal.append_using(
+            &request(&namespace, 0, "preloaded-pages"),
+            |encoded, metadata, expected, pages| {
+                assert!(!pages.is_empty());
+                probe.reset();
+                assert!(branch
+                    .publish_wal_append(encoded, metadata, expected.clone(), &[])
+                    .is_err());
+                assert_eq!(
+                    probe.roots(),
+                    0,
+                    "the head cannot name unstaged missing pages"
+                );
+                for page in pages {
+                    branch.put(&page.key, &page.bytes, PutCondition::Absent)?;
+                }
+                probe.reset();
+                branch.publish_wal_append(encoded, metadata, expected, pages)
+            },
+        )?,
+        257
+    );
+    assert_eq!(probe.roots(), 1);
+    assert_eq!(probe.groups.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        probe.bodies.load(Ordering::SeqCst),
+        2,
+        "only chunk and index are new"
+    );
+    authority.verify_deep(&authority.snapshot()?.root)?;
+    Ok(())
+}
+
+#[test]
+fn local_wal_page_registration_race_rebuilds_without_extra_instances() -> Result<()> {
+    let (probe, store, namespace) = fixture(0)?;
+    for index in 0..crate::wal::WAL_INDEX_SEGMENT_LIMIT {
+        store.append_wal(&request(&namespace, 0, &format!("seed-{index}")))?;
+    }
+    let authority = Authority::open(probe.clone(), namespace.clone())?;
+    let branch = authority.branch_store("main")?;
+    let competitor = authority.branch_store("main")?;
+    let wal = RemoteWal::new(branch.clone());
+    let mut attempts = 0;
+    assert_eq!(
+        wal.append_using(
+            &request(&namespace, 0, "page-race"),
+            |encoded, metadata, expected, pages| {
+                attempts += 1;
+                if attempts == 1 {
+                    let competitor = competitor.clone();
+                    let writes = pages.to_vec();
+                    let observed = probe.clone();
+                    *probe.after_root_read.lock().unwrap() = Some(Box::new(move || {
+                        for page in writes {
+                            competitor
+                                .put(&page.key, &page.bytes, PutCondition::Absent)
+                                .unwrap();
+                        }
+                        observed.reset();
+                    }));
+                }
+                branch.publish_wal_append(encoded, metadata, expected, pages)
+            },
+        )?,
+        257
+    );
+    assert_eq!(attempts, 2, "only the storage publication is rebuilt");
+    assert_eq!(probe.roots(), 1);
+    assert_eq!(probe.groups.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.bodies.load(Ordering::SeqCst), 2);
+    authority.verify_deep(&authority.snapshot()?.root)?;
+    Ok(())
+}
+
+#[test]
+fn local_wal_staged_pages_enforce_identity_immutability_and_budget() -> Result<()> {
+    let (probe, _, namespace) = fixture(0)?;
+    let authority = Authority::open(probe.clone(), namespace.clone())?;
+    let branch = authority.branch_store("main")?;
+    let wal = RemoteWal::new(branch.clone());
+    let bytes = b"staged".to_vec();
+    let valid = GroupWrite::absent(
+        namespace.key(&format!("wal/receipt-pages/{}", blake3::hash(&bytes)))?,
+        bytes,
+    );
+    let mut bad_hash = valid.clone();
+    bad_hash.bytes.push(0);
+    let mut bad_namespace = valid.clone();
+    bad_namespace.key = Namespace::new("other", "database")?.key("wal/receipt-pages/page")?;
+    let mut bad_prefix = valid.clone();
+    bad_prefix.key = namespace.key(&format!("wal/chunks/{}", blake3::hash(&valid.bytes)))?;
+    let mut mutable = valid.clone();
+    mutable.condition = PutCondition::Match("unrelated-etag".into());
+    let mut oversized = valid.clone();
+    oversized.bytes = vec![0; crate::wal::MAX_APPEND_STAGED_BYTES + 1];
+    for pages in [
+        vec![bad_hash],
+        vec![bad_namespace],
+        vec![bad_prefix],
+        vec![mutable],
+        vec![oversized],
+        vec![valid; crate::wal::MAX_APPEND_STAGED_PAGES + 1],
+    ] {
+        probe.reset();
+        assert!(wal
+            .append_using(
+                &request(&namespace, 0, "invalid-page"),
+                |encoded, metadata, expected, _| {
+                    branch.publish_wal_append(encoded, metadata, expected, &pages)
+                },
+            )
+            .is_err());
+        assert_eq!(probe.roots(), 0);
+        assert_eq!(probe.bodies.load(Ordering::SeqCst), 0);
+    }
+    assert_eq!(wal.metadata(&namespace)?.last_lsn, 0);
     Ok(())
 }
 

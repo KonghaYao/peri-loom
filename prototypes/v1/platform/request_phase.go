@@ -109,17 +109,19 @@ func (phase requestPhase) kind() requestPhaseKind {
 // requestPhaseRecord is one line of the phase stream. Nothing here identifies a tenant: the
 // request id correlates with the client's own timestamps, and the action names the operation.
 type requestPhaseRecord struct {
-	Stream        string                `json:"stream"`
-	RequestID     string                `json:"request_id"`
-	Action        string                `json:"action"`
-	Outcome       string                `json:"outcome"`
-	Status        int                   `json:"status"`
-	Window        uint64                `json:"window"`
-	TotalNS       uint64                `json:"total_ns"`
-	AccountedNS   uint64                `json:"accounted_ns"`
-	UnaccountedNS uint64                `json:"unaccounted_ns"`
-	Truncated     bool                  `json:"truncated"`
-	Spans         []requestPhaseSegment `json:"spans"`
+	Stream         string                `json:"stream"`
+	RequestID      string                `json:"request_id"`
+	OuterRequestID string                `json:"outer_request_id,omitempty"`
+	HranaStep      uint64                `json:"hrana_step,omitempty"`
+	Action         string                `json:"action"`
+	Outcome        string                `json:"outcome"`
+	Status         int                   `json:"status"`
+	Window         uint64                `json:"window"`
+	TotalNS        uint64                `json:"total_ns"`
+	AccountedNS    uint64                `json:"accounted_ns"`
+	UnaccountedNS  uint64                `json:"unaccounted_ns"`
+	Truncated      bool                  `json:"truncated"`
+	Spans          []requestPhaseSegment `json:"spans"`
 }
 
 type requestPhaseSegment struct {
@@ -236,6 +238,7 @@ type requestPhaseFrame struct {
 type requestPhaseTrace struct {
 	observer *requestPhaseObserver
 	request  string
+	outer    hranaStep
 	action   string
 	started  time.Time
 
@@ -401,6 +404,7 @@ func beginRequestPhases(ctx context.Context, observer *requestPhaseObserver, req
 		return ctx, nil
 	}
 	trace := &requestPhaseTrace{observer: observer, request: requestID, action: action, started: started}
+	trace.outer, _ = ctx.Value(hranaStepKey{}).(hranaStep)
 	return context.WithValue(ctx, requestPhaseKey{}, trace), trace
 }
 
@@ -503,16 +507,18 @@ func (trace *requestPhaseTrace) finish(requestID, outcome string, status int) {
 		requestID = trace.request
 	}
 	trace.observer.record(requestPhaseRecord{
-		Stream:        "",
-		RequestID:     requestID,
-		Action:        trace.action,
-		Outcome:       outcome,
-		Status:        status,
-		Window:        window,
-		TotalNS:       total,
-		AccountedNS:   accounted,
-		UnaccountedNS: total - accounted,
-		Truncated:     truncated,
-		Spans:         spans,
+		Stream:         "",
+		RequestID:      requestID,
+		OuterRequestID: trace.outer.outer,
+		HranaStep:      trace.outer.index,
+		Action:         trace.action,
+		Outcome:        outcome,
+		Status:         status,
+		Window:         window,
+		TotalNS:        total,
+		AccountedNS:    accounted,
+		UnaccountedNS:  total - accounted,
+		Truncated:      truncated,
+		Spans:          spans,
 	})
 }

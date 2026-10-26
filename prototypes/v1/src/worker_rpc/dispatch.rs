@@ -63,6 +63,18 @@ impl RequestMemory {
                 named_args,
                 ..
             } => (sql_bytes(sql, args, named_args), 0),
+            WorkerCommand::OpenReadCursorFirst {
+                sql,
+                args,
+                named_args,
+                ..
+            }
+            | WorkerCommand::OpenWriteCursorFirst {
+                sql,
+                args,
+                named_args,
+                ..
+            } => (sql_bytes(sql, args, named_args), result),
             WorkerCommand::FetchReadCursor { .. } | WorkerCommand::FetchWriteCursor { .. } => {
                 (0, result)
             }
@@ -393,8 +405,13 @@ impl State {
                         "last_insert_rowid": result.last_insert_rowid,
                         "autocommit": result.autocommit,
                     }),
-                    crate::session::GuardedStatementOutcome::RequiresIntent => {
-                        json!({"requires_intent": true})
+                    crate::session::GuardedStatementOutcome::RequiresIntent(reason) => {
+                        let reason = match reason {
+                            crate::session::GuardedIntentReason::EngineWritable => "engine_writable",
+                            crate::session::GuardedIntentReason::TransactionContext => "transaction_context",
+                            crate::session::GuardedIntentReason::ConnectionControl => "connection_control",
+                        };
+                        json!({"requires_intent": true, "reason": reason})
                     }
                 });
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
@@ -428,6 +445,24 @@ impl State {
                 }
                 result
             }
+            WorkerCommand::OpenReadCursorFirst {
+                sql,
+                args,
+                named_args,
+                max_rows,
+                ..
+            } => dispatch_cursor_first(
+                call, sql, args, named_args, max_rows, false, version, terminal,
+            ),
+            WorkerCommand::OpenWriteCursorFirst {
+                sql,
+                args,
+                named_args,
+                max_rows,
+                ..
+            } => dispatch_cursor_first(
+                call, sql, args, named_args, max_rows, true, version, terminal,
+            ),
             WorkerCommand::FetchReadCursor { max_rows, .. } => {
                 let call = call.context("worker session RPC guard absent")?;
                 let result = crate::slow_diagnostics::native("cursor_fetch_read", || call.handle().fetch_read_cursor(max_rows)).map(|(rows, done)| {
@@ -539,6 +574,49 @@ impl State {
                 .diagnostics(),
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_cursor_first(
+    call: Option<&SessionCall>,
+    sql: String,
+    args: Vec<StatementArg>,
+    named_args: Vec<NamedStatementArg>,
+    max_rows: usize,
+    writing: bool,
+    version: u32,
+    terminal: &mut Option<SessionState>,
+) -> Result<Value> {
+    if !(1..=256).contains(&max_rows) {
+        return Err(anyhow::anyhow!("cursor page size exceeds limit")
+            .context(crate::session::SqlEvidence::NotExecuted));
+    }
+    let args = args
+        .into_iter()
+        .map(native_arg)
+        .collect::<Result<Vec<_>>>()?;
+    let named_args = named_args
+        .into_iter()
+        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let call = call.context("worker session RPC guard absent")?;
+    let result = call.handle().open_cursor_first(&sql, &args, &named_args, max_rows, writing)
+        .map(|first| {
+            let mut result = json!({
+                "cols": first.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
+                "rows": first.page.rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "done": first.page.done,
+            });
+            if writing {
+                result["affected_row_count"] = json!(first.page.affected_row_count);
+                result["last_insert_rowid"] = json!(first.page.last_insert_rowid);
+            }
+            result
+        });
+    if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
+        *terminal = call.terminal_state().unwrap_or(None);
+    }
+    result
 }
 
 fn native_arg(arg: StatementArg) -> Result<SqlValue> {

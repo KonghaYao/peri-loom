@@ -4,6 +4,11 @@ This is the Go management, SQL gateway, key broker, and ownership controller for
 the native Rust database services. It is a standalone Go module with a local
 dependency on `../controller`. Initialize the pinned Turso submodule before building.
 
+The optional `PERI_COMPLETION_JOURNAL=1` format unifies platform terminal and
+audit durability. See [completion-journal-v2.md](completion-journal-v2.md) for
+enablement, audit file layout, migration/recovery rules, byte limits, and evidence.
+The format is opt-in for new launcher runs and cannot be silently downgraded.
+
 ## 发版卷兼容性（v1.1.9 起）
 
 从 v1.1.9 起创建的**本地 backend** 卷支持跨后续版本干净重启；这是完整证明链

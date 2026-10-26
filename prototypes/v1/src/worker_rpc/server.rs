@@ -439,12 +439,16 @@ impl State {
                 | WorkerCommand::Statement { .. }
                 | WorkerCommand::FetchReadCursor { .. }
                 | WorkerCommand::FetchWriteCursor { .. }
+                | WorkerCommand::OpenReadCursorFirst { .. }
+                | WorkerCommand::OpenWriteCursorFirst { .. }
         );
         let deadline = accepted + Budget::trusted_default().wall_duration();
         let _deadline_scope = crate::session::RequestDeadline::scope(deadline);
         let write_cursor_request = matches!(
             &parsed.command,
-            WorkerCommand::OpenWriteCursor { .. } | WorkerCommand::FetchWriteCursor { .. }
+            WorkerCommand::OpenWriteCursor { .. }
+                | WorkerCommand::FetchWriteCursor { .. }
+                | WorkerCommand::OpenWriteCursorFirst { .. }
         );
         let stateful = matches!(
             &parsed.command,
@@ -460,6 +464,8 @@ impl State {
                 | WorkerCommand::FetchReadCursor { .. }
                 | WorkerCommand::CloseReadCursor { .. }
                 | WorkerCommand::OpenWriteCursor { .. }
+                | WorkerCommand::OpenReadCursorFirst { .. }
+                | WorkerCommand::OpenWriteCursorFirst { .. }
                 | WorkerCommand::FetchWriteCursor { .. }
                 | WorkerCommand::CloseWriteCursor { .. }
                 | WorkerCommand::CloseSession { .. }
@@ -509,7 +515,9 @@ impl State {
                 | WorkerCommand::Statement { session, sql, .. }
                 | WorkerCommand::GuardedReadonlyStatement { session, sql, .. }
                 | WorkerCommand::OpenReadCursor { session, sql, .. }
-                | WorkerCommand::OpenWriteCursor { session, sql, .. } => {
+                | WorkerCommand::OpenWriteCursor { session, sql, .. }
+                | WorkerCommand::OpenReadCursorFirst { session, sql, .. }
+                | WorkerCommand::OpenWriteCursorFirst { session, sql, .. } => {
                     ensure!(
                         sql.len() <= Budget::trusted_default().max_sql_bytes,
                         "SQL byte budget exceeded"

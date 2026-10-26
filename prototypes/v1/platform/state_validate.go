@@ -21,8 +21,11 @@ func validRole(role string) bool {
 }
 
 func validateState(state State, previous *State) error {
-	if state.OperationStorageVersion > 1 || previous != nil && state.OperationStorageVersion < previous.OperationStorageVersion {
+	if state.OperationStorageVersion > completionJournalVersion || previous != nil && state.OperationStorageVersion < previous.OperationStorageVersion {
 		return errors.New("operation storage version cannot be reset")
+	}
+	if (state.OperationStorageVersion == completionJournalVersion) != (len(state.CompletionGenesis) == 64) || state.OperationStorageVersion != completionJournalVersion && state.CompletionGenesis != "" || previous != nil && previous.CompletionGenesis != "" && previous.CompletionGenesis != state.CompletionGenesis {
+		return errors.New("completion storage identity cannot be changed")
 	}
 	// The checkpoint names a revision of this state, and it is a record of the
 	// past: it can be left behind by later commits but never invented ahead of

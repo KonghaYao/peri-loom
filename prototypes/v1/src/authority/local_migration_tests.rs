@@ -650,8 +650,9 @@ fn migrated_v6_store_keeps_archived_wal_receipts_after_gc() -> Result<()> {
     };
     let mut publish = |encoded: &crate::wal::EncodedWalRecord,
                        metadata: &crate::wal::WalMetadata,
-                       expected: Option<String>| {
-        branch.publish_wal_append(encoded, metadata, expected)
+                       expected: Option<String>,
+                       pages: &[crate::object_store::GroupWrite]| {
+        branch.publish_wal_append(encoded, metadata, expected, pages)
     };
     let appends = crate::wal::WAL_RECEIPT_INLINE_LIMIT + 2;
     for ordinal in 1..=appends {
@@ -714,9 +715,12 @@ fn migrated_v6_store_keeps_archived_wal_receipts_after_gc() -> Result<()> {
     let branch = reopened.branch_store("main")?;
     let wal = crate::wal::RemoteWal::new(branch.clone());
     assert_eq!(
-        wal.append_using(&request("wal-1", 1), |encoded, metadata, expected| {
-            branch.publish_wal_append(encoded, metadata, expected)
-        })?,
+        wal.append_using(
+            &request("wal-1", 1),
+            |encoded, metadata, expected, pages| {
+                branch.publish_wal_append(encoded, metadata, expected, pages)
+            }
+        )?,
         1,
         "a reopened v6 store must still answer the archived receipt"
     );

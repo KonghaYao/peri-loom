@@ -10,7 +10,8 @@ use turso_core::{Connection, LimboError, NoncommittingAbort, Statement, StepResu
 use super::admission::{Permit, SessionControl, UnsettledSqlOutcome};
 use super::budget::{Budget, ExecutionBudget, RequestDeadline};
 use super::{
-    DescribeResult, GuardedStatementOutcome, StatementColumn, StatementResult, WriteCursorPage,
+    DescribeResult, GuardedIntentReason, GuardedStatementOutcome, StatementColumn, StatementResult,
+    WriteCursorPage,
 };
 use crate::database::RemoteDatabase;
 use crate::metrics::{Metrics, Operation};
@@ -311,9 +312,17 @@ pub(super) fn guarded_readonly_statement(
             // A statement inside an explicit transaction cannot be proven to
             // finish without committing that transaction, and a transaction
             // control statement has effects the read-only flag does not cover.
-            if !connection.get_auto_commit() || !guarded_statement_fast_path(sql) {
+            if !connection.get_auto_commit() {
                 crate::work_metrics::note_guarded_statement_outcome(0, true);
-                return Ok(GuardedStatementOutcome::RequiresIntent);
+                return Ok(GuardedStatementOutcome::RequiresIntent(
+                    GuardedIntentReason::TransactionContext,
+                ));
+            }
+            if !guarded_statement_fast_path(sql) {
+                crate::work_metrics::note_guarded_statement_outcome(0, true);
+                return Ok(GuardedStatementOutcome::RequiresIntent(
+                    GuardedIntentReason::ConnectionControl,
+                ));
             }
             let context = ExecutionContext {
                 database,
@@ -369,7 +378,9 @@ pub(super) fn guarded_readonly_statement(
             deadline.evidence.settle();
             let Some(rows) = rows else {
                 crate::work_metrics::note_guarded_statement_outcome(reprepares, true);
-                return Ok(GuardedStatementOutcome::RequiresIntent);
+                return Ok(GuardedStatementOutcome::RequiresIntent(
+                    GuardedIntentReason::EngineWritable,
+                ));
             };
             let affected_row_count = if connection.total_changes() != prior_changes {
                 connection.changes()

@@ -1,0 +1,11 @@
+{
+  "name": "peri-loom-issue11-sdk-diagnostic",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test runner.test.mjs"
+  },
+  "dependencies": {
+    "@tursodatabase/serverless": "1.4.1"
+  }
+}

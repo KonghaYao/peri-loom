@@ -1,5 +1,6 @@
 """H1–H7 SQL 工作流；H8–H10/N1 不在 W0-A 执行。"""
 import uuid
+import hashlib
 from issue11 import contract
 from issue11.http import protocol
 
@@ -56,6 +57,12 @@ class Workflows:
                               self._phase, sample_index)
         attempts = [write]
         verification = self._check_affected(write, 0)
+        if write.ok and verification["ok"]:
+            self.write_effect = {
+                "request_id": write.request_id, "kind": "update", "table": "perf_kv",
+                "id": row_id, "value": value,
+                "payload_sha256": hashlib.sha256(contract.fixture_payload(row_id).encode()).hexdigest(),
+            }
         if write.ok:
             read = self._request([self._read_step(row_id)], self._phase, sample_index)
             attempts.append(read)
@@ -85,11 +92,15 @@ class Workflows:
             attempts = [attempt]
             verification = self._check_affected(attempt, 0)
             if attempt.ok and verification["ok"]:
+                self._acknowledge_insert(attempt, row_id, value, payload)
+            if attempt.ok and verification["ok"]:
                 verification = self._check_row(attempt, 1, payload, value)
         else:
             attempt = self._request([write], self._phase, sample_index)
             attempts = [attempt]
             verification = self._check_affected(attempt, 0)
+            if attempt.ok and verification["ok"]:
+                self._acknowledge_insert(attempt, row_id, value, payload)
             if attempt.ok and verification["ok"]:
                 read = self._request([self._read_step(row_id, events=True)],
                                      self._phase, sample_index)
@@ -105,6 +116,13 @@ class Workflows:
         if verification["ok"]:
             self.inserted.add(row_id)
         return self._finish(attempts, verification, may_have_committed=True)
+
+    def _acknowledge_insert(self, attempt, row_id, value, payload):
+        self.write_effect = {
+            "request_id": attempt.request_id, "kind": "insert", "table": "perf_events",
+            "id": row_id, "value": value,
+            "payload_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+        }
 
     def _persistent_insert_read(self, sample_index):
         return self._insert_read(sample_index)
