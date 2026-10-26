@@ -1358,6 +1358,68 @@ class Project:
         atomic_private_json(self.directory / "launcher-startup-attempt.json",
                             signed_owned_identity(configuration, self.startup_intent))
 
+    def recover_completed_clean_shutdown(self, configuration):
+        """Rebuild a clean terminal proof when the shutdown completed but the write was lost.
+
+        A container stop can be killed after the authority wrote its clean marker
+        and every service joined, but before mark_clean_terminal wrote the proof.
+        The terminal is derived evidence, so a missing one must not force an
+        operator to delete the volume when the independent clean evidence agrees.
+        Any doubt (dirty marker, unclean or partial stop, unresolved operations,
+        failed restart record, pre-ready attempt) keeps the existing refusal.
+        """
+        terminal = self.directory / "launcher-terminal.json"
+        if terminal.is_symlink():
+            return False
+        if (self.directory / "launcher-restart-failure-unavailable.json").exists():
+            return False
+        authority = self.directory / "authority/authority.lock"
+        if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
+            return False
+        attempt_path = self.directory / "launcher-startup-attempt.json"
+        if attempt_path.exists():
+            try:
+                attempt = self.read_signed_private(attempt_path, configuration, "startup attempt intent")
+            except RuntimeError:
+                return False
+            if (attempt.get("version") != 1 or attempt.get("generation") != configuration["generation"]
+                    or attempt.get("kind") != "launcher_startup_attempt" or attempt.get("ready") is not True):
+                return False
+        stop_path = self.directory / "launcher-stop.json"
+        if stop_path.is_symlink() or not stop_path.is_file():
+            return False
+        try:
+            record = self.read_signed_private(stop_path, configuration, "clean launcher stop record")
+        except RuntimeError:
+            return False
+        if (type(record.get("version")) is not int or record.get("version") != 1
+                or record.get("generation") != configuration["generation"]):
+            return False
+        stages = record.get("stages")
+        completed = record.get("outcome") == "clean" or (
+            record.get("outcome") == "in_progress" and isinstance(stages, list) and bool(stages)
+            and all(isinstance(stage, dict) and stage.get("ack") is True
+                    and stage.get("exit_code") == 0 and stage.get("signal") is None for stage in stages))
+        if not completed:
+            return False
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+        verify_no_unresolved_operations(self.directory, configuration)
+        if terminal.exists():
+            verify_clean_terminal(self.directory, configuration)
+        else:
+            atomic_private_json(terminal, signed_owned_identity(configuration, terminal_record(self.directory, configuration)))
+        if record.get("outcome") != "clean":
+            record["outcome"] = "clean"
+            record["reason"] = "terminal_proof_recovered"
+            record["unresolved_operations"] = False
+            atomic_private_json(stop_path, signed_owned_identity(configuration, record))
+        if attempt_path.exists():
+            os.replace(attempt_path, self.directory / ("launcher-startup-attempt.completed-" + configuration["generation"] + ".json"))
+            fsync_directory(self.directory)
+        print(json.dumps({"launcher": "clean_terminal_recovered", "generation": configuration["generation"]}),
+              file=sys.stderr, flush=True)
+        return True
+
     def verify_startup_attempt(self, configuration):
         path = self.directory / "launcher-startup-attempt.json"
         if not path.exists():
@@ -2024,6 +2086,7 @@ class Project:
             except Exception:
                 self.restart_failure_gate_rejected = True
                 raise
+            self.recover_completed_clean_shutdown(configuration)
             self.verify_startup_attempt(configuration)
             verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
             verify_clean_terminal(self.directory, configuration)

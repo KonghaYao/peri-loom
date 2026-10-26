@@ -256,6 +256,79 @@ class OwnedStopProofTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "interrupted startup"):
                     dev.Project(project.arguments).prepare()
 
+    def test_missing_terminal_after_verified_clean_shutdown_is_rebuilt(self):
+        with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            terminal = project.directory / "launcher-terminal.json"
+            attempt = {"version": 1, "kind": "launcher_startup_attempt",
+                       "generation": configuration["generation"], "ready": True,
+                       "services_started": ["authority", "platform", "worker-a", "worker-b"],
+                       "pids": {}, "commands": {},
+                       "terminal_sha256": dev.file_sha256(terminal), "state_hashes": "snapshot"}
+            dev.atomic_private_json(project.directory / "launcher-startup-attempt.json",
+                                    dev.signed_owned_identity(configuration, attempt))
+            terminal.unlink()
+            restarted = dev.Project(project.arguments)
+            restarted.prepare()
+            self.assertTrue(terminal.exists())
+            dev.verify_clean_terminal(project.directory, restarted.config["owned_stop_proof"])
+            self.assertEqual(len(list(project.directory.glob("launcher-startup-attempt.completed-*"))), 1)
+            record = json.loads(json.loads((project.directory / "launcher-stop.json").read_text())["payload"])
+            self.assertEqual(record["outcome"], "clean")
+
+    def test_missing_terminal_with_in_progress_joined_stages_is_rebuilt(self):
+        with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            record = {"version": 1, "generation": configuration["generation"], "outcome": "in_progress",
+                      "reason": "shutdown_started", "deadline_ms": 1,
+                      "stages": [{"name": name, "ack": True, "exit_code": 0, "signal": None}
+                                 for name in ("platform", "worker-a", "worker-b", "authority")],
+                      "unresolved_operations": "not_verified"}
+            dev.atomic_private_json(project.directory / "launcher-stop.json",
+                                    dev.signed_owned_identity(configuration, record))
+            (project.directory / "launcher-terminal.json").unlink()
+            restarted = dev.Project(project.arguments)
+            restarted.prepare()
+            self.assertTrue((project.directory / "launcher-terminal.json").exists())
+            saved = json.loads(json.loads((project.directory / "launcher-stop.json").read_text())["payload"])
+            self.assertEqual(saved["outcome"], "clean")
+            self.assertEqual(saved["reason"], "terminal_proof_recovered")
+
+    def test_missing_terminal_without_clean_shutdown_evidence_is_refused(self):
+        cases = (("dirty marker", b"dirty\n", "clean"),
+                 ("unclean stop", b"clean\n", "unclean"),
+                 ("partial stop", b"clean\n", "in_progress"))
+        for label, marker, outcome in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
+                project = self.clean_run_directory(directory)
+                configuration = project.config["owned_stop_proof"]
+                (project.directory / "authority/authority.lock").write_bytes(marker)
+                if outcome != "clean":
+                    record = json.loads(json.loads((project.directory / "launcher-stop.json").read_text())["payload"])
+                    record["outcome"] = outcome
+                    record["stages"] = [{"name": "platform", "ack": True, "exit_code": 1, "signal": None}]
+                    dev.atomic_private_json(project.directory / "launcher-stop.json",
+                                            dev.signed_owned_identity(configuration, record))
+                (project.directory / "launcher-terminal.json").unlink()
+                with self.assertRaisesRegex(RuntimeError, "clean launcher terminal proof|authority clean startup marker"):
+                    dev.Project(project.arguments).prepare()
+
+    def test_missing_terminal_with_pre_ready_attempt_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            attempt = {"version": 1, "kind": "launcher_startup_attempt",
+                       "generation": configuration["generation"], "ready": False,
+                       "services_started": [], "pids": {}, "commands": {},
+                       "terminal_sha256": None, "state_hashes": "snapshot"}
+            dev.atomic_private_json(project.directory / "launcher-startup-attempt.json",
+                                    dev.signed_owned_identity(configuration, attempt))
+            (project.directory / "launcher-terminal.json").unlink()
+            with self.assertRaises((RuntimeError, FileNotFoundError)):
+                dev.Project(project.arguments).prepare()
+
     def write_clean_stop(self, project, configuration):
         record = {"version": 1, "generation": configuration["generation"], "outcome": "clean",
                   "reason": "terminal_proof_written", "deadline_ms": 1, "stages": [],
