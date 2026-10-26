@@ -477,6 +477,30 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.15
+
+This release adds repository-only benchmark infrastructure under
+`scripts/perf-reliability/issue11/`: the issue11 Hrana `/v2/pipeline`
+benchmark contract, isolated SQL fixtures, a real HTTP runner, client request
+and phase attribution, and a raw-evidence recomputation gate, with regression
+tests. It does not modify the issue8 frozen contract. None of this code is part
+of the service image, so the published image behaves like v1.1.14 and only its
+version metadata changes.
+
+This release does not include the Go/Rust server-side observability work
+(W0-B) or the `committingStatementCache` performance change (W1).
+
+No formal performance data has been produced. OrbStack/overlay runs are
+diagnostic only; formal evidence still requires a Linux native persistent
+volume. This release therefore claims no p50/p99, capacity, throughput or SP01
+result, and no complete Hrana or all-green SQL compatibility.
+
+Known gaps remain: E1 has no acknowledged rollback proof for an HTTP v3 write
+cursor abort; dirty restart is still denied; disaster recovery, live external
+S3 and HA are not certified; the official JS SDK matrix still declares 27
+scripts and default-executes 26 per round for 2 rounds (52 runs, 2 E1 skips).
+This is a preview, not a production release.
+
 ## v1.1.14
 
 Concurrent Hrana session closes no longer collide on a single project-wide
