@@ -482,6 +482,34 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.16
+
+This release implements the issue11 performance work. Hot-statement write
+hints cache only SQL the engine confirmed as writable; a cached hit still
+writes the durable operation intent first, and connection-control or
+transaction-context refusals never enter the cross-session cache. The v3 JSON
+cursor fuses open and first page into one internal `cursor_start` command
+(`OpenReadCursorFirst` / `OpenWriteCursorFirst`); Go and Rust must be upgraded
+together because the internal RPC is not compatible across versions.
+
+`PERI_LOCAL_OBJECT_PACK` defaults off and enables an immutable pack layout only
+on a new empty local volume (at most 32 entries / 256 KiB payload / 64 KiB
+directory per pack, four staging workers, legacy envelope for larger objects).
+There is no online migration or downgrade. `PERI_COMPLETION_JOURNAL` defaults
+off and unifies terminal and audit state in completion journal v2; a volume that
+already carries v2 is always opened as v2 and is not downgraded by clearing the
+variable. WAL receipt, roll, index segment and chunk records are merged into the
+final publication; above 512 pages or 8 MiB publication uses a bounded
+pre-write and rebuilds the plan after a CAS conflict without re-executing SQL.
+
+Measured results do not reach the planned 4x target: H4 p50 improved about
+15–23% through the real SDK runner and 1.44–1.53x in the fixed v2 runner; the
+formal performance acceptance remains incomplete. E1 (HTTP v3 write-cursor
+abort has no acknowledged rollback proof) remains a known gap, and this release
+does not claim full Hrana compatibility. Benchmark tooling under
+`scripts/perf-reliability` is repository-only and is not part of the service
+image.
+
 ## v1.1.15
 
 This release adds repository-only benchmark infrastructure under
