@@ -762,7 +762,7 @@ def experimental_environment(environment, maintenance=False):
         # Temporary diagnostic forwarding: remove these names and their guard once slow
         # diagnostics become a supported flag or are no longer needed.
         if (name in ("PERI_WORK_METRICS", "PERI_WORKER_DB_IDLE_UNLOAD_MS", "PERI_ADMISSION_TRACE",
-                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR", "PERI_DIAG_GROUP_PHASE")
+                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR", "PERI_DIAG_GROUP_PHASE", "PERI_REQUEST_READ_TRACE")
                 or (maintenance and name.startswith("PERI_MAINTENANCE_"))):
             environment[name] = value
     return environment
@@ -2445,7 +2445,8 @@ class Project:
         # the profile is on; the platform keeps its documented defaults for names not set.
         if getattr(self.arguments, "sql_open_observer", False):
             for name in ("PERI_SQL_OPEN_OBSERVER_PHASE_THRESHOLD_MS", "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE",
-                         "PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS", "PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY"):
+                         "PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS", "PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY",
+                         "PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY"):
                 if name in os.environ:
                     platform_environment[name] = os.environ[name]
         platform_environment["PERI_HRANA_EXPERIMENTAL"] = "1" if os.environ.get("PERI_HRANA_EXPERIMENTAL") == "1" else "0"

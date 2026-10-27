@@ -30,6 +30,7 @@ pub mod session;
 mod shutdown_budget;
 pub(crate) mod slow_diagnostics;
 pub mod storage;
+mod storage_diagnostics;
 pub mod wal;
 pub(crate) mod work_metrics;
 pub mod worker_rpc;

@@ -70,6 +70,7 @@ are read only then; unset names keep the defaults and an invalid value fails the
 | `PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE` | `100` | Fast-success sample rate, 0-1000 (100 = 10%) |
 | `PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS` | `60000` | Window used to tag samples and count rotations, 1-86400000 |
 | `PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY` | `8192` | Ring capacity, 1-65536 records |
+| `PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY` | `0` | `1` adds public Hrana handler envelopes to the same ring; see `hrana-http-observation.md` |
 
 **Switch.** The private diagnostic profile that already exists: `PERI_SQL_OPEN_OBSERVER=1`,
 which the launcher already forwards (`dev.py --sql-open-observer`). The launcher also forwards

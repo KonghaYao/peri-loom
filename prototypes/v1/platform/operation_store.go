@@ -174,10 +174,14 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 }
 
 func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool) error {
-	unlock := store.lockState()
+	unlock := store.lockOperationMutationState()
 	if err := store.disk.available(); err != nil {
 		unlock()
 		return err
+	}
+	if store.maintenanceClosing {
+		unlock()
+		return ErrStateClosed
 	}
 	// The shutdown checkpoint names the revision that materialized the operation
 	// view; an operation committed afterwards would make that name a lie, so the
@@ -243,19 +247,23 @@ func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error
 	store.cost.observeCommit()
 	unlock()
 	<-commit.settled
-	unlock = store.lockState()
+	unlock = store.lockOperationMutationState()
 	// Another waiter may have settled this commit before us; settling again is what makes
 	// the outcome definite either way.
 	settleErr := store.settleOperations()
+	var compaction *operationCompaction
 	if settleErr == nil {
 		if store.operations.completion != nil {
 			store.scheduleCompletionMaintenanceLocked()
 		} else {
-			settleErr = store.compactOperationsLocked()
+			compaction, settleErr = store.beginOperationCompactionLocked()
 		}
 	}
 	poisoned := store.disk.poisoned
 	unlock()
+	if compaction != nil {
+		settleErr = store.finishOperationCompaction(compaction)
+	}
 	if settleErr != nil {
 		return settleErr
 	}

@@ -606,6 +606,7 @@ fn dispatch_cursor_first(
                 "cols": first.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
                 "rows": first.page.rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "done": first.page.done,
+                "autocommit": first.autocommit,
             });
             if writing {
                 result["affected_row_count"] = json!(first.page.affected_row_count);

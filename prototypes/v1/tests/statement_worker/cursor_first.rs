@@ -45,6 +45,7 @@ fn cursor_first_zero_column_write_and_completed_read_release_native_slots() -> R
         assert_eq!(inserted["result"]["cols"], json!([]));
         assert_eq!(inserted["result"]["rows"], json!([]));
         assert_eq!(inserted["result"]["done"], true);
+        assert_eq!(inserted["result"]["autocommit"], true);
         assert_eq!(inserted["result"]["affected_row_count"], 2);
         assert_eq!(inserted["result"]["last_insert_rowid"], 2);
         let read = first(
@@ -57,6 +58,7 @@ fn cursor_first_zero_column_write_and_completed_read_release_native_slots() -> R
         assert_eq!(read["ok"], true, "{read}");
         assert_eq!(read["result"]["rows"], json!([[1], [2]]));
         assert_eq!(read["result"]["done"], true);
+        assert_eq!(read["result"]["autocommit"], true);
         assert_eq!(
             worker.statement(&session, "SELECT count(*) FROM fused_plain", vec![])?["result"]
                 ["rows"],
@@ -82,6 +84,7 @@ fn cursor_first_read_and_returning_pages_preserve_order_and_abort_proof() -> Res
     let aborted = first(&worker, &session, sql, true, 256)?;
     assert_eq!(aborted["ok"], true, "{aborted}");
     assert_eq!(aborted["result"]["done"], false);
+    assert_eq!(aborted["result"]["autocommit"], Value::Null);
     assert_eq!(aborted["result"]["rows"].as_array().unwrap().len(), 256);
     assert_eq!(aborted["result"]["affected_row_count"], Value::Null);
     assert_eq!(aborted["result"]["last_insert_rowid"], Value::Null);
@@ -167,6 +170,7 @@ fn cursor_first_done_inside_transaction_stays_rollbackable() -> Result<()> {
         )?;
         assert_eq!(write["ok"], true, "{write}");
         assert_eq!(write["result"]["done"], true);
+        assert_eq!(write["result"]["autocommit"], false);
         assert_eq!(write["result"]["rows"], json!([[1]]));
         if profile {
             assert_eq!(write["session_state"]["owner"], true);
@@ -180,6 +184,7 @@ fn cursor_first_done_inside_transaction_stays_rollbackable() -> Result<()> {
         )?;
         assert_eq!(read["result"]["rows"], json!([[1]]), "{read}");
         assert_eq!(read["result"]["done"], true);
+        assert_eq!(read["result"]["autocommit"], false);
         assert_eq!(worker.statement(&session, "ROLLBACK", vec![])?["ok"], true);
         assert_eq!(
             worker.statement(&session, "SELECT count(*) FROM fused_transaction", vec![])?["result"]

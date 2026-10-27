@@ -26,6 +26,9 @@ type stateStore struct {
 	unconfirmed        []operationPendingEdit
 	maintenance        sync.WaitGroup
 	maintenanceClosing bool
+	// The state lock owns the v1 compaction gate and its shutdown error latch.
+	operationCompacting        chan struct{}
+	operationCompactionFailure error
 }
 
 func OpenStateStore(directory string) (StateStore, error) {
@@ -140,7 +143,7 @@ func operationsCheckpointMaterialized(state State) bool {
 }
 
 func (store *stateStore) checkpointOperations() error {
-	defer store.lockState()()
+	defer store.lockOperationMutationState()()
 	if err := store.disk.available(); err != nil {
 		return err
 	}
@@ -260,7 +263,7 @@ func readGatewayRequestState(store StateStore, projectID string, database *contr
 }
 
 func (store *stateStore) Update(mutation func(*State) error) error {
-	defer store.lockState()()
+	defer store.lockOperationMutationState()()
 	if err := store.disk.available(); err != nil {
 		return err
 	}
@@ -334,8 +337,9 @@ func (store *stateStore) Close() error {
 	operations := store.operations.close()
 	unlock = store.lockState()
 	settled := store.settleOperations()
+	compactionFailure := store.operationCompactionFailure
 	unlock()
-	return errors.Join(operations, settled, store.disk.close())
+	return errors.Join(operations, settled, compactionFailure, store.disk.close())
 }
 
 func cloneState(state State) (State, error) {

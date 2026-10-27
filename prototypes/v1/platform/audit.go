@@ -148,13 +148,18 @@ type fileAudit struct {
 
 	// fsync cost is accumulated atomically because recordBatch holds the write
 	// lock across the barrier and status must not queue behind it.
-	syncNS    atomic.Uint64
-	syncCount atomic.Uint64
-	syncMaxNS atomic.Uint64
+	syncNS                   atomic.Uint64
+	syncCount                atomic.Uint64
+	syncMaxNS                atomic.Uint64
+	headCheckpointCount      atomic.Uint64
+	headCheckpointNS         atomic.Uint64
+	headCheckpointFailures   atomic.Uint64
+	headCheckpointInProgress atomic.Bool
 
 	// testSyncGate holds the writer before the file barrier so a test can make
 	// fsync slow deterministically. Production leaves it nil.
-	testSyncGate func()
+	testSyncGate       func()
+	testCheckpointGate func()
 
 	mutex  sync.Mutex
 	head   *durableFile
@@ -601,6 +606,9 @@ func (audit *fileAudit) drain() {
 		for _, request := range batch {
 			request.done <- errors.Join(err, request.failure)
 		}
+		if err == nil {
+			audit.checkpointAfterBatch()
+		}
 	}
 }
 
@@ -662,12 +670,16 @@ func (audit *fileAudit) AuditStatus() map[string]any {
 			"completion_bytes":      auditCompletionBytes,
 			"completion_slot_bytes": auditCompletionSlotBytes,
 		},
-		"observed_admitted_max":       audit.admittedMaximum,
-		"observed_admitted_bytes_max": audit.admittedBytesMaximum,
-		"fsync_count":                 audit.syncCount.Load(),
-		"fsync_ns_total":              audit.syncNS.Load(),
-		"fsync_ns_max":                audit.syncMaxNS.Load(),
-		"dropped_semantics":           "records refused before admission; accepted records are never dropped",
+		"observed_admitted_max":          audit.admittedMaximum,
+		"observed_admitted_bytes_max":    audit.admittedBytesMaximum,
+		"fsync_count":                    audit.syncCount.Load(),
+		"fsync_ns_total":                 audit.syncNS.Load(),
+		"fsync_ns_max":                   audit.syncMaxNS.Load(),
+		"head_checkpoint_attempts_total": audit.headCheckpointCount.Load(),
+		"head_checkpoint_ns_total":       audit.headCheckpointNS.Load(),
+		"head_checkpoint_failures_total": audit.headCheckpointFailures.Load(),
+		"head_checkpoint_in_progress":    audit.headCheckpointInProgress.Load(),
+		"dropped_semantics":              "records refused before admission; accepted records are never dropped",
 	}
 	audit.queueMutex.Unlock()
 	status["durability_source"] = "audit_file_v1"
@@ -756,7 +768,7 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
 	// barriers per request for no durability gain, so it moves by at most
 	// auditBatchMaximum records at a time, which is also the gap recovery accepts.
 	if next.Sequence-audit.head.revision > auditBatchMaximum && audit.state.Sequence > audit.head.revision {
-		if err := audit.head.commitAuditBatch(audit.state.Sequence, audit.state); err != nil {
+		if err := audit.commitHead(); err != nil {
 			return err
 		}
 	}
@@ -795,7 +807,7 @@ func (audit *fileAudit) Close() error {
 	// acknowledged record is still present.
 	checkpoint := error(nil)
 	if audit.state.Sequence > audit.head.revision {
-		checkpoint = audit.head.commitAuditBatch(audit.state.Sequence, audit.state)
+		checkpoint = audit.commitHead()
 	}
 	return errors.Join(checkpoint, audit.file.Close(), audit.head.close())
 }

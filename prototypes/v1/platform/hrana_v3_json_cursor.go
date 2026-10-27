@@ -462,12 +462,17 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		return true
 	}
 	results, failures := make([]any, len(steps)), make([]any, len(steps))
+	// This stays on the stack under stream.mu: consume it at the next step,
+	// including a skipped or failed step, and never carry it to another HTTP batch.
+	var nextAutocommit *bool
 	for index, step := range steps {
 		if request.Context().Err() != nil {
 			failed = true
 			return
 		}
-		allowed, conditionReply := handler.readCursorCondition(request, credential, stream.session, step.Condition, results, failures)
+		snapshot := nextAutocommit
+		nextAutocommit = nil
+		allowed, conditionReply := handler.readCursorConditionSnapshot(request, credential, stream.session, step.Condition, results, failures, snapshot)
 		if conditionReply.code != "" {
 			fatal("cursor condition unavailable: " + conditionReply.code)
 			return
@@ -560,8 +565,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			return
 		}
 		var metadata struct {
-			Cols []json.RawMessage `json:"cols"`
-			Done bool              `json:"done"`
+			Cols       []json.RawMessage `json:"cols"`
+			Done       bool              `json:"done"`
+			Autocommit *bool             `json:"autocommit"`
 		}
 		if json.Unmarshal(reply.result, &metadata) != nil || metadata.Cols == nil {
 			fatal("invalid cursor metadata")
@@ -652,6 +658,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 					return
 				}
 				results[index] = true
+				if metadata.Done {
+					nextAutocommit = metadata.Autocommit
+				}
 				break
 			}
 		}

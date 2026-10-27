@@ -64,68 +64,84 @@ func TestCursorFirstCannotBeEnabledByPublicRequest(t *testing.T) {
 	}
 }
 
-func TestHranaJSONCursorFirstSDKShapeUsesEightRPCsAndFrozenWriteIntent(t *testing.T) {
-	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		switch command["command"] {
-		case "describe":
-			write := strings.HasPrefix(command["sql"].(string), "INSERT")
-			cols := firstCursorColumns()
-			if write {
-				cols = []any{}
+func TestHranaJSONCursorFirstSDKShapeUsesNativeAutocommitAndFrozenWriteIntent(t *testing.T) {
+	for _, snapshot := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy_eight_rpcs", true: "snapshot_six_rpcs"}[snapshot], func(t *testing.T) {
+			fixture := newGatewayFixture(t)
+			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+				switch command["command"] {
+				case "describe":
+					write := strings.HasPrefix(command["sql"].(string), "INSERT")
+					cols := firstCursorColumns()
+					if write {
+						cols = []any{}
+					}
+					return map[string]any{"params": []any{}, "cols": cols, "is_readonly": !write, "is_explain": false}, nil
+				case "open_write_cursor_first":
+					state, err := fixture.state.Snapshot()
+					if err != nil {
+						t.Fatal(err)
+					}
+					fixture.upstream.mu.Lock()
+					sent := append([]byte(nil), fixture.upstream.calls[len(fixture.upstream.calls)-1].encoded...)
+					fixture.upstream.mu.Unlock()
+					found := false
+					for _, record := range state.Operations {
+						if record.Action == "cursor_start" && record.State == "in_flight" && record.Digest == commandDigest(sent) {
+							found = true
+						}
+					}
+					if !found || command["max_rows"] != float64(256) {
+						t.Fatal("write reached worker without complete frozen intent")
+					}
+					page := map[string]any{"cols": []any{}, "rows": []any{}, "done": true, "affected_row_count": 1, "last_insert_rowid": 1}
+					if snapshot {
+						page["autocommit"] = true
+					}
+					return page, nil
+				case "open_read_cursor_first":
+					page := map[string]any{"cols": firstCursorColumns(), "rows": [][]any{{1}}, "done": true}
+					if snapshot {
+						page["autocommit"] = true
+					}
+					return page, nil
+				case "session_autocommit":
+					return map[string]any{"autocommit": true}, nil
+				case "guarded_readonly_statement":
+					return map[string]any{"cols": firstCursorColumns(), "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
+				}
+				return nil, nil
+			})
+			handler := newHranaHTTP(fixture.gateway)
+			// Same shape as @tursodatabase/serverless 1.4.1: want_rows is true for
+			// run/get alike, followed by its conditional autocommit SQL probe.
+			body := `{"baton":null,"batch":{"steps":[{"stmt":{"sql":"INSERT INTO records VALUES(?)","args":[{"type":"integer","value":"1"}],"named_args":[],"want_rows":true}},{"stmt":{"sql":"SELECT 1","args":[],"named_args":[],"want_rows":false},"condition":{"type":"is_autocommit"}}]}}`
+			first := hranaV3JSONCall(handler, fixture.tokenA, hranaV3JSONPath+"/cursor", "application/json", body)
+			if first.Code != 200 || strings.Count(first.Body.String(), `"type":"step_end"`) != 2 {
+				t.Fatalf("write/probe failed: %d %s", first.Code, first.Body.String())
 			}
-			return map[string]any{"params": []any{}, "cols": cols, "is_readonly": !write, "is_explain": false}, nil
-		case "open_write_cursor_first":
-			state, err := fixture.state.Snapshot()
-			if err != nil {
-				t.Fatal(err)
+			var header map[string]any
+			_ = json.Unmarshal([]byte(strings.Split(first.Body.String(), "\n")[0]), &header)
+			body = strings.Replace(body, `"baton":null`, `"baton":"`+header["baton"].(string)+`"`, 1)
+			body = strings.Replace(body, "INSERT INTO records VALUES(?)", "SELECT id FROM records WHERE id=?", 1)
+			second := hranaV3JSONCall(handler, fixture.tokenA, hranaV3JSONPath+"/cursor", "application/json", body)
+			if second.Code != 200 || strings.Count(second.Body.String(), `"type":"row"`) != 1 || strings.Count(second.Body.String(), `"type":"step_end"`) != 2 {
+				t.Fatalf("read/probe failed: %d %s", second.Code, second.Body.String())
 			}
-			fixture.upstream.mu.Lock()
-			sent := append([]byte(nil), fixture.upstream.calls[len(fixture.upstream.calls)-1].encoded...)
-			fixture.upstream.mu.Unlock()
-			found := false
-			for _, record := range state.Operations {
-				if record.Action == "cursor_start" && record.State == "in_flight" && record.Digest == commandDigest(sent) {
-					found = true
+			autocommitCalls := 2
+			if snapshot {
+				autocommitCalls = 0
+			}
+			for command, want := range map[string]int{"describe": 2, "open_write_cursor_first": 1, "open_read_cursor_first": 1, "session_autocommit": autocommitCalls, "guarded_readonly_statement": 2, "open_write_cursor": 0, "open_read_cursor": 0, "fetch_write_cursor": 0, "fetch_read_cursor": 0, "close_write_cursor": 0, "close_read_cursor": 0} {
+				if got := fixture.upstream.count(command); got != want {
+					t.Errorf("%s count=%d want=%d", command, got, want)
 				}
 			}
-			if !found || command["max_rows"] != float64(256) {
-				t.Fatal("write reached worker without complete frozen intent")
+			record := latestCursorOperation(t, fixture, "cursor_start")
+			if record.CursorNativeOutcome != cursorOutcomeCommitted || record.State != "terminal" {
+				t.Fatalf("first page commit not durable: %+v", record.OperationStatus)
 			}
-			return map[string]any{"cols": []any{}, "rows": []any{}, "done": true, "affected_row_count": 1, "last_insert_rowid": 1}, nil
-		case "open_read_cursor_first":
-			return map[string]any{"cols": firstCursorColumns(), "rows": [][]any{{1}}, "done": true}, nil
-		case "session_autocommit":
-			return map[string]any{"autocommit": true}, nil
-		case "guarded_readonly_statement":
-			return map[string]any{"cols": firstCursorColumns(), "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
-		}
-		return nil, nil
-	})
-	handler := newHranaHTTP(fixture.gateway)
-	// Same shape as @tursodatabase/serverless 1.4.1: want_rows is true for
-	// run/get alike, followed by its conditional autocommit SQL probe.
-	body := `{"baton":null,"batch":{"steps":[{"stmt":{"sql":"INSERT INTO records VALUES(?)","args":[{"type":"integer","value":"1"}],"named_args":[],"want_rows":true}},{"stmt":{"sql":"SELECT 1","args":[],"named_args":[],"want_rows":false},"condition":{"type":"is_autocommit"}}]}}`
-	first := hranaV3JSONCall(handler, fixture.tokenA, hranaV3JSONPath+"/cursor", "application/json", body)
-	if first.Code != 200 || strings.Count(first.Body.String(), `"type":"step_end"`) != 2 {
-		t.Fatalf("write/probe failed: %d %s", first.Code, first.Body.String())
-	}
-	var header map[string]any
-	_ = json.Unmarshal([]byte(strings.Split(first.Body.String(), "\n")[0]), &header)
-	body = strings.Replace(body, `"baton":null`, `"baton":"`+header["baton"].(string)+`"`, 1)
-	body = strings.Replace(body, "INSERT INTO records VALUES(?)", "SELECT id FROM records WHERE id=?", 1)
-	second := hranaV3JSONCall(handler, fixture.tokenA, hranaV3JSONPath+"/cursor", "application/json", body)
-	if second.Code != 200 || strings.Count(second.Body.String(), `"type":"row"`) != 1 || strings.Count(second.Body.String(), `"type":"step_end"`) != 2 {
-		t.Fatalf("read/probe failed: %d %s", second.Code, second.Body.String())
-	}
-	for command, want := range map[string]int{"describe": 2, "open_write_cursor_first": 1, "open_read_cursor_first": 1, "session_autocommit": 2, "guarded_readonly_statement": 2, "open_write_cursor": 0, "open_read_cursor": 0, "fetch_write_cursor": 0, "fetch_read_cursor": 0, "close_write_cursor": 0, "close_read_cursor": 0} {
-		if got := fixture.upstream.count(command); got != want {
-			t.Errorf("%s count=%d want=%d", command, got, want)
-		}
-	}
-	record := latestCursorOperation(t, fixture, "cursor_start")
-	if record.CursorNativeOutcome != cursorOutcomeCommitted || record.State != "terminal" {
-		t.Fatalf("first page commit not durable: %+v", record.OperationStatus)
+		})
 	}
 }
 

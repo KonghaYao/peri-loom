@@ -32,6 +32,19 @@ func validCursorFirstResponse(encoded json.RawMessage, maxRows int, writing bool
 	if json.Unmarshal(encoded, &fields) != nil {
 		return false
 	}
+	// Older workers omit this optional observation. They still provide the
+	// full cursor result; the adapter asks session_state as before. An explicit
+	// snapshot must be boolean on done, and null while a cursor is active.
+	if raw, present := fields["autocommit"]; present {
+		if string(fields["done"]) == "true" {
+			if string(raw) != "true" && string(raw) != "false" {
+				return false
+			}
+		} else if string(raw) != "null" {
+			return false
+		}
+		delete(fields, "autocommit")
+	}
 	cols, present := fields["cols"]
 	if !present {
 		return false

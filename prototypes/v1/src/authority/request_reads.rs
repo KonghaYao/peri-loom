@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 
+use super::paged_index::{KeyOrder, Page};
 use super::ObjectEntry;
 
 // One publication re-reads the trie paths it is about to rewrite: at registry sizes the
@@ -11,15 +13,38 @@ use super::ObjectEntry;
 // publication), so keep enough room for the whole request while still bounding a lane.
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ENTRIES: usize = 1024;
+const MAX_PARSED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PARSED_ENTRIES: usize = 1024;
+
+struct ParsedPage {
+    page: Arc<Page>,
+    order: KeyOrder,
+    depth: u16,
+    prefix: Vec<u8>,
+}
+
+fn trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PERI_REQUEST_READ_TRACE").as_deref() == Ok("1"))
+}
 
 #[derive(Default)]
 struct Reads {
     entries: BTreeMap<(usize, String), (ObjectEntry, Vec<u8>)>,
     pages: BTreeMap<(usize, String), Vec<u8>>,
+    parsed: BTreeMap<(usize, String), ParsedPage>,
+    parsed_bytes: usize,
+    parsed_hits: u64,
+    parsed_misses: u64,
+    parsed_rejected: u64,
     bytes: usize,
     hits: u64,
     misses: u64,
     rejected: u64,
+    decoded_pages: u64,
+    decoded_bytes: u64,
+    validated_leaf_keys: u64,
+    validated_path_checks: u64,
 }
 
 thread_local! {
@@ -59,21 +84,145 @@ impl Scope {
 impl Drop for Scope {
     fn drop(&mut self) {
         let retired = CURRENT.with(|current| current.replace(self.previous.take()));
-        if std::env::var("PERI_REQUEST_READ_TRACE").as_deref() == Ok("1") {
+        if trace_enabled() {
             if let Some(reads) = retired {
                 eprintln!(
-                    "NATIVE_REQUEST_READS request_id={} elapsed_us={} hits={} misses={} rejected={} entries={} bytes={}",
+                    concat!(
+                        "NATIVE_REQUEST_READS request_id={} elapsed_us={} hits={} misses={} ",
+                        "rejected={} entries={} bytes={} decoded_pages={} decoded_bytes={} ",
+                        "validated_leaf_keys={} validated_path_checks={} parsed_hits={} ",
+                        "parsed_misses={} parsed_rejected={} parsed_entries={} parsed_bytes={}"
+                    ),
                     self.request_id.as_deref().unwrap_or("local"),
                     self.started.elapsed().as_micros(),
                     reads.hits,
                     reads.misses,
                     reads.rejected,
                     reads.entries.len() + reads.pages.len(),
-                    reads.bytes
+                    reads.bytes,
+                    reads.decoded_pages,
+                    reads.decoded_bytes,
+                    reads.validated_leaf_keys,
+                    reads.validated_path_checks,
+                    reads.parsed_hits,
+                    reads.parsed_misses,
+                    reads.parsed_rejected,
+                    reads.parsed.len(),
+                    reads.parsed_bytes
                 );
             }
         }
     }
+}
+
+/// A content-addressed page is reusable only in the exact access context that was
+/// validated. A different order, depth or path must go through the ordinary reader.
+pub(super) fn parsed_page(
+    backend: usize,
+    key: &str,
+    order: KeyOrder,
+    depth: u16,
+    prefix: &[u8],
+) -> Option<Arc<Page>> {
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        let reads = current.as_mut()?;
+        let page = reads
+            .parsed
+            .get(&(backend, key.to_owned()))
+            .filter(|cached| {
+                cached.order == order && cached.depth == depth && cached.prefix == prefix
+            })
+            .map(|cached| Arc::clone(&cached.page));
+        if page.is_some() {
+            reads.parsed_hits += 1;
+        } else {
+            reads.parsed_misses += 1;
+        }
+        page
+    })
+}
+
+/// This budget is independent of the raw-byte cache: decoded JSON can be much larger
+/// than its encoding. `memory_charge` recursively charges allocated containers; the
+/// additional allowance covers a full map node, Arc and the access-context fields.
+pub(super) fn remember_parsed_page(
+    backend: usize,
+    key: String,
+    order: KeyOrder,
+    depth: u16,
+    prefix: &[u8],
+    page: Arc<Page>,
+) {
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        let Some(reads) = current.as_mut() else {
+            return;
+        };
+        let charge = page
+            .memory_charge()
+            .saturating_add(key.capacity())
+            .saturating_add(prefix.len())
+            .saturating_add(2048);
+        if reads.parsed.len() >= MAX_PARSED_ENTRIES
+            || charge > MAX_PARSED_BYTES.saturating_sub(reads.parsed_bytes)
+            || reads.parsed.contains_key(&(backend, key.clone()))
+        {
+            reads.parsed_rejected += 1;
+            return;
+        }
+        reads.parsed_bytes += charge;
+        reads.parsed.insert(
+            (backend, key),
+            ParsedPage {
+                page,
+                order,
+                depth,
+                prefix: prefix.to_vec(),
+            },
+        );
+    });
+}
+
+#[cfg(test)]
+pub(super) fn test_parsed_usage() -> (usize, usize, u64) {
+    CURRENT.with(|current| {
+        let current = current.borrow();
+        let reads = current.as_ref().unwrap();
+        (
+            reads.parsed.len(),
+            reads.parsed_bytes,
+            reads.parsed_rejected,
+        )
+    })
+}
+
+/// Raw-byte cache hits still decode and validate a page. These diagnostic counts
+/// distinguish repeated CPU work from physical reads without adding per-page clocks.
+pub(super) fn observe_page_decode(bytes: usize) {
+    if !trace_enabled() {
+        return;
+    }
+    CURRENT.with(|current| {
+        if let Some(reads) = current.borrow_mut().as_mut() {
+            reads.decoded_pages = reads.decoded_pages.saturating_add(1);
+            reads.decoded_bytes = reads.decoded_bytes.saturating_add(bytes as u64);
+        }
+    });
+}
+
+pub(super) fn observe_leaf_validation(keys: usize, path_length: usize) {
+    if !trace_enabled() {
+        return;
+    }
+    CURRENT.with(|current| {
+        if let Some(reads) = current.borrow_mut().as_mut() {
+            reads.validated_leaf_keys = reads.validated_leaf_keys.saturating_add(keys as u64);
+            reads.validated_path_checks = reads
+                .validated_path_checks
+                .saturating_add((keys as u64).saturating_mul(path_length as u64));
+        }
+    });
 }
 
 pub(super) fn get(backend: usize, key: &str, entry: &ObjectEntry) -> Option<Vec<u8>> {
