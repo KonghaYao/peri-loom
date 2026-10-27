@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -21,6 +21,8 @@ struct ParsedPage {
     order: KeyOrder,
     depth: u16,
     prefix: Vec<u8>,
+    charge: usize,
+    referenced: bool,
 }
 
 fn trace_enabled() -> bool {
@@ -33,10 +35,12 @@ struct Reads {
     entries: BTreeMap<(usize, String), (ObjectEntry, Vec<u8>)>,
     pages: BTreeMap<(usize, String), Vec<u8>>,
     parsed: BTreeMap<(usize, String), ParsedPage>,
+    parsed_clock: VecDeque<(usize, String)>,
     parsed_bytes: usize,
     parsed_hits: u64,
     parsed_misses: u64,
     parsed_rejected: u64,
+    parsed_evicted: u64,
     bytes: usize,
     hits: u64,
     misses: u64,
@@ -56,6 +60,70 @@ pub(crate) struct Scope {
     thread: PhantomData<Rc<()>>,
     request_id: Option<String>,
     started: std::time::Instant,
+}
+
+/// Short-lived adapters can reuse a stack address within one request. Isolate only
+/// their own entries, so reads they delegate to a durable backend still share the
+/// enclosing request cache. The borrow keeps the adapter at the keyed address.
+pub(crate) struct BackendScope<'a> {
+    backend: usize,
+    store: PhantomData<&'a dyn crate::object_store::ObjectStore>,
+    _request: Option<Scope>,
+}
+
+impl<'a> BackendScope<'a> {
+    pub(crate) fn new(store: &'a dyn crate::object_store::ObjectStore) -> Self {
+        let request = Scope::enter();
+        let backend = store as *const dyn crate::object_store::ObjectStore as *const () as usize;
+        forget_backend(backend);
+        Self {
+            backend,
+            store: PhantomData,
+            _request: request,
+        }
+    }
+}
+
+impl Drop for BackendScope<'_> {
+    fn drop(&mut self) {
+        forget_backend(self.backend);
+    }
+}
+
+fn forget_backend(backend: usize) {
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        let Some(reads) = current.as_mut() else {
+            return;
+        };
+        reads.entries.retain(|(identity, _), (_, bytes)| {
+            if *identity == backend {
+                reads.bytes -= bytes.len();
+                false
+            } else {
+                true
+            }
+        });
+        reads.pages.retain(|(identity, _), bytes| {
+            if *identity == backend {
+                reads.bytes -= bytes.len();
+                false
+            } else {
+                true
+            }
+        });
+        reads.parsed.retain(|(identity, _), cached| {
+            if *identity == backend {
+                reads.parsed_bytes -= cached.charge;
+                false
+            } else {
+                true
+            }
+        });
+        reads
+            .parsed_clock
+            .retain(|(identity, _)| *identity != backend);
+    });
 }
 
 impl Scope {
@@ -91,7 +159,8 @@ impl Drop for Scope {
                         "NATIVE_REQUEST_READS request_id={} elapsed_us={} hits={} misses={} ",
                         "rejected={} entries={} bytes={} decoded_pages={} decoded_bytes={} ",
                         "validated_leaf_keys={} validated_path_checks={} parsed_hits={} ",
-                        "parsed_misses={} parsed_rejected={} parsed_entries={} parsed_bytes={}"
+                        "parsed_misses={} parsed_rejected={} parsed_entries={} parsed_bytes={} ",
+                        "parsed_evicted={}"
                     ),
                     self.request_id.as_deref().unwrap_or("local"),
                     self.started.elapsed().as_micros(),
@@ -108,7 +177,8 @@ impl Drop for Scope {
                     reads.parsed_misses,
                     reads.parsed_rejected,
                     reads.parsed.len(),
-                    reads.parsed_bytes
+                    reads.parsed_bytes,
+                    reads.parsed_evicted
                 );
             }
         }
@@ -129,11 +199,14 @@ pub(super) fn parsed_page(
         let reads = current.as_mut()?;
         let page = reads
             .parsed
-            .get(&(backend, key.to_owned()))
+            .get_mut(&(backend, key.to_owned()))
             .filter(|cached| {
                 cached.order == order && cached.depth == depth && cached.prefix == prefix
             })
-            .map(|cached| Arc::clone(&cached.page));
+            .map(|cached| {
+                cached.referenced = true;
+                Arc::clone(&cached.page)
+            });
         if page.is_some() {
             reads.parsed_hits += 1;
         } else {
@@ -145,7 +218,9 @@ pub(super) fn parsed_page(
 
 /// This budget is independent of the raw-byte cache: decoded JSON can be much larger
 /// than its encoding. `memory_charge` recursively charges allocated containers; the
-/// additional allowance covers a full map node, Arc and the access-context fields.
+/// additional allowance covers a full map node, Arc, clock slot and context fields.
+/// Cold pages are retired when the working set changes between registry phases. A
+/// first-fill cache otherwise stops helping for the rest of a large publication.
 pub(super) fn remember_parsed_page(
     backend: usize,
     key: String,
@@ -161,24 +236,44 @@ pub(super) fn remember_parsed_page(
         };
         let charge = page
             .memory_charge()
-            .saturating_add(key.capacity())
+            .saturating_add(key.capacity().saturating_mul(2))
             .saturating_add(prefix.len())
             .saturating_add(2048);
-        if reads.parsed.len() >= MAX_PARSED_ENTRIES
-            || charge > MAX_PARSED_BYTES.saturating_sub(reads.parsed_bytes)
-            || reads.parsed.contains_key(&(backend, key.clone()))
-        {
+        let identity = (backend, key);
+        // Do not discard useful pages for an entry that can never fit, or replace
+        // an existing page's validated access context after a context-miss.
+        if charge > MAX_PARSED_BYTES || reads.parsed.contains_key(&identity) {
             reads.parsed_rejected += 1;
             return;
         }
+        while reads.parsed.len() >= MAX_PARSED_ENTRIES
+            || charge > MAX_PARSED_BYTES.saturating_sub(reads.parsed_bytes)
+        {
+            let oldest = reads.parsed_clock.pop_front().expect("parsed clock entry");
+            let cached = reads
+                .parsed
+                .get_mut(&oldest)
+                .expect("parsed clock identity");
+            if cached.referenced {
+                cached.referenced = false;
+                reads.parsed_clock.push_back(oldest);
+            } else {
+                let retired = reads.parsed.remove(&oldest).expect("parsed clock victim");
+                reads.parsed_bytes -= retired.charge;
+                reads.parsed_evicted += 1;
+            }
+        }
         reads.parsed_bytes += charge;
+        reads.parsed_clock.push_back(identity.clone());
         reads.parsed.insert(
-            (backend, key),
+            identity,
             ParsedPage {
                 page,
                 order,
                 depth,
                 prefix: prefix.to_vec(),
+                charge,
+                referenced: false,
             },
         );
     });
@@ -195,6 +290,11 @@ pub(super) fn test_parsed_usage() -> (usize, usize, u64) {
             reads.parsed_rejected,
         )
     })
+}
+
+#[cfg(test)]
+pub(super) fn test_parsed_evictions() -> u64 {
+    CURRENT.with(|current| current.borrow().as_ref().unwrap().parsed_evicted)
 }
 
 /// Raw-byte cache hits still decode and validate a page. These diagnostic counts
@@ -293,6 +393,10 @@ pub(super) fn remember_page(backend: usize, key: String, bytes: &[u8]) {
         reads.pages.insert((backend, key), bytes.to_vec());
     });
 }
+
+#[cfg(test)]
+#[path = "request_read_scope_tests.rs"]
+mod backend_scope_tests;
 
 #[cfg(test)]
 mod tests {

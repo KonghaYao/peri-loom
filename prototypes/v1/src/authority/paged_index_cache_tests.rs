@@ -122,7 +122,7 @@ fn invalid_pages_are_not_cached_as_successful_parses() -> Result<()> {
 }
 
 #[test]
-fn decoded_cache_budget_counts_nested_allocations_and_rejects_without_hiding_reads() -> Result<()> {
+fn decoded_cache_budget_counts_nested_allocations_and_follows_new_working_sets() -> Result<()> {
     let store = MemoryObjectStore::default();
     let namespace = Namespace::new("parsed", "budget")?;
     let pages = PagedIndex::new(&store, &namespace);
@@ -143,13 +143,20 @@ fn decoded_cache_budget_counts_nested_allocations_and_rejects_without_hiding_rea
     let (entries, bytes, rejected) = request_reads::test_parsed_usage();
     assert!(entries < roots.len());
     assert!(bytes <= 4 * 1024 * 1024);
-    assert!(rejected > 0);
+    assert_eq!(rejected, 0);
+    assert!(request_reads::test_parsed_evictions() > 0);
     let last = pages.read(roots.last().unwrap(), 0, &[])?;
-    assert!(!Arc::ptr_eq(
+    assert!(Arc::ptr_eq(
         &last,
         &pages.read(roots.last().unwrap(), 0, &[])?
     ));
-    assert!(Arc::ptr_eq(&first, &pages.read(&roots[0], 0, &[])?));
+    let reloaded = pages.read(&roots[0], 0, &[])?;
+    assert!(!Arc::ptr_eq(&first, &reloaded));
+    assert_eq!(
+        serde_json::to_value(first.as_ref())?,
+        serde_json::to_value(reloaded.as_ref())?
+    );
+    assert!(Arc::ptr_eq(&reloaded, &pages.read(&roots[0], 0, &[])?));
     Ok(())
 }
 
@@ -190,8 +197,119 @@ fn parsed_entry_limit_is_independent_of_the_byte_budget() -> Result<()> {
     let (entries, bytes, rejected) = request_reads::test_parsed_usage();
     assert_eq!(entries, 1024);
     assert!(bytes < 4 * 1024 * 1024);
-    assert!(rejected > 0);
+    assert_eq!(rejected, 0);
+    assert_eq!(request_reads::test_parsed_evictions(), 76);
     let page = pages.read(&last, 0, &[])?;
-    assert!(!Arc::ptr_eq(&page, &pages.read(&last, 0, &[])?));
+    assert!(Arc::ptr_eq(&page, &pages.read(&last, 0, &[])?));
+    Ok(())
+}
+
+#[test]
+fn parsed_clock_retains_referenced_pages_and_has_no_stale_slots() -> Result<()> {
+    let store = MemoryObjectStore::default();
+    let namespace = Namespace::new("parsed", "clock")?;
+    let pages = PagedIndex::new(&store, &namespace);
+    let roots = (0..1_100)
+        .map(|number| pages.insert_many(None, BTreeMap::from([("key".into(), json!(number))])))
+        .collect::<Result<Vec<_>>>()?;
+    let _scope = request_reads::Scope::new();
+    for root in &roots[..1_024] {
+        pages.read(root, 0, &[])?;
+    }
+    let hot = pages.read(&roots[0], 0, &[])?;
+    let cold = pages.read(&roots[1], 0, &[])?;
+    // Both entries have a second chance; walking the complete ring clears that
+    // chance and evicts cold entries, while the repeated root remains referenced.
+    for root in &roots[1_024..] {
+        pages.read(root, 0, &[])?;
+        assert!(Arc::ptr_eq(&hot, &pages.read(&roots[0], 0, &[])?));
+    }
+    assert!(Arc::ptr_eq(&cold, &pages.read(&roots[1], 0, &[])?));
+    for _ in 0..4 {
+        for root in &roots {
+            let page = pages.read(root, 0, &[])?;
+            assert!(Arc::ptr_eq(&page, &pages.read(root, 0, &[])?));
+        }
+        let (entries, charge, rejected) = request_reads::test_parsed_usage();
+        assert_eq!(entries, 1_024);
+        assert!(charge <= 4 * 1_024 * 1_024);
+        assert_eq!(rejected, 0);
+    }
+    assert!(request_reads::test_parsed_evictions() > 1_024);
+    Ok(())
+}
+
+#[test]
+fn oversized_parsed_page_does_not_flush_useful_pages_or_hide_context_errors() -> Result<()> {
+    let store = MemoryObjectStore::default();
+    let namespace = Namespace::new("parsed", "oversized")?;
+    let pages = PagedIndex::new(&store, &namespace);
+    let root = pages.insert_many(None, BTreeMap::from([("key".into(), json!(1))]))?;
+    let _scope = request_reads::Scope::new();
+    let cached = pages.read(&root, 0, &[])?;
+    let oversized = Arc::new(Page::Leaf {
+        version: 1,
+        depth: 0,
+        entries: BTreeMap::from([("key".into(), Value::String("x".repeat(4 * 1_024 * 1_024)))]),
+    });
+    request_reads::remember_parsed_page(1, "oversized".into(), KeyOrder::Hashed, 0, &[], oversized);
+    assert_eq!(request_reads::test_parsed_usage().0, 1);
+    assert_eq!(request_reads::test_parsed_usage().2, 1);
+    assert_eq!(request_reads::test_parsed_evictions(), 0);
+    assert!(Arc::ptr_eq(&cached, &pages.read(&root, 0, &[])?));
+    assert!(pages.read(&root, 1, &[0]).is_err());
+    assert!(Arc::ptr_eq(&cached, &pages.read(&root, 0, &[])?));
+    Ok(())
+}
+
+#[test]
+fn evicted_pages_still_validate_context_and_do_not_alias_later_cached_pages() -> Result<()> {
+    let store = MemoryObjectStore::default();
+    let namespace = Namespace::new("parsed", "eviction-validation")?;
+    let pages = PagedIndex::new(&store, &namespace);
+    let identity = "original".to_owned();
+    let slot = pages.nibble(&identity, 0)? as u8;
+    let root = pages.write(&Page::Leaf {
+        version: 1,
+        depth: 1,
+        entries: BTreeMap::from([(identity.clone(), json!(1))]),
+    })?;
+    let key = pages.page_key(&root)?;
+    let _scope = request_reads::Scope::new();
+    // Saturating the independent raw cache ensures the reload below uses the
+    // actual durable bytes, rather than proving only the raw cache's behavior.
+    request_reads::remember_page(1, "fill".into(), &vec![0; 4 * 1_024 * 1_024]);
+    let mut held = pages.read(&root, 1, &[slot])?;
+    for number in 0..1_024 {
+        let pressure = pages.insert_many(None, BTreeMap::from([("key".into(), json!(number))]))?;
+        pages.read(&pressure, 0, &[])?;
+    }
+    assert_eq!(request_reads::test_parsed_evictions(), 1);
+    assert!(pages.read(&root, 1, &[(slot + 1) % 16]).is_err());
+    assert!(pages.read(&root, 0, &[]).is_err());
+    let reloaded = pages.read(&root, 1, &[slot])?;
+    assert!(!Arc::ptr_eq(&held, &reloaded));
+    let Page::Leaf { entries, .. } = Arc::make_mut(&mut held) else {
+        panic!("leaf expected")
+    };
+    entries.insert(identity.clone(), json!(2));
+    let Page::Leaf { entries, .. } = reloaded.as_ref() else {
+        panic!("leaf expected")
+    };
+    assert_eq!(entries.get(&identity), Some(&json!(1)));
+    assert!(Arc::ptr_eq(&reloaded, &pages.read(&root, 1, &[slot])?));
+    let pending = std::cell::RefCell::new(PendingPages {
+        writes: vec![GroupWrite::new(
+            key.clone(),
+            b"corrupt".to_vec(),
+            PutCondition::Any,
+        )],
+    });
+    assert!(pages.deferring(&pending).read(&root, 1, &[slot]).is_err());
+    // A new scope does not inherit either parsed or raw bytes, including after
+    // an eviction/reload cycle in the enclosing scope.
+    store.put(&key, b"corrupt", PutCondition::Any)?;
+    let _nested = request_reads::Scope::new();
+    assert!(pages.read(&root, 1, &[slot]).is_err());
     Ok(())
 }

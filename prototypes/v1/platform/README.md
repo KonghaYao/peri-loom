@@ -482,6 +482,16 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.18
+
+This release adds a bounded CLOCK eviction policy to the request-local parsed
+index-page cache, reuses that cache during isolated receipt replay validation,
+and selects the oldest eligible receipt before reconstructing archive batches.
+The fixed-v1.1.17 two-round ABBA did not meet the issue 15 performance target:
+the second H4 round regressed. These changes are not a proven fix for the
+reported M4/OrbStack write tail. See
+[the measured results](../../../docs/performance-review/2026-10-27-v117-tail.md).
+
 ## v1.1.17
 
 This preview includes the issue 15 write-tail candidate: request-local validated
