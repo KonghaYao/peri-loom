@@ -712,8 +712,8 @@ where
     if introduced.is_empty() {
         return Ok(());
     }
-    let _reads = crate::authority::request_reads::Scope::new();
     let replay = ReceiptPageReplay::new(namespace, load_page);
+    let _reads = crate::authority::request_reads::BackendScope::new(&replay);
     let pages = PagedIndex::with_prefix(&replay, namespace, WAL_RECEIPT_PAGE_PREFIX);
     for identity in introduced {
         ensure!(
@@ -756,10 +756,8 @@ where
         })
         .collect::<Result<Vec<_>>>()?;
     candidates.sort();
-    // See `validate_index_state`: the replay store's address may repeat, so it must not
-    // share the outer request's page cache.
-    let _reads = crate::authority::request_reads::Scope::new();
     let replay = ReceiptPageReplay::new(namespace, load_page);
+    let reads = crate::authority::request_reads::BackendScope::new(&replay);
     let root = {
         let pages = PagedIndex::with_prefix(&replay, namespace, WAL_RECEIPT_PAGE_PREFIX);
         let mut root = old_root.map(str::to_owned);
@@ -781,6 +779,7 @@ where
         }
         root
     };
+    drop(reads);
     Ok(ArchiveReplay {
         root,
         staged: replay.into_staged(),
@@ -843,11 +842,10 @@ pub fn validate_index_state(
     let mut archived_hits = 0u64;
     let mut last_record_commit = None;
     {
-        // The replay store is a stack object, so its address can repeat across requests. A
-        // fresh request-read scope keeps cached pages from an earlier adapter from answering
-        // for this one; the scope is dropped before control returns to the caller.
-        let _reads = crate::authority::request_reads::Scope::new();
+        // Retire this stack adapter's entries without discarding the Authority
+        // pages read by its load callback during the enclosing publication.
         let replay = ReceiptPageReplay::new(namespace, &mut load_page);
+        let _reads = crate::authority::request_reads::BackendScope::new(&replay);
         let pages = PagedIndex::with_prefix(&replay, namespace, WAL_RECEIPT_PAGE_PREFIX);
         for entry_index in 0..entries.len() {
             let (commit, append_id) = validate_record(

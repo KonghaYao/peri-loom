@@ -13,6 +13,8 @@ use crate::object_store::{GroupWrite, ObjectStore, PutCondition};
 #[cfg(test)]
 #[path = "wal_append_pages_tests.rs"]
 mod append_pages_tests;
+#[path = "wal_receipt_selection.rs"]
+mod receipt_selection;
 
 pub trait DurableWal: Send + Sync {
     fn append(&self, namespace: &Namespace, epoch: u64, batch: WalBatch) -> Result<u64>;
@@ -331,10 +333,11 @@ pub(crate) const WAL_RECEIPT_PAGE_PREFIX: &str = "wal/receipt-pages";
 /// Receipts written per page-tree update. Batching bounds both the page count touched and
 /// the bytes each archive attempt rewrites; the tree itself keeps every page small.
 pub(crate) const WAL_RECEIPT_ARCHIVE_BATCH: usize = 64;
-/// Digested receipts kept inline in the WAL head before older ones roll out. Legacy
+/// Digested receipts kept inline in the WAL head before batches roll out. Legacy
 /// receipts without a digest are exempt and remain inline, so the effective inline count is
-/// `legacy_count + 1` while such receipts exist. Older digested receipts move to the durable
-/// page tree in batches, so a normal append only rewrites a bounded hot window.
+/// `legacy_count + 1` while such receipts exist. The inline map is a bounded working set,
+/// not a strictly recent window: each roll includes its oldest eligible receipt and
+/// nearby hash paths, reducing the immutable pages rewritten by the same-size batch.
 pub(crate) const WAL_RECEIPT_INLINE_LIMIT: usize = 256;
 /// Slack left after a roll. Archiving one receipt per append would make every append a roll
 /// and pay the archive validation walk each time; a batch amortises that cost.
@@ -769,7 +772,7 @@ impl RemoteWal {
         Ok(())
     }
 
-    /// Moves the oldest digested receipts into the page archive before the head CAS.
+    /// Moves a locality-selected batch of digested receipts before the head CAS.
     ///
     /// The receipt this append adds stays inline: a roll must move at least one older receipt,
     /// so a legacy head whose inline window is entirely undigested never changes the archive
@@ -801,7 +804,7 @@ impl RemoteWal {
             return Ok(Vec::new());
         }
         let target = excess.saturating_add(WAL_RECEIPT_ROLL_BATCH);
-        let mut candidates = index
+        let candidates = index
             .receipts
             .iter()
             .filter(|(identity, _)| {
@@ -809,8 +812,7 @@ impl RemoteWal {
             })
             .map(|(identity, lsn)| (*lsn, identity.clone()))
             .collect::<Vec<_>>();
-        candidates.sort();
-        candidates.truncate(target.min(candidates.len()));
+        let candidates = receipt_selection::select(candidates, target);
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
