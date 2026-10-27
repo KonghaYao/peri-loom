@@ -482,7 +482,13 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
-## Issue 15 follow-up (unreleased)
+## v1.1.17
+
+This preview includes the issue 15 write-tail candidate: request-local validated
+index-page caching, audit checkpoint scheduling, and opt-in boundary diagnostics.
+Two ABBA rounds did not meet the issue 15 acceptance target; this release is
+not a proven performance fix. See
+[the measured results](../../../docs/performance-review/2026-10-27-tail-results.md).
 
 Completed v3 JSON cursor first pages now carry the engine's autocommit observation.
 The adapter consumes it only for the immediately following condition under the
