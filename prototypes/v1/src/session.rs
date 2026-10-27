@@ -46,6 +46,8 @@ pub struct WriteCursorPage {
 pub struct CursorFirstPage {
     pub cols: Vec<StatementColumn>,
     pub page: WriteCursorPage,
+    // Only a completed page can provide the next batch condition's snapshot.
+    pub autocommit: Option<bool>,
 }
 
 pub struct DescribeResult {

@@ -814,6 +814,12 @@ impl RemoteWal {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
+        let diagnostic = crate::storage_diagnostics::enabled().then(|| {
+            (
+                crate::storage_diagnostics::Stamp::new(),
+                std::time::Instant::now(),
+            )
+        });
         let pending =
             std::cell::RefCell::new(crate::authority::paged_index::PendingPages::default());
         let pages = crate::authority::paged_index::PagedIndex::retained_with_prefix(
@@ -847,6 +853,15 @@ impl RemoteWal {
         }
         index.receipt_index = root;
         let writes = pending.borrow().writes().to_vec();
+        if let Some((stamp, started)) = diagnostic {
+            crate::storage_diagnostics::receipt_roll(
+                &stamp,
+                candidates.len(),
+                writes.len(),
+                writes.iter().map(|write| write.bytes.len()).sum(),
+                started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            );
+        }
         Ok(writes)
     }
 

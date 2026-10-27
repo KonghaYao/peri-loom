@@ -678,13 +678,31 @@ static PUBLISH_TOTAL_MAX_NANOS: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct PublishTimer {
     started: Option<Instant>,
     stage: Option<(PublishStage, Instant)>,
+    metrics: bool,
+    diagnostic: Option<crate::storage_diagnostics::Publication>,
 }
 
 impl PublishTimer {
     pub(crate) fn begin() -> Self {
+        let metrics = enabled();
+        let diagnostic = crate::storage_diagnostics::Publication::begin();
         Self {
-            started: enabled().then(Instant::now),
+            started: (metrics || diagnostic.is_some()).then(Instant::now),
             stage: None,
+            metrics,
+            diagnostic,
+        }
+    }
+
+    pub(crate) fn identity(&mut self, origin: PublishOrigin, attempt: usize) {
+        if let Some(diagnostic) = &mut self.diagnostic {
+            diagnostic.identity(origin, attempt);
+        }
+    }
+
+    pub(crate) fn result(&mut self, result: &'static str) {
+        if let Some(diagnostic) = &mut self.diagnostic {
+            diagnostic.result(result);
         }
     }
 
@@ -706,6 +724,12 @@ impl PublishTimer {
             return;
         };
         let elapsed = nanos(started.elapsed());
+        if let Some(diagnostic) = &mut self.diagnostic {
+            diagnostic.stage(stage, elapsed);
+        }
+        if !self.metrics {
+            return;
+        }
         let index = stage.index();
         add(&PUBLISH_STAGE_CALLS[index], 1);
         add(&PUBLISH_STAGE_NANOS[index], elapsed);
@@ -720,8 +744,13 @@ impl Drop for PublishTimer {
         };
         self.close_stage();
         let elapsed = nanos(started.elapsed());
-        add(&PUBLISH_TOTAL_NANOS, elapsed);
-        PUBLISH_TOTAL_MAX_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+        if self.metrics {
+            add(&PUBLISH_TOTAL_NANOS, elapsed);
+            PUBLISH_TOTAL_MAX_NANOS.fetch_max(elapsed, Ordering::Relaxed);
+        }
+        if let Some(diagnostic) = &self.diagnostic {
+            diagnostic.emit(elapsed);
+        }
     }
 }
 

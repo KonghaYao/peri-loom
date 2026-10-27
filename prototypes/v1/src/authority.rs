@@ -867,8 +867,9 @@ impl Authority {
         let _probe = scaling_probe::stage("transact", 0);
         let _reads = request_reads::Scope::enter();
         let operation = unique_id()?;
-        for _ in 0..128 {
+        for attempt in 0..128 {
             let mut publish = PublishTimer::begin();
+            publish.identity(origin, attempt);
             publish.stage(PublishStage::Snapshot);
             let current = self.snapshot()?;
             if let Some(revision) = expected_revision {
@@ -878,6 +879,7 @@ impl Authority {
             // attempt was between its own check and this snapshot. The loser must adopt the
             // published v6 head, not publish a second migration head of its own.
             if scope == PublicationScope::LocalMigration && Self::is_local_root(&current.root) {
+                publish.result("already_migrated");
                 return Ok(current);
             }
             // One durability group per attempt: the immutable in-flight page bodies are
@@ -980,6 +982,7 @@ impl Authority {
             };
             match published {
                 Ok(etags) => {
+                    publish.result("published");
                     for write in pending.borrow().writes() {
                         request_reads::remember_page(
                             Arc::as_ptr(&self.store) as *const () as usize,
@@ -1010,12 +1013,14 @@ impl Authority {
                     publish.stage(PublishStage::Recover);
                     let observed = self.snapshot()?;
                     if self.receipt_in(&observed.root, &operation)? == Some(candidate.revision) {
+                        publish.result("resolved_receipt");
                         return Ok(observed);
                     }
                     if error.is::<PreconditionFailed>() && expected_revision.is_none() {
                         // The head moved under this attempt, so the next loop iteration is a
                         // retry of the same publication.
                         crate::work_metrics::observe_root_publish_retry();
+                        publish.result("root_cas_retry");
                         continue;
                     }
                     return Err(error);

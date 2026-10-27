@@ -25,12 +25,15 @@ const requestPhaseDrainBatch = 64
 
 type serviceRequestPhaseRecord struct {
 	Stream         string                `json:"stream"`
+	Scope          string                `json:"scope,omitempty"`
+	StartedUnixNS  int64                 `json:"started_unix_ns,omitempty"`
+	FinishedUnixNS int64                 `json:"finished_unix_ns,omitempty"`
 	RequestID      string                `json:"request_id"`
 	OuterRequestID string                `json:"outer_request_id,omitempty"`
 	HranaStep      uint64                `json:"hrana_step,omitempty"`
 	Action         string                `json:"action"`
 	Outcome        string                `json:"outcome"`
-	Status         int                   `json:"status"`
+	Status         int                   `json:"status,omitempty"`
 	Window         uint64                `json:"window"`
 	TotalNS        uint64                `json:"total_ns"`
 	AccountedNS    uint64                `json:"accounted_ns"`
@@ -142,6 +145,7 @@ func (sink *serviceRequestPhaseSink) consume(ctx context.Context, output io.Writ
 				continue
 			}
 			projected := serviceRequestPhaseRecord{Stream: sink.stream, RequestID: record.RequestID,
+				Scope: record.Scope, StartedUnixNS: record.StartedUnixNS, FinishedUnixNS: record.FinishedUnixNS,
 				OuterRequestID: record.OuterRequestID, HranaStep: record.HranaStep,
 				Action: record.Action, Outcome: record.Outcome, Status: record.Status, Window: record.Window,
 				TotalNS: record.TotalNS, AccountedNS: record.AccountedNS, UnaccountedNS: record.UnaccountedNS,

@@ -42,11 +42,8 @@ enum StagedPlan {
     Adopt(String),
 }
 
-const GROUP_PHASE_ENV: &str = "PERI_DIAG_GROUP_PHASE";
-
 fn group_phase_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var(GROUP_PHASE_ENV).as_deref() == Ok("1"))
+    crate::storage_diagnostics::enabled()
 }
 
 /// Bounded staging width. Local A/B measured the 540-body roll at 4 workers
@@ -110,6 +107,12 @@ struct GroupPhase {
     unique: u64,
     reused: u64,
     stage_ns: u64,
+    precheck_ns: u64,
+    worker_select_ns: u64,
+    worker_start_wait_max_ns: u64,
+    worker_wall_max_ns: u64,
+    join_tail_ns: u64,
+    collect_ns: u64,
     stage_max_ns: u64,
     prep_ns: u64,
     hash_ns: u64,
@@ -127,6 +130,7 @@ struct GroupPhase {
     dir_flush_ns: u64,
     barrier_ns: u64,
     total_started: Option<Instant>,
+    stamp: Option<crate::storage_diagnostics::Stamp>,
 }
 
 impl GroupPhase {
@@ -137,6 +141,7 @@ impl GroupPhase {
             timed,
             stderr,
             total_started: timed.then(Instant::now),
+            stamp: stderr.then(crate::storage_diagnostics::Stamp::new),
             ..Self::default()
         };
         if timed {
@@ -176,6 +181,7 @@ impl GroupPhase {
         if !self.stderr {
             return;
         }
+        let stamp = self.stamp.as_ref().expect("diagnostic stamp missing");
         let _ = writeln!(
             std::io::stderr().lock(),
             concat!(
@@ -183,7 +189,10 @@ impl GroupPhase {
                 "stage_ns={} stage_max_ns={} body_write_ns={} body_fsync_ns={} ",
                 "body_fsync_max_ns={} lock_wait_ns={} recheck_ns={} rename_ns={} ",
                 "dir_flush_ns={} barrier_ns={} total_ns={} prep_ns={} hash_ns={} ",
-                "encode_ns={} open_ns={} spawn_ns={} workers={} body_total_max_ns={}"
+                "encode_ns={} open_ns={} spawn_ns={} workers={} body_total_max_ns={} ",
+                "precheck_ns={} worker_select_ns={} worker_start_wait_max_ns={} ",
+                "worker_wall_max_ns={} join_tail_ns={} collect_ns={} ",
+                "start_unix_ns={} publication_id={} request_id={}"
             ),
             std::process::id(),
             self.writes,
@@ -209,6 +218,15 @@ impl GroupPhase {
             self.spawn_ns,
             self.workers,
             self.body_total_max_ns,
+            self.precheck_ns,
+            self.worker_select_ns,
+            self.worker_start_wait_max_ns,
+            self.worker_wall_max_ns,
+            self.join_tail_ns,
+            self.collect_ns,
+            stamp.start_unix_ns,
+            stamp.publication_id,
+            stamp.request_id.as_deref().unwrap_or("none"),
         );
     }
 }
@@ -442,6 +460,8 @@ impl LocalObjectStore {
                 check_condition(self.read(&write.key)?.as_ref(), &write.condition)?;
             }
         }
+        phase.precheck_ns = elapsed_ns(stage_started);
+        let select_started = phase.timed.then(Instant::now);
         // A publication is 25-30 bodies on the steady path and several hundred when a
         // receipt roll lands. Attribution on 2 KiB bodies shows create/fsync dominating
         // the per-body work while encoding stays in the low single-digit percent, so
@@ -456,19 +476,29 @@ impl LocalObjectStore {
             stage_worker_count(writes.len())
         };
         let diagnostics = phase.timed;
+        phase.worker_select_ns = elapsed_ns(select_started);
         let mut spawn_ns = 0;
+        let mut worker_start_wait_max_ns = 0;
+        let mut worker_wall_max_ns = 0;
+        let mut last_worker_finished = None;
         let staged: Vec<Result<StagedBody>> = if workers == 1 {
-            writes
+            let worker_started = diagnostics.then(Instant::now);
+            let staged = writes
                 .iter()
                 .map(|write| self.stage_body_timed(write, None, diagnostics))
-                .collect()
+                .collect();
+            worker_wall_max_ns = elapsed_ns(worker_started);
+            last_worker_finished = diagnostics.then(Instant::now);
+            staged
         } else {
             std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(workers);
                 for offset in 0..workers {
                     let spawn_started = diagnostics.then(Instant::now);
                     handles.push(scope.spawn(move || {
-                        (offset..writes.len())
+                        let worker_started = diagnostics.then(Instant::now);
+                        let wait_ns = elapsed_ns(spawn_started);
+                        let staged = (offset..writes.len())
                             .step_by(workers)
                             .map(|index| {
                                 (
@@ -476,14 +506,20 @@ impl LocalObjectStore {
                                     self.stage_body_timed(&writes[index], None, diagnostics),
                                 )
                             })
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>();
+                        let wall_ns = elapsed_ns(worker_started);
+                        (staged, wait_ns, wall_ns, diagnostics.then(Instant::now))
                     }));
                     spawn_ns += elapsed_ns(spawn_started);
                 }
-                let mut staged: Vec<(usize, Result<StagedBody>)> = handles
-                    .into_iter()
-                    .flat_map(|handle| handle.join().unwrap())
-                    .collect();
+                let mut staged = Vec::with_capacity(writes.len());
+                for handle in handles {
+                    let (bodies, wait_ns, wall_ns, finished) = handle.join().unwrap();
+                    worker_start_wait_max_ns = worker_start_wait_max_ns.max(wait_ns);
+                    worker_wall_max_ns = worker_wall_max_ns.max(wall_ns);
+                    last_worker_finished = last_worker_finished.max(finished);
+                    staged.extend(bodies);
+                }
                 staged.sort_by_key(|(index, _)| *index);
                 staged.into_iter().map(|(_, result)| result).collect()
             })
@@ -491,7 +527,13 @@ impl LocalObjectStore {
         if phase.timed {
             phase.workers = workers;
             phase.spawn_ns = spawn_ns;
+            phase.worker_start_wait_max_ns = worker_start_wait_max_ns;
+            phase.worker_wall_max_ns = worker_wall_max_ns;
+            // Time after the final worker's completion, not summed join waits (which
+            // overlap the actual I/O). This closes the former scheduling blind spot.
+            phase.join_tail_ns = elapsed_ns(last_worker_finished);
         }
+        let collect_started = phase.timed.then(Instant::now);
         let mut bodies = Vec::with_capacity(staged.len());
         let mut failure = None;
         for result in staged {
@@ -510,6 +552,7 @@ impl LocalObjectStore {
             return Err(error);
         }
         if phase.timed {
+            phase.collect_ns = elapsed_ns(collect_started);
             phase.stage_ns = elapsed_ns(stage_started);
         }
         Ok(bodies)

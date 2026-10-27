@@ -64,6 +64,11 @@ pub(crate) fn enabled() -> bool {
     runtime().is_some()
 }
 
+/// Storage diagnostics share the already-sanitized RPC identity, never object keys.
+pub(crate) fn request_id() -> Option<String> {
+    CONTEXT.with(|slot| slot.borrow().request_id.clone())
+}
+
 pub(crate) fn retry() {
     if runtime().is_some() {
         RETRIES.with(|count| count.set(count.get().saturating_add(1)));

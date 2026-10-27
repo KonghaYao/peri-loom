@@ -96,13 +96,15 @@ class ObserverTests(unittest.TestCase):
                     children[name] = dict(environment)
                     return {}
 
-                with patch.dict(dev.os.environ, {"PERI_SQL_OPEN_OBSERVER": "inherited-invalid"}), patch.object(project, "start", side_effect=record_start), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
+                with patch.dict(dev.os.environ, {"PERI_SQL_OPEN_OBSERVER": "inherited-invalid", "PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY": "1"}), patch.object(project, "start", side_effect=record_start), patch.object(project, "start_maintenance"), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
                     with self.assertRaisesRegex(RuntimeError, "offline stop before API"):
                         project.run()
                 self.assertEqual(children["platform"]["PERI_SQL_OPEN_OBSERVER"], "1" if enabled else "0")
+                self.assertEqual(children["platform"].get("PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY"), "1" if enabled else None)
                 for name, environment in children.items():
                     if name != "platform":
                         self.assertNotIn("PERI_SQL_OPEN_OBSERVER", environment)
+                        self.assertNotIn("PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY", environment)
 
     def test_experiment_switches_are_forwarded_by_name_and_scope(self):
         with patch.dict(dev.os.environ, {

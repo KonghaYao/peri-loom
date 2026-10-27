@@ -90,6 +90,7 @@ func newHranaHTTP(gateway *Gateway) http.Handler {
 
 func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	request = beginHranaCorrelation(request, handler.gateway.config.OpenObserver.requestPhases())
+	defer observeHranaHTTPBoundary(request, handler.gateway.config.OpenObserver.requestPhases())()
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	if serveHranaWS(writer, request, handler) {

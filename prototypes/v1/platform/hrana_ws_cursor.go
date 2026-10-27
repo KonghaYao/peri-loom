@@ -29,15 +29,26 @@ type hranaReadCursorStep struct {
 }
 
 func (handler *hranaHTTP) readCursorCondition(request *http.Request, credential, session string, condition json.RawMessage, results, failures []any) (bool, hranaReply) {
+	return handler.readCursorConditionSnapshot(request, credential, session, condition, results, failures, nil)
+}
+
+// A snapshot is usable only while the caller holds the stream lock, immediately
+// after a completed native action in the same batch. Nil means ask the worker;
+// it must never be interpreted as a false autocommit result.
+func (handler *hranaHTTP) readCursorConditionSnapshot(request *http.Request, credential, session string, condition json.RawMessage, results, failures []any, snapshot *bool) (bool, hranaReply) {
 	if len(condition) == 0 {
 		return true, hranaReply{}
 	}
 	isAutocommit := false
 	if hranaConditionNeedsAutocommit(condition) {
-		var reply hranaReply
-		isAutocommit, reply = handler.autocommit(request, credential, session)
-		if reply.code != "" {
-			return false, reply
+		if snapshot != nil {
+			isAutocommit = *snapshot
+		} else {
+			var reply hranaReply
+			isAutocommit, reply = handler.autocommit(request, credential, session)
+			if reply.code != "" {
+				return false, reply
+			}
 		}
 	}
 	return hranaCondition(condition, results, failures, isAutocommit), hranaReply{}

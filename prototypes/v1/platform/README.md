@@ -482,6 +482,26 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## Issue 15 follow-up (unreleased)
+
+Completed v3 JSON cursor first pages now carry the engine's autocommit observation.
+The adapter consumes it only for the immediately following condition under the
+same batch/stream lock; it is not a lease-validity or execution-proof cache.
+Missing observations and multi-page results retain the existing native probe.
+The one-page SDK write/read path uses six internal RPCs instead of eight;
+new-session write/read/acknowledged-close uses eight instead of ten. Upgrade Go
+before Rust, or upgrade both together: new Go accepts an older reply without
+the optional field, but old Go rejects the new Rust reply.
+
+Legacy operation-journal compaction still blocks the triggering write until the
+same durable snapshot/sync/truncate sequence completes. Its file I/O no longer
+holds the shared registry lock; new mutations and shutdown checkpoints wait
+outside that lock. Snapshot, sync, truncate, maximum-duration and failure
+counters are exposed in operation-journal metrics. Thresholds and disk formats
+are unchanged. See [the lock-scope review](../../../docs/performance-review/2026-10-26-operation-compaction-lock-scope.md).
+These changes alone do not establish the cause or resolution of the M4/OrbStack
+write-tail report in [issue 15](https://github.com/KonghaYao/peri-loom/issues/15).
+
 ## v1.1.16
 
 This release implements the issue11 performance work. Hot-statement write

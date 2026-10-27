@@ -207,30 +207,35 @@ func operationDeltaBetween(previous, next map[string]OperationRecord) operationD
 }
 
 type operationJournal struct {
-	mutex              sync.Mutex
-	path               string
-	lock               *os.File
-	file               *os.File
-	revision           uint64
-	digest             string
-	size               int64
-	records            []journalEntry
-	snapshot           *operationSnapshot
-	appends            uint64
-	appendsTotal       uint64
-	ordered            uint64
-	syncs              uint64
-	compactions        uint64
-	compactionNS       uint64
-	closed             bool
-	poisoned           bool
-	completion         *completionGenesis
-	auditHead          auditHead
-	orderedAudit       auditHead
-	retainedBytes      int64
-	archivedRevision   uint64
-	queuedBytes        int64
-	maintenancePending bool
+	mutex                sync.Mutex
+	path                 string
+	lock                 *os.File
+	file                 *os.File
+	revision             uint64
+	digest               string
+	size                 int64
+	records              []journalEntry
+	snapshot             *operationSnapshot
+	appends              uint64
+	appendsTotal         uint64
+	ordered              uint64
+	syncs                uint64
+	compactions          uint64
+	compactionNS         uint64
+	compactionMaxNS      uint64
+	compactionFailures   uint64
+	compactionSnapshotNS uint64
+	compactionSyncNS     uint64
+	compactionTruncateNS uint64
+	closed               bool
+	poisoned             bool
+	completion           *completionGenesis
+	auditHead            auditHead
+	orderedAudit         auditHead
+	retainedBytes        int64
+	archivedRevision     uint64
+	queuedBytes          int64
+	maintenancePending   bool
 
 	// The ordered commit queue. The queue lock covers bookkeeping only, so a submitter
 	// never queues behind a barrier; write serializes the file itself and is held by the
@@ -259,9 +264,10 @@ type operationJournal struct {
 	// testPopGate holds the committer before it chooses a batch, and testWriteGate holds it
 	// inside one, so a test can make either side of the queue deterministic. Production
 	// leaves both nil; no request path observes them.
-	testPopGate   func()
-	testWriteGate func()
-	testSyncGate  func()
+	testPopGate        func()
+	testWriteGate      func()
+	testSyncGate       func()
+	testCompactionGate func(string) error
 }
 
 func journalWitnessLine(revision uint64, digest string) []byte {
@@ -660,48 +666,19 @@ func (journal *operationJournal) writeWitnessFor(commit *operationCommit) error 
 // the snapshot binds a chain position the surviving records still verify.
 func (journal *operationJournal) compact(view State) error {
 	started := time.Now()
-	defer func() { journal.compactionNS += uint64(time.Since(started)) }()
-	snapshot := operationSnapshot{Version: operationJournalVersion, BaseRevision: view.Revision, Revision: journal.revision, Digest: journal.digest, Sequence: view.OperationSequence, Evictions: view.OperationEvictions, Records: view.Operations}
 	if journal.completion != nil {
-		snapshot.Version = completionJournalVersion
-		head := journal.auditHead
-		snapshot.CompletionAudit = &head
 		if err := journal.archiveCompletionPrefix(); err != nil {
+			journal.recordCompactionCost(started, operationCompactionTimings{}, err)
 			return err
 		}
 	}
-	// A materialization keeps the origin of the view it materializes: content that once
-	// needed the pre-envelope acceptance path is still the same content here, so the
-	// artifact must not start describing itself as natively bound.
-	origin := operationSnapshotOriginNative
-	if journal.snapshot != nil && journal.snapshot.Origin == operationSnapshotOriginReseal {
-		origin = operationSnapshotOriginReseal
+	compaction := journal.captureCompaction(view)
+	timings, err := journal.persistCompaction(compaction)
+	journal.recordCompactionCost(started, timings, err)
+	if err == nil {
+		journal.installCompaction(compaction)
 	}
-	if err := sealSnapshot(&snapshot, origin); err != nil {
-		return err
-	}
-	encoded, err := json.Marshal(snapshot)
-	if err != nil || len(encoded) > operationJournalMaximumBytes {
-		return errors.New("invalid operation snapshot")
-	}
-	if err := atomicPrivate(journal.snapshotPath(), encoded); err != nil {
-		return err
-	}
-	if err := journal.file.Sync(); err != nil {
-		return err
-	}
-	if err := journal.file.Truncate(operationJournalWitnessBytes); err != nil {
-		return err
-	}
-	if journal.completion != nil {
-		journal.retainedBytes -= journal.size - operationJournalWitnessBytes
-	}
-	journal.size = operationJournalWitnessBytes
-	journal.records = nil
-	journal.appends = 0
-	journal.snapshot = &snapshot
-	journal.compactions++
-	return nil
+	return err
 }
 
 // applyView joins the durable deltas onto a view whose revision is base. It is the

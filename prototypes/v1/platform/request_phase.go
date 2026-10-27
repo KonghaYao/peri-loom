@@ -56,6 +56,7 @@ const (
 	requestPhaseSampleEnvironment    = "PERI_SQL_OPEN_OBSERVER_PHASE_SAMPLE_PERMILLE"
 	requestPhaseWindowEnvironment    = "PERI_SQL_OPEN_OBSERVER_PHASE_WINDOW_MS"
 	requestPhaseCapacityEnvironment  = "PERI_SQL_OPEN_OBSERVER_PHASE_CAPACITY"
+	requestPhaseHTTPEnvironment      = "PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY"
 )
 
 type requestPhase string
@@ -110,12 +111,15 @@ func (phase requestPhase) kind() requestPhaseKind {
 // request id correlates with the client's own timestamps, and the action names the operation.
 type requestPhaseRecord struct {
 	Stream         string                `json:"stream"`
+	Scope          string                `json:"scope,omitempty"`
+	StartedUnixNS  int64                 `json:"started_unix_ns,omitempty"`
+	FinishedUnixNS int64                 `json:"finished_unix_ns,omitempty"`
 	RequestID      string                `json:"request_id"`
 	OuterRequestID string                `json:"outer_request_id,omitempty"`
 	HranaStep      uint64                `json:"hrana_step,omitempty"`
 	Action         string                `json:"action"`
 	Outcome        string                `json:"outcome"`
-	Status         int                   `json:"status"`
+	Status         int                   `json:"status,omitempty"`
 	Window         uint64                `json:"window"`
 	TotalNS        uint64                `json:"total_ns"`
 	AccountedNS    uint64                `json:"accounted_ns"`
@@ -137,6 +141,7 @@ type requestPhaseConfig struct {
 	SamplePermille uint64
 	Window         time.Duration
 	Capacity       int
+	HTTPBoundary   bool
 }
 
 func defaultRequestPhaseConfig() requestPhaseConfig {
@@ -152,6 +157,12 @@ func defaultRequestPhaseConfig() requestPhaseConfig {
 // keep their defaults; invalid values fail the start instead of quietly changing the capture.
 func requestPhaseConfigFromEnvironment() (requestPhaseConfig, error) {
 	config := defaultRequestPhaseConfig()
+	if raw, present := os.LookupEnv(requestPhaseHTTPEnvironment); present {
+		if raw != "0" && raw != "1" {
+			return requestPhaseConfig{}, fmt.Errorf("%s must be 0 or 1", requestPhaseHTTPEnvironment)
+		}
+		config.HTTPBoundary = raw == "1"
+	}
 	if raw, present := os.LookupEnv(requestPhaseThresholdEnvironment); present {
 		value, err := requestPhaseMilliseconds(requestPhaseThresholdEnvironment, raw, true)
 		if err != nil {
@@ -201,6 +212,7 @@ type requestPhaseObserver struct {
 	samplePermille uint64
 	window         time.Duration
 	capacity       int
+	httpBoundary   bool
 
 	sequence    atomic.Uint64 // records accepted into the ring
 	filtered    atomic.Uint64 // fast successes removed by the sampler
@@ -274,6 +286,7 @@ func newRequestPhaseObserverWithConfig(config requestPhaseConfig) *requestPhaseO
 		samplePermille: config.SamplePermille,
 		window:         config.Window,
 		capacity:       config.Capacity,
+		httpBoundary:   config.HTTPBoundary,
 		records:        make([]requestPhaseRecord, config.Capacity),
 	}
 	// Baselines the rotation counter at the window the observer started in. Without this,
@@ -508,6 +521,8 @@ func (trace *requestPhaseTrace) finish(requestID, outcome string, status int) {
 	}
 	trace.observer.record(requestPhaseRecord{
 		Stream:         "",
+		StartedUnixNS:  trace.started.UnixNano(),
+		FinishedUnixNS: now.UnixNano(),
 		RequestID:      requestID,
 		OuterRequestID: trace.outer.outer,
 		HranaStep:      trace.outer.index,

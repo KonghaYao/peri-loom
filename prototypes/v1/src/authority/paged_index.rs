@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -71,9 +72,9 @@ impl PendingPages {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
-enum Page {
+pub(super) enum Page {
     Leaf {
         version: u8,
         depth: u16,
@@ -84,6 +85,70 @@ enum Page {
         depth: u16,
         children: BTreeMap<String, String>,
     },
+}
+
+// Charge a full internal BTree node per entry, even though ordinary nodes hold
+// several entries. This deliberately overestimates sparse maps and includes
+// allocator/node overhead rather than treating encoded JSON bytes as heap size.
+fn map_charge<K, V>(entries: usize) -> usize {
+    entries.saturating_mul(
+        64usize
+            .saturating_add(12 * std::mem::size_of::<usize>())
+            .saturating_add(11 * (std::mem::size_of::<K>() + std::mem::size_of::<V>())),
+    )
+}
+
+fn allocation_charge(capacity: usize) -> usize {
+    capacity.saturating_add(if capacity == 0 { 0 } else { 64 })
+}
+
+fn value_heap_charge(value: &Value) -> usize {
+    match value {
+        Value::String(value) => allocation_charge(value.capacity()),
+        Value::Array(values) => values.iter().fold(
+            allocation_charge(
+                values
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Value>()),
+            ),
+            |charge, value| charge.saturating_add(value_heap_charge(value)),
+        ),
+        Value::Object(values) => values.iter().fold(
+            map_charge::<String, Value>(values.len()),
+            |charge, (key, value)| {
+                charge
+                    .saturating_add(allocation_charge(key.capacity()))
+                    .saturating_add(value_heap_charge(value))
+            },
+        ),
+        // The locked serde_json configuration does not enable arbitrary_precision,
+        // so Number has no separately allocated decimal representation.
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+    }
+}
+
+impl Page {
+    pub(super) fn memory_charge(&self) -> usize {
+        let heap = match self {
+            Page::Leaf { entries, .. } => entries.iter().fold(
+                map_charge::<String, Value>(entries.len()),
+                |charge, (key, value)| {
+                    charge
+                        .saturating_add(allocation_charge(key.capacity()))
+                        .saturating_add(value_heap_charge(value))
+                },
+            ),
+            Page::Branch { children, .. } => children.iter().fold(
+                map_charge::<String, String>(children.len()),
+                |charge, (key, child)| {
+                    charge
+                        .saturating_add(allocation_charge(key.capacity()))
+                        .saturating_add(allocation_charge(child.capacity()))
+                },
+            ),
+        };
+        std::mem::size_of::<Self>().saturating_add(heap)
+    }
 }
 
 pub(crate) struct PagedIndex<'a> {
@@ -249,7 +314,7 @@ impl<'a> PagedIndex<'a> {
         let mut current = root.map(str::to_owned);
         let mut prefix = Vec::new();
         while let Some(hash) = current {
-            match self.read(&hash, prefix.len() as u16, &prefix)? {
+            match self.read(&hash, prefix.len() as u16, &prefix)?.as_ref() {
                 Page::Leaf { entries, .. } => return Ok(entries.get(key).cloned()),
                 Page::Branch { children, .. } => {
                     let nibble = self.nibble(key, prefix.len() as u16)?;
@@ -293,7 +358,7 @@ impl<'a> PagedIndex<'a> {
     ) -> Result<String> {
         match root {
             None => self.leaf_or_branch(updates, depth),
-            Some(hash) => match self.read(hash, depth, prefix)? {
+            Some(hash) => match Arc::unwrap_or_clone(self.read(hash, depth, prefix)?) {
                 Page::Leaf { mut entries, .. } => {
                     let mut changed = false;
                     for (key, value) in updates {
@@ -374,7 +439,7 @@ impl<'a> PagedIndex<'a> {
             }
             return Ok(Some(self.leaf_or_branch(inserts, depth)?));
         };
-        match self.read(hash, depth, prefix)? {
+        match Arc::unwrap_or_clone(self.read(hash, depth, prefix)?) {
             Page::Leaf { mut entries, .. } => {
                 let mut changed = false;
                 for key in removals {
@@ -455,7 +520,8 @@ impl<'a> PagedIndex<'a> {
     }
 
     /// Full page walk used by maintenance paths (garbage collection, deep verification,
-    /// one-time inline spilling). Every page digest is re-verified by `read`.
+    /// one-time inline spilling). Each access validates its page or reuses the same
+    /// immutable page already verified for this exact path in the current request.
     pub(crate) fn entries(&self, root: Option<&str>) -> Result<BTreeMap<String, Value>> {
         let mut entries = BTreeMap::new();
         self.walk(root, 0, &[], &mut entries)?;
@@ -505,13 +571,13 @@ impl<'a> PagedIndex<'a> {
             .split_once('/')
             .map(|(pin, _)| pin)
             .context("index prefix is not a reader pin")?;
-        match self.read(location, depth, path)? {
+        match self.read(location, depth, path)?.as_ref() {
             Page::Leaf { entries: page, .. } => {
                 for (key, value) in page {
                     *scanned += 1;
                     if key.starts_with(target) {
                         ensure!(
-                            entries.insert(key, value).is_none(),
+                            entries.insert(key.clone(), value.clone()).is_none(),
                             "duplicate index key across pages"
                         );
                     }
@@ -555,11 +621,11 @@ impl<'a> PagedIndex<'a> {
         let Some(location) = root else {
             return Ok(());
         };
-        match self.read(location, depth, prefix)? {
+        match self.read(location, depth, prefix)?.as_ref() {
             Page::Leaf { entries: page, .. } => {
                 for (key, value) in page {
                     ensure!(
-                        entries.insert(key, value).is_none(),
+                        entries.insert(key.clone(), value.clone()).is_none(),
                         "duplicate index key across pages"
                     );
                 }
@@ -569,7 +635,7 @@ impl<'a> PagedIndex<'a> {
                     let selected = slot.parse::<u8>()?;
                     let mut next_prefix = prefix.to_vec();
                     next_prefix.push(selected);
-                    self.walk(Some(&child), depth + 1, &next_prefix, entries)?;
+                    self.walk(Some(child), depth + 1, &next_prefix, entries)?;
                 }
             }
         }
@@ -610,7 +676,7 @@ impl<'a> PagedIndex<'a> {
         })
     }
 
-    fn read(&self, hash: &str, depth: u16, prefix: &[u8]) -> Result<Page> {
+    fn read(&self, hash: &str, depth: u16, prefix: &[u8]) -> Result<Arc<Page>> {
         self.reads.set(self.reads.get() + 1);
         #[cfg(test)]
         TEST_PAGE_READS.with(|reads| reads.set(reads.get() + 1));
@@ -618,6 +684,15 @@ impl<'a> PagedIndex<'a> {
         let backend = self.store as *const dyn ObjectStore as *const () as usize;
         let buffered = self.pending.and_then(|pending| pending.borrow().page(hash));
         crate::work_metrics::observe_index_page_read();
+        // Pending bytes take precedence even when a durable page with the same key was
+        // cached earlier. They must pass the original digest and path checks themselves.
+        let cacheable = buffered.is_none();
+        if cacheable {
+            if let Some(page) = request_reads::parsed_page(backend, &key, self.order, depth, prefix)
+            {
+                return Ok(page);
+            }
+        }
         let bytes = match buffered {
             Some(bytes) => bytes,
             None => match request_reads::get_page(backend, &key) {
@@ -638,6 +713,7 @@ impl<'a> PagedIndex<'a> {
             bytes.len() <= PAGE_BYTES && blake3::hash(&bytes).to_hex().as_str() == hash,
             "index page size or digest mismatch"
         );
+        request_reads::observe_page_decode(bytes.len());
         let page: Page = serde_json::from_slice(&bytes)?;
         match &page {
             Page::Leaf {
@@ -659,6 +735,7 @@ impl<'a> PagedIndex<'a> {
                         "index leaf outside selected path"
                     );
                 }
+                request_reads::observe_leaf_validation(entries.len(), prefix.len());
             }
             Page::Branch {
                 version,
@@ -682,6 +759,17 @@ impl<'a> PagedIndex<'a> {
                     validate_hash(child)?;
                 }
             }
+        }
+        let page = Arc::new(page);
+        if cacheable {
+            request_reads::remember_parsed_page(
+                backend,
+                key,
+                self.order,
+                depth,
+                prefix,
+                Arc::clone(&page),
+            );
         }
         Ok(page)
     }
@@ -715,6 +803,10 @@ impl<'a> PagedIndex<'a> {
         Ok(hash)
     }
 }
+
+#[cfg(test)]
+#[path = "paged_index_cache_tests.rs"]
+mod cache_tests;
 
 /// Page keys are registry keys, so they follow the object-key shape (URL-safe path
 /// components) rather than a flat hash alphabet: logical catalog keys such as

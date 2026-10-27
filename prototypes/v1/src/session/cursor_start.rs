@@ -39,7 +39,11 @@ impl SessionLane {
             .map_err(|error| deadline.evidence.failure(error))
             .and_then(|(cursor, cols)| {
                 self.step_write_cursor(database, native, cursor, page_size)
-                    .map(|page| CursorFirstPage { cols, page })
+                    .map(|page| CursorFirstPage {
+                        autocommit: page.done.then(|| native.get_auto_commit()),
+                        cols,
+                        page,
+                    })
             })
         } else {
             execution::open_read_cursor(
@@ -56,6 +60,7 @@ impl SessionLane {
                 self.step_read_cursor(database, native, cursor, page_size)
                     .map(|(rows, done)| CursorFirstPage {
                         cols,
+                        autocommit: done.then(|| native.get_auto_commit()),
                         page: WriteCursorPage {
                             rows,
                             done,
