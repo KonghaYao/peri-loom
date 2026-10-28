@@ -42,7 +42,11 @@ func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySe
 	pending := pendingDispatchOperation(session, "statement", stage, requestID, guardedCommand)
 	var reply json.RawMessage
 	leaveWorker := requestPhaseSpan(ctx, requestPhaseWorker)
+	// The guarded call crosses the same native boundary as callSession. Keep it
+	// nested so worker reports only its own work, including on an unknown reply.
+	leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
 	err = gateway.sendSession(ctx, session, binding, probeID, guardedCommand, &reply)
+	leaveNative()
 	leaveWorker()
 	if err != nil {
 		result := gateway.upstreamFailure(err, session, permit)

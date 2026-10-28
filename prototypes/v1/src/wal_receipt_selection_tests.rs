@@ -8,7 +8,10 @@ use crate::wal::{
     WAL_RECEIPT_PAGE_PREFIX,
 };
 use anyhow::{Context, Result};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[test]
 fn selection_wraps_in_full_hash_order_and_always_includes_the_oldest() {
@@ -154,6 +157,113 @@ fn cold(store: &MemoryObjectStore, namespace: &Namespace, bytes: &[u8]) -> Resul
         |key| Ok(store.get(key)?.context("fixture chunk missing")?.bytes),
         |hash| page(store, namespace, "receipt-pages", hash),
     )
+}
+
+/// Compatibility gate for the proposed authority-only transient-page omission.
+/// A canonical 64+1 roll has pages that no final root reaches, but the public
+/// durable-only incremental validator still requires their bytes. An ephemeral
+/// callback during publication cannot preserve that post-publication contract.
+/// Keep this counterexample even when the optimization is rejected.
+#[test]
+fn omitting_transient_receipt_pages_breaks_durable_only_incremental_validation() -> Result<()> {
+    let namespace = Namespace::new("receipt", "transient-compatibility")?;
+    let store = Arc::new(MemoryObjectStore::default());
+    let wal = RemoteWal::new(store.clone());
+    for ordinal in 1..=256 {
+        wal.append_local(&request(&namespace, ordinal))?;
+    }
+    let previous = wal.metadata(&namespace)?;
+    assert!(previous.receipt_index.is_none());
+    assert_eq!(previous.receipts.len(), 256);
+    let previous_bytes = serde_json::to_vec(&previous)?;
+
+    wal.append_local(&request(&namespace, 257))?;
+    let candidate = wal.metadata(&namespace)?;
+    assert!(candidate.receipt_index.is_some());
+    let candidate_bytes = serde_json::to_vec(&candidate)?;
+    assert_eq!(previous.receipts.len() + 1 - candidate.receipts.len(), 65);
+    let prefix = format!("{}/", namespace.key(WAL_RECEIPT_PAGE_PREFIX)?);
+    let all_pages = store.list(&prefix)?;
+    let mut reachable = BTreeSet::new();
+    crate::authority::paged_index::walk_tree(candidate.receipt_index.as_deref(), |hash| {
+        reachable.insert(namespace.key(&format!("{WAL_RECEIPT_PAGE_PREFIX}/{hash}"))?);
+        page(store.as_ref(), &namespace, "receipt-pages", hash)
+    })?;
+    let transient = all_pages
+        .into_iter()
+        .filter(|key| !reachable.contains(key))
+        .map(|key| {
+            let value = store
+                .get(&key)?
+                .context("canonical intermediate page missing")?;
+            Ok((key, value))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert!(
+        !transient.is_empty(),
+        "fixture must have a real intermediate page"
+    );
+    let non_archive_bytes = || {
+        store
+            .list(&namespace.prefix())?
+            .into_iter()
+            .filter(|key| !key.starts_with(&prefix))
+            .map(|key| {
+                let bytes = store.get(&key)?.context("fixture object missing")?.bytes;
+                Ok((key, bytes))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()
+    };
+    let unchanged_objects = non_archive_bytes()?;
+
+    let incremental = || {
+        validate_index_append(
+            cold(store.as_ref(), &namespace, &previous_bytes)?,
+            &candidate_bytes,
+            &namespace,
+            |hash| page(store.as_ref(), &namespace, "index-segments", hash),
+            |key| Ok(store.get(key)?.context("fixture chunk missing")?.bytes),
+            |hash| page(store.as_ref(), &namespace, "receipt-pages", hash),
+        )
+    };
+    assert_eq!(incremental()?.archive_entries(), 65);
+    for (key, value) in &transient {
+        assert_eq!(
+            store.get(key)?.as_ref().map(|entry| &entry.bytes),
+            Some(&value.bytes)
+        );
+        store.delete(key, Some(&value.etag))?;
+        assert!(store.get(key)?.is_none(), "ordinary get contract changed");
+    }
+    // All persistent receipts remain reachable and cold reopening still works.
+    // That alone is insufficient to establish compatibility with hot validation.
+    assert_eq!(
+        cold(store.as_ref(), &namespace, &candidate_bytes)?.archive_entries(),
+        65
+    );
+    assert_eq!(
+        serde_json::to_vec(&wal.metadata(&namespace)?)?,
+        candidate_bytes
+    );
+    assert_eq!(non_archive_bytes()?, unchanged_objects);
+    let error = incremental()
+        .err()
+        .context("omission unexpectedly preserved incremental validation")?;
+    assert!(format!("{error:#}").contains("fixture page missing"));
+    eprintln!(
+        "TRANSIENT_COMPATIBILITY rolled=65 reachable={} transient={} cold_after=pass durable_incremental_after=fail",
+        reachable.len(),
+        transient.len()
+    );
+
+    // Restoring only the omitted bytes restores the old public behavior. No head,
+    // chunk, receipt selection, batch cadence or validator implementation changed.
+    for (key, value) in &transient {
+        store.put(key, &value.bytes, PutCondition::Absent)?;
+    }
+    assert_eq!(incremental()?.archive_entries(), 65);
+    assert_eq!(non_archive_bytes()?, unchanged_objects);
+    Ok(())
 }
 
 #[test]

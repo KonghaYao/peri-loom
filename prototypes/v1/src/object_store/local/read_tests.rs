@@ -75,7 +75,7 @@ fn permission_error_is_not_converted_to_absence() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let store = legacy_store(&directory)?;
     let original = fs::metadata(&store.root)?.permissions();
-    fs::set_permissions(&store.root, fs::Permissions::from_mode(0))?;
+    fs::set_permissions(&store.root, fs::Permissions::from_mode(0o0))?;
     let result = store.get("object");
     fs::set_permissions(&store.root, original)?;
     let error = result.unwrap_err();

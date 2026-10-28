@@ -20,7 +20,7 @@ enum Draft {
 pub(super) fn collapse_enabled() -> bool {
     #[cfg(test)]
     {
-        return POLICY.with(std::cell::Cell::get);
+        POLICY.with(std::cell::Cell::get)
     }
     #[cfg(not(test))]
     {

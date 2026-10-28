@@ -482,6 +482,21 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.20
+
+This release reuses the already size-checked leaf-page JSON encoding during
+bucketed pin-index updates instead of serializing the same leaf a second time,
+and records a nested `native` span inside guarded read-only dispatch. The reuse
+keeps the same bytes, hashes, page boundaries and publication order; the new
+span is attribution only.
+
+Two ABBA rounds on Linux x86_64 reduced business p99 by 34.47%/42.89% (H4/H6) in
+round one and 12.49%/11.47% in round two. The frozen target requires at least 20%
+per scenario in every round, so it still fails; round two also had paired p99/p50
+regressions and H4 requests above 100ms rose from 16 to 18. This is not a proven
+fix for the reported M4/OrbStack write tail. See
+[the measured results](../../../docs/performance-review/2026-10-28-v120-tail.md).
+
 ## v1.1.19
 
 This release applies the issue 15 candidate that keeps changed bucketed pin-index

@@ -87,7 +87,14 @@ func TestRequestPhaseDefaultOff(test *testing.T) {
 // the request.
 func TestRequestPhaseRecordsReadSegments(test *testing.T) {
 	fixture, observer := requestPhaseObserverFixtureAll(test)
+	// The default fixture is conservative about statement effects. Model the
+	// worker's positive read-only proof explicitly so this is the intended
+	// non-committing path rather than an intent/terminal fallback.
+	hook := (&readonlyDescribeHook{verdict: readonlyVerdict(true)}).install(fixture)
+	store := newGatedStateStore(fixture.state)
+	fixture.gateway.config.State = store
 	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	before := operationCommits(test, store)
 	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1"})
 	if response.Code != 200 {
 		test.Fatalf("query failed: %d %s", response.Code, response.Body.String())
@@ -134,8 +141,16 @@ func TestRequestPhaseRecordsReadSegments(test *testing.T) {
 	if seen[requestPhaseIntent] == 0 {
 		test.Fatal("the read admission check was not reported")
 	}
-	if seen[requestPhaseTerminal] > 1_000_000 {
-		test.Fatalf("a read still paid a sidecar terminal write: %d ns", seen[requestPhaseTerminal])
+	// Measure the contract directly: elapsed span time includes scheduler/race
+	// overhead and cannot prove whether the sidecar wrote a record.
+	if commits := operationCommits(test, store) - before; commits != 0 {
+		test.Fatalf("a proven read paid sidecar writes: %d commits", commits)
+	}
+	if hook.count() != 1 || fixture.upstream.count("query") != 1 {
+		test.Fatal("the read must have one read-only proof and one query dispatch")
+	}
+	if outcomes := fixture.audit.outcomesOf("query"); len(outcomes) != 1 || outcomes[0] != "ok" {
+		test.Fatalf("the read did not complete its one successful audit barrier: %v", outcomes)
 	}
 	if seen[requestPhaseAudit] == 0 {
 		test.Fatal("the read durable audit barrier was not reported")

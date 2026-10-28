@@ -45,6 +45,20 @@ thread_local! {
 }
 
 #[cfg(test)]
+#[path = "paged_index_encoding_tests.rs"]
+mod encoding_tests;
+
+#[cfg(test)]
+pub(crate) use encoding_tests::{leaf_encoding_test_stats, LeafEncodingPolicyGuard};
+
+fn encode_page(page: &Page) -> Result<Vec<u8>> {
+    let bytes = serde_json::to_vec(page)?;
+    #[cfg(test)]
+    encoding_tests::observe_encode(bytes.len());
+    Ok(bytes)
+}
+
+#[cfg(test)]
 pub(crate) fn reset_test_page_reads() {
     TEST_PAGE_READS.with(|reads| reads.set(0));
 }
@@ -657,9 +671,23 @@ impl<'a> PagedIndex<'a> {
             depth,
             entries,
         };
-        if serde_json::to_vec(&leaf)?.len() <= PAGE_BYTES {
-            return self.write(&leaf);
+        let bytes = encode_page(&leaf)?;
+        if bytes.len() <= PAGE_BYTES {
+            #[cfg(test)]
+            {
+                encoding_tests::observe_reusable_leaf(bytes.len());
+                // The historical second serialization is available only to the
+                // deterministic mechanism tests; production has no policy switch.
+                if !encoding_tests::reuse_enabled() {
+                    drop(bytes);
+                    return self.write(&leaf);
+                }
+            }
+            return self.write_encoded(bytes);
         }
+        // Match the former size-check temporary's lifetime: a split must not
+        // retain its oversized encoding while recursively constructing children.
+        drop(bytes);
         ensure!(
             depth < self.max_depth(),
             "index path exhausted before the page budget"
@@ -784,7 +812,13 @@ impl<'a> PagedIndex<'a> {
     }
 
     fn write(&self, page: &Page) -> Result<String> {
-        let bytes = serde_json::to_vec(page)?;
+        self.write_encoded(encode_page(page)?)
+    }
+
+    /// Keep the exact encoding used for the leaf-size check. Only this module's
+    /// typed page encoders call this method; the common size check, hashing,
+    /// pending publication and read-cache behavior remain below this boundary.
+    fn write_encoded(&self, bytes: Vec<u8>) -> Result<String> {
         ensure!(bytes.len() <= PAGE_BYTES, "index page byte budget exceeded");
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let key = self.page_key(&hash)?;

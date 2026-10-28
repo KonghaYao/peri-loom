@@ -170,10 +170,10 @@ fn process_usage() -> Result<Value> {
         );
         let usage = unsafe { usage.assume_init() };
         let micros = |time: libc::timeval| -> Result<u64> {
-            Ok(u64::try_from(time.tv_sec)?
+            u64::try_from(time.tv_sec)?
                 .checked_mul(1_000_000)
                 .and_then(|v| v.checked_add(u64::try_from(time.tv_usec).ok()?))
-                .context("process CPU counter overflow")?)
+                .context("process CPU counter overflow")
         };
         Ok(json!({"available":true,"user_us":micros(usage.ru_utime)?,
             "system_us":micros(usage.ru_stime)?,"maxrss_os_units":usage.ru_maxrss,
