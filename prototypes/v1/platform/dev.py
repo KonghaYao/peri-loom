@@ -757,12 +757,14 @@ def experimental_environment(environment, maintenance=False):
     the data plane, so its switches are forwarded to workers only. The PERI_DIAG_* switches are
     temporary slow/phase diagnostics wiring; only the slow pair needs
     prepare_slow_diagnostic_directory, while the group-phase switch writes to stderr only.
+    All-call RPC links use the same existing slow sink and private directory. Forwarding
+    that literal name does not enable the sink without PERI_DIAG_SLOW=1.
     """
     for name, value in os.environ.items():
         # Temporary diagnostic forwarding: remove these names and their guard once slow
         # diagnostics become a supported flag or are no longer needed.
         if (name in ("PERI_WORK_METRICS", "PERI_WORKER_DB_IDLE_UNLOAD_MS", "PERI_ADMISSION_TRACE",
-                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR", "PERI_DIAG_GROUP_PHASE", "PERI_REQUEST_READ_TRACE")
+                     "PERI_DIAG_SLOW", "PERI_DIAG_DIR", "PERI_DIAG_GROUP_PHASE", "PERI_DIAG_RPC_LINK", "PERI_REQUEST_READ_TRACE")
                 or (maintenance and name.startswith("PERI_MAINTENANCE_"))):
             environment[name] = value
     return environment
@@ -2390,6 +2392,7 @@ class Project:
         if self.launch["dev_sql_timeout_seconds"] != 30:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "0"
+        platform_environment["PERI_DURABILITY_OBSERVER"] = "0"
         platform_environment["PERI_HRANA_EXPERIMENTAL"] = "0"
         platform_environment["PERI_RECOVERY_ONLY"] = "1"
         platform_environment["PERI_SHUTDOWN_STAGE_CAP_MS"] = str(SHUTDOWN_STAGE_CAPS["platform"] * 1000)
@@ -2441,6 +2444,9 @@ class Project:
         if self.launch["dev_sql_timeout_seconds"] != 30:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])
         platform_environment["PERI_SQL_OPEN_OBSERVER"] = "1" if getattr(self.arguments, "sql_open_observer", False) else "0"
+        platform_environment["PERI_DURABILITY_OBSERVER"] = "1" if (
+            getattr(self.arguments, "sql_open_observer", False)
+            and os.environ.get("PERI_DURABILITY_OBSERVER") == "1") else "0"
         # The phase knobs belong to the profile. Forward only explicit values, and only when
         # the profile is on; the platform keeps its documented defaults for names not set.
         if getattr(self.arguments, "sql_open_observer", False):

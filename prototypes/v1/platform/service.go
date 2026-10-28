@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -41,6 +42,15 @@ func RunServiceWithWorkerStopVerifier(parent context.Context, config ServiceConf
 }
 
 func runService(parent context.Context, config ServiceConfig, output io.Writer, verifier WorkerStopVerifier) (result error) {
+	// This defer follows the bounded store/audit teardown attempts. A timeout
+	// leaves diagnostic coverage incomplete; it does not change their result.
+	var durability *serviceDurabilityObservation
+	defer func() {
+		durability.serviceResult(result)
+		if durability != nil && !durability.stop() {
+			log.Printf("durability observer did not complete")
+		}
+	}()
 	recovery, err := serviceRecoveryMode()
 	if err != nil {
 		return err
@@ -79,6 +89,13 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 		return err
 	}
 	defer func() { result = joinServiceResult(result, closeAuditWithin(budget, audit)) }()
+	if !recovery {
+		durability, err = startServiceDurabilityObservation(config.StateDirectory, os.Getenv(durabilityObservationEnvironment))
+		if err != nil {
+			log.Printf("durability observer unavailable; diagnostics incomplete")
+		}
+		bindDurabilityObservation(state, audit, durability)
+	}
 	if config.OwnedStopProof != nil {
 		if err := bindOwnedRunGeneration(state, *config.OwnedStopProof); err != nil {
 			return err

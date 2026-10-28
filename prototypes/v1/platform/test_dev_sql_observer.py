@@ -96,15 +96,17 @@ class ObserverTests(unittest.TestCase):
                     children[name] = dict(environment)
                     return {}
 
-                with patch.dict(dev.os.environ, {"PERI_SQL_OPEN_OBSERVER": "inherited-invalid", "PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY": "1"}), patch.object(project, "start", side_effect=record_start), patch.object(project, "start_maintenance"), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
+                with patch.dict(dev.os.environ, {"PERI_SQL_OPEN_OBSERVER": "inherited-invalid", "PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY": "1", "PERI_DURABILITY_OBSERVER": "1"}), patch.object(project, "start", side_effect=record_start), patch.object(project, "start_maintenance"), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
                     with self.assertRaisesRegex(RuntimeError, "offline stop before API"):
                         project.run()
                 self.assertEqual(children["platform"]["PERI_SQL_OPEN_OBSERVER"], "1" if enabled else "0")
                 self.assertEqual(children["platform"].get("PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY"), "1" if enabled else None)
+                self.assertEqual(children["platform"]["PERI_DURABILITY_OBSERVER"], "1" if enabled else "0")
                 for name, environment in children.items():
                     if name != "platform":
                         self.assertNotIn("PERI_SQL_OPEN_OBSERVER", environment)
                         self.assertNotIn("PERI_SQL_OPEN_OBSERVER_HTTP_BOUNDARY", environment)
+                        self.assertNotIn("PERI_DURABILITY_OBSERVER", environment)
 
     def test_experiment_switches_are_forwarded_by_name_and_scope(self):
         with patch.dict(dev.os.environ, {
@@ -149,6 +151,48 @@ class ObserverTests(unittest.TestCase):
         for name in workers:
             self.assertEqual(children[name]["PERI_WORK_METRICS"], "1")
             self.assertEqual(children[name]["PERI_MAINTENANCE_SCHEDULE"], "1")
+
+    def test_rpc_links_are_forwarded_by_exact_name_with_existing_slow_switches(self):
+        with patch.dict(dev.os.environ, {
+            "PERI_DIAG_RPC_LINK": "1", "PERI_DIAG_SLOW": "1",
+            "PERI_DIAG_DIR": "private-diagnostic-directory", "PERI_DIAG_SECRET": "not-forwarded",
+        }, clear=True):
+            self.assertNotIn("PERI_DIAG_RPC_LINK", dev.safe_environment())
+            environment = dev.experimental_environment({})
+        self.assertEqual(environment, {
+            "PERI_DIAG_RPC_LINK": "1", "PERI_DIAG_SLOW": "1",
+            "PERI_DIAG_DIR": "private-diagnostic-directory",
+        })
+
+    def test_rpc_links_reach_native_children_independently_of_go_observer_profile(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                project = self.project(enabled)
+                project.directory = self.root / ("links-on" if enabled else "links-off")
+                project.arguments.run_dir = str(project.directory)
+                children = {}
+
+                def record_start(name, command, environment):
+                    children[name] = dict(environment)
+                    return {}
+
+                with patch.dict(dev.os.environ, {
+                    "PERI_DIAG_RPC_LINK": "1", "PERI_DIAG_SLOW": "1",
+                    "PERI_DIAG_DIR": str(self.root / "diagnostics"),
+                }), patch.object(project, "start", side_effect=record_start), patch.object(project, "start_maintenance"), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
+                    with self.assertRaisesRegex(RuntimeError, "offline stop before API"):
+                        project.run()
+                self.assertNotIn("PERI_DIAG_RPC_LINK", children["platform"])
+                native = [environment for name, environment in children.items() if name != "platform"]
+                self.assertGreaterEqual(len(native), 2)
+                for environment in native:
+                    self.assertEqual(environment.get("PERI_DIAG_RPC_LINK"), "1")
+
+    def test_rpc_link_sink_without_directory_fails_before_starting_native_children(self):
+        project = self.project(False)
+        with patch.dict(dev.os.environ, {"PERI_DIAG_RPC_LINK": "1", "PERI_DIAG_SLOW": "1", "PERI_DIAG_DIR": ""}), patch.object(project, "start", side_effect=AssertionError("native process must not start")):
+            with self.assertRaisesRegex(RuntimeError, "requires PERI_DIAG_DIR"):
+                project.run()
 
     def test_fresh_symlink_is_rejected_before_build(self):
         target = self.root / "empty-target"

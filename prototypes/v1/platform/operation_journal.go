@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -207,35 +208,37 @@ func operationDeltaBetween(previous, next map[string]OperationRecord) operationD
 }
 
 type operationJournal struct {
-	mutex                sync.Mutex
-	path                 string
-	lock                 *os.File
-	file                 *os.File
-	revision             uint64
-	digest               string
-	size                 int64
-	records              []journalEntry
-	snapshot             *operationSnapshot
-	appends              uint64
-	appendsTotal         uint64
-	ordered              uint64
-	syncs                uint64
-	compactions          uint64
-	compactionNS         uint64
-	compactionMaxNS      uint64
-	compactionFailures   uint64
-	compactionSnapshotNS uint64
-	compactionSyncNS     uint64
-	compactionTruncateNS uint64
-	closed               bool
-	poisoned             bool
-	completion           *completionGenesis
-	auditHead            auditHead
-	orderedAudit         auditHead
-	retainedBytes        int64
-	archivedRevision     uint64
-	queuedBytes          int64
-	maintenancePending   bool
+	observation            atomic.Pointer[durabilityObserver]
+	mutex                  sync.Mutex
+	path                   string
+	lock                   *os.File
+	file                   *os.File
+	revision               uint64
+	digest                 string
+	size                   int64
+	records                []journalEntry
+	snapshot               *operationSnapshot
+	appends                uint64
+	appendsTotal           uint64
+	ordered                uint64
+	syncs                  uint64
+	compactions            uint64
+	compactionNS           uint64
+	compactionMaxNS        uint64
+	compactionFailures     uint64
+	compactionSnapshotNS   uint64
+	compactionSyncNS       uint64
+	compactionTruncateNS   uint64
+	closed                 bool
+	poisoned               bool
+	completion             *completionGenesis
+	auditHead              auditHead
+	orderedAudit           auditHead
+	retainedBytes          int64
+	archivedRevision       uint64
+	queuedBytes            int64
+	maintenancePending     bool
+	observationMaintenance uint64
 
 	// The ordered commit queue. The queue lock covers bookkeeping only, so a submitter
 	// never queues behind a barrier; write serializes the file itself and is held by the

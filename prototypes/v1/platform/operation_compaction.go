@@ -14,21 +14,39 @@ import (
 // Both mutation entry and post-append settlement use the gate, so an older waiter
 // cannot start a second compaction or miss the first one's failure.
 func (store *stateStore) lockOperationMutationState() func() {
+	return store.lockOperationMutationStateObserved(nil)
+}
+
+func (store *stateStore) lockOperationMutationStateObserved(preparation *durabilityPreparation) func() {
 	for {
+		var started time.Time
+		if preparation != nil {
+			started = time.Now()
+		}
 		unlock := store.lockState()
+		if preparation != nil {
+			preparation.timings.StateLockNS += uint64(time.Since(started))
+		}
 		if store.operationCompacting == nil {
 			return unlock
 		}
 		finished := store.operationCompacting
 		unlock()
+		if preparation != nil {
+			started = time.Now()
+		}
 		<-finished
+		if preparation != nil {
+			preparation.timings.CompactionGateNS += uint64(time.Since(started))
+		}
 	}
 }
 
 type operationCompaction struct {
-	snapshot operationSnapshot
-	origin   string
-	started  time.Time
+	observation *durabilityMaintenance
+	snapshot    operationSnapshot
+	origin      string
+	started     time.Time
 }
 
 // The caller owns the state lock and has already settled its operation view.
@@ -110,6 +128,17 @@ func (journal *operationJournal) captureCompaction(view State) *operationCompact
 	if journal.snapshot != nil && journal.snapshot.Origin == operationSnapshotOriginReseal {
 		compaction.origin = operationSnapshotOriginReseal
 	}
+	if observer := journal.observation.Load(); observer != nil {
+		identity := observer.nextID()
+		journal.observationMaintenance = identity
+		mode := "legacy_v1"
+		if journal.completion != nil {
+			mode = "completion_v2"
+		}
+		compaction.observation = &durabilityMaintenance{observer: observer, started: compaction.started,
+			event: durabilityEvent{Kind: "journal_compaction", Mode: mode, ID: identity, Revision: journal.revision, Owner: "background", Count: len(compaction.snapshot.Records),
+				Timings: durabilityTimings{CaptureNS: uint64(time.Since(compaction.started))}}}
+	}
 	return compaction
 }
 
@@ -121,8 +150,10 @@ type operationCompactionTimings struct {
 
 // This method changes only durable files and the detached snapshot. The same
 // snapshot -> witness sync -> truncate order is used for v1, v2 and recovery.
-func (journal *operationJournal) persistCompaction(compaction *operationCompaction) (operationCompactionTimings, error) {
-	var timings operationCompactionTimings
+func (journal *operationJournal) persistCompaction(compaction *operationCompaction) (timings operationCompactionTimings, failure error) {
+	if compaction.observation != nil {
+		defer func() { compaction.observation.finish(failure) }()
+	}
 	if err := journal.compactionGate("before_snapshot"); err != nil {
 		return timings, err
 	}
@@ -134,8 +165,17 @@ func (journal *operationJournal) persistCompaction(compaction *operationCompacti
 	if err != nil || len(encoded) > operationJournalMaximumBytes {
 		return timings, errors.New("invalid operation snapshot")
 	}
+	var persistStarted time.Time
+	if compaction.observation != nil {
+		compaction.observation.event.Timings.EncodeNS = uint64(time.Since(started))
+		compaction.observation.event.Bytes = len(encoded)
+		persistStarted = time.Now()
+	}
 	err = atomicPrivate(journal.snapshotPath(), encoded)
 	timings.snapshot = uint64(time.Since(started))
+	if compaction.observation != nil {
+		compaction.observation.event.Timings.SnapshotNS = uint64(time.Since(persistStarted))
+	}
 	if err != nil {
 		return timings, err
 	}
@@ -145,6 +185,9 @@ func (journal *operationJournal) persistCompaction(compaction *operationCompacti
 	started = time.Now()
 	err = journal.file.Sync()
 	timings.sync = uint64(time.Since(started))
+	if compaction.observation != nil {
+		compaction.observation.event.Timings.SyncNS = timings.sync
+	}
 	if err != nil {
 		return timings, err
 	}
@@ -154,6 +197,9 @@ func (journal *operationJournal) persistCompaction(compaction *operationCompacti
 	started = time.Now()
 	err = journal.file.Truncate(operationJournalWitnessBytes)
 	timings.truncate = uint64(time.Since(started))
+	if compaction.observation != nil {
+		compaction.observation.event.Timings.TruncateNS = timings.truncate
+	}
 	return timings, err
 }
 

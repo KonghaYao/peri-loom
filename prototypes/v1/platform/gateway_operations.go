@@ -75,7 +75,7 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 	if err != nil {
 		result = gateway.upstreamFailure(err, session, permit)
 	}
-	gateway.settleOperation(session.database, operationID, "close_session", &result, permit)
+	gateway.settleOperationCaller(session.database, operationID, "close_session", &result, permit, requestID)
 	if result.code == "outcome_unknown" {
 		return &SQLRPCError{Ambiguous: true, cause: err}
 	}
@@ -83,13 +83,22 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 }
 
 func (gateway *Gateway) settleOperation(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit) {
-	_ = gateway.settleOperationUsing(database, operationID, stage, result, permit, func(change func(*operationEdit) error) error {
+	gateway.settleOperationCaller(database, operationID, stage, result, permit, "")
+}
+
+func (gateway *Gateway) settleOperationCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, requestID string) {
+	caller := newDurabilityCaller(gateway.config.State, operationID, requestID, "terminal", "gateway")
+	_ = gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, func(change func(*operationEdit) error) error {
 		return updateOperationRecords(gateway.config.State, change)
-	})
+	}, caller)
 }
 
 func (gateway *Gateway) settleOperationUsing(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error) error {
-	unlock := lockOperationNamespace(database.Namespace)
+	return gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, persist, nil)
+}
+
+func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error, caller *durabilityCaller) error {
+	unlock := lockObservedOperationNamespace(database.Namespace, caller)
 	defer unlock()
 	result.operationID, result.operationStage = operationID, stage
 	// observed keeps the committed copy of a record whose outcome the reply must
@@ -97,6 +106,7 @@ func (gateway *Gateway) settleOperationUsing(database controller.DatabaseID, ope
 	// after this function returns. It is request-local, so no lock is shared.
 	var observed *OperationStatus
 	err := persist(func(edit *operationEdit) error {
+		edit.caller = caller
 		key := operationKey(database, operationID)
 		record, exists := edit.record(key)
 		if !exists || record.State != "in_flight" {

@@ -163,6 +163,18 @@ pub(crate) struct Event {
 #[derive(Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum Detail {
+    AuthorityRpcLink {
+        scope: &'static str,
+        command: &'static str,
+        phase: &'static str,
+        parent_id_status: &'static str,
+        child_id_status: &'static str,
+        link_available: bool,
+        send_invoked: bool,
+        response_headers_received: bool,
+        capture: &'static str,
+        complete: bool,
+    },
     AuthorityObjectIo {
         scope: &'static str,
         object_class: &'static str,
@@ -457,7 +469,10 @@ impl AuthorityOperation {
     }
 }
 
+mod rpc_link;
 mod sink;
+
+pub(crate) use rpc_link::{AuthorityRpcLink, RpcPhase};
 
 #[cfg(test)]
 mod tests {

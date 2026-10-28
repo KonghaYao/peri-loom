@@ -17,11 +17,15 @@ use std::{
 };
 
 mod pack;
+mod physical_diagnostics;
+#[cfg(test)]
+mod read_tests;
 
 pub struct LocalObjectStore {
     root: PathBuf,
     packed: bool,
     physical: pack::Counters,
+    physical_diagnostics: Option<physical_diagnostics::CountersDiagnostic>,
 }
 
 /// One body staged for a group publication. `file` is `None` when staging found an
@@ -131,17 +135,26 @@ struct GroupPhase {
     barrier_ns: u64,
     total_started: Option<Instant>,
     stamp: Option<crate::storage_diagnostics::Stamp>,
+    group_id: u64,
+    shape: Option<crate::storage_diagnostics::GroupShape>,
 }
 
 impl GroupPhase {
     fn start(writes: &[super::GroupWrite]) -> Self {
         let stderr = group_phase_enabled();
         let timed = stderr || crate::work_metrics::enabled();
+        static NEXT_GROUP: AtomicU64 = AtomicU64::new(1);
         let mut phase = Self {
             timed,
             stderr,
             total_started: timed.then(Instant::now),
             stamp: stderr.then(crate::storage_diagnostics::Stamp::new),
+            group_id: if stderr {
+                NEXT_GROUP.fetch_add(1, Ordering::Relaxed)
+            } else {
+                0
+            },
+            shape: stderr.then(|| crate::storage_diagnostics::GroupShape::from_writes(writes)),
             ..Self::default()
         };
         if timed {
@@ -182,6 +195,9 @@ impl GroupPhase {
             return;
         }
         let stamp = self.stamp.as_ref().expect("diagnostic stamp missing");
+        if let Some(shape) = &self.shape {
+            shape.emit(stamp, self.group_id);
+        }
         let _ = writeln!(
             std::io::stderr().lock(),
             concat!(
@@ -192,7 +208,7 @@ impl GroupPhase {
                 "encode_ns={} open_ns={} spawn_ns={} workers={} body_total_max_ns={} ",
                 "precheck_ns={} worker_select_ns={} worker_start_wait_max_ns={} ",
                 "worker_wall_max_ns={} join_tail_ns={} collect_ns={} ",
-                "start_unix_ns={} publication_id={} request_id={}"
+                "start_unix_ns={} publication_id={} request_id={} group_id={}"
             ),
             std::process::id(),
             self.writes,
@@ -227,6 +243,7 @@ impl GroupPhase {
             stamp.start_unix_ns,
             stamp.publication_id,
             stamp.request_id.as_deref().unwrap_or("none"),
+            self.group_id,
         );
     }
 }
@@ -308,6 +325,7 @@ impl LocalObjectStore {
             root: root.canonicalize()?,
             packed: false,
             physical: pack::Counters::default(),
+            physical_diagnostics: None,
         };
         let _guard = store.lock()?;
         store.packed = pack::open(&store, requested)?;
@@ -316,12 +334,29 @@ impl LocalObjectStore {
             flush_directory(parent)?;
         }
         publish_directory_barrier(&store.root)?;
+        // Only successfully opened handles receive a diagnostic identity. Failed
+        // format admission must not be reported as an opened legacy/packed store.
+        store.physical_diagnostics =
+            physical_diagnostics::CountersDiagnostic::new(group_phase_enabled());
         Ok(store)
     }
 
     /// Physical calls, including maintenance, rather than logical group counts.
     pub fn local_storage_metrics(&self) -> serde_json::Value {
         self.physical.snapshot(self.packed)
+    }
+
+    fn emit_physical_counters(
+        &self,
+        reason: physical_diagnostics::SnapshotReason,
+        group_id: Option<u64>,
+    ) {
+        physical_diagnostics::emit_if_enabled(
+            self.physical_diagnostics.as_ref(),
+            reason,
+            group_id,
+            || self.local_storage_metrics(),
+        );
     }
 
     fn flush_body(&self, file: &File) -> std::io::Result<()> {
@@ -798,7 +833,17 @@ impl LocalObjectStore {
         if self.packed {
             return pack::read(self, &path, key);
         }
-        reject_symlink(&path)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "nonregular store file rejected"
+            ),
+            // A missing observation is complete at this lookup. Staging still
+            // rechecks the final object under STORE before publishing, so a
+            // concurrent creator does not require a second failed open here.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
         let encoded = match fs::read(path) {
             Ok(encoded) => encoded,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -825,6 +870,18 @@ impl LocalObjectStore {
             bytes: envelope.bytes,
             etag: envelope.etag,
         }))
+    }
+}
+
+impl Drop for LocalObjectStore {
+    fn drop(&mut self) {
+        // Diagnostic failure (including panic) must never turn teardown into a
+        // business failure. A missing Drop record is not evidence of zero work.
+        // Do not enter formatting, cache locking or stderr during another unwind.
+        if self.physical_diagnostics.is_none() || std::thread::panicking() {
+            return;
+        }
+        self.emit_physical_counters(physical_diagnostics::SnapshotReason::StoreDrop, None);
     }
 }
 
@@ -1049,6 +1106,13 @@ impl ObjectStore for LocalObjectStore {
         })();
         if result.is_ok() {
             phase.emit();
+            // These are handle-lifetime counters, not costs of this group. Other
+            // callers may have advanced them concurrently. Emission is outside
+            // the old group-total clock and still costs the enclosing request.
+            self.emit_physical_counters(
+                physical_diagnostics::SnapshotReason::SuccessfulGroupBoundary,
+                phase.stderr.then_some(phase.group_id),
+            );
         }
         result
     }

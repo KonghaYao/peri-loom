@@ -9,6 +9,12 @@ use super::request_reads;
 use crate::namespace::Namespace;
 use crate::object_store::{ObjectStore, PutCondition};
 
+#[path = "paged_index_update.rs"]
+mod update;
+
+#[cfg(test)]
+pub(crate) use update::{collapse_test_stats, CollapsePolicyGuard};
+
 const PAGE_BYTES: usize = 16 * 1024;
 const HASH_NIBBLES: u16 = 64;
 /// Reader-pin keys are bucketed by a two-byte digest of the pin identity. A prefix scan
@@ -422,6 +428,9 @@ impl<'a> PagedIndex<'a> {
         inserts: BTreeMap<String, Value>,
         removals: &BTreeSet<String>,
     ) -> Result<Option<String>> {
+        if self.order == KeyOrder::Bucketed && update::collapse_enabled() {
+            return self.apply_bucketed(root, inserts, removals);
+        }
         self.apply_at(root, inserts, removals, 0, &[])
     }
 

@@ -32,10 +32,11 @@ var ErrOperationQueueFull = errors.New("durable operation queue exhausted")
 // fixed when it is queued, so the order the log records is the order submitters were
 // serialized in, and the digest covers the bytes that are actually written.
 type operationCommit struct {
-	revision uint64
-	payload  journalMutation
-	line     []byte
-	hash     string
+	observation *durabilityPending
+	revision    uint64
+	payload     journalMutation
+	line        []byte
+	hash        string
 
 	// settled closes once the barrier's result is known; err is written before it closes,
 	// so a waiter that observes the close also observes the result.
@@ -55,7 +56,13 @@ func (journal *operationJournal) submit(view State, delta operationDelta) (*oper
 }
 
 func (journal *operationJournal) submitAudit(view State, delta operationDelta, event *AuditEvent, reserved bool) (*operationCommit, error) {
+	return journal.submitAuditPrepared(view, delta, event, reserved, nil)
+}
+
+func (journal *operationJournal) submitAuditPrepared(view State, delta operationDelta, event *AuditEvent, reserved bool, preparation *durabilityPreparation) (*operationCommit, error) {
+	preparation.mark("submit_entry")
 	journal.mutex.Lock()
+	preparation.mark("queue_lock")
 	defer journal.mutex.Unlock()
 	if err := journal.available(); err != nil {
 		return nil, err
@@ -82,6 +89,7 @@ func (journal *operationJournal) submitAudit(view State, delta operationDelta, e
 	if journal.completion != nil {
 		mutation.Version = completionJournalVersion
 	}
+	preparation.mark("order")
 	if event != nil {
 		if journal.completion == nil || validateAudit(*event) != nil || journal.orderedAudit.Sequence == ^uint64(0) {
 			return nil, errors.New("invalid completion audit")
@@ -103,6 +111,7 @@ func (journal *operationJournal) submitAudit(view State, delta operationDelta, e
 	if err != nil {
 		return nil, errors.New("invalid operation mutation")
 	}
+	preparation.mark("encode")
 	if journal.completion != nil {
 		maximum := completionRetentionSoftBytes
 		activeMaximum := int64(operationJournalMaximumBytes)
@@ -118,8 +127,17 @@ func (journal *operationJournal) submitAudit(view State, delta operationDelta, e
 			return nil, ErrOperationQueueFull
 		}
 	}
-	journal.encodeNS += uint64(time.Since(encodeStarted))
+	encodeNS := uint64(time.Since(encodeStarted))
+	journal.encodeNS += encodeNS
 	commit := &operationCommit{revision: mutation.Revision, payload: mutation, line: append(line, '\n'), hash: hash, settled: make(chan struct{})}
+	if observer := journal.observation.Load(); observer != nil {
+		member := durabilityOperationMember(observer.nextID(), mutation.Revision, delta, event)
+		if preparation != nil {
+			member = preparation.correlate(member, delta, event)
+		}
+		commit.observation = &durabilityPending{observer: observer, member: member, enqueued: time.Now(), encodeNS: encodeNS}
+		preparation.finish(commit.observation)
+	}
 	journal.commits = append(journal.commits, commit)
 	journal.queuedBytes += int64(len(commit.line))
 	if mutation.Audit != nil {
@@ -145,7 +163,7 @@ func (journal *operationJournal) await(commit *operationCommit) error {
 		return errors.New("operation commit missing")
 	}
 	started := time.Now()
-	<-commit.settled
+	journal.waitObserved(commit)
 	journal.observeWait(time.Since(started))
 	return commit.err
 }
@@ -177,7 +195,16 @@ func (journal *operationJournal) flush() {
 			// Held before the batch is chosen, so a test can let appends pile up first.
 			journal.testPopGate()
 		}
+		observer := journal.observation.Load()
+		var observedStart time.Time
+		if observer != nil {
+			observedStart = time.Now()
+		}
 		journal.write.Lock()
+		var lockNS uint64
+		if observer != nil {
+			lockNS = uint64(time.Since(observedStart))
+		}
 		journal.mutex.Lock()
 		if len(journal.commits) == 0 {
 			journal.mutex.Unlock()
@@ -185,6 +212,20 @@ func (journal *operationJournal) flush() {
 			continue
 		}
 		batch := journal.takeBatchLocked()
+		var observedBatch uint64
+		var observedMembers []durabilityMember
+		previousMaintenance := journal.observationMaintenance
+		if observer != nil {
+			observedBatch = observer.nextID()
+			selected := time.Now()
+			observedMembers = make([]durabilityMember, 0, len(batch))
+			for _, commit := range batch {
+				if commit.observation != nil {
+					commit.observation.batch, commit.observation.selected = observedBatch, selected
+					observedMembers = append(observedMembers, commit.observation.member)
+				}
+			}
+		}
 		journal.writing = true
 		offset := journal.size
 		failure := journal.available()
@@ -211,6 +252,13 @@ func (journal *operationJournal) flush() {
 		}
 		journal.mutex.Unlock()
 		journal.write.Unlock()
+		if observer != nil {
+			now := time.Now()
+			observer.record(durabilityEvent{Kind: "journal_batch", ID: observedBatch, Owner: durabilityBatchOwner(observedMembers),
+				PreviousMaintenance: previousMaintenance, Outcome: durabilityOutcome(err), Count: len(batch),
+				StartedUnixNS: observedStart.UnixNano(), FinishedUnixNS: now.UnixNano(), TotalNS: uint64(now.Sub(observedStart)),
+				Timings: durabilityTimings{LockNS: lockNS, VerifyNS: timings.verify, AssembleNS: timings.assemble, WriteNS: timings.write, SyncNS: timings.sync, WitnessNS: timings.witness}, Members: observedMembers})
+		}
 		for _, commit := range batch {
 			commit.err = err
 			close(commit.settled)

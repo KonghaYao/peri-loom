@@ -136,7 +136,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		if result.operationPending && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
-			gateway.settleOperation(result.operationDatabase, result.operationID, result.operationStage, &result, permit)
+			gateway.settleOperationCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, identifier)
 			leaveTerminal()
 		} else if result.operationDeferred != nil && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
@@ -166,7 +166,8 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 					return reservation.RecordOperation(event, change)
 				}
 				if result.operationPending {
-					auditErr = gateway.settleOperationUsing(result.operationDatabase, result.operationID, result.operationStage, &result, permit, persist)
+					caller := newDurabilityCaller(gateway.config.State, result.operationID, identifier, "completion", "gateway")
+					auditErr = gateway.settleOperationUsingCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, persist, caller)
 				} else {
 					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, persist)
 				}

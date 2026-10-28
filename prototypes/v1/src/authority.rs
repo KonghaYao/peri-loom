@@ -11,6 +11,8 @@ mod migration;
 pub mod ownership;
 mod ownership_view;
 pub(crate) mod paged_index;
+#[cfg(test)]
+mod receipt_roll_work_tests;
 mod registry;
 pub(crate) mod request_reads;
 #[cfg(test)]
@@ -365,13 +367,24 @@ fn decode_head_with_digest(
     Ok((root, digest))
 }
 
+#[cfg(test)]
+pub(crate) mod deterministic_test_ids;
+
 pub(super) fn now_ms() -> Result<u64> {
+    #[cfg(test)]
+    if let Some(now) = deterministic_test_ids::now_ms() {
+        return Ok(now);
+    }
     Ok(u64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
     )?)
 }
 
 pub(super) fn unique_id() -> Result<String> {
+    #[cfg(test)]
+    if let Some(id) = deterministic_test_ids::unique_id() {
+        return Ok(id);
+    }
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let mut hash = blake3::Hasher::new();

@@ -101,6 +101,8 @@ type operationTouch struct {
 }
 
 type operationEdit struct {
+	// Diagnostic metadata only; never part of State, journalMutation or rollback.
+	caller        *durabilityCaller
 	state         *State
 	index         *operationIndex
 	priorSequence uint64

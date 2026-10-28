@@ -174,7 +174,9 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 }
 
 func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool) error {
-	unlock := store.lockOperationMutationState()
+	preparation := store.observeOperationPreparation()
+	unlock := store.lockOperationMutationStateObserved(preparation)
+	preparation.mark("state_gate")
 	if err := store.disk.available(); err != nil {
 		unlock()
 		return err
@@ -203,11 +205,13 @@ func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error
 	// outstanding. That is safe because the queue keeps them in submit order and a failure
 	// reverts them in reverse order, and it is what lets concurrent appends share one
 	// barrier: waiting here would serialize every commit behind the oldest one.
+	preparation.mark("entry_checks")
 	if store.operationsIndex == nil {
 		store.operationsIndex = newOperationIndex(store.state.Operations)
 		store.cost.observeIndexRebuild(len(store.operationsIndex.records))
 	}
 	edit := newOperationEdit(&store.state, store.operationsIndex)
+	preparation.mark("edit_setup")
 	if change != nil {
 		if err := change(edit); err != nil {
 			edit.revert()
@@ -215,23 +219,30 @@ func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error
 			return err
 		}
 	}
+	preparation.mark("edit")
 	if err := edit.settleRetention(); err != nil {
 		edit.revert()
 		unlock()
 		return err
 	}
+	preparation.mark("retention")
 	if err := edit.validate(); err != nil {
 		edit.revert()
 		unlock()
 		return err
 	}
+	preparation.mark("validate")
 	delta := edit.delta()
+	preparation.mark("delta")
 	if event == nil && delta.empty() && store.state.OperationSequence == edit.priorSequence && store.state.OperationEvictions == edit.evictions {
 		// A mutation that changed nothing needs no barrier at all.
 		unlock()
 		return nil
 	}
-	commit, err := store.operations.submitAudit(store.state, delta, event, reserved)
+	if preparation != nil {
+		preparation.caller = edit.caller
+	}
+	commit, err := store.operations.submitAuditPrepared(store.state, delta, event, reserved, preparation)
 	if err != nil {
 		// A full queue is a refusal this change introduced before any write, so it poisons
 		// nothing; every other registration refusal keeps the base behaviour of failing the
@@ -246,7 +257,7 @@ func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error
 	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert})
 	store.cost.observeCommit()
 	unlock()
-	<-commit.settled
+	store.operations.waitObserved(commit)
 	unlock = store.lockOperationMutationState()
 	// Another waiter may have settled this commit before us; settling again is what makes
 	// the outcome definite either way.

@@ -72,6 +72,7 @@ type auditRotation struct {
 }
 
 type auditRequest struct {
+	observation     *durabilityPending
 	event           AuditEvent
 	class           AuditClass
 	bytes           int
@@ -123,9 +124,12 @@ func (witness *auditWitness) verify() error {
 }
 
 type fileAudit struct {
-	completionStore *stateStore
-	queueMutex      sync.Mutex
-	pending         []*auditRequest
+	observation            atomic.Pointer[durabilityObserver]
+	observationBatch       uint64
+	observationMaintenance uint64
+	completionStore        *stateStore
+	queueMutex             sync.Mutex
+	pending                []*auditRequest
 	// writing is the batch the single writer is currently persisting. It keeps
 	// its admission charge, and its age is reported too, because a stalled
 	// barrier is exactly when the queue age matters.
@@ -228,6 +232,10 @@ func (audit *fileAudit) admitLocked(class AuditClass, bytes int) bool {
 }
 
 func (audit *fileAudit) enqueueLocked(request *auditRequest) {
+	if observer := audit.observation.Load(); observer != nil {
+		request.observation = &durabilityPending{observer: observer, member: durabilityRequestMember(observer.nextID(), 0, request.event.RequestID), enqueued: time.Now()}
+		request.observation.member.Phase = "audit"
+	}
 	audit.pending = append(audit.pending, request)
 	if !audit.running {
 		audit.running = true
@@ -317,7 +325,7 @@ func (audit *fileAudit) recordCompletionOperation(event AuditEvent, reservation 
 	audit.observeMaximumLocked()
 	audit.enqueueLocked(request)
 	audit.queueMutex.Unlock()
-	return <-request.done
+	return audit.waitObserved(request)
 }
 
 func auditSegmentPath(path string, start uint64) string {
@@ -574,7 +582,7 @@ func (audit *fileAudit) RecordClass(event AuditEvent, class AuditClass) error {
 	}
 	audit.enqueueLocked(request)
 	audit.queueMutex.Unlock()
-	return <-request.done
+	return audit.waitObserved(request)
 }
 
 // 只合并已有等待者，不为形成批次延迟孤立请求；每个调用都等待自己的持久化结果。
@@ -592,6 +600,14 @@ func (audit *fileAudit) drain() {
 		clear(audit.pending[:count])
 		audit.pending = audit.pending[count:]
 		audit.writing = batch
+		if audit.observation.Load() != nil {
+			selected := time.Now()
+			for _, request := range batch {
+				if request.observation != nil {
+					request.observation.selected = selected
+				}
+			}
+		}
 		audit.queueMutex.Unlock()
 		err := audit.recordBatch(batch)
 		// The batch keeps its admission charge until the barrier returns, so a
@@ -705,12 +721,38 @@ func (audit *fileAudit) recordSyncDuration(elapsed time.Duration) {
 	}
 }
 
-func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
+func (audit *fileAudit) recordBatch(batch []*auditRequest) (failure error) {
+	observation := audit.observeBatch(batch)
+	if observation != nil {
+		defer func() {
+			diagnosticFailure := failure
+			for _, request := range batch[:min(len(batch), auditBatchMaximum)] {
+				if request.observation != nil {
+					observation.event.Members = append(observation.event.Members, request.observation.member)
+				}
+				if request.failure != nil {
+					diagnosticFailure = request.failure
+				}
+			}
+			observation.event.Owner = durabilityBatchOwner(observation.event.Members)
+			observation.finish(diagnosticFailure)
+		}()
+	}
 	if audit.completionStore != nil {
 		return audit.recordUnifiedBatch(batch)
 	}
+	var lockStarted time.Time
+	if observation != nil {
+		lockStarted = time.Now()
+	}
 	audit.mutex.Lock()
 	defer audit.mutex.Unlock()
+	if observation != nil {
+		observation.event.Timings.LockNS = uint64(time.Since(lockStarted))
+		audit.observationBatch = observation.event.ID
+		observation.event.PreviousMaintenance = audit.observationMaintenance
+		defer func() { audit.observationBatch = 0 }()
+	}
 	if audit.closed {
 		return ErrStateClosed
 	}
@@ -727,6 +769,10 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
 	}
 	next := audit.state
 	var line []byte
+	var encodeStarted time.Time
+	if observation != nil {
+		encodeStarted = time.Now()
+	}
 	for _, request := range batch {
 		if err := validateAudit(request.event); err != nil {
 			return err
@@ -738,8 +784,24 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
 		line = append(line, record...)
 		line = append(line, '\n')
 		next = auditHead{Version: 1, Sequence: payload.Sequence, Hash: hash}
+		if request.observation != nil {
+			request.observation.member.Sequence = payload.Sequence
+		}
+	}
+	if observation != nil {
+		observation.event.Timings.EncodeNS = uint64(time.Since(encodeStarted))
+		observation.event.Bytes = len(line)
 	}
 	if audit.size+int64(len(line)) > auditSegmentBytes {
+		var rotationStarted time.Time
+		if observation != nil {
+			rotationStarted = time.Now()
+			defer func() {
+				if observation.event.Timings.RotationNS == 0 {
+					observation.event.Timings.RotationNS = uint64(time.Since(rotationStarted))
+				}
+			}()
+		}
 		if audit.size == 0 {
 			return errors.New("audit event exceeds segment capacity")
 		}
@@ -762,17 +824,38 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
 			audit.head.poisoned = true
 			return ErrStateUncertain
 		}
+		if observation != nil {
+			observation.event.Timings.RotationNS = uint64(time.Since(rotationStarted))
+		}
 	}
 	// The appended chain is what makes a record durable, so the head only has to
 	// stay close enough to witness it. Advancing it on every record would add four
 	// barriers per request for no durability gain, so it moves by at most
 	// auditBatchMaximum records at a time, which is also the gap recovery accepts.
 	if next.Sequence-audit.head.revision > auditBatchMaximum && audit.state.Sequence > audit.head.revision {
-		if err := audit.commitHead(); err != nil {
+		var checkpointStarted time.Time
+		if observation != nil {
+			checkpointStarted = time.Now()
+		}
+		if err := audit.commitHead("pre_batch"); err != nil {
+			if observation != nil {
+				observation.event.Timings.CheckpointNS = uint64(time.Since(checkpointStarted))
+			}
 			return err
 		}
+		if observation != nil {
+			observation.event.Timings.CheckpointNS = uint64(time.Since(checkpointStarted))
+		}
 	}
-	if written, err := audit.file.Write(line); err != nil || written != len(line) {
+	var writeStarted time.Time
+	if observation != nil {
+		writeStarted = time.Now()
+	}
+	written, err := audit.file.Write(line)
+	if observation != nil {
+		observation.event.Timings.WriteNS = uint64(time.Since(writeStarted))
+	}
+	if err != nil || written != len(line) {
 		audit.head.poisoned = true
 		return ErrStateUncertain
 	}
@@ -780,7 +863,11 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) error {
 		gate()
 	}
 	syncStarted := time.Now()
-	if err := audit.file.Sync(); err != nil {
+	err = audit.file.Sync()
+	if observation != nil {
+		observation.event.Timings.SyncNS = uint64(time.Since(syncStarted))
+	}
+	if err != nil {
 		audit.head.poisoned = true
 		return ErrStateUncertain
 	}
@@ -807,7 +894,7 @@ func (audit *fileAudit) Close() error {
 	// acknowledged record is still present.
 	checkpoint := error(nil)
 	if audit.state.Sequence > audit.head.revision {
-		checkpoint = audit.commitHead()
+		checkpoint = audit.commitHead("shutdown")
 	}
 	return errors.Join(checkpoint, audit.file.Close(), audit.head.close())
 }

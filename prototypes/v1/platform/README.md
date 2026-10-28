@@ -482,6 +482,23 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.19
+
+This release applies the issue 15 candidate that keeps changed bucketed pin-index
+nodes in memory, collapses already-read adjacent leaves without sibling reads,
+and persists only the final reachable pages. It also adds default-off diagnostics
+for Go journal preparation and durability batches, Rust physical storage
+counters, and local request-ID links across Worker, Authority and publication.
+The diagnostics change no durable encoding, barrier, ACK order, retry policy or
+response boundary.
+
+Two ABBA rounds on Linux x86_64 reduced business p99 by 19.58%/18.29% (H4/H6) in
+round one and 20.25%/26.13% in round two; every paired p50 stayed within 5%. The
+frozen target still fails: round one H6 had one paired p99 regression of about
+4.99%, and not every round reached 20% for both scenarios. This is not a proven
+fix for the reported M4/OrbStack write tail. See
+[the measured results](../../../docs/performance-review/2026-10-28-v119-tail.md).
+
 ## v1.1.18
 
 This release adds a bounded CLOCK eviction policy to the request-local parsed

@@ -345,9 +345,11 @@ func settleNonCommittingOperationUsing(store StateStore, database controller.Dat
 	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || !taggedCommandDigest(digest) {
 		return operationID, errors.New("operation registration unavailable")
 	}
-	unlock := lockOperationNamespace(database.Namespace)
+	caller := newDurabilityCaller(store, operationID, requestID, "terminal", source)
+	unlock := lockObservedOperationNamespace(database.Namespace, caller)
 	defer unlock()
 	err = persist(func(edit *operationEdit) error {
+		edit.caller = caller
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
@@ -369,13 +371,15 @@ func settleNonCommittingOperationUsing(store StateStore, database controller.Dat
 // bytes, so the record cannot describe a command other than the one that will be
 // sent after this returns.
 func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session string, command frozenCommand) error {
-	unlock := lockOperationNamespace(database.Namespace)
+	caller := newDurabilityCaller(store, operationID, requestID, "intent", source)
+	unlock := lockObservedOperationNamespace(database.Namespace, caller)
 	defer unlock()
 	digest := command.digest()
 	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || source == "management" && !labelPattern.MatchString(requestID) {
 		return errors.New("operation registration unavailable")
 	}
 	return updateOperationRecords(store, func(edit *operationEdit) error {
+		edit.caller = caller
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}

@@ -208,6 +208,7 @@ impl AuthorityClient {
         command: AuthorityCommand,
         deadline: Option<std::time::Instant>,
     ) -> Result<serde_json::Value> {
+        let mut link = crate::slow_diagnostics::AuthorityRpcLink::begin(&command);
         let is_grant = matches!(&command, AuthorityCommand::Grant { .. });
         let request_id = match &command {
             AuthorityCommand::Grant { request } => request.request_id.clone(),
@@ -216,7 +217,9 @@ impl AuthorityClient {
             AuthorityCommand::Maintenance { request_id, .. } => request_id.clone(),
             _ => random_id()?,
         };
+        link.child(&request_id);
         crate::ownership::types::validate_label(&request_id)?;
+        link.phase(crate::slow_diagnostics::RpcPhase::EncodeRequest);
         let bytes = serde_json::to_vec(&RpcRequest {
             version: PROTOCOL_VERSION,
             request_id: request_id.clone(),
@@ -233,6 +236,7 @@ impl AuthorityClient {
         } else {
             None
         };
+        link.phase(crate::slow_diagnostics::RpcPhase::Deadline);
         let budget = match deadline {
             Some(deadline) => deadline
                 .checked_duration_since(Instant::now())
@@ -243,6 +247,7 @@ impl AuthorityClient {
         // The slot is taken before the request exists. Taking it after `send`
         // would make the bound advisory, and taking it here is exactly why
         // running out of slots is a definite "not sent" instead of an unknown.
+        link.phase(crate::slow_diagnostics::RpcPhase::AcquireSlot);
         let _slot = self
             .connections
             .acquire(budget)
@@ -256,9 +261,11 @@ impl AuthorityClient {
         if deadline.is_some() {
             pending = pending.timeout(budget);
         }
+        link.phase(crate::slow_diagnostics::RpcPhase::Send);
         let response = pending
             .send()
             .map_err(|_| anyhow::anyhow!("authority transport failed; outcome may be unknown"))?;
+        link.phase(crate::slow_diagnostics::RpcPhase::ResponseHeaders);
         ensure!(
             response.status().is_success(),
             "authority HTTP request rejected with status {}",
@@ -270,6 +277,7 @@ impl AuthorityClient {
                 "authority response body limit exceeded"
             );
         }
+        link.phase(crate::slow_diagnostics::RpcPhase::ReadBody);
         let mut bytes = Vec::new();
         response
             .take(MAX_RPC_BYTES as u64 + 1)
@@ -284,8 +292,10 @@ impl AuthorityClient {
         // One strict parse covers identity, result presence and the result itself. The wire
         // protocol always writes `result`, so a reply that omits it is malformed rather than
         // a null result, while an explicit null stays legitimate.
+        link.phase(crate::slow_diagnostics::RpcPhase::DecodeResponse);
         let response: ResponseEnvelope = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow::anyhow!("invalid authority response"))?;
+        link.phase(crate::slow_diagnostics::RpcPhase::ValidateResponse);
         let result = match response.result {
             ResponseResult::Missing => {
                 return Err(anyhow::anyhow!("authority result field missing"))
@@ -302,6 +312,7 @@ impl AuthorityClient {
                 !response.precondition_failed && response.error.is_none(),
                 "inconsistent authority response"
             );
+            link.complete("ok");
             return Ok(result.unwrap_or(serde_json::Value::Null));
         }
         ensure!(
@@ -309,11 +320,13 @@ impl AuthorityClient {
             "inconsistent authority error response"
         );
         if response.precondition_failed {
+            link.complete("precondition_failed");
             return Err(PreconditionFailed.into());
         }
         if let Some(observation) = observation {
             observation.reject(response.error.as_deref().unwrap_or_default());
         }
+        link.complete("rejected");
         Err(KnownAuthorityRejection.into())
     }
 }

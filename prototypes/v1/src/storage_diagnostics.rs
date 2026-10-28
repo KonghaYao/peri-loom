@@ -7,6 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::work_metrics::{PublishOrigin, PublishStage};
 
+mod group_shape;
+pub(crate) use group_shape::GroupShape;
+
 pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("PERI_DIAG_GROUP_PHASE").as_deref() == Ok("1"))
