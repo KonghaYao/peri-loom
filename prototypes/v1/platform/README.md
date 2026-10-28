@@ -85,11 +85,13 @@ never publish it. Open its gateway endpoint in a browser and trust the disposabl
 development CA only for this fixture. Do not disable TLS verification in clients.
 The browser console has project/database navigation, SQL editor, refs, operations,
 access, and observability; see `frontend/README.md` for direct Vite development
-and the required frontend-before-Go build order. Project API keys remain in
-page memory only; if a user explicitly opts in, the console verifies the
-global management API key and saves it in this browser's localStorage until
-cleared. Such a key is readable by same-origin scripts/extensions and anyone
-using the browser profile; do not enable this on shared devices. The global
+and the required frontend-before-Go build order. The connection API Key (global
+or project scope) is kept in page memory and, when `在此浏览器记住 API Key` is
+checked (the default), saved in this browser's localStorage after `/v1/catalog`
+accepts it. Unchecking deletes it immediately without disconnecting the current
+session. Project SQL keys typed in the workbench remain in page memory only.
+Such a saved key is readable by same-origin scripts/extensions and anyone
+using the browser profile; clear it on shared devices. The global
 key can open project-scoped native SQL sessions and preview rows; project keys remain available for application access.
 
 The listener defaults to `127.0.0.1:9443`. `--listen` changes the endpoint;

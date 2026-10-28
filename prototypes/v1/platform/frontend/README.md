@@ -20,10 +20,15 @@ deployed console uses no runtime CDN.
 The console uses `@cloudflare/kumo@2.14.0` with standalone styles. Hash routes
 include the project, database, and branch. The database list is the home page;
 open a database for data, SQL, branches, recovery, activity, and settings.
-Management and project SQL credentials are held separately. Project SQL keys
-are never written to localStorage. Only a positively verified global admin can
-opt to remember a master key. Disconnecting does not erase a saved master key;
-clear that credential separately on the device.
+Management and project SQL credentials are held separately. The connection
+API Key (global or project scope) is stored in this browser's localStorage when
+`在此浏览器记住 API Key` is checked; that checkbox is the default, and the key is
+saved only after `/v1/catalog` accepts it. Unchecking deletes the saved key
+immediately without disconnecting the current session, and a saved key is used
+for one automatic connect after a reload. Project SQL keys typed in the
+workbench remain in page memory only. localStorage is readable by same-origin
+scripts/extensions and anyone using the browser profile; clear the key on shared
+devices.
 
 Table names come from `/v1/databases/schema`. A selected table previews at most
 25 unordered rows. SQL uses the native `describe` and `statement` routes and

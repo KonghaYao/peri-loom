@@ -56,7 +56,7 @@ func nativeDiagnosticPhase(phase string) string {
 	switch phase {
 	case "active", "renew_intent", "renew_pending", "renew_worker_pending",
 		"grant_intent", "grant_pending", "acquire_pending", "migrate_drain",
-		"suspend_drain", "revoke_pending", "suspended":
+		"suspend_drain", "revoke_pending", "suspended", "idle", "idle_drain":
 		return phase
 	default:
 		return "unknown"

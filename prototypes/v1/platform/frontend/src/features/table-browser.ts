@@ -12,11 +12,36 @@ export function isPendingSchema(result: unknown): boolean {
 
 export const previewLimit = 25;
 
-export function schemaRetryDelay(failure: unknown, attempt: number): number | null {
+const schemaRetrySchedule = [400, 800, 1600, 3200, 5000, 5000];
+
+export function schemaRetryBackoff(attempt: number): number | null {
+  return schemaRetrySchedule[attempt] ?? null;
+}
+
+export function schemaRetryDelay(failure: unknown, attempt: number, databaseState?: string): number | null {
+  if (databaseState === 'suspended') return null;
+  // Pending isolation responses are definitive "still running" signals and share the same bounded backoff.
+  if (isPendingSchema(failure)) return schemaRetryBackoff(attempt);
   const response = failure as { code?: unknown; uncertain?: unknown } | null;
   return failure instanceof Error && response?.code === 'operation_incomplete' && response.uncertain === false
-    ? [400, 800, 1600][attempt] ?? null
+    ? schemaRetryBackoff(attempt)
     : null;
+}
+
+export function schemaFailureMessage(failure: unknown, databaseState?: string): string {
+  const response = failure as { code?: unknown; uncertain?: unknown; requestID?: unknown; message?: unknown } | null;
+  if (response?.uncertain === true) return '结果待确认，无法自动恢复。请勿重试；请核对服务端状态。';
+  if (databaseState === 'suspended') return '该数据库已暂停，请恢复后重试。';
+  const support = typeof response?.code === 'string'
+    ? `（${response.code}${typeof response.requestID === 'string' && response.requestID ? ` · request ${response.requestID}` : ''}）`
+    : '';
+  if (response?.code === 'operation_incomplete') {
+    return `数据库暂时不可读，自动重试未成功。请在 SQL 页执行任意查询唤醒数据库，或查看分支状态${support}。`;
+  }
+  if (typeof response?.message === 'string' && response.message.startsWith('Schema response')) {
+    return '网关返回的表结构不是有效行列表。请检查当前网关与数据库状态。';
+  }
+  return failure instanceof Error ? failure.message : String(failure);
 }
 
 export function quoteSQLiteIdentifier(name: string): string {

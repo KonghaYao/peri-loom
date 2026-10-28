@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test ../tests/ui-*.test.mjs ../tests/master-key.test.mjs ../tests/table-browser.test.mjs ../tests/database-connection.test.mjs"
+    "test": "node --test ../tests/ui-*.test.mjs ../tests/api-key.test.mjs ../tests/table-browser.test.mjs ../tests/database-connection.test.mjs"
   },
   "dependencies": {
     "@cloudflare/kumo": "2.14.0",

@@ -3,12 +3,18 @@ package platform
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	controller "peri-loom/controller"
 )
 
 const defaultToolCleanupTimeout = 5 * time.Second
+
+// A metadata read may wake an idle database, but it must leave room for the
+// tool RPC that follows. The activation keeps running after this budget ends;
+// the next schema retry joins the same single-flight wake.
+const defaultToolWakeTimeout = 2 * time.Second
 
 func (management *Management) authorityMaintenance(ctx context.Context, database controller.DatabaseID, requestID string, operation any) (any, error) {
 	var result any
@@ -162,7 +168,26 @@ func (management *Management) nativeTool(ctx context.Context, principal Principa
 	placement, err := management.config.Controller.Status(input.Database)
 	phase = placement.Phase
 	if err != nil || placement.Phase != "active" {
-		return nil, errors.New("database is not active")
+		// Only read-only metadata may wake a database. An administrator suspend,
+		// a failure, or a non-view tool keeps the original refusal, and the wake
+		// registers no management operation: it is a controller lifecycle.
+		if action != "view" || err != nil || management.config.Controller == nil || !placement.AutoWakeable() {
+			return nil, errors.New("database is not active")
+		}
+		wakeCtx, cancel := context.WithTimeout(ctx, defaultToolWakeTimeout)
+		status, wakeErr := management.config.Controller.Wake(wakeCtx, input.Database)
+		cancel()
+		if wakeErr != nil && status.State != controller.ActivationActive {
+			return nil, fmt.Errorf("database wake did not complete: %w", wakeErr)
+		}
+		placement, err = management.config.Controller.Status(input.Database)
+		phase = placement.Phase
+		if err != nil {
+			return nil, fmt.Errorf("database wake status: %w", err)
+		}
+		if placement.Phase != "active" {
+			return nil, fmt.Errorf("database wake state %s", placement.Phase)
+		}
 	}
 	stage = "metadata"
 	metadata, err := management.config.Placements.Snapshot()

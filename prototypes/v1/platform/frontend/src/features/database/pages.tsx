@@ -4,33 +4,39 @@ import { Input, InputArea } from '@cloudflare/kumo/components/input';
 import { Badge } from '@cloudflare/kumo/components/badge';
 import { Table } from '@cloudflare/kumo/components/table';
 import { Tabs } from '@cloudflare/kumo/components/tabs';
-import { Select } from '@cloudflare/kumo/components/select';
 import { Collapsible } from '@cloudflare/kumo/components/collapsible';
 import { DropdownMenu } from '@cloudflare/kumo/components/dropdown';
 import { Banner } from '@cloudflare/kumo/components/banner';
 import { Empty } from '@cloudflare/kumo/components/empty';
+import { RefreshCw, Search } from 'lucide-react';
 import type { PageProps } from '../../App';
 import { type DatabaseID, APIError } from '../../api';
-import { ErrorNotice, Grid, Modal } from '../../app/ui';
+import { CopyButton, ErrorNotice, Grid, Modal, useSearchShortcut } from '../../app/ui';
 import { databasePath, navigate, setNavigationBlocker } from '../../app/routes';
-import { isIsolatedSchema, isPendingSchema, parseSchemaTables, schemaRetryDelay, tableColumnsSQL, tablePreviewSQL, parseTableColumns } from '../table-browser';
+import { formatPreviewCell, isIsolatedSchema, isPendingSchema, parseSchemaTables, schemaFailureMessage, schemaRetryDelay, tableColumnsSQL, tablePreviewSQL, parseTableColumns } from '../table-browser';
 import { parseConnectionCapabilities, hranaDatabaseURI, hranaWebSocketURI, type ConnectionCapabilities } from '../database-connection';
 
 type Statement = { cols: { name: string; decltype: string | null }[]; rows: unknown[][]; affected_row_count: number | bigint; last_insert_rowid: number | bigint | null; autocommit: boolean };
 const failureText = (failure: unknown) => failure instanceof APIError && failure.uncertain ? `结果待确认 · ${failure.message}。不要重试。` : String(failure);
 
-function SQLAccess({ setSQLCredential }: Pick<PageProps, 'setSQLCredential'>) {
-  const [key, setKey] = useState('');
-  return <section className="section"><h2>查看表数据或运行 SQL</h2><p className="muted">请输入当前项目的 SQL 凭证；全局管理员可直接使用管理凭证执行 SQL。</p><form className="actions" onSubmit={event => { event.preventDefault(); setSQLCredential(key.trim()); setKey(''); }}><Input aria-label="项目 SQL 凭证" type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} /><Button variant="primary" type="submit" disabled={!key.trim()}>授权 SQL 操作</Button></form></section>;
+function TableSkeleton({ columns = 5, rows = 6 }: { columns?: number; rows?: number }) {
+  return <div className="table-skeleton" role="status" aria-label="正在加载数据">
+    <div className="table-skeleton-row table-skeleton-head">{Array.from({ length: columns }, (_, index) => <span key={index} />)}</div>
+    {Array.from({ length: rows }, (_, row) => <div className="table-skeleton-row" key={row}>{Array.from({ length: columns }, (_, cell) => <span key={cell} />)}</div>)}
+  </div>;
 }
 
-function Connection({ database, close }: { database: DatabaseID; close: () => void }) {
+function SQLAccess({ setSQLCredential }: Pick<PageProps, 'setSQLCredential'>) {
+  const [key, setKey] = useState('');
+  return <section className="section"><h2>查看表数据或运行 SQL</h2><p className="muted">请输入当前项目的 SQL 凭证；全局管理员可直接使用 API Key 执行 SQL。</p><form className="actions" onSubmit={event => { event.preventDefault(); setSQLCredential(key.trim()); setKey(''); }}><Input aria-label="项目 SQL 凭证" type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} /><Button variant="primary" type="submit" disabled={!key.trim()}>授权 SQL 操作</Button></form></section>;
+}
+
+export function ConnectionDialog({ database, close }: { database: DatabaseID; close: () => void }) {
   const [capabilities, setCapabilities] = useState<ConnectionCapabilities | null>(null);
   const [error, setError] = useState('');
   useEffect(() => { const controller = new AbortController(); fetch('/v1/platform/capabilities', { signal: controller.signal, cache: 'no-store' }).then(response => response.json()).then(data => { if (!controller.signal.aborted) setCapabilities(parseConnectionCapabilities(data)); }).catch(() => { if (!controller.signal.aborted) setError('无法验证接入能力，不提供 libSQL 地址。'); }); return () => controller.abort(); }, []);
-  const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); } catch { setError('复制失败，请手动选择地址。'); } };
   const uri = capabilities?.enabled ? hranaDatabaseURI(capabilities, database) : '';
-  return <Modal open onClose={close} title="连接数据库"><p>{database.namespace.database} / {database.branch}</p><ErrorNotice error={error} /><div className="stack"><Input label="原生 API 地址" readOnly value={capabilities?.origin ?? location.origin} /><Button variant="secondary" onClick={() => void copy(capabilities?.origin ?? location.origin)}>复制 API 地址</Button>{uri ? <><Badge>实验性</Badge><p className="muted">libSQL 兼容性尚未完整验证。</p><Input label="libSQL 地址" readOnly value={uri} /><Button variant="secondary" onClick={() => void copy(uri)}>复制 libSQL 地址</Button>{capabilities?.wsEnabled && <Input label="WebSocket 地址" readOnly value={hranaWebSocketURI(capabilities, database)} />}<pre className="code">{`const db = createClient({ url: ${JSON.stringify(uri)}, authToken: process.env.PROJECT_SQL_API_KEY });`}</pre></> : <p className="muted">此网关未启用 libSQL 接入。</p>}</div></Modal>;
+  return <Modal open onClose={close} title="连接数据库"><p className="connection-context mono">{database.namespace.database} / {database.branch}</p><ErrorNotice error={error} /><div className="stack"><Input label="原生 API 地址" readOnly value={capabilities?.origin ?? location.origin} /><CopyButton value={capabilities?.origin ?? location.origin} label="复制 API 地址" onError={setError} />{uri ? <><Badge variant="beta">实验性</Badge><p className="muted small">libSQL 兼容性尚未完整验证。</p><Input label="libSQL 地址" readOnly value={uri} /><div className="form-row"><CopyButton value={uri} label="复制 libSQL 地址" onError={setError} />{capabilities?.wsEnabled && <CopyButton value={hranaWebSocketURI(capabilities, database)} label="复制 WebSocket 地址" onError={setError} />}</div>{capabilities?.wsEnabled && <Input label="WebSocket 地址" readOnly value={hranaWebSocketURI(capabilities, database)} />}<pre className="code">{`const db = createClient({ url: ${JSON.stringify(uri)}, authToken: process.env.PROJECT_SQL_API_KEY });`}</pre></> : <p className="muted small">此网关未启用 libSQL 接入。</p>}</div></Modal>;
 }
 
 function DataPage({ database, call, sqlCall, setSQLCredential, onIsolation }: PageProps & { onIsolation: (isolated: boolean) => void }) {
@@ -46,6 +52,7 @@ function DataPage({ database, call, sqlCall, setSQLCredential, onIsolation }: Pa
   const [schemaRetryable, setSchemaRetryable] = useState(true);
   const [schemaIsolated, setSchemaIsolated] = useState(false);
   const [schemaPending, setSchemaPending] = useState(false);
+  const [schemaWaking, setSchemaWaking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [schemaLoading, setSchemaLoading] = useState(true);
   const [schemaReload, setSchemaReload] = useState(0);
@@ -53,6 +60,8 @@ function DataPage({ database, call, sqlCall, setSQLCredential, onIsolation }: Pa
   const schemaRequest = useRef<{ call: PageProps['call']; key: string; promise: Promise<unknown> } | null>(null);
   const [blocked, setBlocked] = useState(false);
   const restoredTable = useRef('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  useSearchShortcut(searchRef);
   useEffect(() => {
     if (!database) return;
     let active = true;
@@ -60,6 +69,7 @@ function DataPage({ database, call, sqlCall, setSQLCredential, onIsolation }: Pa
     setSchemaLoading(true);
     setSchemaError('');
     setSchemaPending(false);
+    setSchemaWaking(false);
     const load = async (attempt: number) => {
       try {
         const key = JSON.stringify(database.id);
@@ -74,42 +84,44 @@ function DataPage({ database, call, sqlCall, setSQLCredential, onIsolation }: Pa
         if (isIsolatedSchema(result)) {
           if (isPendingSchema(result)) {
             setSchemaPending(true);
-            const delay = [400, 800, 1600][attempt];
-            if (delay !== undefined) {
+            const delay = schemaRetryDelay(result, attempt, database?.state);
+            if (delay !== null) {
+              setSchemaWaking(true); setSchemaError('');
               retryTimer = setTimeout(() => { retryTimer = undefined; void load(attempt + 1); }, delay);
             } else {
-              setSchemaError('另一项操作仍在进行，暂时无法读取表结构。请稍后刷新表列表。');
+              setSchemaWaking(false);
+              setSchemaError(database?.state === 'suspended' ? schemaFailureMessage(result, database.state) : '另一项操作仍在进行，暂时无法读取表结构。请稍后刷新表列表。');
               setSchemaRetryable(true);
             }
             return;
           }
           setSchemaPending(false);
+          setSchemaWaking(false);
           setSchemaIsolated(true); onIsolation(true);
           setTables([]); setTable(''); setRows([]); setColumns([]); setSchemaRows([]);
           setSchemaError(''); setSchemaRetryable(false);
           return;
         }
         const names = parseSchemaTables(result).map(item => item.name);
-        if (active) { setSchemaPending(false); setSchemaIsolated(false); onIsolation(false); setTables(names); setSchemaError(''); setSchemaRetryable(true); }
+        if (active) { setSchemaPending(false); setSchemaWaking(false); setSchemaIsolated(false); onIsolation(false); setTables(names); setSchemaError(''); setSchemaRetryable(true); }
       } catch (failure) {
         if (!active) return;
         if (failure instanceof APIError && failure.code === 'database_isolated') {
+          setSchemaPending(false); setSchemaWaking(false);
           setSchemaIsolated(true); onIsolation(true);
           setTables([]); setTable(''); setRows([]); setColumns([]); setSchemaRows([]);
           setSchemaError(''); setSchemaRetryable(false);
           return;
         }
-        const delay = schemaRetryDelay(failure, attempt);
+        const delay = schemaRetryDelay(failure, attempt, database?.state);
         if (delay !== null) {
+          setSchemaWaking(true); setSchemaError('');
           retryTimer = setTimeout(() => { retryTimer = undefined; void load(attempt + 1); }, delay);
           return;
         }
+        setSchemaWaking(false);
         setSchemaRetryable(!(failure instanceof APIError && failure.uncertain));
-        setSchemaError(failure instanceof APIError && failure.code === 'operation_incomplete'
-          ? '数据库正在切换状态，暂时无法读取表。请稍后刷新表列表。'
-          : failure instanceof Error && failure.message.startsWith('Schema response')
-              ? '网关返回的表结构不是有效行列表。请检查当前网关与数据库状态。'
-              : failureText(failure));
+        setSchemaError(schemaFailureMessage(failure, database?.state));
       } finally {
         if (active && retryTimer === undefined) setSchemaLoading(false);
       }
@@ -147,17 +159,53 @@ function DataPage({ database, call, sqlCall, setSQLCredential, onIsolation }: Pa
   };
   useEffect(() => {
     const params = new URLSearchParams(location.hash.split('?')[1] ?? '');
-    const selected = params.get('table') ?? '';
-    if (schemaIsolated || !selected || !tables.includes(selected) || !sqlCall || restoredTable.current === selected) return;
+    const requested = params.get('table') ?? '';
+    const selected = requested && tables.includes(requested) ? requested : sqlCall ? tables[0] ?? '' : '';
+    if (schemaIsolated || !selected || !sqlCall || restoredTable.current === selected) return;
     restoredTable.current = selected;
     setView(params.get('view') === 'schema' ? 'schema' : 'rows');
     void preview(selected);
   }, [tables, sqlCall, schemaIsolated]);
+  const visibleTables = tables.filter(item => item.toLowerCase().includes(search.toLowerCase()));
+  const treeStatus = schemaLoading ? (schemaWaking ? '数据库暂时不可读，正在自动重试…' : schemaPending ? '操作进行中，等待表结构…' : '正在加载表…') : schemaIsolated ? '数据库已隔离' : schemaError ? '加载表失败' : tables.length ? `${visibleTables.length} / ${tables.length} 张表` : '暂无表';
   return <div className="data-layout">
-    <aside className="table-tree"><Input aria-label="搜索表" placeholder="搜索表" value={search} onChange={event => setSearch(event.target.value)} />{tables.filter(item => item.toLowerCase().includes(search.toLowerCase())).map(item => <Button key={item} variant={item === table ? 'secondary' : 'ghost'} disabled={loading || blocked || schemaIsolated} aria-current={item === table ? 'true' : undefined} onClick={() => selectTable(item)}>{item}</Button>)}{!tables.length && <p className="muted">{schemaLoading ? schemaPending ? '操作进行中，等待表结构…' : '正在加载表…' : schemaIsolated ? '数据库已隔离' : schemaError ? '加载表失败' : '暂无表'}</p>}{schemaError && schemaRetryable && !schemaLoading && <Button variant="secondary" onClick={() => setSchemaReload(value => value + 1)}>刷新表列表</Button>}</aside>
-    <section className="data-panel"><div className="section-heading"><h2>{table || '选择表'}</h2>{table && <Button variant="secondary" onClick={() => navigate(databasePath(database!.project, database!.id.namespace.database, database!.id.branch, 'sql'))}>在 SQL 中打开</Button>}</div>
-      {table && <Tabs tabs={[{ value: 'rows', label: '数据' }, { value: 'schema', label: '结构' }]} value={view} onValueChange={setView} />}
-      <ErrorNotice error={schemaError} /><ErrorNotice error={error} />{schemaIsolated ? <><Empty title="数据库已隔离" description="表结构读取被暂停，操作结果待确认；请勿重试写入。" /><Button variant="secondary" onClick={() => navigate(databasePath(database!.project, database!.id.namespace.database, database!.id.branch, 'activity'))}>查看操作记录</Button></> : !sqlCall ? table ? <SQLAccess setSQLCredential={setSQLCredential} /> : <Empty title="选择表查看数据和结构" /> : loading ? <p role="status">加载中…</p> : table ? view === 'rows' ? <><Grid columns={columns} rows={rows} /><p className="muted">{rows.length} 行 · 最多 25 行 · 未排序</p></> : <Grid columns={['字段', '类型', '可空', '默认值', '主键']} rows={schemaRows.map(row => [row[1], row[2], row[3] === 1 ? '否' : '是', row[4] ?? '—', row[5] ? '是' : '否'])} /> : <Empty title="选择表查看数据和结构" />}
+    <aside className="table-tree" aria-label="表列表">
+      <div className="table-tree-head">
+        <div className="search-box compact">
+          <Search size={15} className="search-icon" aria-hidden="true" />
+          <Input ref={searchRef} aria-label="搜索表" placeholder="搜索表（按 /）" value={search} onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setSearch(''); }} />
+        </div>
+        <Button variant="ghost" className="icon-button" aria-label="刷新表列表" title="刷新表列表" icon={<RefreshCw size={15} />} disabled={schemaLoading} onClick={() => setSchemaReload(value => value + 1)} />
+      </div>
+      <div className="table-list" role="group" aria-label="数据库表">
+        {visibleTables.map(item => <Button key={item} variant="ghost" className="table-item" aria-pressed={item === table} aria-current={item === table ? 'true' : undefined} disabled={loading || blocked || schemaIsolated} onClick={() => selectTable(item)} onKeyDown={event => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+          event.preventDefault();
+          const sibling = event.key === 'ArrowDown' ? event.currentTarget.nextElementSibling : event.currentTarget.previousElementSibling;
+          if (sibling instanceof HTMLElement) sibling.focus();
+        }}>{item}</Button>)}
+      </div>
+      <div className="table-tree-foot">
+        <span className={schemaError ? 'muted small text-danger' : 'muted small'} role={schemaWaking ? 'status' : undefined} aria-live={schemaWaking ? 'polite' : undefined}>{treeStatus}</span>
+        {schemaError && schemaRetryable && !schemaLoading && <Button variant="secondary" size="sm" onClick={() => setSchemaReload(value => value + 1)}>重试</Button>}
+      </div>
+    </aside>
+    <section className="data-panel" aria-busy={loading}>
+      <div className="panel-head">
+        <div>
+          <h2 className={table ? 'mono' : undefined}>{table || '数据预览'}</h2>
+          <p className="panel-meta">{table ? view === 'rows' ? `${rows.length} 行 · 最多 25 行 · 未排序` : `${schemaRows.length} 列` : '从左侧选择一张表查看数据与结构'}</p>
+        </div>
+        {table && <div className="panel-actions">
+          {sqlCall && !schemaIsolated && <Button variant="ghost" icon={<RefreshCw size={15} />} disabled={loading || blocked} onClick={() => void preview(table)}>刷新</Button>}
+          <Button variant="secondary" onClick={() => navigate(databasePath(database!.project, database!.id.namespace.database, database!.id.branch, 'sql'))}>在 SQL 中打开</Button>
+        </div>}
+      </div>
+      {table && <div className="data-view-tabs"><Tabs tabs={[{ value: 'rows', label: '数据' }, { value: 'schema', label: '结构' }]} value={view} onValueChange={setView} /></div>}
+      <ErrorNotice error={schemaError} /><ErrorNotice error={error} />
+      <div className="data-panel-body">
+        {schemaIsolated ? <><Empty title="数据库已隔离" description="表结构读取被暂停，操作结果待确认；请勿重试写入。" /><div className="empty-action"><Button variant="secondary" onClick={() => navigate(databasePath(database!.project, database!.id.namespace.database, database!.id.branch, 'activity'))}>查看操作记录</Button></div></> : !sqlCall ? table ? <SQLAccess setSQLCredential={setSQLCredential} /> : <Empty title="还没有选择表" description="从左侧表列表中选择一张表。" /> : loading ? <TableSkeleton /> : table ? view === 'rows' ? <Grid columns={columns} rows={rows} /> : <Grid columns={['字段', '类型', '可空', '默认值', '主键']} rows={schemaRows.map(row => [row[1], row[2], row[3] === 1 ? '否' : '是', row[4] ?? '—', row[5] ? '是' : '否'])} /> : <Empty title="还没有选择表" description="从左侧表列表中选择一张表。" />}
+      </div>
     </section>
   </div>;
 }
@@ -228,16 +276,34 @@ function SQLPage({ database, sqlCall, setSQLCredential, isolated }: PageProps & 
     return () => { setNavigationBlocker(null); window.removeEventListener('hashchange', onHashChange); };
   }, []);
   if (!sqlCall) return <SQLAccess setSQLCredential={setSQLCredential} />;
-  return <>
-    <section className="section"><div className="section-heading"><h2>编辑器</h2><span className="muted">{database?.id.namespace.database} / {database?.id.branch}</span></div>
+  const tsv = result ? [result.cols.map(column => column.name), ...result.rows.slice(0, 200)]
+    .map(row => row.map(value => formatPreviewCell(value).replaceAll('\t', ' ').replaceAll('\n', ' ')).join('\t')).join('\n') : '';
+  return <div className="sql-page">
+    <section className="section sql-editor-section">
+      <div className="section-heading">
+        <div><h2>SQL 编辑器</h2><p className="muted small">会话绑定当前分支；写入语句会在执行前二次确认。</p></div>
+        <span className="context-chip mono">{database?.id.namespace.database} / {database?.id.branch}</span>
+      </div>
       <InputArea aria-label="SQL 编辑器" className="sql-editor" spellCheck={false} value={sql} onChange={event => setSQL(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void run(); } }} />
-      <div className="actions"><Button variant="primary" disabled={busy || blocked || isolated} onClick={() => void run()}>{busy ? '运行中…' : '运行 SQL'}</Button><Button variant="secondary" disabled={!session || busy || blocked || transaction} onClick={() => void close()}>结束会话</Button><span className="muted">⌘ / Ctrl + Enter</span></div>
-      <ErrorNotice error={error} />{transaction && <Badge>事务进行中 · 请运行 COMMIT 或 ROLLBACK</Badge>}{blocked && <Badge>结果待确认 · 不可重试</Badge>}
+      <div className="editor-actions">
+        <Button variant="primary" disabled={busy || blocked || isolated} onClick={() => void run()}>{busy ? '运行中…' : '运行 SQL'}</Button>
+        <Button variant="secondary" disabled={!session || busy || blocked || transaction} onClick={() => void close()}>结束会话</Button>
+        <span className="shortcut-hint"><kbd>⌘</kbd><kbd>Enter</kbd></span>
+        <span className="editor-status">{transaction && <Badge variant="warning">事务进行中 · 请运行 COMMIT 或 ROLLBACK</Badge>}{blocked && <Badge variant="error">结果待确认 · 不可重试</Badge>}{!session && !blocked && <span className="muted small">未打开会话</span>}</span>
+      </div>
+      <ErrorNotice error={error} />
       <Collapsible.Root className="disclosure"><Collapsible.DefaultTrigger>会话状态</Collapsible.DefaultTrigger><Collapsible.DefaultPanel><p>{session ? '已打开' : '未打开'} {blocked && '· 待确认'}</p></Collapsible.DefaultPanel></Collapsible.Root>
     </section>
-    {result && <section className="section"><div className="section-heading"><h2>结果</h2><span className="muted">{result.rows.length} 行 · 影响 {String(result.affected_row_count)} 行 · 往返耗时 {elapsed} ms</span></div><Grid columns={result.cols.map((column, index) => column.name || `列 ${index + 1}`)} rows={result.rows.slice(0, 200)} />{result.rows.length > 200 && <p className="muted">仅显示前 200 行。请缩小查询范围。</p>}</section>}
-    <Modal open={confirm} onClose={() => setConfirm(false)} title="确认写入" footer={<Button variant="primary" onClick={() => void execute()}>确认运行</Button>}><p>将在 {database?.id.namespace.database} / {database?.id.branch} 写入数据。</p></Modal>
-  </>;
+    <section className="section sql-result-section">
+      <div className="section-heading">
+        <div><h2>结果</h2>{result && <p className="muted small">{`${result.rows.length} 行 · 影响 ${String(result.affected_row_count)} 行 · 往返耗时 ${elapsed} ms`}</p>}</div>
+        {result && <CopyButton value={tsv} label="复制 TSV" onError={setError} disabled={!tsv} />}
+      </div>
+      {result ? (result.cols.length ? <Grid columns={result.cols.map((column, index) => column.name || `列 ${index + 1}`)} rows={result.rows.slice(0, 200)} /> : <Empty title="语句已执行" description={`影响 ${String(result.affected_row_count)} 行`} />) : <Empty title="还没有执行结果" description="使用 ⌘/Ctrl + Enter 运行 SQL。" />}
+      {result && result.rows.length > 200 && <p className="muted small">仅显示前 200 行，请缩小查询范围。</p>}
+    </section>
+    <Modal open={confirm} onClose={() => setConfirm(false)} title="确认写入" footer={<Button variant="primary" onClick={() => void execute()}>确认运行</Button>}><p>将在 <span className="mono">{database?.id.namespace.database} / {database?.id.branch}</span> 写入数据。</p></Modal>
+  </div>;
 }
 
 function RecoveryPage({ database, call, isolated }: PageProps & { isolated: boolean }) {
@@ -297,7 +363,6 @@ function DetailsPage({ database, call, page, refresh, isolated }: PageProps & { 
 }
 
 export function DatabasePages(props: PageProps & { page: string }) {
-  const [connection, setConnection] = useState(false);
   const [isolated, setIsolated] = useState(false);
   const [schemaIsolated, setSchemaIsolated] = useState(false);
   useEffect(() => { setSchemaIsolated(false); }, [props.scopeKey]);
@@ -310,5 +375,5 @@ export function DatabasePages(props: PageProps & { page: string }) {
     return () => { active = false; };
   }, [props.scopeKey, props.call]);
   if (!props.database) return <Empty title="找不到此分支" description="请返回数据库列表。" />;
-  return <>{(isolated || schemaIsolated) && <Banner variant="error" role="alert" description="此数据库命名空间已隔离，可能影响所有分支；请查看活动中的处理记录，不要重试写入。" />}<div className="database-toolbar"><Select label="分支" value={props.database.id.branch} onValueChange={branch => { if (branch) navigate(databasePath(props.project, props.database!.id.namespace.database, branch, props.page)); }}>{Object.values(props.catalog.databases).filter(item => item.project === props.project && item.id.namespace.database === props.database?.id.namespace.database && item.state !== 'deleted').map(item => <Select.Option key={item.id.branch} value={item.id.branch}>{item.id.branch}</Select.Option>)}</Select><Button variant="secondary" onClick={() => setConnection(true)}>连接</Button></div>{props.page === 'data' && <DataPage {...props} onIsolation={setSchemaIsolated} />}{props.page === 'sql' && <SQLPage {...props} isolated={isolated || schemaIsolated} />}{props.page === 'recovery' && <RecoveryPage {...props} isolated={isolated || schemaIsolated} />}{['activity', 'settings'].includes(props.page) && <DetailsPage {...props} isolated={isolated || schemaIsolated} />}{connection && <Connection database={props.database.id} close={() => setConnection(false)} />}</>;
+  return <div className="database-page">{(isolated || schemaIsolated) && <Banner variant="error" role="alert" description="此数据库命名空间已隔离，可能影响所有分支；请查看活动中的处理记录，不要重试写入。" />}{props.page === 'data' && <DataPage {...props} onIsolation={setSchemaIsolated} />}{props.page === 'sql' && <SQLPage {...props} isolated={isolated || schemaIsolated} />}{props.page === 'recovery' && <RecoveryPage {...props} isolated={isolated || schemaIsolated} />}{['activity', 'settings'].includes(props.page) && <DetailsPage {...props} isolated={isolated || schemaIsolated} />}</div>;
 }
