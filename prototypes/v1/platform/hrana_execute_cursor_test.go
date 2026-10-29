@@ -115,3 +115,56 @@ func TestHranaHighLevelExecutePagesOnlyProvenReadonlyResult(t *testing.T) {
 		})
 	}
 }
+
+// The fallback result comes either from another execution or from no execution
+// at all. It cannot borrow the first attempt's duration and counters, so the
+// fallback keeps the legacy shape.
+func TestHranaCursorFallbackKeepsLegacyShape(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	var next int
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "statement":
+			return nil, testRPCError(true, false, SQLRPCError{})
+		case "describe":
+			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}, "is_explain": false, "is_readonly": true}, nil
+		case "open_read_cursor":
+			return map[string]any{"cols": []any{map[string]any{"name": "id", "decltype": "INTEGER"}}}, nil
+		case "fetch_read_cursor":
+			next++
+			return map[string]any{"rows": [][]any{{next}}, "done": true}, nil
+		case "close_read_cursor":
+			return map[string]bool{"closed": true}, nil
+		}
+		return nil, nil
+	})
+	body := `{"requests":[{"type":"execute","stmt":{"sql":"SELECT id FROM records","want_rows":true}},{"type":"close"}]}`
+	response := hranaV3JSONCall(newHranaHTTP(fixture.gateway), fixture.tokenA, hranaV3JSONPath+"/pipeline", "application/json", body)
+	if response.Code != http.StatusOK || fixture.upstream.count("open_read_cursor") != 1 {
+		t.Fatalf("cursor fallback was not used: %d %s", response.Code, response.Body.String())
+	}
+	var document struct {
+		Results []struct {
+			Response struct {
+				Result map[string]json.RawMessage `json:"result"`
+			} `json:"response"`
+		} `json:"results"`
+	}
+	if json.Unmarshal(response.Body.Bytes(), &document) != nil || len(document.Results) == 0 {
+		t.Fatalf("invalid pipeline body: %s", response.Body.String())
+	}
+	result := document.Results[0].Response.Result
+	if len(result) != 4 {
+		t.Fatalf("cursor fallback result changed shape: %v", result)
+	}
+	for _, name := range []string{"cols", "rows", "affected_row_count", "last_insert_rowid"} {
+		if _, exists := result[name]; !exists {
+			t.Fatalf("cursor fallback lost %q: %v", name, result)
+		}
+	}
+	for _, name := range []string{"rows_read", "rows_written", "query_duration_ms"} {
+		if _, exists := result[name]; exists {
+			t.Fatalf("cursor fallback fabricated %q: %v", name, result)
+		}
+	}
+}

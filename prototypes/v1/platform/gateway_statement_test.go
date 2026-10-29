@@ -91,3 +91,41 @@ func TestGatewayStatementEmptyBlobPreservesRequiredBase64Field(t *testing.T) {
 		}
 	}
 }
+
+func TestStatementResultValidator(t *testing.T) {
+	const legacy = `"cols":[{"name":"id","decltype":"INTEGER"}],"rows":[],"affected_row_count":0,"last_insert_rowid":null,"autocommit":true`
+	withMetrics := func(rowsRead, rowsWritten, duration string) string {
+		return `{` + legacy + `,"rows_read":` + rowsRead + `,"rows_written":` + rowsWritten + `,"query_duration_ms":` + duration + `}`
+	}
+	for _, scenario := range []struct {
+		name  string
+		body  string
+		valid bool
+	}{
+		{"legacy five fields", `{` + legacy + `}`, true},
+		{"eight fields with metrics", withMetrics("8625", "0", "955.25"), true},
+		{"six fields", `{` + legacy + `,"rows_read":1}`, false},
+		{"seven fields", `{` + legacy + `,"rows_read":1,"rows_written":0}`, false},
+		{"nine fields", `{` + legacy + `,"rows_read":1,"rows_written":0,"query_duration_ms":1,"extra":null}`, false},
+		{"eight fields without query_duration_ms", `{` + legacy + `,"rows_read":1,"rows_written":0,"extra":1}`, false},
+		{"null rows_read", withMetrics("null", "0", "1.5"), false},
+		{"null rows_written", withMetrics("1", "null", "1.5"), false},
+		{"null query_duration_ms", withMetrics("1", "0", "null"), false},
+		{"negative rows_read", withMetrics("-1", "0", "1.5"), false},
+		{"negative rows_written", withMetrics("1", "-1", "1.5"), false},
+		{"fractional rows_read", withMetrics("1.5", "0", "1.5"), false},
+		{"exponent rows_read", withMetrics("1e3", "0", "1.5"), false},
+		{"overflowing rows_read", withMetrics("18446744073709551616", "0", "1.5"), false},
+		{"quoted rows_written", withMetrics("1", `"0"`, "1.5"), false},
+		{"negative query_duration_ms", withMetrics("1", "0", "-0.5"), false},
+		{"negative zero query_duration_ms", withMetrics("1", "0", "-0"), true}, // -0 compares equal to zero, so the current rule accepts it
+		{"overflowing query_duration_ms", withMetrics("1", "0", "1e400"), false},
+		{"quoted query_duration_ms", withMetrics("1", "0", `"1.5"`), false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			if got := validStatementResult(json.RawMessage(scenario.body)); got != scenario.valid {
+				t.Fatalf("validStatementResult(%s) = %v, want %v", scenario.body, got, scenario.valid)
+			}
+		})
+	}
+}

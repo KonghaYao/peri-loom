@@ -8,7 +8,7 @@ use turso_core::Value as SqlValue;
 use crate::metrics::{Metrics, Operation};
 use crate::ownership::types::OwnershipCommand;
 use crate::runtime::{result_reservation_bytes, BudgetLane};
-use crate::session::Budget;
+use crate::session::{Budget, StatementResult};
 
 use super::diagnostics::Action;
 use super::outcome::execution_completed;
@@ -356,15 +356,11 @@ impl State {
                     .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
                     .collect::<Result<Vec<_>>>()?;
                 let call = call.context("worker session RPC guard absent")?;
-                let result = crate::slow_diagnostics::native("statement", || call.handle().statement_with_named_args(&sql, &args, &named_args, want_rows)).map(|result| {
-                    json!({
-                        "cols": result.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
-                        "rows": result.rows.into_iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
-                        "affected_row_count": result.affected_row_count,
-                        "last_insert_rowid": result.last_insert_rowid,
-                        "autocommit": result.autocommit,
-                    })
-                });
+                let result = crate::slow_diagnostics::native("statement", || {
+                    call.handle()
+                        .statement_with_named_args(&sql, &args, &named_args, want_rows)
+                })
+                .map(encoded_statement_result);
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
                     *terminal = call.terminal_state().unwrap_or(None);
                 }
@@ -398,18 +394,20 @@ impl State {
                         .guarded_readonly_statement(&sql, &args, &named_args, want_rows)
                 })
                 .map(|outcome| match outcome {
-                    crate::session::GuardedStatementOutcome::Executed(result) => json!({
-                        "cols": result.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
-                        "rows": result.rows.into_iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
-                        "affected_row_count": result.affected_row_count,
-                        "last_insert_rowid": result.last_insert_rowid,
-                        "autocommit": result.autocommit,
-                    }),
+                    crate::session::GuardedStatementOutcome::Executed(result) => {
+                        encoded_statement_result(result)
+                    }
                     crate::session::GuardedStatementOutcome::RequiresIntent(reason) => {
                         let reason = match reason {
-                            crate::session::GuardedIntentReason::EngineWritable => "engine_writable",
-                            crate::session::GuardedIntentReason::TransactionContext => "transaction_context",
-                            crate::session::GuardedIntentReason::ConnectionControl => "connection_control",
+                            crate::session::GuardedIntentReason::EngineWritable => {
+                                "engine_writable"
+                            }
+                            crate::session::GuardedIntentReason::TransactionContext => {
+                                "transaction_context"
+                            }
+                            crate::session::GuardedIntentReason::ConnectionControl => {
+                                "connection_control"
+                            }
                         };
                         json!({"requires_intent": true, "reason": reason})
                     }
@@ -574,6 +572,21 @@ impl State {
                 .diagnostics(),
         }
     }
+}
+
+/// One wire shape for statement results, shared by the plain and the guarded
+/// path so the two can never drift when a field is added.
+fn encoded_statement_result(result: StatementResult) -> Value {
+    json!({
+        "cols": result.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
+        "rows": result.rows.into_iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "affected_row_count": result.affected_row_count,
+        "last_insert_rowid": result.last_insert_rowid,
+        "autocommit": result.autocommit,
+        "rows_read": result.rows_read,
+        "rows_written": result.rows_written,
+        "query_duration_ms": result.query_duration_ms,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

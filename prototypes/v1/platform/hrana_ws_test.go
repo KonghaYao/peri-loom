@@ -2,6 +2,8 @@ package platform
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +92,13 @@ func TestHranaWebSocketScopesAuthenticationAndClosesNativeStreamOnDisconnect(t *
 
 func TestHranaWebSocketProtobufNegotiatesAndDispatchesNativeSQL(t *testing.T) {
 	fixture := newGatewayFixture(t)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "statement" {
+			return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true,
+				"rows_read": uint64(8625), "rows_written": uint64(0), "query_duration_ms": 955.25}, nil
+		}
+		return nil, nil
+	})
 	server := httptest.NewServer(newHranaHTTP(fixture.gateway))
 	defer server.Close()
 	dialer := websocket.Dialer{Subprotocols: []string{"hrana3-protobuf", "hrana3"}, HandshakeTimeout: 5 * time.Second}
@@ -127,8 +136,45 @@ func TestHranaWebSocketProtobufNegotiatesAndDispatchesNativeSQL(t *testing.T) {
 	statement := hranaProtoString(1, "SELECT 1 AS message")
 	statement = append(statement, hranaProtoNumber(5, 1)...)
 	execute := append(hranaProtoNumber(1, 2), hranaProtoBytes(4, append(hranaProtoNumber(1, 1), hranaProtoBytes(2, statement)...))...)
-	if result := exchange(hranaProtoBytes(2, execute)); result[0].number != 3 || fixture.upstream.count("statement") != 1 {
+	result := exchange(hranaProtoBytes(2, execute))
+	if result[0].number != 3 || fixture.upstream.count("statement") != 1 {
 		t.Fatalf("protobuf execute failed: %v", result)
+	}
+	envelope, err := hranaProtoRead(result[0].bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response []byte
+	for _, field := range envelope {
+		if field.number == 4 {
+			response = field.bytes
+		}
+	}
+	wrapped, err := hranaProtoRead(response)
+	if err != nil || len(wrapped) != 1 || wrapped[0].number != 1 {
+		t.Fatalf("invalid execute response: %v %v", wrapped, err)
+	}
+	statementResult, err := hranaProtoRead(wrapped[0].bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNumber := make(map[int]hranaProtoField, len(statementResult))
+	for _, field := range statementResult {
+		byNumber[field.number] = field
+	}
+	if read, exists := byNumber[6]; !exists || read.wire != 0 || read.integer != 8625 {
+		t.Fatalf("rows_read missing: %v", statementResult)
+	}
+	if written, exists := byNumber[7]; !exists || written.wire != 0 || written.integer != 0 {
+		t.Fatalf("rows_written missing: %v", statementResult)
+	}
+	if duration, exists := byNumber[8]; !exists || duration.wire != 1 {
+		t.Fatalf("query_duration_ms missing: %v", statementResult)
+	} else if restored := math.Float64frombits(binary.LittleEndian.Uint64(duration.bytes)); math.Abs(restored-955.25) > 1e-9 {
+		t.Fatalf("query_duration_ms = %v, want 955.25", restored)
+	}
+	if _, exists := byNumber[5]; exists {
+		t.Fatalf("replication_index was written: %v", statementResult)
 	}
 }
 

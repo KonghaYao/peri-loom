@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -810,6 +811,23 @@ func (handler *hranaHTTP) dispatch(request *http.Request, credential, path strin
 	return recorder.reply(path)
 }
 
+// hranaNativeStatement is the worker's statement reply as the adapter reads it.
+// The counters stay raw so an explicit JSON null is distinguishable from an
+// absent key: a null otherwise decodes into a pointer as nil and silently
+// restores the legacy five-field shape the public validator refuses.
+type hranaNativeStatement struct {
+	Cols []struct {
+		Name     string  `json:"name"`
+		Decltype *string `json:"decltype"`
+	} `json:"cols"`
+	Rows             [][]any         `json:"rows"`
+	AffectedRowCount int64           `json:"affected_row_count"`
+	LastInsertRowid  *int64          `json:"last_insert_rowid"`
+	RowsRead         json.RawMessage `json:"rows_read"`
+	RowsWritten      json.RawMessage `json:"rows_written"`
+	QueryDurationMS  json.RawMessage `json:"query_duration_ms"`
+}
+
 func (handler *hranaHTTP) execute(request *http.Request, credential, session string, statement hranaStatement) (any, hranaReply) {
 	invalid := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
 	if statement.SQL == "" {
@@ -860,18 +878,14 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		}
 		return nil, reply
 	}
-	var native struct {
-		Cols []struct {
-			Name     string  `json:"name"`
-			Decltype *string `json:"decltype"`
-		} `json:"cols"`
-		Rows             [][]any `json:"rows"`
-		AffectedRowCount int64   `json:"affected_row_count"`
-		LastInsertRowid  *int64  `json:"last_insert_rowid"`
-	}
+	var native hranaNativeStatement
 	decoder := json.NewDecoder(bytes.NewReader(reply.result))
 	decoder.UseNumber()
 	if decoder.Decode(&native) != nil || native.Cols == nil || native.Rows == nil {
+		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_statement", unknown: true}
+	}
+	metrics, ok := hranaNativeStatementMetrics(native.RowsRead, native.RowsWritten, native.QueryDurationMS)
+	if !ok {
 		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_statement", unknown: true}
 	}
 	cols := make([]any, len(native.Cols))
@@ -895,7 +909,34 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 		encoded := strconv.FormatInt(*native.LastInsertRowid, 10)
 		rowid = &encoded
 	}
-	return map[string]any{"cols": cols, "rows": converted, "affected_row_count": native.AffectedRowCount, "last_insert_rowid": rowid}, hranaReply{}
+	result := map[string]any{"cols": cols, "rows": converted, "affected_row_count": native.AffectedRowCount, "last_insert_rowid": rowid}
+	for name, value := range metrics {
+		result[name] = value
+	}
+	return result, hranaReply{}
+}
+
+// hranaNativeStatementMetrics decodes the optional execution counters a worker
+// appends to a statement reply. A JSON null is not an absent key: the public
+// statement validator rejects null, so letting null decay into the legacy
+// five-field shape would publish a result the gateway itself refuses.
+func hranaNativeStatementMetrics(read, written, duration json.RawMessage) (map[string]any, bool) {
+	if read == nil && written == nil && duration == nil {
+		return nil, true
+	}
+	if read == nil || written == nil || duration == nil ||
+		string(read) == "null" || string(written) == "null" || string(duration) == "null" {
+		return nil, false
+	}
+	var rowsRead, rowsWritten uint64
+	if json.Unmarshal(read, &rowsRead) != nil || json.Unmarshal(written, &rowsWritten) != nil {
+		return nil, false
+	}
+	var queryDuration float64
+	if json.Unmarshal(duration, &queryDuration) != nil || math.IsNaN(queryDuration) || math.IsInf(queryDuration, 0) || queryDuration < 0 {
+		return nil, false
+	}
+	return map[string]any{"rows_read": rowsRead, "rows_written": rowsWritten, "query_duration_ms": queryDuration}, true
 }
 
 func hranaOutputValue(value any) (any, bool) {

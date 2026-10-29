@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -493,6 +495,12 @@ func hranaProtoVar(value uint64) []byte {
 func hranaProtoNumber(number int, value uint64) []byte {
 	return append(hranaProtoVar(uint64(number<<3)), hranaProtoVar(value)...)
 }
+func hranaProtoDouble(number int, value float64) []byte {
+	encoded := hranaProtoVar(uint64(number<<3 | 1))
+	var bits [8]byte
+	binary.LittleEndian.PutUint64(bits[:], math.Float64bits(value))
+	return append(encoded, bits[:]...)
+}
 func hranaProtoBytes(number int, value []byte) []byte {
 	encoded := hranaProtoVar(uint64(number<<3 | 2))
 	encoded = append(encoded, hranaProtoVar(uint64(len(value)))...)
@@ -522,18 +530,11 @@ func hranaProtoResultValue(input any) ([]byte, error) {
 		}
 		return hranaProtoNumber(2, uint64(integer<<1)^uint64(integer>>63)), nil
 	case "float":
-		float, ok := value["value"].(json.Number)
-		if !ok {
-			return nil, errors.New("invalid result float")
+		converted, err := hranaProtoFloat(value["value"])
+		if err != nil {
+			return nil, err
 		}
-		converted, err := float.Float64()
-		if err != nil || math.IsNaN(converted) || math.IsInf(converted, 0) {
-			return nil, errors.New("invalid result float")
-		}
-		encoded := hranaProtoVar(uint64(3<<3 | 1))
-		var bits [8]byte
-		binary.LittleEndian.PutUint64(bits[:], math.Float64bits(converted))
-		return append(encoded, bits[:]...), nil
+		return hranaProtoDouble(3, converted), nil
 	case "text":
 		text, ok := value["value"].(string)
 		if !ok {
@@ -552,6 +553,30 @@ func hranaProtoResultValue(input any) ([]byte, error) {
 		return hranaProtoBytes(5, data), nil
 	}
 	return nil, errors.New("unsupported result value")
+}
+
+// hranaProtoFloat accepts both shapes a REAL cell reaches the encoder in:
+// json.Number when a worker reply was decoded as JSON, and float64 once
+// hranaOutputValue has classified the native cell. Neither NaN nor an infinity
+// is representable on the wire, so both shapes are validated here.
+func hranaProtoFloat(input any) (float64, error) {
+	var converted float64
+	switch value := input.(type) {
+	case json.Number:
+		parsed, err := value.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("invalid result float %q: %w", string(value), err)
+		}
+		converted = parsed
+	case float64:
+		converted = value
+	default:
+		return 0, fmt.Errorf("invalid result float type %T", input)
+	}
+	if math.IsNaN(converted) || math.IsInf(converted, 0) {
+		return 0, fmt.Errorf("invalid result float %v", converted)
+	}
+	return converted, nil
 }
 
 func hranaProtoError(input any) ([]byte, error) {
@@ -676,7 +701,98 @@ func hranaProtoStatementResult(input any) ([]byte, error) {
 		}
 		result = append(result, hranaProtoNumber(4, uint64(integer<<1)^uint64(integer>>63))...)
 	}
-	return result, nil
+	metrics, err := hranaProtoStatementMetrics(value)
+	if err != nil {
+		return nil, err
+	}
+	return append(result, metrics...), nil
+}
+
+// hranaProtoStatementMetrics encodes the optional execution counters as fields
+// 6, 7 and 8 of the official wire schema. Field 5 (replication_index) stays
+// untouched: the worker never reports one and the gateway must not invent it.
+// An old worker omits all three keys, and the reply keeps its legacy shape.
+func hranaProtoStatementMetrics(value map[string]any) ([]byte, error) {
+	_, hasRead := value["rows_read"]
+	_, hasWritten := value["rows_written"]
+	_, hasDuration := value["query_duration_ms"]
+	if !hasRead && !hasWritten && !hasDuration {
+		return nil, nil
+	}
+	if !hasRead || !hasWritten || !hasDuration {
+		return nil, errors.New("incomplete statement metrics")
+	}
+	read, err := hranaProtoMetricUInt(value["rows_read"])
+	if err != nil {
+		return nil, err
+	}
+	written, err := hranaProtoMetricUInt(value["rows_written"])
+	if err != nil {
+		return nil, err
+	}
+	duration, err := hranaProtoMetricFloat(value["query_duration_ms"])
+	if err != nil {
+		return nil, err
+	}
+	encoded := hranaProtoNumber(6, read)
+	encoded = append(encoded, hranaProtoNumber(7, written)...)
+	return append(encoded, hranaProtoDouble(8, duration)...), nil
+}
+
+func hranaProtoMetricUInt(input any) (uint64, error) {
+	switch value := input.(type) {
+	case uint64:
+		return value, nil
+	case uint:
+		return uint64(value), nil
+	case uint32:
+		return uint64(value), nil
+	case int:
+		if value < 0 {
+			return 0, errors.New("negative statement metric")
+		}
+		return uint64(value), nil
+	case int64:
+		if value < 0 {
+			return 0, errors.New("negative statement metric")
+		}
+		return uint64(value), nil
+	case float64:
+		if value < 0 || value != math.Trunc(value) || value >= math.Ldexp(1, 64) {
+			return 0, errors.New("invalid statement metric")
+		}
+		return uint64(value), nil
+	case json.Number:
+		return strconv.ParseUint(string(value), 10, 64)
+	default:
+		return 0, errors.New("invalid statement metric")
+	}
+}
+
+func hranaProtoMetricFloat(input any) (float64, error) {
+	var value float64
+	switch typed := input.(type) {
+	case float64:
+		value = typed
+	case json.Number:
+		converted, err := typed.Float64()
+		if err != nil {
+			return 0, err
+		}
+		value = converted
+	case int:
+		value = float64(typed)
+	case int64:
+		value = float64(typed)
+	case uint64:
+		value = float64(typed)
+	default:
+		return 0, errors.New("invalid statement duration")
+	}
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, errors.New("invalid statement duration")
+	}
+	return value, nil
 }
 
 func hranaProtoUInt(value any) (uint64, error) {
@@ -973,6 +1089,7 @@ func serveHranaV3(writer http.ResponseWriter, request *http.Request, handler *hr
 		output, err = hranaProtoPipelineResponse(result)
 	}
 	if err != nil {
+		log.Printf("Hrana protobuf response unavailable: path=%s error=%v", request.URL.Path, err)
 		http.Error(writer, "Hrana protobuf response unavailable", 502)
 		return true
 	}
