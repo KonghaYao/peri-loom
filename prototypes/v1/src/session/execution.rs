@@ -100,8 +100,8 @@ pub(super) fn execute(
                 };
                 let Some(prepared) = prepared else { break };
                 if let Some(statement) = prepared.context("prepare remote SQL statement")? {
-                    let (next_steps, _) = run(&context, statement, &mut guard, false, steps)?;
-                    steps = next_steps;
+                    let stats = run(&context, statement, &mut guard, false, steps)?;
+                    steps = stats.steps;
                 }
             }
             Ok(())
@@ -144,7 +144,7 @@ pub(super) fn query(
             };
             match statement {
                 Some(statement) => {
-                    run(&context, statement, &mut guard, true, 0).map(|(_, rows)| rows)
+                    run(&context, statement, &mut guard, true, 0).map(|stats| stats.rows)
                 }
                 None => Ok(Vec::new()),
             }
@@ -186,10 +186,14 @@ pub(super) fn statement(
                 deadline,
                 control.clone(),
             )?;
-            let mut statement = {
+            let (mut statement, started) = {
                 let _operation = database.operation_until(deadline, false)?;
                 guard.check()?;
                 super::configure(connection);
+                // The clock starts at prepare and is read after settlement, so
+                // the duration covers the work the caller asked for rather than
+                // the request admission that precedes execution.
+                let started = std::time::Instant::now();
                 let mut runner = connection.query_runner(sql.as_bytes());
                 let statement = runner
                     .next()
@@ -199,7 +203,7 @@ pub(super) fn statement(
                     runner.next().is_none(),
                     "multiple SQL statements not supported"
                 );
-                statement
+                (statement, started)
             };
             bind_parameters(&mut statement, args, named_args)?;
             let cols = (0..statement.num_columns())
@@ -210,7 +214,8 @@ pub(super) fn statement(
                 .collect::<Vec<_>>();
             let prior_rowid_generation = connection.last_insert_rowid_generation();
             let prior_changes = connection.total_changes();
-            let (_, rows) = run(&context, statement, &mut guard, want_rows, 0)?;
+            let stats = run(&context, statement, &mut guard, want_rows, 0)?;
+            let query_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             let affected_row_count = if connection.total_changes() != prior_changes {
                 connection.changes()
             } else {
@@ -221,10 +226,13 @@ pub(super) fn statement(
                 .then(|| connection.last_insert_rowid());
             Ok(StatementResult {
                 cols,
-                rows,
+                rows: stats.rows,
                 affected_row_count,
                 last_insert_rowid,
                 autocommit: connection.get_auto_commit(),
+                rows_read: stats.rows_read,
+                rows_written: stats.rows_written,
+                query_duration_ms,
             })
         },
         |_| 0,
@@ -339,10 +347,14 @@ pub(super) fn guarded_readonly_statement(
                 deadline,
                 control.clone(),
             )?;
-            let mut statement = {
+            let (mut statement, started) = {
                 let _operation = database.operation_until(deadline, false)?;
                 guard.check()?;
                 super::configure(connection);
+                // The clock starts at prepare and is read after settlement, so
+                // the duration covers the work the caller asked for rather than
+                // the request admission that precedes execution.
+                let started = std::time::Instant::now();
                 let mut runner = connection.query_runner(sql.as_bytes());
                 let statement = runner
                     .next()
@@ -352,7 +364,7 @@ pub(super) fn guarded_readonly_statement(
                     runner.next().is_none(),
                     "multiple SQL statements not supported"
                 );
-                statement
+                (statement, started)
             };
             crate::work_metrics::note_guarded_statement_prepare();
             bind_parameters(&mut statement, args, named_args)?;
@@ -365,7 +377,10 @@ pub(super) fn guarded_readonly_statement(
             let prior_rowid_generation = connection.last_insert_rowid_generation();
             let prior_changes = connection.total_changes();
             let (rows, statement) = run_guarded(&context, statement, &mut guard, want_rows)?;
-            let reprepares = statement.metrics().reprepares;
+            // Read every counter from the same completed statement, before the
+            // drop that ends the engine state's guaranteed lifetime.
+            let metrics = statement.metrics();
+            let reprepares = metrics.reprepares;
             drop(statement);
             if database
                 .admission()
@@ -382,6 +397,9 @@ pub(super) fn guarded_readonly_statement(
                     GuardedIntentReason::EngineWritable,
                 ));
             };
+            // Read after settlement, matching the plain path: the admission and
+            // evidence settlement the statement caused belong to its duration.
+            let query_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             let affected_row_count = if connection.total_changes() != prior_changes {
                 connection.changes()
             } else {
@@ -397,6 +415,9 @@ pub(super) fn guarded_readonly_statement(
                 affected_row_count,
                 last_insert_rowid,
                 autocommit: connection.get_auto_commit(),
+                rows_read: metrics.rows_read,
+                rows_written: metrics.rows_written,
+                query_duration_ms,
             }))
         },
         |_| 0,
@@ -885,13 +906,22 @@ fn writer(connection: &Connection) -> bool {
     connection.is_in_write_tx() || connection.get_pager().holds_write_lock()
 }
 
+/// The outcome of one executed statement: the rows the caller asked for plus the
+/// engine counters and step count read from the same completed statement.
+struct RunStats {
+    steps: u64,
+    rows: Vec<Vec<Value>>,
+    rows_read: u64,
+    rows_written: u64,
+}
+
 fn run(
     context: &ExecutionContext<'_>,
     mut statement: Statement,
     guard: &mut ExecutionBudget<'_>,
     collect: bool,
     prior_steps: u64,
-) -> Result<(u64, Vec<Vec<Value>>)> {
+) -> Result<RunStats> {
     let ExecutionContext {
         database,
         connection,
@@ -913,7 +943,10 @@ fn run(
     );
     match result {
         Ok((rows, _)) => {
-            let steps = prior_steps.saturating_add(statement.metrics().vm_steps);
+            // Read every counter from the same completed statement, before the
+            // drop that ends the engine state's guaranteed lifetime.
+            let metrics = statement.metrics();
+            let steps = prior_steps.saturating_add(metrics.vm_steps);
             executed.finish(Some(steps));
             drop(statement);
             if let Some(permit) = permit {
@@ -922,7 +955,12 @@ fn run(
                 database.admission().settle(control, writer(connection))?;
             }
             deadline.evidence.settle();
-            Ok((steps, rows))
+            Ok(RunStats {
+                steps,
+                rows,
+                rows_read: metrics.rows_read,
+                rows_written: metrics.rows_written,
+            })
         }
         Err(error) => {
             // The engine step count of a failed execution is not reported: the abort path

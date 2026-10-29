@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,11 +35,14 @@ func testHranaV3Call(t *testing.T, handler *hranaHTTP, token, path string, paylo
 	return response
 }
 
+func hranaProtoTestStatement() []byte {
+	statement := hranaProtoString(1, "SELECT ? AS message")
+	statement = hranaProtoAppend(statement, 3, hranaProtoString(4, "hello"))
+	return append(statement, hranaProtoNumber(5, 1)...)
+}
+
 func testHranaV3Statement() []byte {
-	stmt := hranaProtoString(1, "SELECT ? AS message")
-	stmt = hranaProtoAppend(stmt, 3, hranaProtoString(4, "hello"))
-	stmt = append(stmt, hranaProtoNumber(5, 1)...)
-	return hranaProtoBytes(2, hranaProtoBytes(1, stmt))
+	return hranaProtoBytes(2, hranaProtoBytes(1, hranaProtoTestStatement()))
 }
 
 type failingCursorWriter struct {
@@ -368,5 +372,511 @@ func TestHranaV3MalformedAndExactInteger(t *testing.T) {
 	response, err := hranaProtoStatementResult(map[string]any{"cols": []any{map[string]any{"name": "big", "decltype": nil}}, "rows": []any{[]any{map[string]any{"type": "integer", "value": "9223372036854775807"}}}, "affected_row_count": json.Number("0"), "last_insert_rowid": nil})
 	if err != nil || len(response) == 0 {
 		t.Fatalf("bigint reply unavailable: %v", err)
+	}
+}
+
+// hranaOutputValue converts every native worker cell before the protobuf
+// encoder sees it, and REAL cells become float64. The encoder must accept that
+// shape; a json.Number-only branch truncated the cursor stream after the 200
+// response was already committed.
+func TestHranaProtoResultValueFloatAcceptsOutputValue(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		input json.Number
+		want  float64
+		wire  []byte
+	}{
+		{"fraction", json.Number("1.5"), 1.5, []byte{0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x3f}},
+		{"exponent", json.Number("1e3"), 1000, []byte{0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x8f, 0x40}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			output, ok := hranaOutputValue(scenario.input)
+			if !ok {
+				t.Fatalf("hranaOutputValue(%q) rejected", scenario.input)
+			}
+			value, ok := output.(map[string]any)["value"].(float64)
+			if !ok || value != scenario.want {
+				t.Fatalf("hranaOutputValue(%q) = %#v, want float64 %v", scenario.input, output, scenario.want)
+			}
+			encoded, err := hranaProtoResultValue(output)
+			if err != nil {
+				t.Fatalf("encode float64 %v: %v", scenario.want, err)
+			}
+			// Golden bytes, independent of hranaProtoRead: field 3 fixed64.
+			if !bytes.Equal(encoded, scenario.wire) {
+				t.Fatalf("wire = %x, want %x", encoded, scenario.wire)
+			}
+		})
+	}
+}
+
+func TestHranaProtoResultValueRoundTripsEveryOutputType(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		input any
+		field int
+		wire  int
+		check func(t *testing.T, value map[string]any)
+	}{
+		{"null", nil, 1, 2, func(t *testing.T, value map[string]any) {
+			if value["type"] != "null" {
+				t.Fatalf("null decoded as %v", value)
+			}
+		}},
+		{"integer", json.Number("42"), 2, 0, func(t *testing.T, value map[string]any) {
+			if value["type"] != "integer" || value["value"] != "42" {
+				t.Fatalf("integer decoded as %v", value)
+			}
+		}},
+		{"float", json.Number("1.5"), 3, 1, func(t *testing.T, value map[string]any) {
+			if value["type"] != "float" || value["value"] != 1.5 {
+				t.Fatalf("float decoded as %v", value)
+			}
+		}},
+		{"text", "hello", 4, 2, func(t *testing.T, value map[string]any) {
+			if value["type"] != "text" || value["value"] != "hello" {
+				t.Fatalf("text decoded as %v", value)
+			}
+		}},
+		{"blob", []any{json.Number("0"), json.Number("255")}, 5, 2, func(t *testing.T, value map[string]any) {
+			if value["type"] != "blob" || value["base64"] != "AP8=" {
+				t.Fatalf("blob decoded as %v", value)
+			}
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			output, ok := hranaOutputValue(scenario.input)
+			if !ok {
+				t.Fatalf("hranaOutputValue(%#v) rejected", scenario.input)
+			}
+			encoded, err := hranaProtoResultValue(output)
+			if err != nil {
+				t.Fatalf("encode %#v: %v", output, err)
+			}
+			fields, err := hranaProtoRead(encoded)
+			if err != nil || len(fields) != 1 || fields[0].number != scenario.field || fields[0].wire != scenario.wire {
+				t.Fatalf("wire fields = %v, want #%d/%d", fields, scenario.field, scenario.wire)
+			}
+			decoded, err := hranaProtoValue(encoded)
+			if err != nil {
+				t.Fatalf("decode %s: %v", scenario.name, err)
+			}
+			scenario.check(t, decoded)
+		})
+	}
+}
+
+func TestHranaProtoResultValueRejectsInvalidFloat(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		value any
+	}{
+		{"nan", math.NaN()},
+		{"positive infinity", math.Inf(1)},
+		{"negative infinity", math.Inf(-1)},
+		{"overflowing number", json.Number("1e999")},
+		{"string", "1.5"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			encoded, err := hranaProtoResultValue(map[string]any{"type": "float", "value": scenario.value})
+			if err == nil || encoded != nil {
+				t.Fatalf("invalid float %s encoded as %x", scenario.name, encoded)
+			}
+		})
+	}
+}
+
+func TestHranaProtoStatementResultMetrics(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": json.Number("0"), "last_insert_rowid": nil}
+	}
+	fieldsByNumber := func(t *testing.T, encoded []byte) map[int]hranaProtoField {
+		t.Helper()
+		fields, err := hranaProtoRead(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byNumber := make(map[int]hranaProtoField, len(fields))
+		for _, field := range fields {
+			byNumber[field.number] = field
+		}
+		return byNumber
+	}
+	checkMetrics := func(t *testing.T, fields map[int]hranaProtoField) {
+		t.Helper()
+		read, exists := fields[6]
+		if !exists || read.wire != 0 || read.integer != 8625 {
+			t.Fatalf("rows_read field: %+v", read)
+		}
+		written, exists := fields[7]
+		if !exists || written.wire != 0 || written.integer != 0 {
+			t.Fatalf("rows_written field: %+v", written)
+		}
+		duration, exists := fields[8]
+		if !exists || duration.wire != 1 || len(duration.bytes) != 8 {
+			t.Fatalf("query_duration_ms field: %+v", duration)
+		}
+		if restored := math.Float64frombits(binary.LittleEndian.Uint64(duration.bytes)); math.Abs(restored-955.25) > 1e-9 {
+			t.Fatalf("query_duration_ms = %v, want 955.25", restored)
+		}
+		if _, exists := fields[5]; exists {
+			t.Fatal("replication_index was written")
+		}
+	}
+
+	typed := base()
+	typed["rows_read"] = uint64(8625)
+	typed["rows_written"] = uint64(0)
+	typed["query_duration_ms"] = 955.25
+	encoded, err := hranaProtoStatementResult(typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Official wire bytes, independent of the package's own decoder: field 6
+	// varint 8625, field 7 varint 0, then field 8 fixed64 955.25. Field 5 must
+	// not appear. A shared bug between encoder and decoder cannot pass this.
+	golden := []byte{
+		0x30, 0xb1, 0x43, // field 6 (rows_read), varint 8625
+		0x38, 0x00, // field 7 (rows_written), varint 0
+		0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0xda, 0x8d, 0x40, // field 8, little-endian IEEE-754 955.25
+	}
+	if !bytes.HasSuffix(encoded, golden) {
+		t.Fatalf("wire bytes = %x, want suffix %x", encoded, golden)
+	}
+	decoded, err := hranaProtoRead(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sequence := make([]int, 0, len(decoded))
+	for _, field := range decoded {
+		sequence = append(sequence, field.number)
+	}
+	if len(sequence) != 4 || sequence[0] != 3 || sequence[1] != 6 || sequence[2] != 7 || sequence[3] != 8 {
+		t.Fatalf("statement result field sequence = %v, want [3 6 7 8]", sequence)
+	}
+	checkMetrics(t, fieldsByNumber(t, encoded))
+
+	number := base()
+	number["rows_read"] = json.Number("8625")
+	number["rows_written"] = json.Number("0")
+	number["query_duration_ms"] = json.Number("955.25")
+	encoded, err = hranaProtoStatementResult(number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkMetrics(t, fieldsByNumber(t, encoded))
+
+	encoded, err = hranaProtoStatementResult(base())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := fieldsByNumber(t, encoded)
+	for _, number := range []int{5, 6, 7, 8} {
+		if _, exists := fields[number]; exists {
+			t.Fatalf("legacy statement result wrote field %d", number)
+		}
+	}
+}
+
+func TestHranaProtoStatementResultMetricsRejected(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": json.Number("0"), "last_insert_rowid": nil}
+	}
+	for _, scenario := range []struct {
+		name   string
+		metric string
+		value  any
+	}{
+		{"partial metrics", "rows_read", uint64(1)},
+		{"nil rows_read", "rows_read", nil},
+		{"nil rows_written", "rows_written", nil},
+		{"nil query_duration_ms", "query_duration_ms", nil},
+		{"fractional rows_read", "rows_read", 1.5},
+		{"negative rows_read", "rows_read", -1},
+		{"float64 beyond uint64", "rows_read", math.Ldexp(1, 64)},
+		{"string rows_written", "rows_written", "1"},
+		{"bool query_duration_ms", "query_duration_ms", true},
+		{"string query_duration_ms", "query_duration_ms", "955.25"},
+		{"negative query_duration_ms", "query_duration_ms", -0.5},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			reply := base()
+			reply[scenario.metric] = scenario.value
+			if _, err := hranaProtoStatementResult(reply); err == nil {
+				t.Fatalf("%s accepted a malformed metric", scenario.metric)
+			}
+		})
+	}
+}
+
+func hranaProtoTestStreamResponse(t *testing.T, entry []byte) hranaProtoField {
+	t.Helper()
+	stream, err := hranaProtoRead(entry)
+	if err != nil || len(stream) != 1 || stream[0].number != 1 || stream[0].wire != 2 {
+		t.Fatalf("invalid pipeline stream result: %v %v", stream, err)
+	}
+	response, err := hranaProtoRead(stream[0].bytes)
+	if err != nil || len(response) != 1 || response[0].wire != 2 {
+		t.Fatalf("invalid pipeline stream response: %v %v", response, err)
+	}
+	return response[0]
+}
+
+func hranaProtoTestPipelineEntry(t *testing.T, fields []hranaProtoField) []byte {
+	t.Helper()
+	for _, field := range fields {
+		if field.number == 3 && field.wire == 2 {
+			return field.bytes
+		}
+	}
+	t.Fatalf("pipeline reply has no result: %v", fields)
+	return nil
+}
+
+func hranaProtoTestPipelineStatement(t *testing.T, entry []byte) []hranaProtoField {
+	t.Helper()
+	response := hranaProtoTestStreamResponse(t, entry)
+	if response.number != 2 {
+		t.Fatalf("pipeline response is not execute: %+v", response)
+	}
+	wrapper, err := hranaProtoRead(response.bytes)
+	if err != nil || len(wrapper) != 1 || wrapper[0].number != 1 || wrapper[0].wire != 2 {
+		t.Fatalf("invalid execute response: %v %v", wrapper, err)
+	}
+	statement, err := hranaProtoRead(wrapper[0].bytes)
+	if err != nil {
+		t.Fatalf("invalid statement result: %v", err)
+	}
+	return statement
+}
+
+// hranaProtoTestStatementRow returns the decoded row message of an execute
+// result. A row is a repeated Value field 1, so each item wraps the oneof.
+func hranaProtoTestStatementRow(t *testing.T, statement []hranaProtoField, index int) []hranaProtoField {
+	t.Helper()
+	var rows []hranaProtoField
+	for _, field := range statement {
+		if field.number == 2 && field.wire == 2 {
+			rows = append(rows, field)
+		}
+	}
+	if index >= len(rows) {
+		t.Fatalf("statement has %d rows, want at least %d", len(rows), index+1)
+	}
+	row, err := hranaProtoRead(rows[index].bytes)
+	if err != nil || len(row) != 1 || row[0].number != 1 || row[0].wire != 2 {
+		t.Fatalf("invalid statement row %d: %v %v", index, row, err)
+	}
+	return row
+}
+
+func hranaProtoTestPipelineBatch(t *testing.T, entry []byte) [][]hranaProtoField {
+	t.Helper()
+	response := hranaProtoTestStreamResponse(t, entry)
+	if response.number != 3 {
+		t.Fatalf("pipeline response is not batch: %+v", response)
+	}
+	wrapper, err := hranaProtoRead(response.bytes)
+	if err != nil || len(wrapper) != 1 || wrapper[0].number != 1 || wrapper[0].wire != 2 {
+		t.Fatalf("invalid batch response: %v %v", wrapper, err)
+	}
+	steps, err := hranaProtoRead(wrapper[0].bytes)
+	if err != nil || len(steps) == 0 {
+		t.Fatalf("invalid batch steps: %v %v", steps, err)
+	}
+	results := make([][]hranaProtoField, 0, len(steps))
+	for index, step := range steps {
+		if step.number != 1 || step.wire != 2 {
+			t.Fatalf("batch step %d is not a result: %+v", index, step)
+		}
+		items, err := hranaProtoRead(step.bytes)
+		if err != nil {
+			t.Fatalf("invalid batch step %d: %v", index, err)
+		}
+		var encoded []byte
+		for _, item := range items {
+			if item.number == 2 && item.wire == 2 {
+				encoded = item.bytes
+			}
+		}
+		if encoded == nil {
+			t.Fatalf("batch step %d has no statement result", index)
+		}
+		statement, err := hranaProtoRead(encoded)
+		if err != nil {
+			t.Fatalf("invalid batch step %d statement result: %v", index, err)
+		}
+		results = append(results, statement)
+	}
+	return results
+}
+
+func hranaProtoTestExpectCounters(t *testing.T, statement []hranaProtoField) {
+	t.Helper()
+	byNumber := make(map[int]hranaProtoField, len(statement))
+	for _, field := range statement {
+		byNumber[field.number] = field
+	}
+	if read, exists := byNumber[6]; !exists || read.wire != 0 || read.integer != 8625 {
+		t.Fatalf("rows_read field: %+v", statement)
+	}
+	if written, exists := byNumber[7]; !exists || written.wire != 0 || written.integer != 0 {
+		t.Fatalf("rows_written field: %+v", statement)
+	}
+	duration, exists := byNumber[8]
+	if !exists || duration.wire != 1 || len(duration.bytes) != 8 {
+		t.Fatalf("query_duration_ms field: %+v", statement)
+	}
+	if restored := math.Float64frombits(binary.LittleEndian.Uint64(duration.bytes)); restored != 955.25 {
+		t.Fatalf("query_duration_ms = %v, want 955.25", restored)
+	}
+	if _, exists := byNumber[5]; exists {
+		t.Fatalf("replication_index was written: %+v", statement)
+	}
+}
+
+func TestHranaV3HTTPPipelineEncodesExecutionCounters(t *testing.T) {
+	hook := func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "statement" {
+			return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true,
+				"rows_read": uint64(8625), "rows_written": uint64(0), "query_duration_ms": 955.25}, nil
+		}
+		return nil, nil
+	}
+	const path = "/db/tenant-a/db-a/main/v3-protobuf/pipeline"
+	t.Run("execute", func(t *testing.T) {
+		fixture := newGatewayFixture(t)
+		fixture.upstream.setHook(hook)
+		handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+		response := testHranaV3Call(t, handler, fixture.tokenA, path, hranaProtoBytes(2, testHranaV3Statement()))
+		if response.Code != http.StatusOK {
+			t.Fatalf("pipeline returned %d: %s", response.Code, response.Body.String())
+		}
+		fields, err := hranaProtoRead(response.Body.Bytes())
+		if err != nil || len(fields) == 0 {
+			t.Fatalf("pipeline envelope: %v %v", fields, err)
+		}
+		hranaProtoTestExpectCounters(t, hranaProtoTestPipelineStatement(t, hranaProtoTestPipelineEntry(t, fields)))
+	})
+	t.Run("batch", func(t *testing.T) {
+		fixture := newGatewayFixture(t)
+		fixture.upstream.setHook(hook)
+		handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+		batch := hranaProtoBytes(1, hranaProtoBytes(2, hranaProtoTestStatement()))
+		batch = append(batch, hranaProtoBytes(1, hranaProtoBytes(2, hranaProtoTestStatement()))...)
+		response := testHranaV3Call(t, handler, fixture.tokenA, path, hranaProtoBytes(2, hranaProtoBytes(3, hranaProtoBytes(1, batch))))
+		if response.Code != http.StatusOK || fixture.upstream.count("statement") != 2 {
+			t.Fatalf("batch pipeline returned %d, statements=%d: %s", response.Code, fixture.upstream.count("statement"), response.Body.String())
+		}
+		fields, err := hranaProtoRead(response.Body.Bytes())
+		if err != nil || len(fields) == 0 {
+			t.Fatalf("pipeline envelope: %v %v", fields, err)
+		}
+		results := hranaProtoTestPipelineBatch(t, hranaProtoTestPipelineEntry(t, fields))
+		if len(results) != 2 {
+			t.Fatalf("batch step results = %d, want 2", len(results))
+		}
+		for index, statement := range results {
+			if len(statement) == 0 {
+				t.Fatalf("batch step %d returned an empty statement result", index)
+			}
+			hranaProtoTestExpectCounters(t, statement)
+		}
+	})
+}
+
+// The fake worker answers with a bare JSON number, so the gateway decodes it
+// into json.Number and hranaOutputValue turns it into float64 before the
+// protobuf encoder runs. A Hrana-wrapped fixture would skip that real path.
+func TestHranaV3HTTPPipelineEncodesRealValue(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "statement" {
+			return map[string]any{
+				"cols":               []any{map[string]any{"name": "id", "decltype": "REAL"}},
+				"rows":               [][]any{{json.Number("1.5")}},
+				"affected_row_count": 0,
+				"last_insert_rowid":  nil,
+				"autocommit":         true,
+			}, nil
+		}
+		return nil, nil
+	})
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	response := testHranaV3Call(t, handler, fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/pipeline", hranaProtoBytes(2, testHranaV3Statement()))
+	if response.Code != http.StatusOK || fixture.upstream.count("statement") != 1 {
+		t.Fatalf("pipeline returned %d, statements=%d: %s", response.Code, fixture.upstream.count("statement"), response.Body.String())
+	}
+	fields, err := hranaProtoRead(response.Body.Bytes())
+	if err != nil || len(fields) == 0 {
+		t.Fatalf("pipeline envelope: %v %v", fields, err)
+	}
+	statement := hranaProtoTestPipelineStatement(t, hranaProtoTestPipelineEntry(t, fields))
+	row := hranaProtoTestStatementRow(t, statement, 0)
+	value, err := hranaProtoRead(row[0].bytes)
+	if err != nil || len(value) != 1 || value[0].number != 3 || value[0].wire != 1 || len(value[0].bytes) != 8 {
+		t.Fatalf("REAL value field: %v %v", value, err)
+	}
+	if restored := math.Float64frombits(binary.LittleEndian.Uint64(value[0].bytes)); restored != 1.5 {
+		t.Fatalf("REAL value = %v, want 1.5", restored)
+	}
+}
+
+func TestHranaV3HTTPReadCursorEncodesRealValue(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "describe":
+			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "id", "decltype": "REAL"}}, "is_explain": false, "is_readonly": true}, nil
+		case "open_read_cursor":
+			return map[string]any{"cols": []any{map[string]any{"name": "id", "decltype": "REAL"}}}, nil
+		case "fetch_read_cursor":
+			return map[string]any{"rows": [][]any{{json.Number("1.5")}}, "done": true}, nil
+		case "close_read_cursor":
+			return map[string]bool{"closed": true}, nil
+		}
+		return nil, nil
+	})
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	statement := append(hranaProtoString(1, "SELECT id FROM records"), hranaProtoNumber(5, 1)...)
+	requestBody := hranaProtoBytes(2, hranaProtoBytes(1, hranaProtoBytes(2, statement)))
+	response := testHranaV3Call(t, handler, fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/cursor", requestBody)
+	if response.Code != http.StatusOK {
+		t.Fatalf("cursor returned %d: %s", response.Code, response.Body.String())
+	}
+	var frames [][]hranaProtoField
+	encoded := response.Body.Bytes()
+	for len(encoded) > 0 {
+		length, size := binary.Uvarint(encoded)
+		if size <= 0 || uint64(len(encoded[size:])) < length {
+			t.Fatal("truncated cursor frame")
+		}
+		frame, err := hranaProtoRead(encoded[size : size+int(length)])
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, frame)
+		encoded = encoded[size+int(length):]
+	}
+	// A truncated stream stops after step_begin; the step_end frame proves the
+	// handler kept the cursor contract instead of closing on the value error.
+	if len(frames) != 4 {
+		t.Fatalf("cursor frames = %d, want header, step_begin, row, step_end", len(frames))
+	}
+	for index, want := range []int{1, 1, 4, 2} {
+		if len(frames[index]) == 0 || frames[index][0].number != want {
+			t.Fatalf("cursor frame %d = %v, want field %d", index, frames[index], want)
+		}
+	}
+	row, err := hranaProtoRead(frames[2][0].bytes)
+	if err != nil || len(row) != 1 || row[0].number != 1 || row[0].wire != 2 {
+		t.Fatalf("cursor row: %v %v", row, err)
+	}
+	value, err := hranaProtoRead(row[0].bytes)
+	if err != nil || len(value) != 1 || value[0].number != 3 || value[0].wire != 1 || len(value[0].bytes) != 8 {
+		t.Fatalf("cursor REAL value field: %v %v", value, err)
+	}
+	if restored := math.Float64frombits(binary.LittleEndian.Uint64(value[0].bytes)); restored != 1.5 {
+		t.Fatalf("cursor REAL value = %v, want 1.5", restored)
 	}
 }

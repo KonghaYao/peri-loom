@@ -292,3 +292,147 @@ func TestHranaV3JSONMalformedAndUnknownOutcomeNeverRetry(t *testing.T) {
 		t.Fatalf("unknown outcome was retried or hidden: status=%d calls=%d body=%s", response.Code, fixture.upstream.count("statement"), response.Body.String())
 	}
 }
+
+func TestHranaQueryMetricsJSONPipeline(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		reply   map[string]any
+		metrics bool
+	}{
+		{
+			name: "new worker exposes counters",
+			reply: map[string]any{
+				"cols": []any{}, "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true,
+				"rows_read": uint64(8625), "rows_written": uint64(0), "query_duration_ms": 955.25,
+			},
+			metrics: true,
+		},
+		{
+			name:  "legacy worker keeps its shape",
+			reply: map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			fixture := newGatewayFixture(t)
+			reply := scenario.reply
+			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+				if command["command"] == "statement" {
+					return reply, nil
+				}
+				return nil, nil
+			})
+			handler := newHranaHTTP(fixture.gateway)
+			body := `{"baton":null,"requests":[{"type":"execute","stmt":{"sql":"SELECT 1","want_rows":true}},{"type":"close"}]}`
+			for _, version := range []string{"v3", "v2"} {
+				t.Run(version, func(t *testing.T) {
+					path := strings.Replace(hranaV3JSONPath, "/v3", "/"+version, 1) + "/pipeline"
+					response := hranaV3JSONCall(handler, fixture.tokenA, path, "application/json", body)
+					if response.Code != http.StatusOK {
+						t.Fatalf("pipeline returned %d: %s", response.Code, response.Body.String())
+					}
+					document := hranaV3JSONDocument(t, response)
+					entries, ok := document["results"].([]any)
+					if !ok || len(entries) == 0 {
+						t.Fatalf("missing pipeline results: %v", document)
+					}
+					execute, ok := entries[0].(map[string]any)["response"].(map[string]any)
+					if !ok || execute["type"] != "execute" {
+						t.Fatalf("missing execute envelope: %v", entries[0])
+					}
+					statement, ok := execute["result"].(map[string]any)
+					if !ok {
+						t.Fatalf("missing statement result: %v", execute)
+					}
+					read, hasRead := statement["rows_read"]
+					written, hasWritten := statement["rows_written"]
+					duration, hasDuration := statement["query_duration_ms"]
+					if !scenario.metrics {
+						if hasRead || hasWritten || hasDuration || len(statement) != 4 {
+							t.Fatalf("legacy statement result changed shape: %v", statement)
+						}
+						return
+					}
+					if !hasRead || read != float64(8625) || !hasWritten || written != float64(0) || !hasDuration || duration != 955.25 || len(statement) != 7 {
+						t.Fatalf("execution counters missing or wrong: %v", statement)
+					}
+				})
+			}
+		})
+	}
+}
+
+// A worker reply that names a counter but sends JSON null must not decay into
+// the legacy five-field shape: the public validator rejects null, so publishing
+// the legacy shape would hand a customer a result the gateway itself refuses.
+func TestHranaStatementMetricsRejectJSONNull(t *testing.T) {
+	for _, transport := range []string{"json", "protobuf"} {
+		t.Run(transport, func(t *testing.T) {
+			fixture := newGatewayFixture(t)
+			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+				if command["command"] == "statement" {
+					return map[string]any{"cols": []any{}, "rows": []any{}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true,
+						"rows_read": nil, "rows_written": uint64(0), "query_duration_ms": 1.5}, nil
+				}
+				return nil, nil
+			})
+			handler := newHranaHTTP(fixture.gateway)
+			var response *httptest.ResponseRecorder
+			if transport == "json" {
+				response = hranaV3JSONCall(handler, fixture.tokenA, hranaV3JSONPath+"/pipeline", "application/json", `{"baton":null,"requests":[{"type":"execute","stmt":{"sql":"SELECT 1","want_rows":true}},{"type":"close"}]}`)
+			} else {
+				response = testHranaV3Call(t, handler.(*hranaHTTP), fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/pipeline", hranaProtoBytes(2, testHranaV3Statement()))
+			}
+			if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "outcome_unknown") {
+				t.Fatalf("null metric was accepted: %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestHranaNativeStatementMetricsShapes(t *testing.T) {
+	for _, scenario := range []struct {
+		name             string
+		read, written    json.RawMessage
+		duration         json.RawMessage
+		accepted, legacy bool
+	}{
+		{"absent", nil, nil, nil, true, true},
+		{"present", json.RawMessage("8625"), json.RawMessage("0"), json.RawMessage("955.25"), true, false},
+		{"null rows_read", json.RawMessage("null"), json.RawMessage("0"), json.RawMessage("1.5"), false, false},
+		{"null rows_written", json.RawMessage("1"), json.RawMessage("null"), json.RawMessage("1.5"), false, false},
+		{"null query_duration_ms", json.RawMessage("1"), json.RawMessage("0"), json.RawMessage("null"), false, false},
+		{"partial", json.RawMessage("1"), nil, json.RawMessage("1.5"), false, false},
+		{"exponent rows_read", json.RawMessage("1e3"), json.RawMessage("0"), json.RawMessage("1.5"), false, false},
+		{"negative query_duration_ms", json.RawMessage("1"), json.RawMessage("0"), json.RawMessage("-0.5"), false, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			metrics, ok := hranaNativeStatementMetrics(scenario.read, scenario.written, scenario.duration)
+			if ok != scenario.accepted || (ok && (metrics == nil) != scenario.legacy) {
+				t.Fatalf("metrics=%v ok=%v, want accepted=%v legacy=%v", metrics, ok, scenario.accepted, scenario.legacy)
+			}
+			if ok && !scenario.legacy {
+				if metrics["rows_read"] != uint64(8625) || metrics["rows_written"] != uint64(0) || metrics["query_duration_ms"] != 955.25 {
+					t.Fatalf("metrics = %v", metrics)
+				}
+			}
+		})
+	}
+}
+
+func TestHranaNativeStatementNullCountersStayDistinguishable(t *testing.T) {
+	decoder := json.NewDecoder(strings.NewReader(`{"cols":[],"rows":[],"affected_row_count":0,"last_insert_rowid":null,"rows_read":null,"rows_written":0,"query_duration_ms":1.5}`))
+	decoder.UseNumber()
+	var native hranaNativeStatement
+	if err := decoder.Decode(&native); err != nil {
+		t.Fatal(err)
+	}
+	if native.RowsRead == nil || string(native.RowsRead) != "null" {
+		t.Fatalf("null rows_read decoded as %q; it must stay distinguishable from an absent key", native.RowsRead)
+	}
+	if _, ok := hranaNativeStatementMetrics(native.RowsRead, native.RowsWritten, native.QueryDurationMS); ok {
+		t.Fatal("null rows_read was accepted as a counter")
+	}
+	if native.RowsWritten == nil || string(native.RowsWritten) != "0" {
+		t.Fatalf("rows_written decoded as %q", native.RowsWritten)
+	}
+}

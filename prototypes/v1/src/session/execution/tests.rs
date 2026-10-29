@@ -270,3 +270,55 @@ fn guarded_step_refuses_program_turned_into_a_write_by_reprepare() -> Result<()>
     drop(statement);
     Ok(())
 }
+
+#[test]
+fn statement_select_reports_engine_counters_and_duration() -> Result<()> {
+    let (_cache, session) = guarded_session("statement_select_stats")?;
+    session.execute("CREATE TABLE items(value INTEGER)")?;
+    session.execute("INSERT INTO items VALUES (1), (2), (3)")?;
+    let result = session.statement("SELECT value FROM items", &[])?;
+    assert_eq!(result.rows.len(), 3);
+    assert!(
+        result.rows_read >= result.rows.len() as u64,
+        "a three-row scan must account for at least the returned rows: {}",
+        result.rows_read
+    );
+    assert_eq!(result.rows_written, 0);
+    assert!(result.query_duration_ms.is_finite());
+    assert!(result.query_duration_ms >= 0.0);
+    Ok(())
+}
+
+#[test]
+fn statement_insert_reports_written_rows_and_duration() -> Result<()> {
+    let (_cache, session) = guarded_session("statement_insert_stats")?;
+    session.execute("CREATE TABLE items(value INTEGER)")?;
+    let result = session.statement("INSERT INTO items VALUES (1)", &[])?;
+    assert_eq!(result.affected_row_count, 1);
+    assert_eq!(result.rows_written, 1);
+    assert!(result.query_duration_ms.is_finite());
+    assert!(result.query_duration_ms >= 0.0);
+    Ok(())
+}
+
+#[test]
+fn guarded_statement_reports_engine_counters_and_duration() -> Result<()> {
+    let _serial = guarded_test_lock();
+    let (_cache, session) = guarded_session("guarded_statement_stats")?;
+    session.execute("CREATE TABLE items(value INTEGER)")?;
+    session.execute("INSERT INTO items VALUES (1), (2), (3)")?;
+    let outcome = session.guarded_readonly_statement("SELECT value FROM items", &[], &[], true)?;
+    let GuardedStatementOutcome::Executed(result) = outcome else {
+        panic!("a read-only statement asked for a durable intent");
+    };
+    assert_eq!(result.rows.len(), 3);
+    assert!(
+        result.rows_read >= result.rows.len() as u64,
+        "a three-row scan must account for at least the returned rows: {}",
+        result.rows_read
+    );
+    assert_eq!(result.rows_written, 0);
+    assert!(result.query_duration_ms.is_finite());
+    assert!(result.query_duration_ms >= 0.0);
+    Ok(())
+}

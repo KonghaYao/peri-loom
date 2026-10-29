@@ -118,6 +118,24 @@ impl Worker {
         )
     }
 
+    fn guarded_statement(
+        &self,
+        session: &str,
+        sql: &str,
+        args: Vec<StatementArg>,
+    ) -> Result<Value> {
+        self.call(
+            WorkerCommand::GuardedReadonlyStatement {
+                session: session.into(),
+                sql: sql.into(),
+                args,
+                named_args: vec![],
+                want_rows: true,
+            },
+            false,
+        )
+    }
+
     fn session(&self) -> Result<String> {
         let response = self.call(
             WorkerCommand::OpenSession {
@@ -1042,6 +1060,172 @@ fn statement_without_rows_still_settles_its_write() -> Result<()> {
         vec![],
     )?;
     assert_eq!(read_back["result"]["rows"], json!([["hidden"]]));
+    assert_eq!(
+        worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn statement_result_carries_engine_counters_and_duration() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    let created = worker.statement(&session, "CREATE TABLE counters(value INTEGER)", vec![])?;
+    assert_eq!(created["ok"], true, "{created}");
+
+    let inserted = worker.statement(&session, "INSERT INTO counters VALUES (1), (2)", vec![])?;
+    assert_eq!(inserted["ok"], true, "{inserted}");
+    assert_eq!(inserted["result"]["affected_row_count"], 2);
+    assert!(
+        inserted["result"]["rows_written"]
+            .as_u64()
+            .expect("rows_written is a JSON number")
+            >= 2,
+        "{inserted}"
+    );
+
+    let selected = worker.statement(&session, "SELECT value FROM counters", vec![])?;
+    assert_eq!(selected["ok"], true, "{selected}");
+    let result = selected["result"]
+        .as_object()
+        .expect("statement result object");
+    let mut keys = result.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "affected_row_count",
+            "autocommit",
+            "cols",
+            "last_insert_rowid",
+            "query_duration_ms",
+            "rows",
+            "rows_read",
+            "rows_written",
+        ],
+        "{selected}"
+    );
+    assert_eq!(result["rows"], json!([[1], [2]]));
+    assert_eq!(result["cols"][0]["name"], "value");
+    assert_eq!(result["affected_row_count"].as_i64(), Some(0));
+    assert_eq!(result["last_insert_rowid"], Value::Null);
+    assert_eq!(result["autocommit"], true);
+    assert!(
+        result["rows_read"]
+            .as_u64()
+            .expect("rows_read is a JSON number")
+            >= 2,
+        "{selected}"
+    );
+    assert_eq!(result["rows_written"].as_u64(), Some(0));
+    let duration = result["query_duration_ms"]
+        .as_f64()
+        .expect("query duration is a JSON number");
+    assert!(duration.is_finite() && duration >= 0.0, "{selected}");
+    assert_eq!(
+        worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_statement_result_carries_engine_counters_and_duration() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    let created = worker.statement(
+        &session,
+        "CREATE TABLE guarded_counters(value INTEGER)",
+        vec![],
+    )?;
+    assert_eq!(created["ok"], true, "{created}");
+    let inserted = worker.statement(
+        &session,
+        "INSERT INTO guarded_counters VALUES (1), (2)",
+        vec![],
+    )?;
+    assert_eq!(inserted["ok"], true, "{inserted}");
+
+    let guarded =
+        worker.guarded_statement(&session, "SELECT value FROM guarded_counters", vec![])?;
+    assert_eq!(guarded["ok"], true, "{guarded}");
+    let result = guarded["result"]
+        .as_object()
+        .expect("guarded statement result object");
+    let mut keys = result.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "affected_row_count",
+            "autocommit",
+            "cols",
+            "last_insert_rowid",
+            "query_duration_ms",
+            "rows",
+            "rows_read",
+            "rows_written",
+        ],
+        "{guarded}"
+    );
+    assert_eq!(result["rows"], json!([[1], [2]]));
+    assert_eq!(result["cols"][0]["name"], "value");
+    assert_eq!(result["affected_row_count"].as_i64(), Some(0));
+    assert_eq!(result["last_insert_rowid"], Value::Null);
+    assert_eq!(result["autocommit"], true);
+    assert!(
+        result["rows_read"]
+            .as_u64()
+            .expect("rows_read is a JSON number")
+            >= 2,
+        "{guarded}"
+    );
+    assert_eq!(result["rows_written"].as_u64(), Some(0));
+    let duration = result["query_duration_ms"]
+        .as_f64()
+        .expect("query duration is a JSON number");
+    assert!(duration.is_finite() && duration >= 0.0, "{guarded}");
+    assert_eq!(
+        worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_write_refusal_wire_shape_carries_no_statement_counters() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    let created = worker.statement(
+        &session,
+        "CREATE TABLE guarded_writes(value INTEGER)",
+        vec![],
+    )?;
+    assert_eq!(created["ok"], true, "{created}");
+
+    let refused =
+        worker.guarded_statement(&session, "INSERT INTO guarded_writes VALUES (1)", vec![])?;
+    assert_eq!(refused["ok"], true, "{refused}");
+    let result = refused["result"]
+        .as_object()
+        .expect("guarded refusal object");
+    let mut keys = result.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    assert_eq!(keys, ["reason", "requires_intent"], "{refused}");
+    assert_eq!(
+        refused["result"],
+        json!({"requires_intent": true, "reason": "engine_writable"}),
+        "{refused}"
+    );
+    for metric in ["rows_read", "rows_written", "query_duration_ms"] {
+        assert!(
+            result.get(metric).is_none(),
+            "{metric} leaked into the refusal: {refused}"
+        );
+    }
+    let count = worker.statement(&session, "SELECT count(*) FROM guarded_writes", vec![])?;
+    assert_eq!(count["result"]["rows"], json!([[0]]), "{count}");
     assert_eq!(
         worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
         true
