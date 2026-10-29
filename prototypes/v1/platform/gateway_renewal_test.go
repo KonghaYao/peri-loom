@@ -123,7 +123,13 @@ func TestGatewayTransientPlacementFailureAllowsNewBusinessOperation(test *testin
 					test.Fatal(err)
 				}
 				response := gatewayHTTP(test, fixture.gateway, credential, "/v1/sql/query", map[string]any{"session": session, "sql": "SELECT 1", "request_id": "blocked-business-operation"})
-				if response.Code != 409 || gatewayCode(test, response) != "placement_unavailable" || fixture.upstream.count("query") != 0 {
+				// A store outage is the platform failing, not a placement decision:
+				// it names its own code and never enters the refusal account.
+				status, code := 409, "placement_unavailable"
+				if failure == "snapshot" {
+					status, code = 503, "metadata_unavailable"
+				}
+				if response.Code != status || gatewayCode(test, response) != code || fixture.upstream.count("query") != 0 {
 					test.Fatalf("transient placement failure was treated as migration or dispatched: %s", response.Body.String())
 				}
 				store.unavailable.Store(false)

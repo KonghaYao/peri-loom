@@ -63,10 +63,14 @@ type gatewaySession struct {
 // the operator log and the counters and never reaches the reply body, whose fields
 // are published (see rejectionReason).
 type gatewayResult struct {
-	status                  int
-	code                    string
-	rejection               rejectionReason
-	failure                 *sqlFailure
+	status    int
+	code      string
+	rejection rejectionReason
+	failure   *sqlFailure
+	// retryAllowed publishes that the same request may be retried without an
+	// operator. It is set only where the platform knows nothing was dispatched
+	// and the answer can change by itself; every other refusal leaves it unset.
+	retryAllowed            bool
 	value                   any
 	dispatched              bool
 	session                 *gatewaySession
@@ -171,6 +175,27 @@ func gatewayFailure(status int, code string) gatewayResult {
 // publishes; only the local account learns which layer answered.
 func gatewayRefusal(status int, code string, reason rejectionReason) gatewayResult {
 	return gatewayResult{status: status, code: code, rejection: reason}
+}
+
+// placementFailure publishes a route refusal with its own classification. It
+// keeps the retry signal only when the refusal says the controller will converge
+// the placement by itself, so an administrator's suspension or a missing
+// database is never answered with a retry promise.
+func (gateway *Gateway) placementFailure(err error) gatewayResult {
+	var refusal *placementRefusal
+	if !errors.As(err, &refusal) {
+		// An unclassified failure is still a placement answer, but nothing here
+		// proves it can change: the caller must not be told to retry.
+		return gatewayFailure(http.StatusConflict, "placement_unavailable")
+	}
+	return gatewayResult{status: refusal.status, code: refusal.code, rejection: refusal.reason, retryAllowed: refusal.transient}
+}
+
+// gatewayRetryablePlacementFailure answers the writer re-route that found the
+// binding changed before any SQL was dispatched. Nothing ran, so a retry is
+// safe, and it is the caller that has to open a new session for the new binding.
+func gatewayRetryablePlacementFailure() gatewayResult {
+	return gatewayResult{status: http.StatusConflict, code: "placement_unavailable", rejection: rejectionPlacement, retryAllowed: true}
 }
 
 func (gateway *Gateway) Close(ctx context.Context) error {

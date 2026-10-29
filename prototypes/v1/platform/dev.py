@@ -502,16 +502,40 @@ def signed_owned_identity(configuration, identity):
     return {"payload": payload, "mac": hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()}
 
 
-def terminal_record(run_directory, configuration, proof_directory=None, state_directory=None):
+def terminal_record(run_directory, configuration, proof_directory=None, state_directory=None, dead_workers=None):
     proof_directory = proof_directory or run_directory / "owned-proof"
     state_directory = state_directory or run_directory / "platform"
-    return {"version": 1, "generation": configuration["generation"],
-            "launch_sha256": hashlib.sha256((run_directory / "launch.json").read_bytes()).hexdigest(),
-            "platform_sha256": hashlib.sha256((run_directory / "platform.json").read_bytes()).hexdigest(),
-            "state_sha256": hashlib.sha256((state_directory / "state.json").read_bytes()).hexdigest(),
-            "state_floor_sha256": hashlib.sha256((state_directory / "state.json.floor").read_bytes()).hexdigest(),
-            "proof_sha256": {f"{worker}.{kind}.json": hashlib.sha256((proof_directory / f"{worker}.{kind}.json").read_bytes()).hexdigest()
-                             for worker in configuration["workers"] for kind in ("identity", "stop")}}
+    proofs = {}
+    for worker in configuration["workers"]:
+        for kind in ("identity", "stop"):
+            path = proof_directory / f"{worker}.{kind}.json"
+            if path.exists():
+                proofs[f"{worker}.{kind}.json"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    record = {"version": 1, "generation": configuration["generation"],
+              "launch_sha256": hashlib.sha256((run_directory / "launch.json").read_bytes()).hexdigest(),
+              "platform_sha256": hashlib.sha256((run_directory / "platform.json").read_bytes()).hexdigest(),
+              "state_sha256": hashlib.sha256((state_directory / "state.json").read_bytes()).hexdigest(),
+              "state_floor_sha256": hashlib.sha256((state_directory / "state.json.floor").read_bytes()).hexdigest(),
+              "proof_sha256": proofs}
+    if dead_workers:
+        record["dead_workers"] = dead_workers
+    return record
+
+
+def verify_dead_worker_evidence(run_directory, configuration, dead):
+    workers = configuration["workers"]
+    if not isinstance(dead, dict) or set(dead) - set(workers):
+        raise RuntimeError("clean launcher terminal proof invalid: dead worker evidence")
+    for worker, evidence in dead.items():
+        if (not isinstance(evidence, dict) or set(evidence) != {"identity_sha256", "exit_code", "observed"}
+                or evidence.get("observed") != "joined_exit"
+                or not isinstance(evidence["identity_sha256"], str) or len(evidence["identity_sha256"]) != 64
+                or type(evidence["exit_code"]) is not int or evidence["exit_code"] == 0):
+            raise RuntimeError("clean launcher terminal proof invalid: dead worker evidence")
+        identity = run_directory / "owned-proof" / (worker + ".identity.json")
+        if (not identity.is_file() or identity.is_symlink()
+                or hashlib.sha256(identity.read_bytes()).hexdigest() != evidence["identity_sha256"]):
+            raise RuntimeError("clean launcher terminal proof invalid: dead worker identity")
 
 
 def verify_clean_terminal(run_directory, configuration):
@@ -522,8 +546,13 @@ def verify_clean_terminal(run_directory, configuration):
         signed = json.loads(marker.read_bytes(), object_pairs_hook=unique_object)
         if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
             raise ValueError("invalid terminal proof envelope")
-        expected = terminal_record(run_directory, configuration)
         payload = json.loads(signed["payload"], object_pairs_hook=unique_object)
+        if not isinstance(payload, dict):
+            raise ValueError("invalid terminal proof")
+        dead = payload.get("dead_workers") or {}
+        if not isinstance(dead, dict):
+            raise ValueError("invalid dead worker evidence")
+        expected = terminal_record(run_directory, configuration, dead_workers=dead)
         if payload != expected or type(payload["version"]) is not int:
             raise ValueError("terminal proof does not match runtime")
         key = pathlib.Path(configuration["key_file"]).read_bytes()
@@ -531,9 +560,11 @@ def verify_clean_terminal(run_directory, configuration):
             raise ValueError("terminal proof signature mismatch")
     except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as error:
         raise RuntimeError("clean launcher terminal proof invalid") from error
+    verify_dead_worker_evidence(run_directory, configuration, dead)
     authority = run_directory / "authority/authority.lock"
     if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
         raise RuntimeError("authority clean startup marker missing")
+    return dead
 
 
 class OperationViewNotMaterialized(RuntimeError):
@@ -566,8 +597,10 @@ def verify_snapshot_terminal(staging, run_directory, configuration):
         signed = json.loads(marker.read_bytes(), object_pairs_hook=unique_object)
         if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
             raise ValueError("invalid terminal proof envelope")
-        expected = terminal_record(run_directory, configuration, staging / "owned-proof", staging / "platform")
         payload = json.loads(signed["payload"], object_pairs_hook=unique_object)
+        dead = payload.get("dead_workers") or {}
+        expected = terminal_record(run_directory, configuration, staging / "owned-proof", staging / "platform",
+                                   dead_workers=dead)
         if payload != expected or type(payload["version"]) is not int:
             raise ValueError("preserved terminal does not match its snapshot")
         key = pathlib.Path(configuration["key_file"]).read_bytes()
@@ -666,8 +699,7 @@ def verify_no_unresolved_operations(run_directory, configuration, state_path=Non
         raise RuntimeError("unresolved platform operation prevents clean restart") from error
 
 
-def verify_owned_stop_proofs(run_directory, configuration, workers, proof_directory=None):
-    """Verify both worker incarnations were joined before a clean restart."""
+def owned_proof_context(run_directory, configuration, workers, proof_directory=None):
     canonical_directory = run_directory / "owned-proof"
     key_file = run_directory / "keys/owned-proof.key"
     if (configuration.get("key_file") != str(key_file)
@@ -686,38 +718,129 @@ def verify_owned_stop_proofs(run_directory, configuration, workers, proof_direct
     key = key_file.read_bytes()
     if len(key) != 32:
         raise RuntimeError("owned stop proof key invalid")
-    expected = {f"{worker}.{kind}.json" for worker in workers for kind in ("identity", "stop")}
-    if {entry.name for entry in proof_directory.iterdir()} != expected:
+    return proof_directory, key
+
+
+def read_owned_proof(proof_directory, key, worker, kind):
+    path = proof_directory / f"{worker}.{kind}.json"
+    if not path.exists():
+        return None
+    if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or path.stat().st_mode & 0o077 or path.stat().st_size > 4096:
+        raise RuntimeError("owned stop proof file invalid")
+    try:
+        signed = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
+        if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
+            raise ValueError("invalid envelope")
+        payload = signed["payload"].encode()
+        if not hmac.compare_digest(signed["mac"], hmac.new(key, payload, hashlib.sha256).hexdigest()):
+            raise ValueError("bad mac")
+        record = json.loads(signed["payload"], object_pairs_hook=unique_object)
+        if set(record) != {"version", "generation", "worker_id", "nonce", "pid", "started", "waited", "exit_code"}:
+            raise ValueError("invalid fields")
+    except (ValueError, TypeError, UnicodeError, RuntimeError) as error:
+        raise RuntimeError("owned stop proof validation failed") from error
+    return record
+
+
+def verify_owned_identity(identity, configuration, worker):
+    if (identity["version"] != 1 or isinstance(identity["version"], bool)
+            or identity["generation"] != configuration["generation"]
+            or identity["worker_id"] != worker or identity["nonce"] != configuration["workers"][worker]
+            or type(identity["pid"]) is not int or identity["pid"] <= 0
+            or not isinstance(identity["started"], str) or not identity["started"]
+            or identity["waited"] is not False or type(identity["exit_code"]) is not int or identity["exit_code"] != 0):
+        raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
+
+
+def joined_exit(stop_record, configuration, worker):
+    if (not isinstance(stop_record, dict) or stop_record.get("version") != 1
+            or stop_record.get("generation") != configuration["generation"]):
+        return None
+    stages = stop_record.get("stages")
+    if not isinstance(stages, list):
+        return None
+    for stage in stages:
+        if isinstance(stage, dict) and stage.get("name") == worker:
+            code = stage.get("exit_code")
+            if type(code) is int:
+                return code
+    return None
+
+
+def verify_owned_stop_proofs(run_directory, configuration, workers, proof_directory=None, allow_dead=None):
+    """Verify both worker incarnations were joined before a clean restart.
+
+    allow_dead carries the terminal's dead-worker evidence. A dead worker's stop
+    proof records its nonzero joined exit instead of exit 0; a normal restart
+    accepts it only through that signed terminal, never on the raw proof alone.
+    """
+    allow_dead = allow_dead or {}
+    proof_directory, key = owned_proof_context(run_directory, configuration, workers, proof_directory)
+    expected = {f"{worker}.{kind}.json" for worker in workers for kind in ("identity", "stop")
+                if worker not in allow_dead or kind == "identity"}
+    optional = {f"{worker}.stop.json" for worker in allow_dead}
+    actual = {entry.name for entry in proof_directory.iterdir()}
+    if expected - actual or actual - expected - optional:
         raise RuntimeError("owned stop proof set incomplete or unexpected")
     for worker in workers:
-        records = []
-        for kind in ("identity", "stop"):
-            path = proof_directory / f"{worker}.{kind}.json"
-            if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or path.stat().st_mode & 0o077 or path.stat().st_size > 4096:
-                raise RuntimeError("owned stop proof file invalid")
-            try:
-                signed = json.loads(path.read_bytes(), object_pairs_hook=unique_object)
-                if set(signed) != {"payload", "mac"} or not isinstance(signed["payload"], str) or not isinstance(signed["mac"], str):
-                    raise ValueError("invalid envelope")
-                payload = signed["payload"].encode()
-                if not hmac.compare_digest(signed["mac"], hmac.new(key, payload, hashlib.sha256).hexdigest()):
-                    raise ValueError("bad mac")
-                record = json.loads(signed["payload"], object_pairs_hook=unique_object)
-                if set(record) != {"version", "generation", "worker_id", "nonce", "pid", "started", "waited", "exit_code"}:
-                    raise ValueError("invalid fields")
-            except (ValueError, TypeError, UnicodeError, RuntimeError) as error:
-                raise RuntimeError("owned stop proof validation failed") from error
-            records.append(record)
-        identity, stopped = records
-        if (identity["version"] != 1 or isinstance(identity["version"], bool)
-                or identity["generation"] != configuration["generation"]
-                or identity["worker_id"] != worker or identity["nonce"] != configuration["workers"][worker]
-                or type(identity["pid"]) is not int or identity["pid"] <= 0
-                or not isinstance(identity["started"], str) or not identity["started"]
-                or identity["waited"] is not False or type(identity["exit_code"]) is not int or identity["exit_code"] != 0
-                or stopped != {**identity, "waited": True, "exit_code": 0}
-                or stopped["waited"] is not True or type(stopped["exit_code"]) is not int):
+        identity = read_owned_proof(proof_directory, key, worker, "identity")
+        stopped = read_owned_proof(proof_directory, key, worker, "stop")
+        if identity is None:
+            raise RuntimeError("owned stop proof set incomplete or unexpected")
+        verify_owned_identity(identity, configuration, worker)
+        evidence = allow_dead.get(worker)
+        expected_exit = 0
+        if evidence is not None:
+            if (not isinstance(evidence, dict) or set(evidence) != {"identity_sha256", "exit_code", "observed"}
+                    or evidence.get("observed") != "joined_exit"
+                    or not isinstance(evidence["identity_sha256"], str) or len(evidence["identity_sha256"]) != 64
+                    or type(evidence["exit_code"]) is not int or evidence["exit_code"] == 0
+                    or hashlib.sha256((proof_directory / (worker + ".identity.json")).read_bytes()).hexdigest()
+                    != evidence["identity_sha256"]):
+                raise RuntimeError("owned stop proof dead worker evidence mismatch")
+            expected_exit = evidence["exit_code"]
+        if stopped is None:
+            if evidence is None:
+                raise RuntimeError("owned stop proof set incomplete or unexpected")
+            continue
+        if stopped != {**identity, "waited": True, "exit_code": expected_exit}:
             raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
+
+
+def verify_recovery_worker_joins(run_directory, configuration, workers, stop_record=None):
+    """Prove every worker incarnation ended before --recover starts.
+
+    The normal gate requires exit 0. A stop that observed a nonzero joined exit
+    is still durable evidence that the incarnation can never run again; the
+    authority's clean marker proves the storage side fenced it. --recover turns
+    that fact into signed terminal evidence so the next normal start is not
+    bricked by the failed stop.
+    """
+    proof_directory, key = owned_proof_context(run_directory, configuration, workers)
+    allowed = {f"{worker}.{kind}.json" for worker in workers for kind in ("identity", "stop")}
+    if {entry.name for entry in proof_directory.iterdir()} - allowed:
+        raise RuntimeError("owned stop proof set incomplete or unexpected")
+    dead = {}
+    for worker in workers:
+        identity = read_owned_proof(proof_directory, key, worker, "identity")
+        if identity is None:
+            raise RuntimeError("owned stop proof set incomplete or unexpected")
+        verify_owned_identity(identity, configuration, worker)
+        stopped = read_owned_proof(proof_directory, key, worker, "stop")
+        observed = joined_exit(stop_record, configuration, worker)
+        if stopped is not None:
+            if stopped["waited"] is not True or type(stopped["exit_code"]) is not int:
+                raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
+            if observed is not None and observed != stopped["exit_code"]:
+                raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
+            observed = stopped["exit_code"]
+        if stopped is not None and stopped["exit_code"] == 0:
+            continue
+        if observed is None or observed == 0:
+            raise RuntimeError("worker " + worker + " has no joined exit proof; keep the volume isolated and provide the S05 recovery evidence")
+        dead[worker] = {"identity_sha256": hashlib.sha256((proof_directory / (worker + ".identity.json")).read_bytes()).hexdigest(),
+                        "exit_code": observed, "observed": "joined_exit"}
+    return dead
 
 
 def stop_owned_worker(run_directory, worker):
@@ -844,6 +967,7 @@ class Project:
         self.logs = []
         self.stop = threading.Event()
         self.owned_identities = {}
+        self.recovered_dead_workers = {}
         self.maintenance = None
         self.run_lock = None
         self.shutdown_budget_seconds = getattr(arguments, "shutdown_budget_seconds", SHUTDOWN_BUDGET_SECONDS)
@@ -851,6 +975,7 @@ class Project:
         self.stop_record = None
         self.cleanup_complete = False
         self.shutdown_failure = None
+        self.shutdown_survivors = set()
         self.stop_record_lock = threading.Lock()
         # Startup failures never announce readiness, so no workload was admitted. The
         # previous clean proof has already been consumed by prepare() by then, and it
@@ -1254,8 +1379,11 @@ class Project:
         The normal clean-restart gate stays exactly as it is. A signed startup
         intent plus a complete preserved snapshot may be rolled back to the last
         clean point; if that proof is absent or fails, the isolation-release path
-        still requires the owned worker joins and the authority's clean marker.
-        A dirty authority without such proof needs its remote terminal proven
+        still requires every worker incarnation to have ended and the authority's
+        clean marker. A stop that observed a nonzero worker join is admitted here
+        because the exit is signed evidence the incarnation cannot run again; the
+        recovery terminal records it so later normal starts can verify it. A
+        dirty authority without such proof needs its remote terminal proven
         first; starting it here would be the takeover the authority refuses.
         """
         try:
@@ -1264,10 +1392,25 @@ class Project:
             raise RuntimeError("interrupted startup proof recovery refused: " + str(error)
                                + "; operator: send SIGTERM to any surviving platform and authority, wait for their joined exit so the shutdown checkpoint materializes the operation view, retain all markers, proofs and launcher-restart-staging, then rerun the original configuration with --recover; do not delete or rewrite markers, and keep the volume isolated if the preserved proof no longer matches") from error
         if not recovered:
-            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            try:
+                verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            except RuntimeError as clean_error:
+                try:
+                    stop_record = self.read_signed_private(self.directory / "launcher-stop.json", configuration,
+                                                           "previous launcher stop record")
+                except RuntimeError:
+                    stop_record = None
+                dead = verify_recovery_worker_joins(self.directory, configuration, self.launch["workers"], stop_record)
+                if not dead:
+                    raise clean_error
+                self.recovered_dead_workers = dead
             authority = self.directory / "authority/authority.lock"
             if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
-                raise RuntimeError("recovery requires a clean authority startup marker; if a signed startup intent and complete preserved proof exist, use --recover to run proof recovery; otherwise retain isolation and inspect the authority")
+                # A dirty marker means the authority term was not fenced. Neither
+                # --recover nor a later normal start may take it over: only S05
+                # evidence, proven against the backend, can. Say that instead of
+                # repeating the clean-restart gate the operator already failed.
+                raise RuntimeError("recovery refused: it requires a clean authority startup marker, but the previous authority term is not provably fenced; keep the volume isolated and supply the S05 authority recovery evidence (this launcher does not generate it); markers and proofs were left untouched")
         try:
             verify_clean_terminal(self.directory, configuration)
             verify_no_unresolved_operations(self.directory, configuration)
@@ -1404,11 +1547,13 @@ class Project:
                     and stage.get("exit_code") == 0 and stage.get("signal") is None for stage in stages))
         if not completed:
             return False
-        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
-        verify_no_unresolved_operations(self.directory, configuration)
         if terminal.exists():
-            verify_clean_terminal(self.directory, configuration)
+            dead = verify_clean_terminal(self.directory, configuration)
         else:
+            dead = {}
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"], allow_dead=dead)
+        verify_no_unresolved_operations(self.directory, configuration)
+        if not terminal.exists():
             atomic_private_json(terminal, signed_owned_identity(configuration, terminal_record(self.directory, configuration)))
         if record.get("outcome") != "clean":
             record["outcome"] = "clean"
@@ -1592,8 +1737,8 @@ class Project:
 
     def verify_clean_evidence(self):
         configuration = self.config["owned_stop_proof"]
-        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
-        verify_clean_terminal(self.directory, configuration)
+        dead = verify_clean_terminal(self.directory, configuration)
+        verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"], allow_dead=dead)
         verify_no_unresolved_operations(self.directory, configuration)
 
     def verify_clean_reuse_gate(self):
@@ -2090,8 +2235,18 @@ class Project:
                 raise
             self.recover_completed_clean_shutdown(configuration)
             self.verify_startup_attempt(configuration)
-            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
-            verify_clean_terminal(self.directory, configuration)
+            # Keep the historical proof-set answer for an incomplete run; only a
+            # terminal that signs the same dead worker may relax that gate.
+            try:
+                verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            except RuntimeError as refused:
+                try:
+                    dead = verify_clean_terminal(self.directory, configuration)
+                    verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"], allow_dead=dead)
+                except RuntimeError:
+                    raise refused from None
+            else:
+                verify_clean_terminal(self.directory, configuration)
             # 复用的 clean 语义必须与停机时一致：历史 terminal proof 也是在一个可能滞后于侧车的 payload 上做出的判定。
             verify_no_unresolved_operations(self.directory, configuration)
             self.verify_clean_reuse_gate()
@@ -2540,7 +2695,14 @@ class Project:
         process = self.processes[name]
         if process.poll() is None:
             process.kill()
+            # Poll the joined exit so a recorded proof describes what actually
+            # happened; a timeout without a join is a survivor, never evidence.
+            deadline = time.monotonic() + min(1.0, self.remaining())
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
         stage["exit_code"] = process.poll()
+        if stage["exit_code"] is None:
+            self.shutdown_survivors.add(name)
         self.write_stop_record()
 
     def shutdown_stage(self, names, cap, failures):
@@ -2557,7 +2719,7 @@ class Project:
             self.stop_record["stages"].append(stage)
             self.write_stop_record()
             replies = None
-            if stage["exit_code"] is None and not failures and self.remaining(deadline) > 0:
+            if stage["exit_code"] is None and not self.shutdown_survivors and self.remaining(deadline) > 0:
                 if name == "platform":
                     process.terminate()
                     stage["ack"] = True
@@ -2592,15 +2754,27 @@ class Project:
                             local_failures.append(name + " owned stop proof unavailable")
                 if stage["exit_code"] != 0:
                     local_failures.append(name + " exited without a clean proof")
+                    # A nonzero join is still durable evidence. Signing it lets
+                    # --recover admit the run without pretending the exit was 0.
+                    if stage["exit_code"] is not None and name in self.owned_identities:
+                        try:
+                            self.record_joined_worker_stop(name, stage["exit_code"])
+                        except (OSError, RuntimeError, ValueError):
+                            local_failures.append(name + " owned stop proof unavailable")
             except (subprocess.TimeoutExpired, queue.Empty):
                 local_failures.append(name + " shutdown incomplete; no clean proof")
                 stage["remaining_ms"] = self.remaining() * 1000
                 self.kill_unclean(name, stage, local_failures[-1])
+                if stage["exit_code"] is not None and stage["exit_code"] != 0 and name in self.owned_identities:
+                    try:
+                        self.record_joined_worker_stop(name, stage["exit_code"])
+                    except (OSError, RuntimeError, ValueError):
+                        local_failures.append(name + " owned stop proof unavailable")
             stage["waited_ms"] = (time.monotonic() - started) * 1000
             stage["authority_lock"] = self.authority_lock_status()
             return local_failures
 
-        if failures:
+        if self.shutdown_survivors:
             for item in pending:
                 name, process, stage, _ = item
                 if stage["exit_code"] is None:
@@ -2665,13 +2839,15 @@ class Project:
             if set(self.processes) != ({"authority", "platform"} if self.recovery else {"authority", "platform", "worker-a", "worker-b"}):
                 raise RuntimeError("clean launcher terminal requires all services")
             configuration = self.config["owned_stop_proof"]
-            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"])
+            dead = self.recovered_dead_workers if self.recovery else {}
+            verify_owned_stop_proofs(self.directory, configuration, self.launch["workers"], allow_dead=dead)
             authority = self.directory / "authority/authority.lock"
             if authority.is_symlink() or not authority.is_file() or authority.read_bytes() != b"clean\n":
                 raise RuntimeError("authority clean startup marker missing")
             verify_no_unresolved_operations(self.directory, configuration)
             self.stop_record["unresolved_operations"] = False
-            terminal = signed_owned_identity(configuration, terminal_record(self.directory, configuration))
+            terminal = signed_owned_identity(configuration, terminal_record(self.directory, configuration,
+                                                                            dead_workers=dead))
             if self.remaining() <= 0:
                 raise RuntimeError("shutdown deadline expired; no clean proof")
             atomic_private_json(self.directory / "launcher-terminal.json", terminal)

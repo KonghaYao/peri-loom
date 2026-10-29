@@ -11,6 +11,49 @@ import (
 	controller "peri-loom/controller"
 )
 
+// placementSettleTimeout bounds how long an open waits for the controller to
+// converge a placement it owns. It is a variable so a test can shorten the wait;
+// production keeps it well below the public request deadline.
+var placementSettleTimeout = 5 * time.Second
+
+// placementSettlePoll is the re-route interval while a placement settles. The
+// metadata read is cheap and the window is short, so polling beats a second
+// notification channel that could disagree with the store.
+const placementSettlePoll = 50 * time.Millisecond
+
+// settlePlacement routes once and, while the refusal says the controller is
+// expected to converge, retries the route until the wait budget or the request
+// context ends. A non-transient refusal, a gateway without a controller, and an
+// exhausted budget all answer with the last refusal instead of guessing.
+func (gateway *Gateway) settlePlacement(ctx context.Context, database controller.DatabaseID) (controller.Worker, controller.Binding, error) {
+	worker, binding, err := gateway.route(database)
+	if gateway.config.Controller == nil {
+		return worker, binding, err
+	}
+	deadline := time.Now().Add(placementSettleTimeout)
+	if contextDeadline, bounded := ctx.Deadline(); bounded && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	for {
+		var refusal *placementRefusal
+		if err == nil || !errors.As(err, &refusal) || !refusal.transient {
+			return worker, binding, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return worker, binding, err
+		}
+		timer := time.NewTimer(min(placementSettlePoll, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return worker, binding, err
+		case <-timer.C:
+		}
+		worker, binding, err = gateway.route(database)
+	}
+}
+
 func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) (result gatewayResult) {
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
@@ -32,10 +75,10 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		if waiting := gateway.awaitActivation(ctx, database); waiting != nil {
 			return *waiting
 		}
-		worker, binding, err = gateway.route(database)
+		worker, binding, err = gateway.settlePlacement(ctx, database)
 	}
 	if err != nil {
-		return gatewayFailure(409, "placement_unavailable")
+		return gateway.placementFailure(err)
 	}
 	if !principalBindingValid(principal, binding) {
 		return gatewayFailure(403, "token_binding_mismatch")
@@ -79,8 +122,14 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 			return gatewayFailure(503, "writer_profile_unavailable")
 		}
 		currentWorker, currentBinding, routeErr := gateway.route(database)
-		if routeErr != nil || !sameGatewayBinding(binding, currentBinding) || worker.Address != currentWorker.Address {
-			return gatewayFailure(409, "placement_unavailable")
+		if routeErr != nil {
+			return gateway.placementFailure(routeErr)
+		}
+		if !sameGatewayBinding(binding, currentBinding) || worker.Address != currentWorker.Address {
+			// The binding moved between routing and the open call, so no SQL was
+			// dispatched and a retry is safe; the caller must open a new session
+			// against the binding the platform now routes.
+			return gatewayRetryablePlacementFailure()
 		}
 		if !principalBindingValid(principal, currentBinding) || gateway.authorize(principal, database) != nil {
 			return gatewayFailure(403, "forbidden")
@@ -195,7 +244,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	}
 	if principal.Database != nil {
 		if err := lookup(); err != nil {
-			return gatewayFailure(409, "placement_unavailable")
+			return gateway.placementFailure(err)
 		}
 		if !principalBindingValid(principal, binding) {
 			return gatewayFailure(403, "token_binding_mismatch")
@@ -206,7 +255,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return gatewayFailure(409, "session_moved")
 		}
 		if err := lookup(); err != nil {
-			return gatewayFailure(409, "placement_unavailable")
+			return gateway.placementFailure(err)
 		}
 		if !sameGatewayBinding(session.binding, binding) || worker.Address != session.worker.Address {
 			session.moved = true

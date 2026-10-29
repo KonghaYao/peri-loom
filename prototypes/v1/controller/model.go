@@ -159,6 +159,18 @@ func (placement Placement) AutoWakeable() bool {
 	return false
 }
 
+// Transient reports whether an unroutable placement is expected to become
+// routable through the controller's own convergence, without an operator.
+func (placement Placement) Transient() bool {
+	switch placement.Phase {
+	case "grant_intent", "grant_pending", "acquire_pending", "migrate_drain", "idle_drain":
+		return true
+	case "idle", "revoke_pending":
+		return placement.AutoWakeable()
+	}
+	return false
+}
+
 // ActivationStatus is the durable identity of one wake attempt. Waiters that
 // leave the budget keep the same operation ID to inspect or retry the open,
 // and they never resend SQL: activation itself dispatches no statement.

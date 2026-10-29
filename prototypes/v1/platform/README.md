@@ -57,6 +57,10 @@ The format is opt-in for new launcher runs and cannot be silently downgraded.
     当前 S3 不提供证明式启动回滚；不得删 marker 强启，需保留卷并按 S3/Authority 证据人工处置。
 - **readiness 已宣告后的 SIGKILL** 不进入 startup rollback：客户端可能已执行未知 SQL，
   普通启动和 `--recover` 都拒绝把这次尝试回滚到旧 terminal，按普通 unclean 语义处理。
+  例外是 launcher 实际观察到 worker 的非零 joined exit（例如 stop 中 worker 退出）：
+  该次 stop 会留下签名的 joined-exit 证明，`--recover` 在 Authority clean marker 下
+  把它写成 terminal 的 `dead_workers` 证据，下一次正常启动不再被同一门禁卡死；
+  launcher 自身被 SIGKILL、没有观察过 worker 退出时没有这条证据，仍 fail-closed。
   另有一条独立的 Authority 恢复 profile：仅在可机器检查的 `--recovery-evidence` 计划
   通过后以受限模式启动，不会回滚旧 terminal；见 `## v1.1.10` 的 S05 小节。
 - 启动后的失败保留签名 `requires_operator:true` 记录。完整 clean 门禁通过并宣告 ready 后，
@@ -111,8 +115,13 @@ version 0 的完整内联 operation view 不受 checkpoint 字段限制，仍须
 
 `--recover` reopens an existing run directory to end an isolation or to roll back an
 interrupted startup from its signed intent and preserved snapshot. It is not a second
-restart gate. The isolation-release path requires the owned worker stop proofs and the
-clean Authority shutdown marker the previous stop left behind. The startup-rollback path
+restart gate. The isolation-release path requires every owned worker incarnation to be
+joined: exit 0, or a nonzero exit the launcher actually observed. A stop that observed a
+nonzero worker exit records that exit in the same signed stop proof; `--recover` admits it
+only with the clean Authority shutdown marker and writes the worker into the new terminal
+as `dead_workers` (`observed:"joined_exit"`) evidence. The next normal start accepts that
+terminal; an incarnation with no joined-exit record at all still requires the S05 Authority
+recovery evidence. The startup-rollback path
 is described in the release-volume compatibility section and is limited to the local
 backend. It refuses a directory that already passes the unchanged clean gate, and archives
 the failing `launcher-stop.json` as `launcher-stop.pre-recovery.json` before

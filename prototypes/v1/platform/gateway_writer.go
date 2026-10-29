@@ -35,7 +35,7 @@ func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewa
 	}
 	worker, binding, err := gateway.route(session.database)
 	if err != nil {
-		return gatewayFailure(409, "placement_unavailable")
+		return gateway.placementFailure(err)
 	}
 	if !principalBindingValid(principal, binding) {
 		return gatewayFailure(403, "token_binding_mismatch")

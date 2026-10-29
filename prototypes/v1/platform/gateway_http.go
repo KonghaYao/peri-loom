@@ -191,8 +191,10 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 						result.value = nil
 						result.stream = nil
 						// The degraded reply reports the audit failure, not the SQL
-						// failure it replaced.
+						// failure it replaced, so a retry promise made by the
+						// replaced refusal is no longer part of this answer.
 						result.failure = nil
+						result.retryAllowed = false
 					}
 				}
 			}
@@ -551,7 +553,7 @@ func hranaFailureFields(reply hranaReply, dispatched bool) map[string]any {
 		"message":                    hranaErrorMessage(reply),
 		"partial_execution_possible": dispatched,
 		"outcome_unknown":            reply.unknown,
-		"retryable":                  false,
+		"retryable":                  reply.failure != nil && reply.failure.RetryAllowed(),
 		"retry_allowed":              false,
 	}
 	if reply.failure != nil {
@@ -635,6 +637,13 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 			} else if result.failure.rejected {
 				sqlExecutionVerdict(failure, false, false)
 			}
+		}
+		// Only the placement layer publishes this field, and only when the
+		// platform knows the answer can change without an operator. Every other
+		// refusal keeps the field absent so a client never reads a retry promise
+		// off a status code.
+		if result.retryAllowed {
+			failure["retry_allowed"] = true
 		}
 		response["error"] = failure
 	}
