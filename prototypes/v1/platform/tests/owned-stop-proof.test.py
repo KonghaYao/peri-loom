@@ -69,7 +69,7 @@ class OwnedStopProofTests(unittest.TestCase):
             if value is not None:
                 environment["PERI_CAPACITY_TRACE"] = value
             with patch.dict(dev.os.environ, environment, clear=True):
-                self.assertEqual(dev.safe_environment(capacity_trace=True), {"PATH": "/synthetic/bin", "PERI_CAPACITY_TRACE": expected})
+                self.assertEqual(dev.safe_environment(capacity_trace=True), {"PATH": "/synthetic/bin", "PERI_CAPACITY_TRACE": expected, "PERI_NATIVE_GATE_TRACE": "0"})
                 self.assertEqual(dev.safe_environment(), {"PATH": "/synthetic/bin"})
 
     def project(self, directory, backend="local"):
@@ -131,19 +131,29 @@ class OwnedStopProofTests(unittest.TestCase):
             self.assertEqual(signed["mac"], hmac.new(key, signed["payload"].encode(), hashlib.sha256).hexdigest())
             self.assertEqual(json.loads(signed["payload"]), {**identity, "waited": True, "exit_code": 0})
 
-    def test_uncertain_shutdown_does_not_record_clean_worker_proof(self):
+    def test_uncertain_shutdown_records_the_observed_join_without_a_clean_proof(self):
         for failure in ("rpc", "exit"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
                 project = self.project(directory)
+                configuration = project.config["owned_stop_proof"]
                 process = Mock()
                 process.poll.return_value = None
                 process.wait.return_value = 1 if failure == "exit" else 0
                 project.processes["worker-a"] = process
-                project.owned_identities["worker-a"] = {"worker_id": "worker-a"}
+                project.owned_identities["worker-a"] = {
+                    "version": 1, "generation": configuration["generation"], "worker_id": "worker-a",
+                    "nonce": configuration["workers"]["worker-a"], "pid": 10001, "started": "incarnation",
+                    "waited": False, "exit_code": 0,
+                }
                 with patch.object(dev, "request", side_effect=RuntimeError("uncertain") if failure == "rpc" else None):
                     with self.assertRaises(RuntimeError):
                         project.cleanup()
-                self.assertFalse((pathlib.Path(project.config["owned_stop_proof"]["directory"]) / "worker-a.stop.json").exists())
+                stop_path = pathlib.Path(configuration["directory"]) / "worker-a.stop.json"
+                if failure == "exit":
+                    joined = json.loads(json.loads(stop_path.read_bytes())["payload"])
+                    self.assertEqual((joined["waited"], joined["exit_code"]), (True, 1))
+                else:
+                    self.assertFalse(stop_path.exists())
 
     def test_failed_proof_persistence_makes_shutdown_unsuccessful(self):
         with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
@@ -165,7 +175,7 @@ class OwnedStopProofTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "cannot be reused"):
                 project.start("worker-a", [], {})
             with self.assertRaisesRegex(RuntimeError, "proof set incomplete"):
-                dev.Project(project.arguments).prepare()
+                dev.verify_owned_stop_proofs(project.directory, project.config["owned_stop_proof"], project.launch["workers"])
 
     def test_maintenance_request_cannot_supply_pid_or_proof(self):
         with tempfile.TemporaryDirectory(prefix="owned-proof-", dir="/tmp") as directory:
@@ -218,11 +228,11 @@ class OwnedStopProofTests(unittest.TestCase):
                 extra = pathlib.Path(configuration["directory"]) / "untracked.stop.json"
                 extra.write_bytes(original)
                 with self.assertRaisesRegex(RuntimeError, "unexpected"):
-                    dev.Project(project.arguments).prepare()
+                    dev.verify_owned_stop_proofs(project.directory, configuration, project.launch["workers"])
                 extra.unlink()
                 (pathlib.Path(configuration["directory"]) / "worker-a.identity.json").unlink()
                 with self.assertRaisesRegex(RuntimeError, "incomplete"):
-                    dev.Project(project.arguments).prepare()
+                    dev.verify_owned_stop_proofs(project.directory, configuration, project.launch["workers"])
 
     def test_clean_terminal_is_single_use_and_rotates_worker_proof_files(self):
         for backend in ("local", "s3"):
@@ -377,6 +387,66 @@ class OwnedStopProofTests(unittest.TestCase):
             # The authority's own marker is still a hard precondition.
             (project.directory / "authority/authority.lock").write_bytes(b"dirty\n")
             with self.assertRaisesRegex(RuntimeError, "clean authority startup marker"):
+                dev.Project(self.recovery_arguments(project)).prepare()
+
+    def test_recovery_admits_a_signed_nonzero_worker_exit(self):
+        with tempfile.TemporaryDirectory(prefix="recovery-dead-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            (project.directory / "launcher-terminal.json").unlink()
+            worker = next(iter(project.launch["workers"]))
+            proofs = pathlib.Path(configuration["directory"])
+            identity = json.loads(json.loads((proofs / (worker + ".identity.json")).read_bytes())["payload"])
+            dev.atomic_private_json(proofs / (worker + ".stop.json"),
+                                    dev.signed_owned_identity(configuration, {**identity, "waited": True, "exit_code": 70}))
+            dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, {
+                "version": 1, "generation": configuration["generation"], "outcome": "unclean",
+                "reason": worker + " exited without a clean proof", "deadline_ms": 1,
+                "stages": [{"name": worker, "exit_code": 70, "ack": True, "signal": None}],
+                "unresolved_operations": False,
+            }))
+            recovery = dev.Project(self.recovery_arguments(project))
+            recovery.prepare()
+            self.assertEqual(set(recovery.recovered_dead_workers), {worker})
+            self.assertEqual(recovery.recovered_dead_workers[worker]["exit_code"], 70)
+            # The recovery terminal carries the signed evidence so a later normal
+            # start can verify the dead incarnation without a clean stop proof.
+            dev.atomic_private_json(project.directory / "launcher-terminal.json", dev.signed_owned_identity(
+                configuration, dev.terminal_record(project.directory, configuration,
+                                                   dead_workers=recovery.recovered_dead_workers)))
+            self.assertEqual(dev.verify_clean_terminal(project.directory, configuration),
+                             recovery.recovered_dead_workers)
+            dev.verify_owned_stop_proofs(project.directory, configuration, project.launch["workers"],
+                                         allow_dead=recovery.recovered_dead_workers)
+            # The raw proof set alone still refuses the nonzero join.
+            with self.assertRaisesRegex(RuntimeError, "incarnation or joined exit"):
+                dev.verify_owned_stop_proofs(project.directory, configuration, project.launch["workers"])
+
+    def test_recovery_refuses_an_unproven_worker_exit(self):
+        with tempfile.TemporaryDirectory(prefix="recovery-unproven-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            (project.directory / "launcher-terminal.json").unlink()
+            worker = next(iter(project.launch["workers"]))
+            (pathlib.Path(configuration["directory"]) / (worker + ".stop.json")).unlink()
+            dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, {
+                "version": 1, "generation": configuration["generation"], "outcome": "unclean",
+                "reason": "shutdown incomplete", "deadline_ms": 1, "stages": [],
+                "unresolved_operations": False,
+            }))
+            with self.assertRaisesRegex(RuntimeError, "no joined exit proof"):
+                dev.Project(self.recovery_arguments(project)).prepare()
+            # A stage that contradicts the signed stop proof is not evidence.
+            identity = json.loads(json.loads((pathlib.Path(configuration["directory"]) / (worker + ".identity.json")).read_bytes())["payload"])
+            dev.atomic_private_json(pathlib.Path(configuration["directory"]) / (worker + ".stop.json"),
+                                    dev.signed_owned_identity(configuration, {**identity, "waited": True, "exit_code": 7}))
+            dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, {
+                "version": 1, "generation": configuration["generation"], "outcome": "unclean",
+                "reason": "shutdown incomplete", "deadline_ms": 1,
+                "stages": [{"name": worker, "exit_code": 1, "ack": True, "signal": None}],
+                "unresolved_operations": False,
+            }))
+            with self.assertRaisesRegex(RuntimeError, "incarnation or joined exit"):
                 dev.Project(self.recovery_arguments(project)).prepare()
 
     def test_startup_failure_restores_clean_stop_and_terminal(self):

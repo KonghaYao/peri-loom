@@ -43,6 +43,11 @@ const (
 	rejectionCloseLane rejectionReason = "close_lane_busy"
 	// rejectionQuarantine is a namespace isolated by an unresolved outcome.
 	rejectionQuarantine rejectionReason = "quarantine"
+	// rejectionPlacement is a request the placement refused after admission: the
+	// database has no serving binding. It is the placement layer answering, not
+	// an admission lane being full, and it is recorded only when a permit was
+	// already held.
+	rejectionPlacement rejectionReason = "placement_unavailable"
 	// rejectionMemoryBudget is the result materialization budget
 	// (Quotas.MaxResultBytes, or the worker's own result budget).
 	rejectionMemoryBudget rejectionReason = "memory_budget"
@@ -75,6 +80,7 @@ var rejectionReasons = []rejectionReason{
 	rejectionClassifyLimit,
 	rejectionCloseLane,
 	rejectionQuarantine,
+	rejectionPlacement,
 	rejectionMemoryBudget,
 	rejectionSQLBytes,
 	rejectionDeadline,
