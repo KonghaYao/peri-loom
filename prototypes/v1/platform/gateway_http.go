@@ -590,6 +590,11 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 		_, _ = writer.Write(result.stream)
 		return
 	}
+	if result.code == "" && (result.status == 0 || result.status == http.StatusOK) {
+		if response, ok := writer.(*hranaGatewayResponse); ok && response.capture(result.value) {
+			return
+		}
+	}
 	response := map[string]any{"version": 1, "request_id": requestID, "ok": result.code == "", "result": result.value, "error": nil}
 	if result.code != "" {
 		response["result"] = nil

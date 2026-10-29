@@ -51,6 +51,16 @@ mod encoding_tests;
 #[cfg(test)]
 pub(crate) use encoding_tests::{leaf_encoding_test_stats, LeafEncodingPolicyGuard};
 
+#[cfg(test)]
+#[path = "paged_index_validation_tests.rs"]
+mod validation_tests;
+
+fn routing_digest(bytes: &[u8]) -> blake3::Hash {
+    #[cfg(test)]
+    validation_tests::observe_digest(bytes.len());
+    blake3::hash(bytes)
+}
+
 fn encode_page(page: &Page) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(page)?;
     #[cfg(test)]
@@ -291,7 +301,7 @@ impl<'a> PagedIndex<'a> {
         ensure!(depth < self.max_depth(), "index path exhausted");
         let selected = match self.order {
             KeyOrder::Hashed => {
-                let digest = blake3::hash(key.as_bytes());
+                let digest = routing_digest(key.as_bytes());
                 let byte = digest.as_bytes()[(depth / 2) as usize];
                 if depth.is_multiple_of(2) {
                     byte >> 4
@@ -305,7 +315,7 @@ impl<'a> PagedIndex<'a> {
                     Self::bucket_nibble(pin, depth)?
                 } else {
                     let tail = depth - BUCKET_NIBBLES;
-                    let digest = blake3::hash(key.as_bytes());
+                    let digest = routing_digest(key.as_bytes());
                     let byte = digest.as_bytes()[(tail / 2) as usize];
                     if tail.is_multiple_of(2) {
                         byte >> 4
@@ -318,9 +328,42 @@ impl<'a> PagedIndex<'a> {
         Ok(u16::from(selected))
     }
 
+    /// Validate the complete ancestor path while hashing each routing input at
+    /// most once. The bucket and full-key digest retain their original boundary.
+    fn matches_prefix(&self, key: &str, prefix: &[u8]) -> bool {
+        if self.order == KeyOrder::Hashed {
+            return matches_hashed_prefix(key, prefix);
+        }
+        #[cfg(test)]
+        {
+            validation_tests::observe_prefix(prefix.len());
+            if !validation_tests::prefix_reuse_enabled() {
+                return prefix.iter().enumerate().all(|(position, expected)| {
+                    self.nibble(key, position as u16)
+                        .is_ok_and(|actual| actual == u16::from(*expected))
+                });
+            }
+        }
+        if prefix.is_empty() {
+            return true;
+        }
+        if prefix.len() > usize::from(BUCKET_NIBBLES + HASH_NIBBLES) {
+            return false;
+        }
+        let Some((pin, _)) = key.split_once('/') else {
+            return false;
+        };
+        let boundary = prefix.len().min(usize::from(BUCKET_NIBBLES));
+        if !digest_matches_prefix(&routing_digest(pin.as_bytes()), &prefix[..boundary]) {
+            return false;
+        }
+        prefix.len() == boundary
+            || digest_matches_prefix(&routing_digest(key.as_bytes()), &prefix[boundary..])
+    }
+
     fn bucket_nibble(pin: &str, depth: u16) -> Result<u8> {
         ensure!(depth < BUCKET_NIBBLES, "pin bucket path exhausted");
-        let digest = blake3::hash(pin.as_bytes());
+        let digest = routing_digest(pin.as_bytes());
         let byte = digest.as_bytes()[(depth / 2) as usize];
         Ok(if depth.is_multiple_of(2) {
             byte >> 4
@@ -724,6 +767,10 @@ impl<'a> PagedIndex<'a> {
         // Pending bytes take precedence even when a durable page with the same key was
         // cached earlier. They must pass the original digest and path checks themselves.
         let cacheable = buffered.is_none();
+        #[cfg(test)]
+        if !cacheable {
+            validation_tests::observe_pending_read();
+        }
         if cacheable {
             if let Some(page) = request_reads::parsed_page(backend, &key, self.order, depth, prefix)
             {
@@ -750,6 +797,12 @@ impl<'a> PagedIndex<'a> {
             bytes.len() <= PAGE_BYTES && blake3::hash(&bytes).to_hex().as_str() == hash,
             "index page size or digest mismatch"
         );
+        #[cfg(test)]
+        if !cacheable {
+            validation_tests::observe_pending_hash_check();
+        }
+        #[cfg(test)]
+        validation_tests::observe_decode(bytes.len(), !cacheable);
         request_reads::observe_page_decode(bytes.len());
         let page: Page = serde_json::from_slice(&bytes)?;
         match &page {
@@ -765,10 +818,7 @@ impl<'a> PagedIndex<'a> {
                 for key in entries.keys() {
                     validate_key(key)?;
                     ensure!(
-                        prefix.iter().enumerate().all(|(position, expected)| {
-                            self.nibble(key, position as u16)
-                                .is_ok_and(|actual| actual == u16::from(*expected))
-                        }),
+                        self.matches_prefix(key, prefix),
                         "index leaf outside selected path"
                     );
                 }
@@ -885,9 +935,38 @@ fn validate_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 
+fn digest_matches_prefix(digest: &blake3::Hash, prefix: &[u8]) -> bool {
+    prefix.len() <= usize::from(HASH_NIBBLES)
+        && prefix.iter().enumerate().all(|(position, expected)| {
+            let byte = digest.as_bytes()[position / 2];
+            let actual = if position % 2 == 0 {
+                byte >> 4
+            } else {
+                byte & 15
+            };
+            actual == *expected
+        })
+}
+
+fn matches_hashed_prefix(key: &str, prefix: &[u8]) -> bool {
+    #[cfg(test)]
+    {
+        validation_tests::observe_prefix(prefix.len());
+        if !validation_tests::prefix_reuse_enabled() {
+            return prefix.iter().enumerate().all(|(position, expected)| {
+                nibble(key, position as u16).is_ok_and(|actual| actual == u16::from(*expected))
+            });
+        }
+    }
+    prefix.is_empty()
+        || (prefix.len() <= usize::from(HASH_NIBBLES)
+            && digest_matches_prefix(&routing_digest(key.as_bytes()), prefix))
+}
+
+#[cfg(test)]
 fn nibble(key: &str, depth: u16) -> Result<u16> {
     ensure!(depth < HASH_NIBBLES, "index path exhausted");
-    let digest = blake3::hash(key.as_bytes());
+    let digest = routing_digest(key.as_bytes());
     let byte = digest.as_bytes()[(depth / 2) as usize];
     Ok(u16::from(if depth.is_multiple_of(2) {
         byte >> 4
@@ -932,10 +1011,7 @@ pub(crate) fn walk_tree_with(
                 for key in entries.keys() {
                     validate_key(key)?;
                     ensure!(
-                        prefix.iter().enumerate().all(|(position, expected)| {
-                            nibble(key, position as u16)
-                                .is_ok_and(|actual| actual == u16::from(*expected))
-                        }),
+                        matches_hashed_prefix(key, prefix),
                         "index leaf outside selected path"
                     );
                 }

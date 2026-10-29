@@ -752,9 +752,10 @@ func hranaFatalDescribeReply(reply hranaReply) hranaReply {
 	return reply
 }
 
-// hranaGatewayReply decodes the gateway's answer into the decision the adapter
-// acts on. It is the only place the Hrana adapter reads a gateway reply, and it
-// reads no evidence and no code name itself: sqlcontract decodes both, so an
+// hranaGatewayReply decodes gateway envelopes into the decision the adapter
+// acts on. All failures pass here, including those from internal calls that
+// accept successful JSON results directly. It reads no evidence and no code
+// name itself: sqlcontract decodes both, so an
 // adapter cannot disagree with the Go, TypeScript, browser and console clients
 // about what a reply proved.
 func hranaGatewayReply(status int, body []byte, path string) hranaReply {
@@ -804,9 +805,9 @@ func (handler *hranaHTTP) dispatch(request *http.Request, credential, path strin
 	}
 	internal := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded)).WithContext(ctx)
 	internal.Header.Set("Authorization", "Bearer "+credential)
-	recorder := httptest.NewRecorder()
+	recorder := newHranaGatewayResponse()
 	handler.gateway.ServeHTTP(recorder, internal)
-	return hranaGatewayReply(recorder.Code, recorder.Body.Bytes(), path)
+	return recorder.reply(path)
 }
 
 func (handler *hranaHTTP) execute(request *http.Request, credential, session string, statement hranaStatement) (any, hranaReply) {

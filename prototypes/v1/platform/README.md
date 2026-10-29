@@ -493,6 +493,25 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.21
+
+This preview hands successful in-process Hrana results directly from the
+gateway to the internal receiver after operation settlement and the audit
+barrier, and reuses the accepted Rust ancestor-prefix digest during route
+validation. Errors, 202 responses, streams and non-RawMessage values keep the
+original path. Auth, admission, fencing, Unknown handling, audit, close
+acknowledgement and SQL execution counts are unchanged, and external REST
+encoding is unchanged. The result is still copied and compacted to its original
+byte budget; this is not zero-copy.
+
+A fixed-serverless diagnostic tool and independent analyzer are added. Micro
+benchmarks cut local result-conversion time by 58%–73% and allocation bytes by
+about half, but the paired business run did not improve consistently: small-query
+p50 stayed about 2.8–2.9x sqld, 20-row p99 rose 16.3%, and 8,625-narrow-row p99
+rose 11.6%. The acceptance target remains on HOLD; this is neither a sqld-parity
+claim nor an issue 15 fix. See
+[the round 7 measurements](../../../docs/performance-review/sqld-parity-round7/README.md).
+
 ## v1.1.20
 
 This release reuses the already size-checked leaf-page JSON encoding during
