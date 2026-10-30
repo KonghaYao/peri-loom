@@ -278,10 +278,12 @@ func TestOperationJournalWitnessedTornTailIsRejectedWithoutRewriting(test *testi
 	}
 }
 
-// A newline-terminated tail that does not decode as a journal record is still a
-// torn append. The completion crash matrix leaves a half-written record plus a
-// newline; only a decodable record can be proven complete, so an undecodable
-// tail is dropped after the witness and snapshot verify the prefix.
+// A legacy newline-terminated tail that does not decode as a journal record is
+// still a torn append. The completion crash matrix leaves a half-written record
+// plus a newline; only a decodable record can be proven complete, so an
+// undecodable tail is dropped after the witness and snapshot verify the prefix.
+// Completion v2 differs: with a genesis present, every newline-terminated tail
+// is a complete completion record and is rejected even when it cannot decode.
 func TestOperationJournalUndecodableCompleteTailIsTreatedAsTorn(test *testing.T) {
 	store, path := journalFixture(test)
 	journalCommit(test, store, "one")
