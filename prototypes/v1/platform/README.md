@@ -222,6 +222,32 @@ source, argv, run configuration, or diagnostic logs.
 - `/v1/keys/revoke` invalidates issuing keys and their database tokens.
 - `/v1/metrics` requires a global management key and combines gateway and actual native process observations.
 
+### Session seats, permits and admission refusals
+
+Quota accounting keeps two resources apart. A **session seat** (`max_sessions`)
+is held by an open session until its close succeeds; a **concurrency permit**
+(`max_concurrent`) is held only while one request executes. `/v1/metrics`
+reports permits as `active_permits`, seats as `session_seats`, and the
+per-project breakdown under `projects.<id>.sessions`. A project with
+`active_permits: 0` can still have every seat occupied. A seat is counted from
+the moment `open` reserves it, not only once the native session is registered.
+
+A Hrana stream opened by a pipeline without a baton keeps its seat after the
+request returns. Its idle timer covers exactly that case: five minutes without
+traffic retire the native session through the bounded cleanup path and return
+the seat. Raw requests that never send `close` therefore hold seats for up to
+five minutes; a client that closes its sessions does not accumulate them.
+
+When every seat is held, `open` is refused with HTTP 429 `quota_exceeded`
+before any SQL is dispatched, so the reply carries
+`partial_execution_possible: false` and `retry_allowed: false`. The platform
+never retries SQL automatically; a client may retry manually after a seat is
+released. The exhausted resource is named at the refusal site and counted in
+`rejection_reasons_total` (`session_limit`, `concurrency_limit`, `rate_limit`,
+`close_lane_busy`, ...), while the client reply keeps its published `code` and
+fields. `quota_scope` stays `single_gateway_process`: the seat counter is
+per gateway process and is not shared across gateway instances.
+
 ### Hrana result metrics and v3-protobuf wire shapes (experimental)
 
 The `/db/...` Hrana routes in this subsection are behind
