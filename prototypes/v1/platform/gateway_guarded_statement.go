@@ -70,7 +70,7 @@ func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySe
 		result.operationDeferred = pending
 		return result
 	}
-	return gatewayResult{value: reply, dispatched: true, operationDeferred: pending}
+	return gatewayResult{value: reply, dispatched: true, validatedResult: true, operationDeferred: pending}
 }
 
 type guardedIntentReason string
@@ -131,5 +131,5 @@ func (gateway *Gateway) dispatchStatement(ctx context.Context, session *gatewayS
 	if !validStatementResult(reply) {
 		return gateway.unknown(session, permit)
 	}
-	return gatewayResult{value: reply, dispatched: true}
+	return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 }
