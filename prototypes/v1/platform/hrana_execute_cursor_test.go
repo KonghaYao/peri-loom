@@ -116,6 +116,54 @@ func TestHranaHighLevelExecutePagesOnlyProvenReadonlyResult(t *testing.T) {
 	}
 }
 
+// The fallback used to materialize up to 8 MiB before the pipeline aggregate
+// check rejected the tenant. Each page fits the tenant budget on its own, but
+// their accumulation must stop at the budget instead of reading every page.
+func TestHranaCursorFallbackHonorsTenantResultBudget(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 8 * 1024 })
+	page := make([][]any, 256)
+	for index := range page {
+		page[index] = []any{strings.Repeat("x", 16)}
+	}
+	const pages = 40
+	fetched := 0
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "statement":
+			return nil, testRPCError(true, false, SQLRPCError{})
+		case "describe":
+			return map[string]any{"params": []any{}, "cols": []any{map[string]any{"name": "body", "decltype": "TEXT"}}, "is_explain": false, "is_readonly": true}, nil
+		case "open_read_cursor":
+			return map[string]any{"cols": []any{map[string]any{"name": "body", "decltype": "TEXT"}}}, nil
+		case "fetch_read_cursor":
+			fetched++
+			return map[string]any{"rows": page, "done": fetched == pages}, nil
+		case "close_read_cursor":
+			return map[string]bool{"closed": true}, nil
+		}
+		return nil, nil
+	})
+	body, err := json.Marshal(map[string]any{"requests": []any{map[string]any{"type": "execute", "stmt": map[string]any{"sql": "SELECT body FROM records", "want_rows": true}}, map[string]any{"type": "close"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/db/tenant-a/db-a/main/v2/pipeline", strings.NewReader(string(body)))
+	request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newHranaHTTP(fixture.gateway).ServeHTTP(response, request)
+	if fetched > 2 {
+		t.Fatalf("cursor fallback read %d pages past an 8 KiB tenant budget: %d %s", fetched, response.Code, response.Body.String())
+	}
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"code":"result_limit"`) || strings.Contains(response.Body.String(), `"rows"`) {
+		t.Fatalf("cursor fallback did not reject at the tenant budget: %d %s", response.Code, response.Body.String())
+	}
+	if fixture.upstream.count("close_read_cursor") != 1 {
+		t.Fatal("budget rejection left the native cursor open")
+	}
+}
+
 // The fallback result comes either from another execution or from no execution
 // at all. It cannot borrow the first attempt's duration and counters, so the
 // fallback keeps the legacy shape.

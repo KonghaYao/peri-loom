@@ -37,6 +37,17 @@ const maxHranaPipelineResultBytes = 8 * 1024 * 1024
 const hranaPipelineTimeout = 30 * time.Second
 const hranaIdleTimeout = 5 * time.Minute
 
+// hranaResultBudget is the single result-size authority shared by the JSON
+// pipeline, the protobuf fast path and the cursor fallback. A non-positive
+// project budget yields zero, which the pipeline rejects as unusable instead of
+// inventing a budget the tenant never had.
+func hranaResultBudget(quota Quotas) int {
+	if quota.MaxResultBytes <= 0 {
+		return 0
+	}
+	return min(maxHranaPipelineResultBytes, quota.MaxResultBytes)
+}
+
 type hranaStream struct {
 	mu         sync.Mutex
 	session    string
@@ -129,7 +140,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		http.Error(writer, "forbidden", 403)
 		return
 	}
-	resultLimit := min(maxHranaPipelineResultBytes, quota.MaxResultBytes)
+	resultLimit := hranaResultBudget(quota)
 	resultReserve := min(maxHranaPipelineSteps*1024, max(128, resultLimit/8))
 	if resultLimit <= resultReserve {
 		http.Error(writer, "invalid result budget", 503)
@@ -393,7 +404,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
 			}
 			dispatched = true
-			value, reply := handler.execute(request, credential, stream.session, entry.Stmt)
+			value, reply := handler.executeWithin(request, credential, stream.session, entry.Stmt, resultLimit)
 			if ctx.Err() != nil {
 				limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 				return
@@ -438,7 +449,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					step.Stmt.SQL = stream.storedSQL[step.Stmt.SQLID]
 				}
 				dispatched = true
-				value, reply := handler.execute(request, credential, stream.session, step.Stmt)
+				value, reply := handler.executeWithin(request, credential, stream.session, step.Stmt, resultLimit)
 				if ctx.Err() != nil {
 					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 					return
@@ -829,6 +840,13 @@ type hranaNativeStatement struct {
 }
 
 func (handler *hranaHTTP) execute(request *http.Request, credential, session string, statement hranaStatement) (any, hranaReply) {
+	return handler.executeWithin(request, credential, session, statement, 0)
+}
+
+// executeWithin runs one statement. resultLimit caps the bytes the cursor
+// fallback may materialize before it refuses; zero keeps the gateway-wide
+// fallback budget for callers that only reach the fallback with discarded rows.
+func (handler *hranaHTTP) executeWithin(request *http.Request, credential, session string, statement hranaStatement, resultLimit int) (any, hranaReply) {
 	invalid := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
 	if statement.SQL == "" {
 		return nil, invalid
@@ -862,7 +880,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 			return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true}
 		}
 		if !description.Readonly && len(description.Cols) > 0 {
-			return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, true, false)
+			return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, true, false, resultLimit)
 		}
 	}
 	reply := handler.call(request, credential, "/v1/sql/statement", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "want_rows": statement.WantRows})
@@ -873,7 +891,7 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 				return nil, hranaFatalDescribeReply(describeReply)
 			}
 			if describeReply.code == "" && readonly {
-				return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, false, !statement.WantRows)
+				return handler.executeCursor(request, credential, session, statement.SQL, args, namedArgs, false, !statement.WantRows, resultLimit)
 			}
 		}
 		return nil, reply

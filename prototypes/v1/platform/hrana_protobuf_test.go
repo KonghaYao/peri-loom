@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -242,6 +243,32 @@ func TestHranaV3TypedPipelineAndHandshake(t *testing.T) {
 		if len(args) != 1 || args[0].(map[string]any)["type"] != "text" || args[0].(map[string]any)["value"] != "hello" {
 			t.Fatalf("typed args lost: %v", args)
 		}
+	}
+}
+
+// A single execute may only exceed the fast path budget when the tenant allows
+// more than the gateway-wide 8 MiB ceiling. The reply must be refused as the
+// pipeline limit failure, not published as a success.
+func TestHranaV3ProtoSingleExecuteRejectsOversizedResult(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 12 * 1024 * 1024 })
+	value := strings.Repeat("x", 9*1024*1024)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "statement" {
+			return map[string]any{"cols": []any{map[string]any{"name": "payload", "decltype": "TEXT"}}, "rows": [][]any{{value}}, "affected_row_count": 0, "last_insert_rowid": nil, "autocommit": true}, nil
+		}
+		return nil, nil
+	})
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	request := append(hranaProtoBytes(2, testHranaV3Statement()), hranaProtoBytes(2, hranaProtoBytes(1, nil))...)
+	response := testHranaV3Call(t, handler, fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/pipeline", request)
+	// The plain-text body proves the native single-execute path answered: the
+	// JSON compatibility path would return its own JSON error envelope.
+	if response.Code != http.StatusRequestEntityTooLarge || response.Body.String() != "pipeline_result_limit\n" {
+		t.Fatalf("oversized single execute returned %d: %q", response.Code, response.Body.String())
+	}
+	if fixture.upstream.count("statement") != 1 || fixture.upstream.count("close_session") == 0 {
+		t.Fatalf("oversized single execute did not run once and retire its session: statements=%d closes=%d", fixture.upstream.count("statement"), fixture.upstream.count("close_session"))
 	}
 }
 
@@ -606,6 +633,53 @@ func TestHranaProtoStatementResultMetricsRejected(t *testing.T) {
 				t.Fatalf("%s accepted a malformed metric", scenario.metric)
 			}
 		})
+	}
+}
+
+// The bounded encoder must refuse as soon as the bytes it has written no longer
+// fit, instead of encoding the whole result and checking afterwards.
+func TestHranaProtoStatementResultStopsAtResultBudget(t *testing.T) {
+	rows := make([]any, 2000)
+	for index := range rows {
+		rows[index] = []any{map[string]any{"type": "text", "value": strings.Repeat("x", 1024)}}
+	}
+	reply := map[string]any{
+		"cols":               []any{map[string]any{"name": "body", "decltype": "TEXT"}},
+		"rows":               rows,
+		"affected_row_count": json.Number("0"),
+		"last_insert_rowid":  nil,
+	}
+	full, err := hranaProtoStatementResult(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const budget = 64 * 1024
+	partial, err := hranaProtoStatementResultWithin(reply, budget)
+	if !errors.Is(err, errHranaProtoResultLimit) {
+		t.Fatalf("oversized result returned %v, want the result limit sentinel", err)
+	}
+	if len(partial) > budget {
+		t.Fatalf("partial encoding wrote %d bytes past a %d byte budget", len(partial), budget)
+	}
+	if len(partial) >= len(full)/4 {
+		t.Fatalf("result was fully encoded before the limit: partial=%d full=%d", len(partial), len(full))
+	}
+}
+
+// An unencodable row sits past the budget. Reaching that row would mean the
+// whole result was encoded; the sentinel proves the loop stopped first.
+func TestHranaProtoPipelineResponseStopsAtResultBudget(t *testing.T) {
+	response := map[string]any{"results": []any{map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": map[string]any{
+		"cols": []any{},
+		"rows": []any{
+			[]any{map[string]any{"type": "text", "value": strings.Repeat("x", 4096)}},
+			[]any{struct{}{}},
+		},
+		"affected_row_count": json.Number("0"),
+		"last_insert_rowid":  nil,
+	}}}}}
+	if _, err := hranaProtoPipelineResponseWithin(response, 1024); !errors.Is(err, errHranaProtoResultLimit) {
+		t.Fatalf("pipeline response encoded every row instead of stopping at the budget: %v", err)
 	}
 }
 

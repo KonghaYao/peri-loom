@@ -9,7 +9,22 @@ import (
 	"time"
 )
 
-func (handler *hranaHTTP) executeCursor(request *http.Request, credential, session, sql string, args []sqlArgument, namedArgs []namedSQLArgument, writing, discardRows bool) (value any, reply hranaReply) {
+// hranaCursorRowLimit is the absolute row guard the fallback keeps regardless
+// of the byte budget: cheap rows must not turn into an unbounded reply either.
+const hranaCursorRowLimit = 100_000
+
+// hranaCursorResultBytes resolves the byte budget the fallback may materialize.
+// A positive resultLimit is the pipeline's effective budget (min of the tenant
+// quota and the gateway ceiling). Zero means no budget reached this caller, so
+// the gateway-wide ceiling alone applies, preserving the pre-budget behavior.
+func hranaCursorResultBytes(resultLimit int) int {
+	if resultLimit <= 0 {
+		return maxHranaPipelineResultBytes
+	}
+	return resultLimit
+}
+
+func (handler *hranaHTTP) executeCursor(request *http.Request, credential, session, sql string, args []sqlArgument, namedArgs []namedSQLArgument, writing, discardRows bool, resultLimit int) (value any, reply hranaReply) {
 	opened := handler.call(request, credential, "/v1/sql/cursor/open", map[string]any{"session": session, "sql": sql, "args": args, "named_args": namedArgs, "write_cursor": writing})
 	if opened.code != "" {
 		return nil, opened
@@ -41,6 +56,7 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 	}
 	rows := make([][]any, 0)
 	responseBytes := 0
+	maxResultBytes := hranaCursorResultBytes(resultLimit)
 	for {
 		reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": session, "max_rows": 256, "write_cursor": writing})
 		if reply.code != "" {
@@ -63,7 +79,7 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 		if reply.status != http.StatusOK || decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 {
 			return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_cursor", unknown: true}
 		}
-		if !discardRows && (responseBytes > 8*1024*1024 || len(rows)+len(page.Rows) > 100_000) {
+		if !discardRows && (responseBytes > maxResultBytes || len(rows)+len(page.Rows) > hranaCursorRowLimit) {
 			if writing && page.Done {
 				active = false
 				return nil, hranaReply{status: http.StatusBadGateway, code: "outcome_unknown", unknown: true}
@@ -99,7 +115,7 @@ func (handler *hranaHTTP) executeCursor(request *http.Request, credential, sessi
 			}
 			return map[string]any{"cols": cols, "rows": rows, "affected_row_count": affected, "last_insert_rowid": rowid}, hranaReply{}
 		}
-		if !discardRows && len(rows) == 100_000 {
+		if !discardRows && len(rows) == hranaCursorRowLimit {
 			return nil, hranaReply{status: http.StatusRequestEntityTooLarge, code: "result_limit"}
 		}
 	}

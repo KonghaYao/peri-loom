@@ -332,10 +332,14 @@ Known boundaries:
   NDJSON) and are not subject to that pipeline cap. A single
   `want_rows:true` execute whose materialized result
   exceeds the budget falls back to a read-only cursor; when the fallback itself
-  reaches 8 MiB or 100,000 rows, the pipeline still answers HTTP 200 with
-  `results[].type=error` and `code=result_limit`. HTTP 413 with
+  reaches that same effective budget (`min(8 MiB, tenant MaxResultBytes)`) or
+  100,000 rows, the pipeline still answers HTTP 200 with `results[].type=error`
+  and `code=result_limit`. HTTP 413 with
   `pipeline_result_limit` is reserved for the pipeline's own accumulated result
-  exceeding its limit. A ~20.2 MB read should use the explicit cursor endpoints.
+  exceeding its limit; the protobuf single-execute fast path meters its encoding
+  against that budget and answers 413 as soon as the reply crosses it, without
+  finishing the encoding. A ~20.2 MB read should use the explicit cursor
+  endpoints.
 - The Worker charges every produced row against the per-statement result budget
   even when `want_rows:false`. A statement whose produced rows exceed that
   budget is answered by the read-only cursor fallback, and the fallback's

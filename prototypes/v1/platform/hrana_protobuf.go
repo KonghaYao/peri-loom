@@ -513,6 +513,21 @@ func hranaProtoAppend(dst []byte, number int, value []byte) []byte {
 	return append(dst, hranaProtoBytes(number, value)...)
 }
 
+// errHranaProtoResultLimit reports that an encoder stopped because the reply
+// would exceed the caller's result budget. It is a sentinel, not a wire error:
+// callers must answer with the pipeline limit failure rather than publishing a
+// truncated reply.
+var errHranaProtoResultLimit = errors.New("hrana protobuf result limit")
+
+// hranaProtoLength is the encoded size of one length-delimited field. Bounded
+// encoders charge a field before appending it, so a row stops growing at the
+// first cell over budget instead of materializing the whole result.
+func hranaProtoLength(number, length int) int {
+	var buffer [binary.MaxVarintLen64]byte
+	return binary.PutUvarint(buffer[:], uint64(number<<3|2)) +
+		binary.PutUvarint(buffer[:], uint64(length)) + length
+}
+
 func hranaProtoResultValue(input any) ([]byte, error) {
 	value, ok := input.(map[string]any)
 	if !ok {
@@ -664,6 +679,15 @@ func hranaProtoDescribeResult(input any) ([]byte, error) {
 }
 
 func hranaProtoStatementResult(input any) ([]byte, error) {
+	return hranaProtoStatementResultWithin(input, 0)
+}
+
+// hranaProtoStatementResultWithin encodes a statement result and stops as soon
+// as the encoded bytes stop fitting budget. A non-positive budget disables the
+// bound. On overflow it returns the rows encoded so far with
+// errHranaProtoResultLimit: the partial bytes are not a valid StatementResult
+// and only exist so callers and tests can see that encoding stopped early.
+func hranaProtoStatementResultWithin(input any, budget int) ([]byte, error) {
 	value, ok := input.(map[string]any)
 	if !ok {
 		return nil, errors.New("invalid statement result")
@@ -695,6 +719,12 @@ func hranaProtoStatementResult(input any) ([]byte, error) {
 				return nil, err
 			}
 			encoded = hranaProtoAppend(encoded, 1, value)
+			if budget > 0 && len(result)+hranaProtoLength(2, len(encoded)) > budget {
+				return result, errHranaProtoResultLimit
+			}
+		}
+		if budget > 0 && len(result)+hranaProtoLength(2, len(encoded)) > budget {
+			return result, errHranaProtoResultLimit
 		}
 		result = hranaProtoAppend(result, 2, encoded)
 	}
@@ -714,7 +744,11 @@ func hranaProtoStatementResult(input any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(result, metrics...), nil
+	result = append(result, metrics...)
+	if budget > 0 && len(result) > budget {
+		return result, errHranaProtoResultLimit
+	}
+	return result, nil
 }
 
 // hranaProtoStatementMetrics encodes the optional execution counters as fields
@@ -835,6 +869,12 @@ func hranaProtoUInt(value any) (uint64, error) {
 }
 
 func hranaProtoBatchResult(input any) ([]byte, error) {
+	return hranaProtoBatchResultWithin(input, 0)
+}
+
+// hranaProtoBatchResultWithin bounds every step result by the bytes left in
+// budget, so one oversized step stops the batch encoding where it happened.
+func hranaProtoBatchResultWithin(input any, budget int) ([]byte, error) {
 	result, ok := input.(map[string]any)
 	if !ok {
 		return nil, errors.New("invalid batch result")
@@ -849,8 +889,15 @@ func hranaProtoBatchResult(input any) ([]byte, error) {
 	}
 	encoded := []byte{}
 	for index := range steps {
+		remaining := 0
+		if budget > 0 {
+			remaining = budget - len(encoded)
+			if remaining <= 0 {
+				return nil, errHranaProtoResultLimit
+			}
+		}
 		if steps[index] != nil {
-			statement, err := hranaProtoStatementResult(steps[index])
+			statement, err := hranaProtoStatementResultWithin(steps[index], remaining)
 			if err != nil {
 				return nil, err
 			}
@@ -865,11 +912,23 @@ func hranaProtoBatchResult(input any) ([]byte, error) {
 			item := append(hranaProtoNumber(1, uint64(index)), hranaProtoBytes(2, failure)...)
 			encoded = hranaProtoAppend(encoded, 2, item)
 		}
+		if budget > 0 && len(encoded) > budget {
+			return nil, errHranaProtoResultLimit
+		}
 	}
 	return encoded, nil
 }
 
 func hranaProtoPipelineResponse(value map[string]any) ([]byte, error) {
+	return hranaProtoPipelineResponseWithin(value, 0)
+}
+
+// hranaProtoPipelineResponseWithin encodes a pipeline reply and stops as soon
+// as the accumulated bytes exceed budget. A non-positive budget disables the
+// bound. Execution results are metered row by row through
+// hranaProtoStatementResultWithin, so a large result never gets fully encoded
+// just to be rejected afterwards.
+func hranaProtoPipelineResponseWithin(value map[string]any, budget int) ([]byte, error) {
 	encoded := []byte{}
 	if baton, ok := value["baton"].(string); ok {
 		encoded = append(encoded, hranaProtoString(1, baton)...)
@@ -882,6 +941,13 @@ func hranaProtoPipelineResponse(value map[string]any) ([]byte, error) {
 		item, ok := entry.(map[string]any)
 		if !ok {
 			return nil, errors.New("invalid pipeline result")
+		}
+		remaining := 0
+		if budget > 0 {
+			remaining = budget - len(encoded)
+			if remaining <= 0 {
+				return nil, errHranaProtoResultLimit
+			}
 		}
 		var result []byte
 		switch item["type"] {
@@ -904,7 +970,7 @@ func hranaProtoPipelineResponse(value map[string]any) ([]byte, error) {
 			case "execute":
 				number = 2
 				var err error
-				message, err = hranaProtoStatementResult(response["result"])
+				message, err = hranaProtoStatementResultWithin(response["result"], remaining)
 				if err != nil {
 					return nil, err
 				}
@@ -912,7 +978,7 @@ func hranaProtoPipelineResponse(value map[string]any) ([]byte, error) {
 			case "batch":
 				number = 3
 				var err error
-				message, err = hranaProtoBatchResult(response["result"])
+				message, err = hranaProtoBatchResultWithin(response["result"], remaining)
 				if err != nil {
 					return nil, err
 				}
@@ -950,6 +1016,9 @@ func hranaProtoPipelineResponse(value map[string]any) ([]byte, error) {
 			return nil, errors.New("invalid stream result type")
 		}
 		encoded = hranaProtoAppend(encoded, 3, result)
+		if budget > 0 && len(encoded) > budget {
+			return nil, errHranaProtoResultLimit
+		}
 	}
 	return encoded, nil
 }
@@ -1139,6 +1208,9 @@ func serveHranaV3(writer http.ResponseWriter, request *http.Request, handler *hr
 // the JSON compatibility round trip. Only a read-only statement that opens and
 // closes its own session is handled here; every other shape falls back to the
 // JSON path so write settlement, batons and conditions keep one implementation.
+// Writes stay on that path deliberately: the Hrana protobuf Error carries only
+// a message and code, so it cannot publish the platform's separate
+// partial-execution and unknown-outcome evidence for a write that may have run.
 func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWriter, request *http.Request, parts []string, input map[string]any) bool {
 	requests, ok := input["requests"].([]any)
 	if !ok || len(requests) != 2 {
@@ -1193,7 +1265,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 	if err != nil {
 		return false
 	}
-	resultLimit := min(maxHranaPipelineResultBytes, quota.MaxResultBytes)
+	resultLimit := hranaResultBudget(quota)
 	resultReserve := min(maxHranaPipelineSteps*1024, max(128, resultLimit/8))
 	if resultLimit <= resultReserve {
 		return false
@@ -1218,7 +1290,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 			handler.cleanupRetiredSession(session, 0)
 		}
 	}()
-	value, executeReply := handler.execute(request, credential, session, statement)
+	value, executeReply := handler.executeWithin(request, credential, session, statement, resultLimit)
 	if executeReply.code != "" {
 		results := []any{map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(executeReply), "code": executeReply.code}}}
 		if closeReply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": session}); closeReply.status == http.StatusOK && closeReply.code == "" {
@@ -1245,7 +1317,11 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 			map[string]any{"type": "ok", "response": map[string]any{"type": "close"}},
 		},
 	}
-	output, err := hranaProtoPipelineResponse(response)
+	output, err := hranaProtoPipelineResponseWithin(response, resultLimit)
+	if errors.Is(err, errHranaProtoResultLimit) {
+		http.Error(writer, "pipeline_result_limit", http.StatusRequestEntityTooLarge)
+		return true
+	}
 	if err != nil {
 		http.Error(writer, "Hrana protobuf response unavailable", http.StatusBadGateway)
 		return true
