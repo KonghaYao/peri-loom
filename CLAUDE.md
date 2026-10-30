@@ -225,6 +225,28 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
   - 结论：不改变持久化时点/数量的前提下，剩余方向的主场景预期收益均 <10%；唯一可达标的是
     pipeline 内只读审计批提交（B1 25–40%），属耐久语义变更，须用户明确授权后才能开轮。
 
+#### R2 后全量复测（2026-10-30，n=15，容器 `peri-loom-issue28`）
+
+| 场景 | 协议 | 基线（`fa1d4a6`） | R2 后（`e861265`） | 变化 |
+|---|---|---:|---:|---:|
+| H1.content-20mb | json-cursor | 636.57ms | 447.61ms | −29.7% |
+| H1.content-20mb | protobuf-cursor | 652.43ms | 398.59ms | −38.9% |
+| H3.content+projection | json-cursor | 664.40ms | 461.48ms | −30.5% |
+| H3.content+projection | protobuf-cursor | 643.27ms | 415.29ms | −35.4% |
+| R1.limit-1000 | json-pipeline | 93.19ms | 72.97ms | −21.7% |
+| R1.limit-1000 | protobuf-pipeline | 90.83ms（R1 基线） | 71.95ms | −20.8% |
+| B1.batch-20 | json-pipeline | 43.53ms | 46.43ms | +6.7%（仍 FAIL） |
+| X1.concurrency=16 | json-pipeline | 61.30ms | 65.07ms | +6.2%（跨轮噪声内） |
+| F1.select-1 | json-pipeline | 9.00ms | 11.59ms | +28.8%（跨轮噪声） |
+| L1.list-20 | json-pipeline | 8.83ms | 10.00ms | +13.3%（跨轮噪声） |
+
+- 本次全量 76.7s，`warnings=[]`、无 429、`session_seats=0`、`active_permits=0`；
+  响应字节与基线逐字节一致（H1 25,162,268/23,600,883；H3 25,300,319/23,635,410；
+  R1-1000 3,725,223/3,545,845）。
+- 小场景单次全量差值在 ±30% 量级（历史 F1 9.0–13.2ms、B1 protobuf 33.8–51.9ms），
+  不作为 R1/R2 的结论；B1 仍是唯一稳定 FAIL。
+- 容器内存 206.2→259.2MiB（idle 259.1MiB），仍未证实是否泄漏；H2 仍受 projection 全 NULL 限制。
+
 ## 代码约定
 
 - 提交信息用中文全角冒号：`feat(v1)：…`、`fix(authority)：…`、`docs(capacity)：…`。
