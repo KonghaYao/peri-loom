@@ -192,6 +192,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 |---|---|---|---|---|
 | R1 | `perf/issue28-r1-cursor-encoding` / `1112133`（merge `fa270fc`） | cursor 行编码直接写入复用缓冲 | H3 protobuf 665.29→590.66ms（−11.2%）；H1 protobuf 644.19→589.45ms（−8.5%）；H2 JSON 120.95→110.48ms（−8.7%）；H1 JSON −2.1%；H2 protobuf +3.2%（噪声） | 合入 `main` |
 | R2 | `perf/issue28-r2-large-result-decode` / `2d21be5`（merge `0b28db9`） | 大结果解码按顶层 span 读取、跳过重复压缩 | H1 JSON 634.90→437.31ms（−31.1%）；H1 protobuf 600.47→400.96ms（−33.2%）；H3 JSON −26.7%、protobuf −29.7%；R1-1000 −20.1%；B1 受控 −8.0%；X1 16 并发 −12.8%（8 并发 +9.7%，噪声内） | 合入 `main` |
+| R3 | `perf/issue28-r3-pipeline-row-encoding` / `44c14be`（未合并） | pipeline 大结果直接编码 | R1-1000 JSON 69.33→63.25ms（−8.8%）；protobuf 65.52→66.97ms（+2.2%）；编码层微基准 JSON −42%、protobuf −44% | 未达 10%，不合入；保留分支 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -207,6 +208,12 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
   后续若要改变耐久时点（批提交/延后 flush）必须先获得用户明确授权，不能作为普通性能轮次合入。
 - R2 的已知测试失败 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode` 与
   `TestRegistryEntriesStillExist` 在 `main` 上同样失败，不是 R2 引入。
+- R3 的 R1-1000 受控 A/B/B/A 为 JSON 69.33→63.25ms（−8.8%）、protobuf 65.52→66.97ms（+2.2%）；
+  编码层微基准 JSON 3.60→2.09ms、protobuf 2.78→1.55ms，但端到端未达 10% 门槛。按协议不合入，
+  `main` 保持 R2；分支、commit `44c14be` 与二进制 `/tmp/peri-issue28/peri-platform-r3`
+  （父级重建 SHA `487113f…`）保留作证据。
+- R3 表明 R1-1000 的剩余成本主要在 worker/传输，不在 Go 编码层；若要继续过 10%，
+  需要 buffer 复用或改变耐久时点（后者必须先获得用户明确授权）。
 
 ## 代码约定
 
