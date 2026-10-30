@@ -385,6 +385,19 @@ func openOperationJournal(directory string) (*operationJournal, error) {
 	return journal, nil
 }
 
+// journalRecordDecodable reports whether a tail line decodes as a journal
+// record envelope. A half-written record cannot decode; only a decodable line
+// can be proven to be a complete record that failed verification.
+func journalRecordDecodable(line []byte) bool {
+	var record struct {
+		Payload struct {
+			Version uint32 `json:"version"`
+		} `json:"payload"`
+		Hash string `json:"hash"`
+	}
+	return json.Unmarshal(line, &record) == nil
+}
+
 func (journal *operationJournal) replay() error {
 	maximum := int64(operationJournalMaximumBytes)
 	if journal.completion != nil {
@@ -400,13 +413,19 @@ func (journal *operationJournal) replay() error {
 	}
 	entries, consumed := journal.parse(encoded[operationJournalWitnessBytes:])
 	journal.size = operationJournalWitnessBytes + consumed
-	if journal.size != int64(len(encoded)) && bytes.IndexByte(encoded[journal.size:], '\n') >= 0 {
-		// A complete record that fails its chain check is never a torn append:
-		// dropping it would hide acknowledged or corrupt durability state.
-		if journal.completion != nil {
-			return errors.New("corrupt complete completion record")
+	if journal.size != int64(len(encoded)) {
+		tail := encoded[journal.size:]
+		if end := bytes.IndexByte(tail, '\n'); end >= 0 && journalRecordDecodable(tail[:end]) {
+			// A decodable line is a complete record that failed its chain check;
+			// dropping it would hide acknowledged or corrupt durability state. A
+			// half-written completion record can still end in a newline (the
+			// crash matrix writes it that way), but it does not decode and stays
+			// a torn append.
+			if journal.completion != nil {
+				return errors.New("corrupt complete completion record")
+			}
+			return errors.New("corrupt complete operation record")
 		}
-		return errors.New("corrupt complete operation record")
 	}
 	if len(entries) > 0 {
 		journal.records = entries
@@ -433,9 +452,11 @@ func (journal *operationJournal) replay() error {
 		return err
 	}
 	if journal.size != int64(len(encoded)) {
-		// Only a torn append reaches this point. It was never acknowledged, and
-		// the witness and snapshot verified the prefix it follows, so dropping it
-		// cannot erase evidence. Every refusal above leaves the file untouched.
+		// Only a tail that does not decode as a record reaches this point. The
+		// completion crash matrix leaves a newline-terminated half record; bytes
+		// that cannot be a record cannot be proven complete, and the witness and
+		// snapshot verified the prefix they follow, so dropping this append does
+		// not erase evidence. Every refusal above leaves the file untouched.
 		return journal.file.Truncate(journal.size)
 	}
 	return nil

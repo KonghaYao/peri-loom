@@ -278,6 +278,58 @@ func TestOperationJournalWitnessedTornTailIsRejectedWithoutRewriting(test *testi
 	}
 }
 
+// A newline-terminated tail that does not decode as a journal record is still a
+// torn append. The completion crash matrix leaves a half-written record plus a
+// newline; only a decodable record can be proven complete, so an undecodable
+// tail is dropped after the witness and snapshot verify the prefix.
+func TestOperationJournalUndecodableCompleteTailIsTreatedAsTorn(test *testing.T) {
+	store, path := journalFixture(test)
+	journalCommit(test, store, "one")
+	journalCommit(test, store, "two")
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	lines := journalLines(test, path)
+	if len(lines) != 4 {
+		test.Fatalf("unexpected mutation count %d", len(lines))
+	}
+	var settled journalEntry
+	if err := strictDecode(lines[2], &settled); err != nil {
+		test.Fatal(err)
+	}
+	// The witness names the last fully verified record; the tail is a
+	// newline-terminated half record, which is what the completion crash
+	// artifact looks like after the helper terminates every line.
+	torn := append([][]byte{}, lines[:3]...)
+	torn = append(torn, lines[3][:len(lines[3])/2])
+	if journalRecordDecodable(torn[len(torn)-1]) {
+		test.Fatal("fixture tail decodes as a record; choose a half-written record")
+	}
+	journalWriteState(test, path, settled.Payload.Revision, settled.Hash, torn)
+	artifact, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if artifact[len(artifact)-1] != '\n' {
+		test.Fatal("fixture tail is not newline-terminated")
+	}
+	reopened, err := journalReopen(test, filepath.Dir(store.disk.path))
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.operations.revision != settled.Payload.Revision {
+		test.Fatalf("torn tail was not truncated at the witness: head %d", reopened.operations.revision)
+	}
+	truncated, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if int64(len(truncated)) != reopened.operations.size {
+		test.Fatalf("journal kept the undecodable tail: %d bytes, want %d", len(truncated), reopened.operations.size)
+	}
+}
+
 // A chain that lost, duplicated or reordered a mutation is refused: the witness
 // proves the prefix is too short, and a rewritten prefix is not the recorded chain.
 func TestOperationJournalRefusesGapDuplicateAndReorder(test *testing.T) {
