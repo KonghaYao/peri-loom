@@ -214,6 +214,16 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
   （父级重建 SHA `487113f…`）保留作证据。
 - R3 表明 R1-1000 的剩余成本主要在 worker/传输，不在 Go 编码层；若要继续过 10%，
   需要 buffer 复用或改变耐久时点（后者必须先获得用户明确授权）。
+- R4 前置诊断（`main`/R2、无代码改动，直接读 `/v1/metrics` 计数器增量）：
+  - X1（800 请求，1/4/8/16 各 100）：每请求 2.01 次 operation journal fsync（每次约 1.96ms）
+    + 1.33 次 audit fsync（每次约 1.30ms）；fsync 总耗时 2,610ms / 墙钟 4,512ms = 58%。
+    `state_lock_wait_ns_total` 仅 170ms（3.8%，单次最大 7.5ms）。X1 饱和由持久化屏障主导，
+    方向 3（worker refresh 门 Condvar）与方向 5（Go state 锁读写分离）的预期收益都到不了 10%。
+  - H1 json-cursor（单次 436ms）：38 次 audit fsync（约 70.3ms）+ 5.3 次 journal fsync（约 18.0ms），
+    fsync 合计约 88ms = 20%；其余为 worker 扫描与传输。方向 6（页 256→512）只省约 17 次
+    audit fsync ≈ 31ms ≈ 7%，低于 10% 门槛；1024 页约 10.5%，但单页预算（4MiB）对宽行有回归风险。
+  - 结论：不改变持久化时点/数量的前提下，剩余方向的主场景预期收益均 <10%；唯一可达标的是
+    pipeline 内只读审计批提交（B1 25–40%），属耐久语义变更，须用户明确授权后才能开轮。
 
 ## 代码约定
 
