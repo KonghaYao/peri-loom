@@ -643,6 +643,35 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.24
+
+This release hardens crash-recovery evidence; it does not add the crash-recovery
+protocol described in the issue 23 recovery design. `--recover` now requires a
+signed worker stop proof to match the identity opened by this recovery in every
+incarnation field (`version`, `generation`, `worker_id`, `nonce`, `pid`,
+`started`); only `waited` and `exit_code` may differ. Each launcher stop stage for
+a worker carries `identity_sha256`, and a stage whose digest is missing or
+different is not joined-exit evidence. A stop record from an older launcher
+format therefore cannot prove that the current worker stopped, and recovery
+fails closed instead of accepting the previous incarnation's proof.
+
+The operation journal no longer rewrites evidence before a verdict. With an
+active completion genesis, any newline-terminated tail is refused as a complete
+completion record. A legacy journal refuses a complete tail that decodes as a
+journal entry; an undecodable tail keeps the existing torn-append rule. In both
+cases the snapshot, witness, reseal and completion history must verify the
+surviving prefix before any truncation. Refusal leaves the file byte-identical,
+so a `rollback detected` verdict can still be audited. The legacy parser also
+accepts the crash window where a snapshot was published before the log was
+truncated.
+
+Quota values, the published failure contract and SQL behavior are unchanged. The
+full crash recovery design (seal v2, backend owner lock, recovery attempts,
+Controller placement recovery) remains unimplemented, and this release does not
+change the v7/v8 dirty-volume conclusion. The E1 known gap remains and the matrix
+still declares 27 scripts with 26 default-executed per round. This preview is not
+a capacity or full Hrana compatibility claim.
+
 ## v1.1.23
 
 This release changes observability, not admission. `/v1/metrics` now reports
