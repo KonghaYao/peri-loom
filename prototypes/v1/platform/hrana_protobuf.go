@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	controller "peri-loom/controller"
 )
 
 type hranaProtoField struct {
@@ -672,7 +674,14 @@ func hranaProtoStatementResult(input any) ([]byte, error) {
 	}
 	rows, ok := value["rows"].([]any)
 	if !ok {
-		return nil, errors.New("invalid statement rows")
+		typed, native := value["rows"].([][]any)
+		if !native {
+			return nil, errors.New("invalid statement rows")
+		}
+		rows = make([]any, len(typed))
+		for index := range typed {
+			rows[index] = typed[index]
+		}
 	}
 	for _, row := range rows {
 		items, ok := row.([]any)
@@ -796,11 +805,33 @@ func hranaProtoMetricFloat(input any) (float64, error) {
 }
 
 func hranaProtoUInt(value any) (uint64, error) {
-	number, ok := value.(json.Number)
-	if !ok {
+	switch typed := value.(type) {
+	case json.Number:
+		return strconv.ParseUint(string(typed), 10, 64)
+	case uint64:
+		return typed, nil
+	case uint:
+		return uint64(typed), nil
+	case uint32:
+		return uint64(typed), nil
+	case int:
+		if typed < 0 {
+			return 0, errors.New("negative protobuf integer")
+		}
+		return uint64(typed), nil
+	case int64:
+		if typed < 0 {
+			return 0, errors.New("negative protobuf integer")
+		}
+		return uint64(typed), nil
+	case float64:
+		if typed < 0 || typed != math.Trunc(typed) || typed >= math.Ldexp(1, 64) {
+			return 0, errors.New("invalid protobuf integer")
+		}
+		return uint64(typed), nil
+	default:
 		return 0, errors.New("missing protobuf integer")
 	}
-	return strconv.ParseUint(string(number), 10, 64)
 }
 
 func hranaProtoBatchResult(input any) ([]byte, error) {
@@ -1055,6 +1086,9 @@ func serveHranaV3(writer http.ResponseWriter, request *http.Request, handler *hr
 	if parts[6] == "cursor" && handler.serveNativeHTTPReadCursor(writer, request, parts, input) {
 		return true
 	}
+	if parts[6] == "pipeline" && handler.serveHranaProtoSingleExecute(writer, request, parts, input) {
+		return true
+	}
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		http.Error(writer, "invalid protobuf input", 400)
@@ -1099,4 +1133,140 @@ func serveHranaV3(writer http.ResponseWriter, request *http.Request, handler *hr
 	writer.WriteHeader(200)
 	_, _ = writer.Write(output)
 	return true
+}
+
+// serveHranaProtoSingleExecute answers the execute+close pipeline shape without
+// the JSON compatibility round trip. Only a read-only statement that opens and
+// closes its own session is handled here; every other shape falls back to the
+// JSON path so write settlement, batons and conditions keep one implementation.
+func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWriter, request *http.Request, parts []string, input map[string]any) bool {
+	requests, ok := input["requests"].([]any)
+	if !ok || len(requests) != 2 {
+		return false
+	}
+	executeRequest, ok := requests[0].(map[string]any)
+	if !ok || executeRequest["type"] != "execute" {
+		return false
+	}
+	closeRequest, ok := requests[1].(map[string]any)
+	if !ok || closeRequest["type"] != "close" {
+		return false
+	}
+	if baton, exists := input["baton"]; exists {
+		if value, ok := baton.(string); !ok || value != "" {
+			return false
+		}
+	}
+	if _, exists := executeRequest["condition"]; exists {
+		return false
+	}
+	statementValue, ok := executeRequest["stmt"].(map[string]any)
+	if !ok {
+		return false
+	}
+	sql, ok := statementValue["sql"].(string)
+	if !ok || !hranaProtoSingleSelect(sql) {
+		return false
+	}
+	encodedStatement, err := json.Marshal(statementValue)
+	if err != nil {
+		return false
+	}
+	var statement hranaStatement
+	if json.Unmarshal(encodedStatement, &statement) != nil || statement.SQL == "" {
+		return false
+	}
+	database := controller.DatabaseID{Namespace: controller.Namespace{Tenant: parts[2], Database: parts[3]}, Branch: parts[4]}
+	if database.Validate() != nil {
+		return false
+	}
+	values := request.Header.Values("Authorization")
+	if len(values) != 1 || !strings.HasPrefix(values[0], "Bearer ") {
+		return false
+	}
+	credential := strings.TrimPrefix(values[0], "Bearer ")
+	principal, err := handler.gateway.config.Identity.Authenticate(credential)
+	if err != nil || principal.Subject == "" || principal.Project == "" {
+		return false
+	}
+	quota, err := handler.gateway.authorizeQuota(principal, database)
+	if err != nil {
+		return false
+	}
+	resultLimit := min(maxHranaPipelineResultBytes, quota.MaxResultBytes)
+	resultReserve := min(maxHranaPipelineSteps*1024, max(128, resultLimit/8))
+	if resultLimit <= resultReserve {
+		return false
+	}
+	reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
+	if reply.status != http.StatusOK || reply.code != "" {
+		return false
+	}
+	var opened struct {
+		Session string `json:"session"`
+	}
+	if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
+		if opened.Session != "" {
+			handler.cleanupRetiredSession(opened.Session, 0)
+		}
+		return false
+	}
+	session := opened.Session
+	closed := false
+	defer func() {
+		if !closed {
+			handler.cleanupRetiredSession(session, 0)
+		}
+	}()
+	value, executeReply := handler.execute(request, credential, session, statement)
+	if executeReply.code != "" {
+		results := []any{map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(executeReply), "code": executeReply.code}}}
+		if closeReply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": session}); closeReply.status == http.StatusOK && closeReply.code == "" {
+			closed = true
+			results = append(results, map[string]any{"type": "ok", "response": map[string]any{"type": "close"}})
+		}
+		output, err := hranaProtoPipelineResponse(map[string]any{"results": results})
+		if err != nil {
+			http.Error(writer, "Hrana protobuf response unavailable", http.StatusBadGateway)
+			return true
+		}
+		writeHranaProtoResponse(writer, output)
+		return true
+	}
+	closeReply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": session})
+	if closeReply.status != http.StatusOK || closeReply.code != "" {
+		http.Error(writer, "cursor session close failed", http.StatusBadGateway)
+		return true
+	}
+	closed = true
+	response := map[string]any{
+		"results": []any{
+			map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}},
+			map[string]any{"type": "ok", "response": map[string]any{"type": "close"}},
+		},
+	}
+	output, err := hranaProtoPipelineResponse(response)
+	if err != nil {
+		http.Error(writer, "Hrana protobuf response unavailable", http.StatusBadGateway)
+		return true
+	}
+	if len(output) > resultLimit {
+		http.Error(writer, "pipeline_result_limit", http.StatusRequestEntityTooLarge)
+		return true
+	}
+	writeHranaProtoResponse(writer, output)
+	return true
+}
+
+func hranaProtoSingleSelect(sql string) bool {
+	trimmed := strings.TrimSpace(sql)
+	return len(trimmed) >= 6 && strings.EqualFold(trimmed[:6], "SELECT")
+}
+
+func writeHranaProtoResponse(writer http.ResponseWriter, output []byte) {
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.Header().Set("Content-Type", "application/x-protobuf")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(output)
 }
