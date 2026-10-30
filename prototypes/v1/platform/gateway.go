@@ -70,8 +70,13 @@ type gatewayResult struct {
 	// retryAllowed publishes that the same request may be retried without an
 	// operator. It is set only where the platform knows nothing was dispatched
 	// and the answer can change by itself; every other refusal leaves it unset.
-	retryAllowed            bool
-	value                   any
+	retryAllowed bool
+	value        any
+	// validatedResult marks value as a worker JSON result sqlDecode accepted
+	// as exactly one JSON value and copied into an owned span. The in-process
+	// Hrana response may retain that span without a second compact-validation
+	// parse. Only the SQL reply decoders set it; a hand-built value must not.
+	validatedResult         bool
 	dispatched              bool
 	session                 *gatewaySession
 	finish                  func()

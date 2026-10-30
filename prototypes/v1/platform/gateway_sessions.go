@@ -394,7 +394,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		if request.WriteCursor {
 			session.writeCursorOpen, session.writeCursorCommitted = true, false
 		}
-		return gatewayResult{value: reply, dispatched: true}
+		return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 	}
 	if action == "cursor_fetch" || action == "cursor_start" {
 		var reply json.RawMessage
@@ -433,10 +433,10 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 				// adapter writes any row, so a disconnect during the final page
 				// cannot be mistaken for an unproven write.
 				session.writeCursorOpen, session.writeCursorCommitted = false, true
-				return gatewayResult{value: reply, dispatched: true, cursorNativeOutcome: cursorOutcomeCommitted}
+				return gatewayResult{value: reply, dispatched: true, validatedResult: true, cursorNativeOutcome: cursorOutcomeCommitted}
 			}
 		}
-		return gatewayResult{value: reply, dispatched: true}
+		return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 	}
 	if action == "cursor_close" {
 		lifecycle := gatewayResult{cursorClientStopped: request.CursorClientStopped, cursorDispatchStopped: request.CursorDispatchStopped}
@@ -492,7 +492,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		if !validDescribeResult(reply) {
 			return gateway.unknown(session, permit)
 		}
-		return gatewayResult{value: reply, dispatched: true}
+		return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 	}
 	if action == "session_state" {
 		var reply struct {
@@ -541,7 +541,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		}
 		return gatewayResult{dispatched: true, stream: stream}
 	}
-	return gatewayResult{value: reply, dispatched: true}
+	return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 }
 
 func (gateway *Gateway) unknown(session *gatewaySession, permit *admissionPermit) gatewayResult {

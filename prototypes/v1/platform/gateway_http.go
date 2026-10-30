@@ -591,7 +591,7 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 		return
 	}
 	if result.code == "" && (result.status == 0 || result.status == http.StatusOK) {
-		if response, ok := writer.(*hranaGatewayResponse); ok && response.capture(result.value) {
+		if response, ok := writer.(*hranaGatewayResponse); ok && response.capture(result.value, result.validatedResult) {
 			return
 		}
 	}
