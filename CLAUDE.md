@@ -191,12 +191,22 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | 轮次 | 分支 / 提交 | 方向 | 受控 A/B 结果 | 决策 |
 |---|---|---|---|---|
 | R1 | `perf/issue28-r1-cursor-encoding` / `1112133`（merge `fa270fc`） | cursor 行编码直接写入复用缓冲 | H3 protobuf 665.29→590.66ms（−11.2%）；H1 protobuf 644.19→589.45ms（−8.5%）；H2 JSON 120.95→110.48ms（−8.7%）；H1 JSON −2.1%；H2 protobuf +3.2%（噪声） | 合入 `main` |
+| R2 | `perf/issue28-r2-large-result-decode` / `2d21be5`（merge `0b28db9`） | 大结果解码按顶层 span 读取、跳过重复压缩 | H1 JSON 634.90→437.31ms（−31.1%）；H1 protobuf 600.47→400.96ms（−33.2%）；H3 JSON −26.7%、protobuf −29.7%；R1-1000 −20.1%；B1 受控 −8.0%；X1 16 并发 −12.8%（8 并发 +9.7%，噪声内） | 合入 `main` |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
   全量运行 `warnings=[]`、无 429、`session_seats=0`、`active_permits=0`。按“明确收益且零回归”接受并记录例外。
 - 全量运行中 pipeline/write 小场景出现 ±30–80% 波动，但该改动只触及 cursor 行编码，且 A/B 交替未复现；
   不作为本轮结论，也不据此宣称小场景性能变化。
+- R2 的 H1/H3/R1 改善在 A/B/B/A 中两次同向；wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、
+  H3 25,300,319/23,635,410 不变；新增 6 个解码对拍测试通过。
+- R2 全量运行期间主机 load 3.5、`StorageManagementService` 占 62% CPU，B1/X1 的全量差值被同环境 R1
+  自身退化（X1 16 并发 65→99ms）证伪；B1/X1 结论以受控交替复测为准。
+- 目标为 v1 耐久模式（`/v1/metrics`：`durability_source=audit_file_v1`、`operation_journal_batch_max=1`、
+  `coalesced_total=0`）；B1 的 20 条只读语句仍对应 20 次审计 fsync，这是 B1 未达 20ms 的主要原因。
+  后续若要改变耐久时点（批提交/延后 flush）必须先获得用户明确授权，不能作为普通性能轮次合入。
+- R2 的已知测试失败 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode` 与
+  `TestRegistryEntriesStillExist` 在 `main` 上同样失败，不是 R2 引入。
 
 ## 代码约定
 
