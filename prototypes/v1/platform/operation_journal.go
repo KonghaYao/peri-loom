@@ -400,17 +400,13 @@ func (journal *operationJournal) replay() error {
 	}
 	entries, consumed := journal.parse(encoded[operationJournalWitnessBytes:])
 	journal.size = operationJournalWitnessBytes + consumed
-	if journal.completion != nil && journal.size != int64(len(encoded)) && bytes.IndexByte(encoded[journal.size:], '\n') >= 0 {
-		return errors.New("corrupt complete completion record")
-	}
-	if journal.size != int64(len(encoded)) {
-		// The unverifiable tail is an append that never returned success; drop it
-		// instead of refusing to start after an ordinary crash.
-		if journal.completion == nil {
-			if err := journal.file.Truncate(journal.size); err != nil {
-				return err
-			}
+	if journal.size != int64(len(encoded)) && bytes.IndexByte(encoded[journal.size:], '\n') >= 0 {
+		// A complete record that fails its chain check is never a torn append:
+		// dropping it would hide acknowledged or corrupt durability state.
+		if journal.completion != nil {
+			return errors.New("corrupt complete completion record")
 		}
+		return errors.New("corrupt complete operation record")
 	}
 	if len(entries) > 0 {
 		journal.records = entries
@@ -436,7 +432,10 @@ func (journal *operationJournal) replay() error {
 	if err := journal.verifyCompletionHistory(); err != nil {
 		return err
 	}
-	if journal.completion != nil && journal.size != int64(len(encoded)) {
+	if journal.size != int64(len(encoded)) {
+		// Only a torn append reaches this point. It was never acknowledged, and
+		// the witness and snapshot verified the prefix it follows, so dropping it
+		// cannot erase evidence. Every refusal above leaves the file untouched.
 		return journal.file.Truncate(journal.size)
 	}
 	return nil
@@ -508,6 +507,12 @@ func (journal *operationJournal) parse(encoded []byte) ([]journalEntry, int64) {
 					// first position is proved against the retained archives by
 					// verifyCompletionHistory, never trusted on position alone.
 					continuous = entry.Payload.Revision == 1 && entry.Payload.Previous == "" || entry.Payload.Revision > 1 && len(entry.Payload.Previous) == 64
+				} else if journal.completion == nil && entry.Payload.Revision == 1 && entry.Payload.Previous == "" {
+					// A legacy crash between publishing the snapshot and truncating
+					// the log leaves the already materialized prefix. Consume it so
+					// verifySnapshot binds that prefix instead of treating valid
+					// records as a droppable tail.
+					continuous = true
 				}
 			}
 		}

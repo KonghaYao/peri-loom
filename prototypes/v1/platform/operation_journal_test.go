@@ -60,6 +60,21 @@ func journalWriteState(test *testing.T, path string, revision uint64, digest str
 	}
 }
 
+// journalWriteTornState writes the durable prefix plus a final record that never
+// received its terminating newline, which is what an interrupted append leaves.
+func journalWriteTornState(test *testing.T, path string, revision uint64, digest string, lines [][]byte, torn []byte) {
+	test.Helper()
+	encoded := append([]byte{}, journalWitnessLine(revision, digest)...)
+	for _, line := range lines {
+		encoded = append(encoded, line...)
+		encoded = append(encoded, '\n')
+	}
+	encoded = append(encoded, torn...)
+	if err := os.WriteFile(path, encoded, 0600); err != nil {
+		test.Fatal(err)
+	}
+}
+
 // journalWriteLines keeps the witness current for the last surviving record, which
 // is the state a crash leaves when an append returned and its witness landed.
 func journalWriteLines(test *testing.T, path string, lines [][]byte) {
@@ -145,10 +160,8 @@ func TestOperationJournalTornTailIsDroppedNotTrusted(test *testing.T) {
 		test.Fatal(err)
 	}
 	// The witness describes the last append whose fsync returned; the torn record is
-	// the one that never did.
-	truncated := append([][]byte{}, lines[:3]...)
-	truncated = append(truncated, lines[3][:len(lines[3])/2])
-	journalWriteState(test, path, settled.Payload.Revision, settled.Hash, truncated)
+	// the one that never did, so it has no terminating newline either.
+	journalWriteTornState(test, path, settled.Payload.Revision, settled.Hash, lines[:3], lines[3][:len(lines[3])/2])
 	directory := filepath.Dir(store.disk.path)
 	reopened, err := journalReopen(test, directory)
 	if err != nil {
@@ -175,6 +188,93 @@ func TestOperationJournalTornTailIsDroppedNotTrusted(test *testing.T) {
 	}
 	if reopened.operations.revision != 4 {
 		test.Fatalf("chain did not continue after the truncation: %d", reopened.operations.revision)
+	}
+}
+
+// A complete record that fails its own chain check is not a torn append: the
+// witness may point at it, and dropping it would erase the evidence an operator
+// needs. Opening must refuse and leave every byte in place.
+func TestOperationJournalLegacyCompleteCorruptTailIsRejectedWithoutRewriting(test *testing.T) {
+	store, path := journalFixture(test)
+	journalCommit(test, store, "one")
+	journalCommit(test, store, "two")
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	lines := journalLines(test, path)
+	if len(lines) != 4 {
+		test.Fatalf("unexpected mutation count %d", len(lines))
+	}
+	var last journalEntry
+	if err := strictDecode(lines[3], &last); err != nil {
+		test.Fatal(err)
+	}
+	last.Payload.Sequence++
+	corrupted, err := json.Marshal(last)
+	if err != nil {
+		test.Fatal(err)
+	}
+	rewritten := append([][]byte{}, lines[:3]...)
+	rewritten = append(rewritten, corrupted)
+	journalWriteLines(test, path, rewritten)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := journalReopen(test, filepath.Dir(store.disk.path))
+	if err == nil {
+		reopened.Close()
+		test.Fatal("complete corrupt operation record was accepted")
+	}
+	if !strings.Contains(err.Error(), "corrupt complete operation record") {
+		test.Fatalf("unexpected refusal: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		test.Fatal("refused journal was rewritten")
+	}
+}
+
+// A torn append is dropped only when the surviving chain still proves the
+// witness. When the witness names the torn record itself, the missing bytes are
+// a rollback, not a recoverable append: refuse and keep the accident bytes.
+func TestOperationJournalWitnessedTornTailIsRejectedWithoutRewriting(test *testing.T) {
+	store, path := journalFixture(test)
+	journalCommit(test, store, "one")
+	journalCommit(test, store, "two")
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	lines := journalLines(test, path)
+	if len(lines) != 4 {
+		test.Fatalf("unexpected mutation count %d", len(lines))
+	}
+	var last journalEntry
+	if err := strictDecode(lines[3], &last); err != nil {
+		test.Fatal(err)
+	}
+	journalWriteTornState(test, path, last.Payload.Revision, last.Hash, lines[:3], lines[3][:len(lines[3])/2])
+	before, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := journalReopen(test, filepath.Dir(store.disk.path))
+	if err == nil {
+		reopened.Close()
+		test.Fatal("witnessed torn tail was accepted")
+	}
+	if !strings.Contains(err.Error(), "operation journal rollback detected") {
+		test.Fatalf("unexpected refusal: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		test.Fatal("witnessed torn tail was truncated before refusal")
 	}
 }
 

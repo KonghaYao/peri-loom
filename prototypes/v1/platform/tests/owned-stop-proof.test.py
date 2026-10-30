@@ -345,6 +345,14 @@ class OwnedStopProofTests(unittest.TestCase):
                   "unresolved_operations": False}
         dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, record))
 
+    def recovery_stop_record(self, configuration, stages):
+        return {"version": 1, "generation": configuration["generation"], "outcome": "unclean",
+                "reason": "shutdown incomplete", "deadline_ms": 1, "stages": stages,
+                "unresolved_operations": False}
+
+    def identity_digest(self, configuration, worker):
+        return hashlib.sha256((pathlib.Path(configuration["directory"]) / (worker + ".identity.json")).read_bytes()).hexdigest()
+
     def clean_run_directory(self, directory):
         project = self.project(directory)
         configuration = project.config["owned_stop_proof"]
@@ -402,7 +410,8 @@ class OwnedStopProofTests(unittest.TestCase):
             dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, {
                 "version": 1, "generation": configuration["generation"], "outcome": "unclean",
                 "reason": worker + " exited without a clean proof", "deadline_ms": 1,
-                "stages": [{"name": worker, "exit_code": 70, "ack": True, "signal": None}],
+                "stages": [{"name": worker, "exit_code": 70, "ack": True, "signal": None,
+                            "identity_sha256": self.identity_digest(configuration, worker)}],
                 "unresolved_operations": False,
             }))
             recovery = dev.Project(self.recovery_arguments(project))
@@ -443,11 +452,74 @@ class OwnedStopProofTests(unittest.TestCase):
             dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(configuration, {
                 "version": 1, "generation": configuration["generation"], "outcome": "unclean",
                 "reason": "shutdown incomplete", "deadline_ms": 1,
-                "stages": [{"name": worker, "exit_code": 1, "ack": True, "signal": None}],
+                "stages": [{"name": worker, "exit_code": 1, "ack": True, "signal": None,
+                            "identity_sha256": self.identity_digest(configuration, worker)}],
                 "unresolved_operations": False,
             }))
             with self.assertRaisesRegex(RuntimeError, "incarnation or joined exit"):
                 dev.Project(self.recovery_arguments(project)).prepare()
+
+    def test_recovery_refuses_a_stop_proof_from_another_incarnation(self):
+        for field in ("pid", "started", "worker_id"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory(prefix="recovery-mixed-", dir="/tmp") as directory:
+                project = self.clean_run_directory(directory)
+                configuration = project.config["owned_stop_proof"]
+                (project.directory / "launcher-terminal.json").unlink()
+                worker = next(iter(project.launch["workers"]))
+                proofs = pathlib.Path(configuration["directory"])
+                identity = json.loads(json.loads((proofs / (worker + ".identity.json")).read_bytes())["payload"])
+                stale = {**identity, "waited": True, "exit_code": 0}
+                stale[field] = {"pid": identity["pid"] + 1, "started": "other-incarnation",
+                                "worker_id": worker + "-other"}[field]
+                dev.atomic_private_json(proofs / (worker + ".stop.json"), dev.signed_owned_identity(configuration, stale))
+                with self.assertRaisesRegex(RuntimeError, "incarnation or joined exit"):
+                    dev.verify_owned_stop_proofs(project.directory, configuration, project.launch["workers"])
+                with self.assertRaisesRegex(RuntimeError, "incarnation or joined exit"):
+                    dev.verify_recovery_worker_joins(project.directory, configuration, project.launch["workers"])
+
+    def test_recovery_refuses_a_mixed_stop_proof_even_with_another_workers_joined_exit(self):
+        with tempfile.TemporaryDirectory(prefix="recovery-mixed-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            (project.directory / "launcher-terminal.json").unlink()
+            mixed, joined = list(project.launch["workers"])[:2]
+            proofs = pathlib.Path(configuration["directory"])
+            mixed_identity = json.loads(json.loads((proofs / (mixed + ".identity.json")).read_bytes())["payload"])
+            dev.atomic_private_json(proofs / (mixed + ".stop.json"), dev.signed_owned_identity(
+                configuration, {**mixed_identity, "waited": True, "exit_code": 0, "pid": mixed_identity["pid"] + 1}))
+            joined_identity = json.loads(json.loads((proofs / (joined + ".identity.json")).read_bytes())["payload"])
+            dev.atomic_private_json(proofs / (joined + ".stop.json"),
+                                    dev.signed_owned_identity(configuration, {**joined_identity, "waited": True, "exit_code": 70}))
+            dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(
+                configuration, self.recovery_stop_record(configuration, [{
+                    "name": joined, "exit_code": 70, "ack": True, "signal": None,
+                    "identity_sha256": self.identity_digest(configuration, joined)}])))
+            with self.assertRaisesRegex(RuntimeError, "incarnation or joined exit"):
+                dev.Project(self.recovery_arguments(project)).prepare()
+
+    def test_recovery_requires_the_current_identity_digest_for_a_stage_join(self):
+        with tempfile.TemporaryDirectory(prefix="recovery-digest-", dir="/tmp") as directory:
+            project = self.clean_run_directory(directory)
+            configuration = project.config["owned_stop_proof"]
+            (project.directory / "launcher-terminal.json").unlink()
+            worker = next(iter(project.launch["workers"]))
+            (pathlib.Path(configuration["directory"]) / (worker + ".stop.json")).unlink()
+
+            def write_stage(identity_sha256):
+                stage = {"name": worker, "exit_code": 70, "ack": True, "signal": None}
+                if identity_sha256 is not None:
+                    stage["identity_sha256"] = identity_sha256
+                dev.atomic_private_json(project.directory / "launcher-stop.json", dev.signed_owned_identity(
+                    configuration, self.recovery_stop_record(configuration, [stage])))
+
+            for identity_sha256 in (None, "0" * 64):
+                write_stage(identity_sha256)
+                with self.assertRaisesRegex(RuntimeError, "no joined exit proof"):
+                    dev.Project(self.recovery_arguments(project)).prepare()
+            write_stage(self.identity_digest(configuration, worker))
+            recovery = dev.Project(self.recovery_arguments(project))
+            recovery.prepare()
+            self.assertEqual(recovery.recovered_dead_workers[worker]["exit_code"], 70)
 
     def test_startup_failure_restores_clean_stop_and_terminal(self):
         with tempfile.TemporaryDirectory(prefix="restart-failure-", dir="/tmp") as directory:
