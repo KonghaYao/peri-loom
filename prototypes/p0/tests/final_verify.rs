@@ -1,23 +1,26 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
-use peri_loom_p0::io::SegmentedIO;
 use peri_loom_p0::manifest::{WalPosition, SEGMENT_SIZE};
 use peri_loom_p0::storage::SegmentedStorage;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+// Child spawns and in-process lock-taking opens go through `common`; see
+// tests/common/mod.rs for why they share a fork gate.
+mod common;
+
 fn cli(root: &Path, arguments: &[&str]) -> Result<Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_peri-loom-p0"))
-        .arg(root)
-        .args(arguments)
-        .output()?;
+    let output = common::spawn(|command| {
+        command.arg(root).args(arguments);
+    })?
+    .wait_with_output()?;
     ensure!(
         output.status.success(),
         "{}",
@@ -36,14 +39,13 @@ impl Drop for KillChild {
 }
 
 fn ready(root: &Path, arguments: &[&str]) -> Result<KillChild> {
-    let mut child = KillChild(
-        Command::new(env!("CARGO_BIN_EXE_peri-loom-p0"))
+    let mut child = KillChild(common::spawn(|command| {
+        command
             .arg(root)
             .args(arguments)
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?,
-    );
+            .stderr(Stdio::inherit());
+    })?);
     let stdout = child.0.stdout.take().context("missing child stdout")?;
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -128,10 +130,12 @@ fn sigkill_lock_release_committed_tail_and_torn_frame() -> Result<()> {
     let root = tempfile::tempdir()?;
     cli(root.path(), &["demo", "120"])?;
     let mut child = ready(root.path(), &["checkpoint-wait"])?;
-    let denied = Command::new(env!("CARGO_BIN_EXE_peri-loom-p0"))
-        .arg(root.path())
-        .args(["query", "SELECT count(*) FROM p0_records"])
-        .output()?;
+    let denied = common::spawn(|command| {
+        command
+            .arg(root.path())
+            .args(["query", "SELECT count(*) FROM p0_records"]);
+    })?
+    .wait_with_output()?;
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("already locked"));
     kill_and_prove(&mut child)?;
@@ -259,7 +263,7 @@ fn directory_symlink_alias_cannot_bypass_wal_publication_guard() -> Result<()> {
     fs::create_dir(&real)?;
     let alias = parent.path().join("alias");
     symlink(&real, &alias)?;
-    let io = SegmentedIO::open(&real)?;
+    let io = common::open_io(&real)?;
     let wal_path = alias.join("database-wal");
     let wal = io.open_file(
         wal_path.to_str().context("WAL path")?,

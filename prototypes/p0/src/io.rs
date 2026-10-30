@@ -422,25 +422,28 @@ impl File for WalFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static FORK_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn fork_gate() -> MutexGuard<'static, ()> {
+        FORK_GATE
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn main_file(io: &SegmentedIO) -> Arc<dyn File> {
         io.open_file(&io.database_path(), OpenFlags::Create, false)
             .unwrap()
     }
 
-    fn open_after_handoff(root: &Path) -> anyhow::Result<Arc<SegmentedIO>> {
-        // 其他测试会并发 fork 子进程；子进程在 exec 关闭 CLoexec 之前会继承锁的
-        // open file description，父进程刚释放句柄时仍可能看到锁。等待这段
-        // fork/exec 窗口，而不是把父进程已不再持有的锁当成泄漏。
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match SegmentedIO::open(root) {
-                Ok(io) => return Ok(io),
-                Err(error) if Instant::now() >= deadline => return Err(error),
-                Err(_) => std::thread::sleep(Duration::from_millis(10)),
-            }
-        }
+    fn open_io(root: &Path) -> anyhow::Result<Arc<SegmentedIO>> {
+        // Another test's fork inherits this lock's open file description until
+        // exec closes the CLOEXEC descriptor. Serialize the lock attempt with
+        // every spawn instead of sleeping and guessing at the window.
+        let _gate = fork_gate();
+        SegmentedIO::open(root)
     }
 
     fn write(file: &dyn File, offset: u64, bytes: &[u8]) -> i32 {
@@ -466,7 +469,7 @@ mod tests {
     #[test]
     fn virtual_database_read_counts_and_truncate_sync() {
         let directory = tempfile::tempdir().unwrap();
-        let io = SegmentedIO::open(directory.path()).unwrap();
+        let io = open_io(directory.path()).unwrap();
         let file = main_file(&io);
         assert_eq!(write(file.as_ref(), 5, b"abcdef"), 6);
         let buffer = Arc::new(Buffer::new_temporary(16));
@@ -504,7 +507,7 @@ mod tests {
         );
         drop(file);
         drop(io);
-        let reopened = SegmentedIO::open(directory.path()).unwrap();
+        let reopened = open_io(directory.path()).unwrap();
         assert_eq!(reopened.storage().size(), 7);
         let mut bytes = [0; 7];
         assert_eq!(reopened.storage().read_at(0, &mut bytes).unwrap(), 7);
@@ -514,7 +517,7 @@ mod tests {
     #[test]
     fn exact_partial_position_and_invalid_tail_are_not_inferred() {
         let directory = tempfile::tempdir().unwrap();
-        let io = SegmentedIO::open(directory.path()).unwrap();
+        let io = open_io(directory.path()).unwrap();
         std::fs::write(directory.path().join("database-wal"), [17; 200]).unwrap();
         let file = main_file(&io);
         write(file.as_ref(), 0, b"checkpointed prefix");
@@ -538,7 +541,7 @@ mod tests {
     #[test]
     fn failed_publication_blocks_wal_reset_until_successful_retry() {
         let directory = tempfile::tempdir().unwrap();
-        let io = SegmentedIO::open(directory.path()).unwrap();
+        let io = open_io(directory.path()).unwrap();
         let wal_path = directory.path().join("database-wal");
         let wal = io
             .open_file(wal_path.to_str().unwrap(), OpenFlags::Create, false)
@@ -580,7 +583,7 @@ mod tests {
     #[test]
     fn readonly_and_vectored_completion_errors_are_finished() {
         let directory = tempfile::tempdir().unwrap();
-        let io = SegmentedIO::open(directory.path()).unwrap();
+        let io = open_io(directory.path()).unwrap();
         let readonly = io
             .open_file(&io.database_path(), OpenFlags::ReadOnly, false)
             .unwrap();
@@ -616,15 +619,15 @@ mod tests {
     #[test]
     fn directory_lock_covers_same_process_and_file_handle_lifetime() {
         let directory = tempfile::tempdir().unwrap();
-        let io = SegmentedIO::open(directory.path()).unwrap();
-        assert!(SegmentedIO::open(directory.path()).is_err());
+        let io = open_io(directory.path()).unwrap();
+        assert!(open_io(directory.path()).is_err());
         let file = main_file(&io);
         drop(io);
-        assert!(SegmentedIO::open(directory.path()).is_err());
+        assert!(open_io(directory.path()).is_err());
         file.unlock_file().unwrap();
-        assert!(SegmentedIO::open(directory.path()).is_err());
+        assert!(open_io(directory.path()).is_err());
         drop(file);
-        assert!(open_after_handoff(directory.path()).is_ok());
+        assert!(open_io(directory.path()).is_ok());
     }
 
     #[test]
@@ -634,17 +637,20 @@ mod tests {
             return;
         }
         let directory = tempfile::tempdir().unwrap();
-        let _io = SegmentedIO::open(directory.path()).unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "io::tests::directory_lock_process_probe",
-                "--nocapture",
-            ])
-            .env("PERI_LOOM_IO_LOCK_PROBE", directory.path())
-            .env("LIMBO_DISABLE_FILE_LOCK", "1")
-            .status()
-            .unwrap();
+        let _io = open_io(directory.path()).unwrap();
+        let status = {
+            let _gate = fork_gate();
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "io::tests::directory_lock_process_probe",
+                    "--nocapture",
+                ])
+                .env("PERI_LOOM_IO_LOCK_PROBE", directory.path())
+                .env("LIMBO_DISABLE_FILE_LOCK", "1")
+                .status()
+                .unwrap()
+        };
         assert!(status.success());
     }
 }

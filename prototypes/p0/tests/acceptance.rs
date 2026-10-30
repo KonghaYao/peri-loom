@@ -1,19 +1,23 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use peri_loom_p0::database::SegmentedDatabase;
 use peri_loom_p0::storage::SegmentedStorage;
 use serde_json::Value;
 
+// Child spawns and in-process lock-taking opens go through `common`; see
+// tests/common/mod.rs for why they share a fork gate.
+mod common;
+
 fn cli(root: &Path, arguments: &[&str]) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_peri-loom-p0"))
-        .arg(root)
-        .args(arguments)
-        .output()
-        .unwrap();
+    let output = common::spawn(|command| {
+        command.arg(root).args(arguments);
+    })
+    .unwrap()
+    .wait_with_output()
+    .unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -33,13 +37,14 @@ impl Drop for CrashProcess {
 
 fn ready_process(root: &Path, arguments: &[&str]) -> CrashProcess {
     let mut process = CrashProcess(
-        Command::new(env!("CARGO_BIN_EXE_peri-loom-p0"))
-            .arg(root)
-            .args(arguments)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap(),
+        common::spawn(|command| {
+            command
+                .arg(root)
+                .args(arguments)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+        })
+        .unwrap(),
     );
     let stdout = process.0.stdout.take().unwrap();
     let (sender, receiver) = mpsc::channel();
@@ -76,7 +81,7 @@ fn checkpoint_kill_restart_and_lazy_query_without_database_file() {
         &["query", "SELECT count(*) FROM p0_records"],
     );
     assert_eq!(rows[0][0], 400);
-    let database = SegmentedDatabase::open(directory.path()).unwrap();
+    let database = common::open_database(directory.path()).unwrap();
     database
         .query("SELECT payload FROM p0_records WHERE id = 1")
         .unwrap();
@@ -114,7 +119,7 @@ fn committed_wal_tail_survives_sigkill_and_checkpoint() {
 #[test]
 fn checkpoints_reuse_untouched_immutable_segments() {
     let directory = tempfile::tempdir().unwrap();
-    let database = SegmentedDatabase::open(directory.path()).unwrap();
+    let database = common::open_database(directory.path()).unwrap();
     database
         .execute("CREATE TABLE records(id INTEGER PRIMARY KEY, payload TEXT)")
         .unwrap();
@@ -144,7 +149,7 @@ fn checkpoints_reuse_untouched_immutable_segments() {
     assert!(reused > 0);
     assert!(reused < before.segments.len());
     drop(database);
-    let database = SegmentedDatabase::open(directory.path()).unwrap();
+    let database = common::open_database(directory.path()).unwrap();
     let rows = database
         .query("SELECT payload FROM records WHERE id = 1")
         .unwrap();
@@ -156,11 +161,14 @@ fn a_second_process_cannot_open_an_active_database() {
     let directory = tempfile::tempdir().unwrap();
     cli(directory.path(), &["demo", "40"]);
     let process = ready_process(directory.path(), &["crash-write", "1"]);
-    let output = Command::new(env!("CARGO_BIN_EXE_peri-loom-p0"))
-        .arg(directory.path())
-        .args(["query", "SELECT count(*) FROM p0_records"])
-        .output()
-        .unwrap();
+    let output = common::spawn(|command| {
+        command
+            .arg(directory.path())
+            .args(["query", "SELECT count(*) FROM p0_records"]);
+    })
+    .unwrap()
+    .wait_with_output()
+    .unwrap();
     assert!(!output.status.success());
     drop(process);
     assert_eq!(
@@ -175,7 +183,7 @@ fn a_second_process_cannot_open_an_active_database() {
 #[test]
 fn rollback_and_wal_epoch_reuse_preserve_committed_state() {
     let directory = tempfile::tempdir().unwrap();
-    let database = SegmentedDatabase::open(directory.path()).unwrap();
+    let database = common::open_database(directory.path()).unwrap();
     database
         .execute("CREATE TABLE records(id INTEGER PRIMARY KEY, value TEXT)")
         .unwrap();
