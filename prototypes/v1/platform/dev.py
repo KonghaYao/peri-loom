@@ -752,6 +752,10 @@ def verify_owned_identity(identity, configuration, worker):
         raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
 
 
+def owned_identity_sha256(configuration, worker):
+    return file_sha256_or_none(pathlib.Path(configuration["directory"]) / (worker + ".identity.json"))
+
+
 def joined_exit(stop_record, configuration, worker):
     if (not isinstance(stop_record, dict) or stop_record.get("version") != 1
             or stop_record.get("generation") != configuration["generation"]):
@@ -759,11 +763,15 @@ def joined_exit(stop_record, configuration, worker):
     stages = stop_record.get("stages")
     if not isinstance(stages, list):
         return None
+    digest = owned_identity_sha256(configuration, worker)
+    if digest is None:
+        return None
     for stage in stages:
         if isinstance(stage, dict) and stage.get("name") == worker:
             code = stage.get("exit_code")
-            if type(code) is int:
+            if type(code) is int and stage.get("identity_sha256") == digest:
                 return code
+            return None
     return None
 
 
@@ -829,7 +837,11 @@ def verify_recovery_worker_joins(run_directory, configuration, workers, stop_rec
         stopped = read_owned_proof(proof_directory, key, worker, "stop")
         observed = joined_exit(stop_record, configuration, worker)
         if stopped is not None:
-            if stopped["waited"] is not True or type(stopped["exit_code"]) is not int:
+            # The signed proof is evidence only for the incarnation this recovery
+            # opened: identity fields may not differ, only the join observation.
+            incarnation = {field: stopped[field] for field in ("version", "generation", "worker_id", "nonce", "pid", "started")}
+            if (stopped["waited"] is not True or type(stopped["exit_code"]) is not int
+                    or incarnation != {field: identity[field] for field in incarnation}):
                 raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
             if observed is not None and observed != stopped["exit_code"]:
                 raise RuntimeError("owned stop proof incarnation or joined exit mismatch")
@@ -2472,7 +2484,8 @@ class Project:
                     stage = {"name": worker, "cap_ms": SHUTDOWN_STAGE_CAPS["workers"] * 1000,
                              "waited_ms": SHUTDOWN_STAGE_CAPS["workers"] * 1000,
                              "exit_code": process.poll(), "signal": signal.SIGKILL,
-                             "ack": False, "authority_lock": self.authority_lock_status()}
+                             "ack": False, "authority_lock": self.authority_lock_status(),
+                             "identity_sha256": owned_identity_sha256(configuration, worker)}
                     self.stop_record["stages"].append(stage)
                     self.write_stop_record()
                 process.kill()
@@ -2708,6 +2721,7 @@ class Project:
     def shutdown_stage(self, names, cap, failures):
         started = time.monotonic()
         deadline = min(self.shutdown_deadline, started + cap)
+        configuration = getattr(self, "config", {}).get("owned_stop_proof")
         pending = []
         for name in names:
             process = self.processes.get(name)
@@ -2716,6 +2730,9 @@ class Project:
             stage = {"name": name, "cap_ms": cap * 1000, "waited_ms": 0,
                      "exit_code": process.poll(), "ack": False,
                      "authority_lock": self.authority_lock_status(), "waits": []}
+            if configuration and name in configuration["workers"]:
+                # A joined exit is evidence only for the incarnation the stage saw.
+                stage["identity_sha256"] = owned_identity_sha256(configuration, name)
             self.stop_record["stages"].append(stage)
             self.write_stop_record()
             replies = None

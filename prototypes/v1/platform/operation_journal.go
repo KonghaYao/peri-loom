@@ -385,6 +385,21 @@ func openOperationJournal(directory string) (*operationJournal, error) {
 	return journal, nil
 }
 
+// journalRecordDecodable reports whether a legacy tail line decodes as a
+// journal record envelope. A half-written completion record cannot decode; only
+// a decodable line can be proven to be a complete record that failed
+// verification. Completion v2 does not use this probe: with a genesis present,
+// every newline-terminated tail is a complete completion record by definition.
+func journalRecordDecodable(line []byte) bool {
+	var record struct {
+		Payload struct {
+			Version uint32 `json:"version"`
+		} `json:"payload"`
+		Hash string `json:"hash"`
+	}
+	return json.Unmarshal(line, &record) == nil
+}
+
 func (journal *operationJournal) replay() error {
 	maximum := int64(operationJournalMaximumBytes)
 	if journal.completion != nil {
@@ -400,15 +415,20 @@ func (journal *operationJournal) replay() error {
 	}
 	entries, consumed := journal.parse(encoded[operationJournalWitnessBytes:])
 	journal.size = operationJournalWitnessBytes + consumed
-	if journal.completion != nil && journal.size != int64(len(encoded)) && bytes.IndexByte(encoded[journal.size:], '\n') >= 0 {
-		return errors.New("corrupt complete completion record")
-	}
 	if journal.size != int64(len(encoded)) {
-		// The unverifiable tail is an append that never returned success; drop it
-		// instead of refusing to start after an ordinary crash.
-		if journal.completion == nil {
-			if err := journal.file.Truncate(journal.size); err != nil {
-				return err
+		tail := encoded[journal.size:]
+		if end := bytes.IndexByte(tail, '\n'); end >= 0 {
+			if journal.completion != nil {
+				// A v2 genesis makes every newline-terminated tail a complete
+				// completion record: records are one per line, so an undecodable
+				// line is corruption, never a half-record crash artifact.
+				return errors.New("corrupt complete completion record")
+			}
+			if journalRecordDecodable(tail[:end]) {
+				// A legacy decodable line is a complete record that failed its
+				// chain check; dropping it would hide acknowledged or corrupt
+				// durability state.
+				return errors.New("corrupt complete operation record")
 			}
 		}
 	}
@@ -436,7 +456,12 @@ func (journal *operationJournal) replay() error {
 	if err := journal.verifyCompletionHistory(); err != nil {
 		return err
 	}
-	if journal.completion != nil && journal.size != int64(len(encoded)) {
+	if journal.size != int64(len(encoded)) {
+		// Only a tail that cannot be proven complete reaches this point: v2 has
+		// no terminating newline, or legacy ends in an undecodable line left by
+		// the completion half-record crash artifact. The witness and snapshot
+		// verified the prefix they follow, so dropping this append does not erase
+		// evidence. Every refusal above leaves the file untouched.
 		return journal.file.Truncate(journal.size)
 	}
 	return nil
@@ -508,6 +533,12 @@ func (journal *operationJournal) parse(encoded []byte) ([]journalEntry, int64) {
 					// first position is proved against the retained archives by
 					// verifyCompletionHistory, never trusted on position alone.
 					continuous = entry.Payload.Revision == 1 && entry.Payload.Previous == "" || entry.Payload.Revision > 1 && len(entry.Payload.Previous) == 64
+				} else if journal.completion == nil && entry.Payload.Revision == 1 && entry.Payload.Previous == "" {
+					// A legacy crash between publishing the snapshot and truncating
+					// the log leaves the already materialized prefix. Consume it so
+					// verifySnapshot binds that prefix instead of treating valid
+					// records as a droppable tail.
+					continuous = true
 				}
 			}
 		}
