@@ -634,6 +634,26 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.23
+
+This release changes observability, not admission. `/v1/metrics` now reports
+`session_seats`, the number of occupied session seats across projects, with
+`session_seats_semantics`. Seats are counted apart from `active_permits`
+because an `open` keeps its seat after the concurrency permit returns: a Hrana
+pipeline stream that never sends `close` can hold every `max_sessions` seat
+while `active_permits` reads zero. Such a stream is retired by the five-minute
+idle timer; until then, `open` is refused with HTTP 429 `quota_exceeded` before
+dispatch and counted as `session_limit` in `rejection_reasons_total`. The
+section [Session seats, permits and admission
+refusals](#session-seats-permits-and-admission-refusals) records the seat and
+permit split, the refusal shape (`partial_execution_possible:false`,
+`retry_allowed:false`) and the process-local `quota_scope`.
+
+Quota values, the published failure contract and SQL behavior are unchanged.
+The E1 known gap remains: the matrix still declares 27 scripts and
+default-executes 26 per round for 2 rounds. This preview is not a capacity or
+full Hrana compatibility claim.
+
 ## v1.1.22
 
 This release carries two changes. The performance-work handoff is
