@@ -186,8 +186,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		stream.mu.Unlock()
 	}()
-	writeFrame := func(payload []byte) error {
-		frame := append(hranaProtoVar(uint64(len(payload))), payload...)
+	writeEncoded := func(frame []byte) error {
 		if _, err := writer.Write(frame); err != nil {
 			// A failed frame write means the peer stopped reading. It says nothing
 			// about the write cursor's native fate.
@@ -196,8 +195,12 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		return nil
 	}
+	writeFrame := func(payload []byte) error {
+		return writeEncoded(append(hranaProtoVar(uint64(len(payload))), payload...))
+	}
 	results := make([]any, len(readSteps))
 	failures := make([]any, len(readSteps))
+	var rowFrame hranaProtoCursorRowFrame
 	startResponse := func() bool {
 		if sentHeader {
 			return true
@@ -393,21 +396,14 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				writeCommitted = true
 			}
 			for _, row := range page.Rows {
-				var encoded []byte
+				rowFrame.begin()
 				for _, cell := range row {
-					value, valid := hranaOutputValue(cell)
-					if !valid {
+					if rowFrame.appendCell(cell) != nil {
 						failed = true
 						return true
 					}
-					binary, err := hranaProtoResultValue(value)
-					if err != nil {
-						failed = true
-						return true
-					}
-					encoded = hranaProtoAppend(encoded, 1, binary)
 				}
-				if writeFrame(hranaProtoBytes(4, encoded)) != nil {
+				if writeEncoded(rowFrame.frame()) != nil {
 					failed = true
 					return true
 				}

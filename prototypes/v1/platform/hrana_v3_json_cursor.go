@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -410,6 +411,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		stream.mu.Unlock()
 	}()
 	encoder := json.NewEncoder(writer)
+	var rowEncoder hranaJSONCursorRow
 	flusher, _ := writer.(http.Flusher)
 	start := func() bool {
 		if started {
@@ -446,6 +448,27 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		} else {
 			_ = encoder.Encode(map[string]any{"type": "error", "error": map[string]any{"message": message, "code": "outcome_unknown"}})
 		}
+	}
+	writeRow := func(cells []any) bool {
+		if !start() {
+			return false
+		}
+		rowEncoder.begin()
+		if err := rowEncoder.appendCells(cells); err != nil {
+			if errors.Is(err, errHranaJSONCursorValue) {
+				fatal("invalid cursor value")
+			} else {
+				clientStopped = true
+				failed = true
+			}
+			return false
+		}
+		if _, err := writer.Write(rowEncoder.bytes()); err != nil {
+			clientStopped = true
+			failed = true
+			return false
+		}
+		return true
 	}
 	nativeFailure := func(reply hranaReply) bool {
 		if reply.failure == nil || reply.failure.OperationID() == "" {
@@ -624,16 +647,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 					fatal("invalid cursor row")
 					return
 				}
-				values := make([]any, 0, len(row))
-				for _, cell := range row {
-					value, valid := hranaOutputValue(cell)
-					if !valid {
-						fatal("invalid cursor value")
-						return
-					}
-					values = append(values, value)
-				}
-				if !write(map[string]any{"type": "row", "row": values}) {
+				if !writeRow(row) {
 					return
 				}
 			}
