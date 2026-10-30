@@ -213,7 +213,7 @@ source, argv, run configuration, or diagnostic logs.
 ## API and credentials
 
 - `/v1/sql/open`, `/execute`, `/query`, `/close` manage opaque, principal-bound sessions.
-- `GET /v1/platform/capabilities` reports the public gateway origin and whether experimental Hrana HTTP and WebSocket are actually enabled. With `PERI_HRANA_EXPERIMENTAL=1`, project SQL API keys can use `https://<host>/db/<tenant>/<database>/<branch>/` through the tested JS client's Hrana HTTP v2 transport, the Rust `turso_serverless` 0.1.3 client's v3 JSON pipeline/cursor transport, or `wss://<host>/db/<tenant>/<database>/<branch>/` through the low-level JS client's WebSocket v1/v2 JSON and v3 protobuf. The adapter defaults off; HTTP v3 JSON read cursors, and v3 protobuf read-only and write cursors on HTTP and WebSocket, fetch bounded native pages. A write cursor no longer requires `RETURNING`: without it the reply carries no columns or rows, and `step_end` reports `affected_row_count` and `last_insert_rowid`. HTTP v3 JSON read cursors have a 10,001-row regression; Rust SDK reads and a disposable transactional write batch passed against an isolated loopback HTTP gateway. TLS development certificates must be trusted by the client independently; the Rust SDK does not accept a custom CA through its public builder. An HTTP v3 write-cursor abort records `cursor_client_stopped`, `cursor_dispatch_stopped` and a proof-bound `cursor_native_outcome` (`rolled_back`, `committed` or `unknown`) on its operation; a close that proves neither outcome keeps the namespace isolated. Full protocol and remote session-store schema compatibility, as well as crash-restart recovery, are not yet proven.
+- `GET /v1/platform/capabilities` reports the public gateway origin and whether experimental Hrana HTTP and WebSocket are actually enabled. With `PERI_HRANA_EXPERIMENTAL=1`, project SQL API keys can use `https://<host>/db/<tenant>/<database>/<branch>/` through the tested JS client's Hrana HTTP v2 transport, the Rust `turso_serverless` 0.1.3 client's v3 JSON pipeline/cursor transport, or `wss://<host>/db/<tenant>/<database>/<branch>/` through the low-level JS client's WebSocket v1/v2 JSON and v3 protobuf. The adapter defaults off; HTTP v3 JSON read cursors, and v3 protobuf read-only and write cursors on HTTP and WebSocket, fetch bounded native pages. A write cursor no longer requires `RETURNING`: without it the reply carries no columns or rows, and `step_end` reports `affected_row_count` and `last_insert_rowid`. HTTP v3 JSON read cursors have a 10,001-row regression; Rust SDK reads and a disposable transactional write batch passed against an isolated loopback HTTP gateway. TLS development certificates must be trusted by the client independently; the Rust SDK does not accept a custom CA through its public builder. An HTTP v3 write-cursor abort records `cursor_client_stopped`, `cursor_dispatch_stopped` and a proof-bound `cursor_native_outcome` (`rolled_back`, `committed` or `unknown`) on its operation; a close that proves neither outcome keeps the namespace isolated. Full protocol and remote session-store schema compatibility, as well as crash-restart recovery, are not yet proven. Execute results also carry `rows_read`, `rows_written` and `query_duration_ms` when the Worker reports them; cursor `step_end` entries keep only `affected_row_count` and `last_insert_rowid`.
 - Query may execute SQL writes: native read-only mode, not SQL text filtering, enforces reader roles.
 - `/v1/databases/*` exposes provisioning, lifecycle, refs, snapshots, clone, restore, PITR, checkpoint, and GC.
 - `/v1/organizations/create` and `/v1/projects/create` require the global management key.
@@ -221,6 +221,121 @@ source, argv, run configuration, or diagnostic logs.
 - `/v1/tokens` issues bounded-lifetime tokens tied to issuer, project, root, branch incarnation, and encryption domain.
 - `/v1/keys/revoke` invalidates issuing keys and their database tokens.
 - `/v1/metrics` requires a global management key and combines gateway and actual native process observations.
+
+### Hrana result metrics and v3-protobuf wire shapes (experimental)
+
+The `/db/...` Hrana routes in this subsection are behind
+`PERI_HRANA_EXPERIMENTAL=1`; without the switch they answer 404. The switch does
+not gate the metrics on the `/v1/sql/statement` REST reply, which carries the
+same keys whenever the Worker reports them.
+`GET /db/<tenant>/<database>/<branch>/v3-protobuf`
+is a probe and returns 200 with no body. Pipeline and cursor traffic goes to
+`POST .../v3-protobuf/pipeline` and `POST .../v3-protobuf/cursor`. The JSON
+transports keep `POST .../v2/pipeline`, `POST .../v3/pipeline` and
+`POST .../v3/cursor`; the WebSocket endpoint accepts `hrana1`, `hrana2` and
+`hrana3` JSON text frames and the `hrana3-protobuf` binary subprotocol.
+
+Protobuf requests and responses must use exactly `application/x-protobuf`. A
+missing Content-Type, or a parameterised one such as
+`application/x-protobuf; charset=utf-8`, is rejected with 415. A pipeline
+response is one protobuf message. A cursor response is a sequence of
+length-delimited frames -- a uvarint byte length followed by the message -- whose
+first frame is the `CursorRespBody` and whose later frames are `CursorEntry`
+values. WebSocket protobuf messages carry no length prefix.
+
+For the protobuf routes, only a 200 response uses that protobuf or framed
+encoding. Non-200 replies pass through the internal JSON or plain-text error
+body and do not guarantee a `Content-Type`; clients must decide from the HTTP
+status before decoding.
+
+Result `Value` encoding:
+
+| Value field | Type | Encoding |
+| --- | --- | --- |
+| 1 | null | length-delimited, zero length |
+| 2 | integer | zigzag varint |
+| 3 | float | fixed64 IEEE-754 double, little-endian |
+| 4 | text | length-delimited UTF-8 |
+| 5 | blob | length-delimited raw bytes, no base64 |
+
+`StmtResult` fields:
+
+| Field | Name | Type | Meaning |
+| --- | --- | --- | --- |
+| 1 | cols | repeated Col | column metadata |
+| 2 | rows | repeated Row | materialized rows |
+| 3 | affected_row_count | uint64 varint | rows changed |
+| 4 | last_insert_rowid | sint64 zigzag varint | last inserted rowid |
+| 5 | replication_index | - | upstream libSQL reserve; not emitted |
+| 6 | rows_read | uint64 varint | engine rows read |
+| 7 | rows_written | uint64 varint | engine rows written |
+| 8 | query_duration_ms | double fixed64 | Worker SQL execution wall clock |
+
+Field 5 is reserved as `replication_index` by the upstream `libsql-hrana`
+protobuf schema and is not emitted here. This is unrelated to field 5 of the
+request `Stmt` message, which is `want_rows`.
+
+`query_duration_ms` starts before preparing the statement and stops after
+stepping, materializing rows and the Worker's local admission settlement, so it
+includes prepare, bind, step, materialization, any admission wait during
+execution and settle on both the plain and guarded paths. It excludes
+pre-execution request admission, authentication, audit, network, client-side
+decoding and the Gateway-to-Worker RPC. `rows_read` and `rows_written` are engine
+counters, not `rows.length`; a filtered or indexed scan can read far more rows
+than it returns.
+The three fields are written only when the Worker reports them: an old Worker
+produces the five-field reply and JSON omits the keys, while protobuf scalars
+have no presence and absent fields decode as zero. Cursor `step_end` entries and
+execute-cursor fallbacks deliberately carry no metrics, because they would
+describe a different execution from the one that produced the rows.
+
+Known boundaries:
+
+- One pipeline response is capped at `min(8 MiB, tenant MaxResultBytes)`
+  (`maxHranaPipelineResultBytes`); the default tenant budget is 4 MiB. Explicit
+  cursor responses stream their pages (length-delimited protobuf frames or
+  NDJSON) and are not subject to that pipeline cap. A single
+  `want_rows:true` execute whose materialized result
+  exceeds the budget falls back to a read-only cursor; when the fallback itself
+  reaches 8 MiB or 100,000 rows, the pipeline still answers HTTP 200 with
+  `results[].type=error` and `code=result_limit`. HTTP 413 with
+  `pipeline_result_limit` is reserved for the pipeline's own accumulated result
+  exceeding its limit. A ~20.2 MB read should use the explicit cursor endpoints.
+- The Worker charges every produced row against the per-statement result budget
+  even when `want_rows:false`. A statement whose produced rows exceed that
+  budget is answered by the read-only cursor fallback, and the fallback's
+  synthesized `StmtResult` carries no `rows_read`, `rows_written` or
+  `query_duration_ms`. Large result reads through a cursor or the fallback
+  therefore expose no `query_duration_ms`; measure the SQL/transfer split on a
+  bounded statement whose result stays within the budget. This is a
+  routing/budget boundary, not a missing protocol field or an SDK behaviour.
+- The metrics' bare JSON numbers lose precision above 2^53 in a JavaScript
+  client unless the client reads them as strings or `bigint`; protobuf `uint64`
+  is exact, and `query_duration_ms` is a double. Row values are separate: a JSON
+  integer is `{"type":"integer","value":"..."}`, so its precision depends on the
+  client's `intMode`/decoding, not on the wire format.
+- The repository locks `@libsql/hrana-client@0.7.0`
+  (`tests/hrana-sdk/package-lock.json`). Its JSON `StmtResult` decoder exposes
+  only `cols`, `rows`, `affected_row_count` and `last_insert_rowid`, and its
+  protobuf decoder implements fields 1-4 only; fields 6-8 are silently ignored.
+  Only a client that reads the raw JSON reply itself sees the new keys.
+- Upgrade order matters: a new Worker's eight-field reply is rejected
+  fail-closed by an old Gateway's strict five-field validator, so upgrade the
+  Gateway first or publish both together.
+
+The manual evidence script `tests/hrana-sdk/query-duration-live.mjs` needs the
+switch-enabled local TLS stack, the fixture CA through `NODE_EXTRA_CA_CERTS`,
+and the private connection file. Start the stack in one terminal -- the
+launcher runs in the foreground -- then run the script in another:
+
+```bash
+PERI_HRANA_EXPERIMENTAL=1 python3 prototypes/v1/platform/dev.py --run-dir /tmp/peri-local --tls
+NODE_EXTRA_CA_CERTS=<ca_file> node prototypes/v1/platform/tests/hrana-sdk/query-duration-live.mjs <connection.json>
+```
+
+`<ca_file>` is the `ca_file` field of the generated `connection.json`.
+`connection.json` contains a private test API key and the development CA path;
+never publish it. The script is not part of the default matrix.
 
 SQL clients should send optional `X-Request-ID` alongside the same JSON
 `request_id`. The header must occur once and contain 1–128 ASCII letters,
@@ -495,14 +610,42 @@ result.
 
 ## v1.1.22
 
-This is a documentation-only handoff release. Performance work was stopped
-early: the 1.5x target and the 1.1x/1.0x acceptance thresholds are not met, and
-no candidate was merged. The measured JSON-row comparison reduced mean latency
-by 5.97%–8.01% (1.064x–1.087x), but groups regressed and business p99 remains
-1.76x–2.34x sqld. The handoff, unfinished-work list, failure records and
-verified evidence manifest are under
-`docs/performance-review/performance-stop-2026-10-30/`; the sealed evidence
-ZIPs are release assets. No runtime behavior changed in this release.
+This release carries two changes. The performance-work handoff is
+documentation-only. Performance work was stopped early: the 1.5x target and the
+1.1x/1.0x acceptance thresholds are not met, and no candidate was merged. The
+measured JSON-row comparison reduced mean latency by 5.97%–8.01%
+(1.064x–1.087x), but groups regressed and business p99 remains 1.76x–2.34x
+sqld. The handoff, unfinished-work list, failure records and verified evidence
+manifest are under `docs/performance-review/performance-stop-2026-10-30/`; the
+sealed evidence ZIPs are release assets.
+
+The runtime change is the Hrana result-metrics work from PR #22. The Rust
+Worker now reports `rows_read`, `rows_written` and
+`query_duration_ms` for each successful statement, and the Go Gateway accepts
+either the previous five-field reply or the new eight-field reply, validating
+the three values before forwarding them. Hrana v2/v3 JSON exposes the new keys;
+Hrana v3 protobuf writes fields 6-8. The platform's `/v1/sql/statement` reply
+forwards the added keys. The authoritative wire shapes, response limits, SDK
+decoder behavior and measurement semantics are in
+[Hrana result metrics and v3-protobuf wire shapes](#hrana-result-metrics-and-v3-protobuf-wire-shapes-experimental).
+
+Known boundary: the Worker charges produced rows against the per-statement
+result budget even when `want_rows:false`, and an over-budget statement is
+answered by the read-only cursor fallback whose synthesized `StmtResult` has no
+execution counters. Large cursor or fallback reads therefore carry no
+`query_duration_ms`; measure the SQL/transfer split with a bounded statement
+that stays within the budget.
+
+The manual, opt-in `query-duration-live.mjs` evidence script writes 8,625 rows
+with a 2,342-byte payload each, samples the JSON pipeline metrics on a bounded
+1,000-row statement and probes the over-budget full scan, hashes the
+same rows delivered through the protobuf and JSON cursor paths against the
+written payloads, checks one row containing every value type, and records the
+pipeline result-limit rejection. It is not part of the 27-script default matrix,
+which stays at 27 declared / 26 executed per round and 52 runs plus 2 E1 skips
+over two rounds. It reports `synthetic:true` and `formal_pass:false`; its numbers
+are not a capacity or sqld-parity claim, and it prints no credentials or
+connection file contents. Run instructions are in the linked section.
 
 ## v1.1.21
 

@@ -34,6 +34,14 @@ pub struct StatementResult {
     pub affected_row_count: i64,
     pub last_insert_rowid: Option<i64>,
     pub autocommit: bool,
+    // Engine statement counters, matching the official libsql statement result.
+    pub rows_read: u64,
+    pub rows_written: u64,
+    // Server-side wall clock of prepare, bind, step and result materialization,
+    // including the worker-local admission wait and settlement that happen while
+    // the statement runs. It excludes request admission before execution,
+    // authentication, network and client transport.
+    pub query_duration_ms: f64,
 }
 
 pub struct WriteCursorPage {
