@@ -339,6 +339,21 @@ func (gate *gatewayAdmission) removeSession(project string) {
 	}
 }
 
+// sessionSeats is the project-wide occupancy of the session resource. Seats are
+// counted apart from concurrency permits because an open keeps its seat after
+// the permit returns; a stream that never closes keeps the seat until the idle
+// timer retires the native session, so a zero permit count is not an empty
+// project.
+func (gate *gatewayAdmission) sessionSeats() int {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	seats := 0
+	for _, state := range gate.projects {
+		seats += state.sessions
+	}
+	return seats
+}
+
 func (gate *gatewayAdmission) status() (map[string]any, int, int) {
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
