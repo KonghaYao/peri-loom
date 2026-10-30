@@ -130,6 +130,61 @@ scripts/p0-gate.sh
   下一项：正常重启的 clean proof、lease fencing 与持久身份轮换；launcher 并发锁已有针对性回归。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
+  单机 Issue 28 基线与实验协议见下节，仍不构成容量或 SLA 证明。
+
+## Issue 28 性能基线（2026-10-30）
+
+纯 peri-loom 黑盒基线：不经 peri 客户端、TS SDK 或本地 SQLite，直接驱动 Hrana v3 JSON/protobuf
+pipeline 与 cursor。Harness、场景契约和复跑说明见 `scripts/perf-reliability/issue28/`；
+离线回归 `python3 -m unittest scripts/perf-reliability/test_issue28_support.py`（16/16）。
+
+```bash
+python3 scripts/perf-reliability/issue28/run.py --connection-file <connection.json> \
+  --container <container> --rounds 3 --warmup 1 --samples 5 --out <dir>
+```
+
+环境：Go platform HEAD `96c1372`（Linux/arm64 本地构建）+ Rust worker `v1.1.24`；隔离容器、
+localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `max_concurrent=16`、
+`max_sessions=32`、`max_result_bytes=4,194,304`。3 轮 ×（1 warmup + 5 计时），中位数：
+
+| 场景 | 协议 | 中位数 | p95 | 响应字节 | 结果 |
+|---|---|---:|---:|---:|---|
+| F1.select-1 | json-pipeline | 9.00ms | 13.15ms | 312 | PASS（13ms 目标，跨轮边缘） |
+| F1.select-1 | protobuf-pipeline | 7.37ms | 16.68ms | 40 | PASS |
+| F1.select-1 | json-cursor | 6.26ms | 14.46ms | 252 | PASS |
+| F1.select-1 | protobuf-cursor | 4.86ms | 9.01ms | 57 | PASS |
+| L1.list-20 | json-pipeline | 8.83ms | 10.51ms | 10,744 | PASS |
+| L1.list-20 | protobuf-pipeline | 8.09ms | 10.73ms | 4,981 | PASS |
+| C1.baton-10（复用） | json-pipeline | 1.52ms | 6.25ms | 300 | — |
+| H1.content-20mb | json-cursor | 636.57ms | 676.88ms | 25,162,268 | PASS |
+| H1.content-20mb | protobuf-cursor | 652.43ms | 687.13ms | 23,600,883 | PASS |
+| H2.projection | protobuf-cursor | 78.86ms | 87.48ms | 60,440 | —（projection 基本为 NULL） |
+| H3.content+projection | json-cursor | 664.40ms | 708.42ms | 25,300,319 | PASS |
+| B1.batch-20 | json-pipeline | 43.53ms | 49.21ms | 4,968 | **FAIL**（目标 20ms） |
+| B1.batch-20 | protobuf-pipeline | 33.80ms | 43.56ms | 686 | **FAIL**（目标 20ms） |
+| R1.limit-1000 | json-pipeline | 93.19ms | 122.64ms | 3,725,223 | — |
+| R1.limit-2000 | json-pipeline | 110.08ms | 143.60ms | 143 | —（`result_limit`） |
+| X1.concurrency=16 | json-pipeline | 61.30ms | 73.55ms | — | PASS（1→16 吞吐 121→251 req/s） |
+
+- **B1 是稳定失败项**：三次正式运行 JSON 41.4/53.3/43.5ms、protobuf 39.8/51.9/33.8ms，均超 20ms；
+  SQL-only 仅 3.1–3.7ms，瓶颈在平台/传输与 20 条语句的串行处理。
+- **F1 处于目标边缘**：formal3 为 13.2ms（FAIL），本次 9.0ms（PASS）；不得宣称稳定达标。
+- **protobuf 的稳定收益是字节数**：F1 −87%、L1 −54%、H1 −6.2%、H2 −82%；大结果延迟差异在 ±3% 内。
+- **4MiB 结果预算**：1,000 行时 JSON 3.73MB 通过，2,000 行即 `result_limit`；合同预登记的 5,000 只是下界。
+- **20MB 读取约 0.64s**（约 39.5MB/s）；H2/H3 受 projection 全 NULL 限制，不代表真实投影载荷。
+- **并发在 8 以后饱和**：1→16 吞吐仅 2.07x；无 429、无租约/会话泄漏。
+- **写路径**：端到端 20–30ms，SQL-only 11.5–16.7ms；W1.create 跨轮 19.8–38.9ms，噪声大。
+- **边界**：单机 macOS + Docker VM、无 TLS，不是容量/SLA 证明；容器内存 151.9→202.6MiB
+  （idle 212MiB），尚未证实是否泄漏。
+
+### 性能实验协议（2026-10-30 用户指定）
+
+- 每轮从 `main` 开独立分支 `perf/issue28-<round>-<slug>`；改动单独 commit，提交信息用中文全角冒号。
+- 先由反思 subagent 给出方向，再由执行 agent 实现；实现后构建并部署到同一隔离靶场。
+- 验收用同容器、同数据、同一轮 A/B：主指标中位数提升 ≥10%（F1 等 <10ms 场景 ≥20%），
+  且其余关键场景（B1/F1/H1/X1 吞吐）不回归 >10%，并至少重复 2 次同向，才算“有提升”。
+- 有提升：记录到本节并合入 `main`；无提升：`main` 保持基线，放弃该分支（保留分支与提交哈希作证据）。
+- 每轮结束在新 `main` 上重新开分支。
 
 ## 代码约定
 
