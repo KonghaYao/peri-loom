@@ -1,0 +1,25 @@
+{
+  "status": "PASS",
+  "command": [
+    "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/owned-first-private-gate.test.py"
+  ],
+  "exit_code": 0,
+  "tests": 6,
+  "stdout": {
+    "path": "/workspace/scratch/6757c94bd47c/recovered-owned-first-gate-preparation/guards.stdout.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "/workspace/scratch/6757c94bd47c/recovered-owned-first-gate-preparation/guards.stderr.log",
+    "sha256": "c6b9b1f09add0403cc07e90bfdf272129b1ddfa2f8f7675ea8218862f2516371"
+  },
+  "tool_inputs": {
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/run-owned-first-gate-trace.py": "bb15df93bc73c64079100d95ca298d51ddf48924f2e50021b1a17a10bf963b14",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/run-private-owned-first-gate.py": "16d964a9babcc2bb8e019dbfe3b4ab4e1667ff067eef2985e3f75c34ccfe6333",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/owned-first-private-gate.test.py": "b793ef1e3662252b9c15212ad7e8019aa5d105668c1d2477c21667d701c8ed6a",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/experiments/owned-first-76433aad-dual-gate-private-v3.json": "61f8b323277d1fc5533ee8f6dd6abad6ea692b565de49c5d97b609ccf7ebdd99"
+  },
+  "scope": "Small offline mock guards only; no service, compile, capture or benchmark",
+  "authoritative_exit_evidence": "functions exec original exit_code0 chunk e7e74e"
+}

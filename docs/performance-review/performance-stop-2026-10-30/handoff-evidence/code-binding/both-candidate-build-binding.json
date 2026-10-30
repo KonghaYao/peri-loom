@@ -1,0 +1,57 @@
+{
+  "schema": "r15-recovery-independent-two-candidate-build-binding/1",
+  "status": "PASS_SOURCE_BUILD_READY_FOR_FUNCTIONAL_PREFLIGHT",
+  "candidates": [
+    {
+      "candidate": "json-wire",
+      "status": "ACTUAL_BUILD_SOURCE_BINDING_PASS",
+      "source_commit": "1059775748132899dd92fcda447d6d46bfc5ad07",
+      "source_tree": "619ecfb2bdddcf7d50a562ca1b7eb2a19e65d0b8",
+      "parent": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+      "repo": "/workspace/scratch/6757c94bd47c/peri-loom-next-json-wire",
+      "go_binary": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-json-wire-go/peri-platform",
+      "go_binary_sha256": "38b467a8f8610e5fbb1a52179a3b353f141a2ae5ba1d38f12d0fcb6bef0c3ce4",
+      "go_provenance": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-json-wire-go/build-provenance.json",
+      "go_provenance_sha256": "423ed39f33dfe6d8c03c527872e666a62621accc18e7f808c962f0cb7bd176b8",
+      "exact_tracked_actual_and_git_go_inputs": 456,
+      "reused_independent_source_test_review": "/workspace/scratch/6757c94bd47c/peri-loom-recovery/docs/performance-review/issue20-round15-recovery/independent-json-wire-source-review.json",
+      "reused_review_sha256": "e9d20b349f7cfd8cff7fb6e9ada6e64d35d6d8326c19ade25447762bb5f13911",
+      "native_actual_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+      "native_original_provenance_sha256": "bf83c103cb4697f52758deba8e156b5d9de21802de96a13e4075106103c3bc86",
+      "native_non_turso_actual_and_git_inputs_checked": 323,
+      "native_entire_git_scope_equal_original": true,
+      "native_original_full_input_count": 4532,
+      "turso_gitlink": "160000 commit 24a3a4609683b73935888f8bc30b47727d100aa8\tprototypes/p0/turso",
+      "go_build_info": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-json-wire-go/peri-platform: go1.23.12\n\tpath\tperi-loom/platform/cmd/peri-platform\n\tmod\tperi-loom/platform\t(devel)\t\n\tdep\tgithub.com/gorilla/websocket\tv1.5.3\th1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=\n\tdep\tperi-loom/controller\tv0.0.0\n\t=>\t../controller\t(devel)\t\n\t\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n"
+    },
+    {
+      "candidate": "owned-first",
+      "status": "ACTUAL_BUILD_SOURCE_BINDING_PASS",
+      "source_commit": "76433aad48590753841c0ca6b944620ca0295a53",
+      "source_tree": "5f40ba9b834d32d20c10bb6795ea48580d07180e",
+      "parent": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+      "repo": "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+      "go_binary": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/peri-platform",
+      "go_binary_sha256": "d868fa9b0f0d12356848c6b352fcd88fac6b53edd65ea0c67c462b8351843a64",
+      "go_provenance": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/build-provenance.json",
+      "go_provenance_sha256": "362bcfd468bdbae386ee98c80a521e8552aeef2e6f967366135a0338de2a166e",
+      "exact_tracked_actual_and_git_go_inputs": 458,
+      "reused_independent_source_test_review": "/workspace/scratch/6757c94bd47c/peri-loom-recovery/docs/performance-review/issue20-round15-recovery/independent-owned-first-source-test-review.json",
+      "reused_review_sha256": "da579f26b2ea751e149672d66f138006c77e12bdd8a22b03528023358003bcb4",
+      "native_actual_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+      "native_original_provenance_sha256": "bf83c103cb4697f52758deba8e156b5d9de21802de96a13e4075106103c3bc86",
+      "native_non_turso_actual_and_git_inputs_checked": 323,
+      "native_entire_git_scope_equal_original": true,
+      "native_original_full_input_count": 4532,
+      "turso_gitlink": "160000 commit 24a3a4609683b73935888f8bc30b47727d100aa8\tprototypes/p0/turso",
+      "go_build_info": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/peri-platform: go1.23.12\n\tpath\tperi-loom/platform/cmd/peri-platform\n\tmod\tperi-loom/platform\t(devel)\t\n\tdep\tgithub.com/gorilla/websocket\tv1.5.3\th1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=\n\tdep\tperi-loom/controller\tv0.0.0\n\t=>\t../controller\t(devel)\t\n\t\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n"
+    }
+  ],
+  "scope": [
+    "Fresh standalone Go executable bytes and every recorded tracked platform/controller build input independently checked against immutable Git and current files; original build success/unchanged metadata retained.",
+    "Source semantics and existing test log audits reused from named independent reviewers with exact SHA; no repeated suite or new service started here.",
+    "JSON-wire existing normal/race45top171entries; owned-first related-domain normal/race194top691entries. Owned-first original full-suite environment failure preserved; no full-suite PASS claim.",
+    "Native actual0af binary verified; current323nonTurso files and complete native Git tree includingTurso24a match originalb674. Candidate Turso worktrees are not materialized and full4532actualnative inventory is original provenance, not newly hashed here.",
+    "No new native tests/build/integration or performance capture; standalone functional runtime confirmation remains future preflight responsibility."
+  ]
+}

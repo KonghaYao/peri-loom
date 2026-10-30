@@ -1,0 +1,54 @@
+{
+  "schema": "owned-first-independent-source-test-review/1",
+  "status": "PASS",
+  "reviewer": "measurement_review",
+  "scope": "Read-only source semantics review and finite original-log/source-map verification; no repeated tests or benchmark",
+  "source_commit": "76433aad48590753841c0ca6b944620ca0295a53",
+  "source_tree": "5f40ba9b834d32d20c10bb6795ea48580d07180e",
+  "base_commit": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+  "clean": true,
+  "source_before_equals_after": true,
+  "source_count": 460,
+  "all_snapshot_files_match_committed_blobs_and_actual_sha256": true,
+  "evidence": {
+    "/workspace/scratch/6757c94bd47c/recovered-owned-first-validation/related-attempt2/source-before.json": "42bbc82362ab2d5b47de17b3e9de23fd5e22a36b1b231d28c122d2c81b9071a1",
+    "/workspace/scratch/6757c94bd47c/recovered-owned-first-validation/related-attempt2/source-after.json": "42bbc82362ab2d5b47de17b3e9de23fd5e22a36b1b231d28c122d2c81b9071a1",
+    "/workspace/scratch/6757c94bd47c/recovered-owned-first-validation/related-attempt2/validation.json": "60aea58e5d2d3b6f1a46021c8a9c444ea608d84bde9cebbe8b02b92281c83f9f"
+  },
+  "tests": [
+    {
+      "mode": "normal",
+      "raw_log": "/workspace/scratch/6757c94bd47c/recovered-owned-first-validation/related-attempt2/normal.jsonl",
+      "sha256": "82639ef34d97f2aaa72636b0398d3138797e9507792302717e2f0c023e306fee",
+      "top_level_passed": 194,
+      "all_cases_passed": 691,
+      "fail_actions": 0,
+      "package_final": "pass"
+    },
+    {
+      "mode": "race",
+      "raw_log": "/workspace/scratch/6757c94bd47c/recovered-owned-first-validation/related-attempt2/race.jsonl",
+      "sha256": "3f94e6e25df6ea5d53f16c83c38bd929358788c21f80156c844816f627dfa146",
+      "top_level_passed": 194,
+      "all_cases_passed": 691,
+      "fail_actions": 0,
+      "package_final": "pass"
+    }
+  ],
+  "review_findings": [
+    "No blocking source defect found",
+    "Original first-response predicate/refusal proof and transport32MiB unchanged",
+    "Private guarded readonly nonwriter only; unsupported or invalid typed decode falls back to original validator on same raw response, no SQL replay",
+    "Float64 overflow rejection precedes audit; exact number lexemes retained",
+    "Strict UTF8/duplicate escaped keys/depth/fullEOF and cols/rows/done/autocommit semantics preserved; null rows retain legacy fallback",
+    "Full raw len(reply) quota preserved; typed success publication only after existing settlement/audit; audit failure publishes no typed page and no subsequent probe",
+    "Rows/string/Number and column RawMessage values own storage; no RPC slice escape",
+    "Writer/v2 path unchanged"
+  ],
+  "limitations": [
+    "Related-domain test selection only; not full ./... PASS",
+    "Initial full-suite environment failure remains preserved (missing native env/generated TypeScript dist)",
+    "No fresh binary review or functional runtime claim in this report",
+    "No performance or p99 claim"
+  ]
+}

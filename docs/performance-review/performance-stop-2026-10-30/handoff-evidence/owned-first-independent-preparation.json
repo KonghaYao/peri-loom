@@ -1,0 +1,100 @@
+{
+  "schema": "r15-independent-owned-first-functional-preparation/1",
+  "status": "PASS_PREPARATION_ONLY",
+  "created_unix_ns": 1793344663988016636,
+  "prepared_root": "/tmp/peri-r15-owned-first-76433-functional-prepared-v2",
+  "capture_root": "/tmp/peri-r15-owned-first-76433-functional-capture-v1",
+  "primary_preparation_report": "/workspace/scratch/6757c94bd47c/peri-loom-recovery/docs/performance-review/issue20-round15-recovery/owned-first-private-functional-preparation.json",
+  "primary_preparation_report_sha256": "016718cd36ccab7b56f68673f44a0c41eb84facaf8db95114d74e87d20ec3446",
+  "actual_freeze_checks": {
+    "prepared": {
+      "directory": "/tmp/peri-r15-owned-first-76433-functional-prepared-v2",
+      "input_count": 379,
+      "all_actual_hashes_match": true,
+      "contract_sha256": "e4a9f00f071e75ae46c22be4b2ae03aa90ec6c2ab782fc0605270a87ac52c346",
+      "freeze_sha256": "8811262868a6166b503f9d89fcfd7e12bba23f3e3a3f6effb258f2275895953a"
+    },
+    "prior_gate": {
+      "directory": "/tmp/peri-r15-json-wire-private-gate-prepared-v1-fe3de0417ef34996996c169f1fab66a2",
+      "input_count": 432,
+      "all_actual_hashes_match": true,
+      "contract_sha256": "f60d2c09dddaf698285ce92d1b08ae2c1d9c1ed53339e336dc9d13bb69b2d8a3",
+      "freeze_sha256": "9b43a485e52a62f41a2537323aece24bc6a7793ccfb31ef654125275ca365be2"
+    }
+  },
+  "source_files": {
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/run-owned-first-trace.py": "48d8497d8c36a29be70d38995abfaa1d7343310cb017af08069c74b649788311",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/run-private-owned-first.py": "6f5ad7ec402261957df46a8f6dc77bf363e050d1806577a037994c89bf261619",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/owned-first-private.test.py": "e736df53b7325523a4b616cbba4938a726bc9fc670b91c794e5297ef43acf600",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/run-private-trace-experiment.py": "bbbdcff9ed6cff6a0190292b43bc8a57c6e394827c953f25c4ba3c0987264f2e",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/storage-v3.mjs": "d14577392309329251772e0cafad76192bd2348795d2af39faca5daea4b7a405",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/runner-trace-v3.mjs": "8351d69cf893728175e41713ad6a56bdc06cdb6262e685fb98f10cc76d133632",
+    "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/trace-analysis.py": "3f032c5997a9488e5c07970b190388ff365f06f03bc8c679a708bd02a2721f11"
+  },
+  "tool_commit": "a859886",
+  "scope": {
+    "tracks": [
+      "protobuf",
+      "historical_json"
+    ],
+    "arms_executed": [
+      "B"
+    ],
+    "scenes": 6,
+    "businesses": 12,
+    "http_requests": 30,
+    "close_acknowledgements": 12,
+    "original_wire_bodies": 60,
+    "warmup": 0,
+    "samples_per_scene_per_track": 1,
+    "syncs_per_track": 135,
+    "native_binary_pages_per_track": 99,
+    "native_work_metrics": true,
+    "timing_claim": false
+  },
+  "identity_B": {
+    "arm": "B",
+    "engine": "peri",
+    "source_commit": "76433aad48590753841c0ca6b944620ca0295a53",
+    "binary_sha256": "d868fa9b0f0d12356848c6b352fcd88fac6b53edd65ea0c67c462b8351843a64",
+    "native_source_commit": "b6746f3f8c460fafb9ac63a4b2a06f0357325688",
+    "native_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+    "profile": {
+      "completion_journal": 1,
+      "guarded_read_journal": 1,
+      "append_fdatasync": 1,
+      "completion_prezero": 1,
+      "work_metrics": 1,
+      "phase_metrics": 0,
+      "wire_diagnostic": 0
+    }
+  },
+  "capture_layout": {
+    "schema": "r15-private-capture-layout/1",
+    "capture_root": "/tmp/peri-r15-owned-first-76433-functional-capture-v1",
+    "service_root": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1",
+    "service_storage_policy": "workspace-journal-database-cache",
+    "original_storage_policy": "private-tmp-no-workspace-live-alias",
+    "export_policy": "after-in-place-dual-audit-single-zip-member-verified"
+  },
+  "findings": [
+    "Fresh imported private adapter and capture schedule share exactly the same capture module instance; existing path and original-inode storage logic is reused unchanged.",
+    "Both protocols and fixture setup route to original V3 runner; run seals are strictly validated before top success seal.",
+    "Only functional mode is accepted; A and S are declared build identities but are not started.",
+    "Private collector originals remain under /tmp; service database/journal/cache remain fresh workspace paths.",
+    "Original trace metadata, same-inode canonical publication, dirty-extra rejection and post-audit single-capsule export requirements remain unchanged.",
+    "All 379 prepared input hashes match actual files; all prior 432 gate-frozen input hashes remain unchanged."
+  ],
+  "guard_evidence": {
+    "test_source_reviewed": true,
+    "independent_test_execution": false,
+    "owner_reported_pass": 6,
+    "owner_original_tool_output": "chunk989ed5; exit_code 0; Ran 6 tests in 0.002s; OK",
+    "raw_log_file_available": false,
+    "limitation": "Owner did not redirect original guard output to a file. This review does not claim independent raw-file verification of those six test executions; no log was reconstructed or tests rerun."
+  },
+  "source_build_scope": "Actual binary/provenance bytes rebound by prepared hash closure; prior independent source/test/build review is reused without duplicate suites or full native physical rehash.",
+  "no_capture_started_observed": true,
+  "blockers": [],
+  "performance_or_functional_result_claim": false
+}

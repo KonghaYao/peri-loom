@@ -1,0 +1,65 @@
+{
+  "schema": "independent-json-wire-source-test-review/1",
+  "status": "PASS",
+  "scope": "Final source review and independent verification of existing owner raw test logs and recorded project inputs; no test, service, benchmark, or performance execution by reviewer.",
+  "source_commit": "1059775748132899dd92fcda447d6d46bfc5ad07",
+  "source_tree": "619ecfb2bdddcf7d50a562ca1b7eb2a19e65d0b8",
+  "parent": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+  "clean": true,
+  "changed_files_sha256": {
+    "prototypes/v1/platform/hrana_cursor_output.go": "fe4975457d9aaf95b588b23bc4e6d9af77fbaa3d73f9c3d3b95bbdc2e6b0c784",
+    "prototypes/v1/platform/hrana_json_row.go": "c0c75519e34ed4b9bb898448374098df849b357d728d13c0a6838fcd9fde7aa1",
+    "prototypes/v1/platform/hrana_json_row_test.go": "bf47917ccb0f5554dd00a66125e2e84d0fe7c68c9754b87ccf91083443419379",
+    "prototypes/v1/platform/hrana_json_wire_test.go": "7af2ed08ed16ad91b8c201b8530224d0d60f6a02c32038f2830fd971eca017fa",
+    "prototypes/v1/platform/hrana_v3_json_cursor.go": "83321cbaf8a00d9186ecef87bcb68d6ff990506d57eea3ef5b451a6e1ca9af1a"
+  },
+  "test_input_count": 457,
+  "test_input_binding": "Before/after recorded tracked platform/controller project files plus read_page_v1_golden.json equal each other, current actual bytes, and all Git blobs at the exact commit. This is the recorded project input scope, not a claim to inventory every host/toolchain runtime file.",
+  "source_before_sha256": "2993dd7f630fa04948bb03260d838acb01e29f6c4a76497fa1880e7fb5871f21",
+  "source_after_sha256": "75caad7f60a1ede8dd8cc1e3a7de87dae982a2bdaceb2b26ee410b0625a67c9e",
+  "selection_sha256": "3e8f65e2ff1aa4d0716261bbd8b677d88e2d42813a36d418d115afb9b7d31e26",
+  "validation_sha256": "876f529378514d8d2d64113b2e268ebf560ad1408dff5bbfcb0b650bf42cee59",
+  "runner_sha256": "3806cea797d6987e1104bcccdc8b7aa63203eb4fc6c4113b87e72be00dc8cd58",
+  "runs": {
+    "normal": {
+      "top_pass": 45,
+      "all_pass_entries": 171,
+      "failures": 0,
+      "skips": 0,
+      "raw_log_sha256": "33243e05e62f2eaa36de9be0945d69f9faee1539efccb6d477d81a9d06f3cc07",
+      "record_sha256": "eff8c6877423d3628cb84b7164fec27e7e8257558f20768aad5ff31c9d101517",
+      "independent_rerun": false
+    },
+    "race": {
+      "top_pass": 45,
+      "all_pass_entries": 171,
+      "failures": 0,
+      "skips": 0,
+      "raw_log_sha256": "789417527740a5bd57f7ff155b6b09936e72d1f8f6ce8b3439552948c1c2e9d9",
+      "record_sha256": "c8465b6e3d0c7462d5a9cdaafab13bf39a5dbc765e9f72a96c2069bc968041cc",
+      "independent_rerun": false
+    }
+  },
+  "boundary_findings": [
+    "Text and integer-lexeme UTF8 gates both route invalid sequences to the entire original row path. ASCII controls, HTML, quote/backslash, U+2028/U+2029 and valid UTF8 boundaries have exact standard Encoder byte oracles; valid cases assert fast support so all-fallback cannot pass.",
+    "Float parse and spelling stay with json.Number.Float64 then standard json.Marshal; threshold/negative-zero/subnormal/extreme and fixed-seed random finite-bit cases compare old encoding. Integer lexemes retain string semantics including empty, +1, 01 and values beyond i64.",
+    "Whole-row prepare only creates immutable owned descriptions and float bytes. Tests assert no header, writes, row-buffer, or error changes, and late unsupported cells publish nothing.",
+    "Two prepared closures interleave and repeat after caller row mutation; exact bytes remain owned and correct.",
+    "Raw and generic entry share sticky Write errors. Both directions, zero/partial/full error and nil short writes are compared against the same standard Encoder oracle, including accepted prefixes and attempted full bytes.",
+    "Generic Marshal errors remain nonsticky; later valid raw writes succeed. Prior raw Write error suppresses MarshalJSON side effects and preserves the first error.",
+    "Each supported row performs one complete line-plus-LF Write. Large rows remain accepted; retained row capacity is at most64KiB and small-row reuse resumes after a large row. This is not a cap on transient or total process memory."
+  ],
+  "preserved_boundaries": [
+    "Only JSON output construction/serialization changes; protobuf methods unchanged.",
+    "Shared cursor executor differs only in JSON constructor invocation; no SQL, audit, cancellation, fencing, quota, page Flush or cleanup order change.",
+    "Old all-byte test remains and compares fallback bytes; old unsupported, late-invalid-value, audited dispatch and existing response/cursor tests are retained."
+  ],
+  "limits": [
+    "No performance gain or business p99 claim from source correctness and test PASS.",
+    "UTF8 validation plus byte scan adds a two-pass tradeoff; real workload gate remains required.",
+    "Static and differential tests do not prove all possible inputs; randomized cases are deterministic fixed seeds.",
+    "Network atomicity is not claimed; each row is prepared before its single Write, and old short-write behavior is deliberately retained.",
+    "New standalone build provenance is owned separately by optimization_council and is not substituted for these test bindings."
+  ],
+  "reviewed_unix_ns": 1793339508038422261
+}

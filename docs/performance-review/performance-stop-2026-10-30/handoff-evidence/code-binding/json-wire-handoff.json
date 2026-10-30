@@ -1,0 +1,32 @@
+{
+  "status": "READY_FOR_INDEPENDENT_REVIEW_AND_FUNCTIONAL_PREFLIGHT",
+  "source_commit": "1059775748132899dd92fcda447d6d46bfc5ad07",
+  "repo": "/workspace/scratch/6757c94bd47c/peri-loom-next-json-wire",
+  "go_binary": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-json-wire-go/peri-platform",
+  "go_binary_sha256": "38b467a8f8610e5fbb1a52179a3b353f141a2ae5ba1d38f12d0fcb6bef0c3ce4",
+  "native_binary": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+  "native_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+  "go_provenance": "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-json-wire-go/build-provenance.json",
+  "go_provenance_sha256": "423ed39f33dfe6d8c03c527872e666a62621accc18e7f808c962f0cb7bd176b8",
+  "binding": "/workspace/scratch/6757c94bd47c/recovery-json-wire-validation/binding.json",
+  "binding_sha256": "613b671b640d87a0e326cca4275cbf029e1decb6429f48c0aeb77e5877551688",
+  "tests": {
+    "normal": {
+      "top": 45,
+      "including_subtests": 171,
+      "record_sha256": "eff8c6877423d3628cb84b7164fec27e7e8257558f20768aad5ff31c9d101517",
+      "raw_sha256": "33243e05e62f2eaa36de9be0945d69f9faee1539efccb6d477d81a9d06f3cc07"
+    },
+    "race": {
+      "top": 45,
+      "including_subtests": 171,
+      "record_sha256": "c8465b6e3d0c7462d5a9cdaafab13bf39a5dbc765e9f72a96c2069bc968041cc",
+      "raw_sha256": "789417527740a5bd57f7ff155b6b09936e72d1f8f6ce8b3439552948c1c2e9d9"
+    }
+  },
+  "process_release": "/workspace/scratch/6757c94bd47c/recovery-json-wire-validation/process-release.json",
+  "process_release_sha256": "80a6f1d99443d157b9bca9ddcbf1b3e14dafa7740b2064213c6792e7598d6a1a",
+  "native_tests_rerun": false,
+  "native_integration_rerun": false,
+  "services_or_benchmark": false
+}

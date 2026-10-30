@@ -1,0 +1,115 @@
+{
+  "schema": "r15-independent-dual-path-canary-review/1",
+  "status": "OBSERVED_PATH_DIFFERENCE_CONFIRMED_NOT_ROOT_CAUSE",
+  "post_report": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c/post-publish-readback.json",
+  "post_report_sha256": "b41d383c4add641aa6235600f667b8bf3e53c2d3e37502a277e60438d1a925ce",
+  "observations": [
+    {
+      "root": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+      "directory_mode": "0o700",
+      "canonical": {
+        "path": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c/original.trace.jsonl",
+        "dev": 27,
+        "ino": 5704,
+        "nlink": 1,
+        "bytes": 23990,
+        "mtime_ns": 1793341345418440801,
+        "ctime_ns": 1793341345518443435,
+        "sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271"
+      },
+      "canonical_records": 100,
+      "canonical_original_inode_witness_matches": true,
+      "witness": {
+        "bytes": 23990,
+        "original_inode": "5704",
+        "pid": 5,
+        "published_ns": 1793341345523762249,
+        "records": 100,
+        "root": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+        "schema": "dual-path-original-trace-canary/1",
+        "sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271",
+        "source_exists_after_publish": false
+      },
+      "witness_file": {
+        "path": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c/witness.json",
+        "dev": 27,
+        "ino": 5705,
+        "nlink": 1,
+        "bytes": 358,
+        "mtime_ns": 1793341345518443435,
+        "ctime_ns": 1793341345518443435,
+        "sha256": "5193572599f337b0cc55499a1c28c0c3e891f63112d757db19929064eff6dcc9"
+      },
+      "observed_unix_ns": 1793341608133880775,
+      "staging_exists": true,
+      "staging": {
+        "path": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c/original.append",
+        "dev": 27,
+        "ino": 5706,
+        "nlink": 1,
+        "bytes": 12470,
+        "mtime_ns": 1793341337798234772,
+        "ctime_ns": 1793341348538523049,
+        "sha256": "b22fc45b155cb0efa1eba420afbd0e09c9c5568d2b872253bd25f9a686977f54",
+        "records": 52,
+        "complete_jsonl_prefix": true,
+        "same_inode_as_canonical": false,
+        "ctime_minus_producer_publish_ns": 3014760800,
+        "mtime_minus_producer_publish_ns": -7725527477
+      }
+    },
+    {
+      "root": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+      "directory_mode": "0o700",
+      "canonical": {
+        "path": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c/original.trace.jsonl",
+        "dev": 27,
+        "ino": 1354852,
+        "nlink": 1,
+        "bytes": 23990,
+        "mtime_ns": 1793341345418440801,
+        "ctime_ns": 1793341345522443541,
+        "sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271"
+      },
+      "canonical_records": 100,
+      "canonical_original_inode_witness_matches": true,
+      "witness": {
+        "bytes": 23990,
+        "original_inode": "1354852",
+        "pid": 5,
+        "published_ns": 1793341345525898382,
+        "records": 100,
+        "root": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+        "schema": "dual-path-original-trace-canary/1",
+        "sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271",
+        "source_exists_after_publish": false
+      },
+      "witness_file": {
+        "path": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c/witness.json",
+        "dev": 27,
+        "ino": 1354853,
+        "nlink": 1,
+        "bytes": 334,
+        "mtime_ns": 1793341345522443541,
+        "ctime_ns": 1793341345522443541,
+        "sha256": "beae8ff0a444a415ba8f726882b89e86f699fec88a92c7f55154e55e364f1bb9"
+      },
+      "observed_unix_ns": 1793341608134597478,
+      "staging_exists": false
+    }
+  ],
+  "scope": [
+    "Finite read-only recheck of producer witness files, both full canonical original traces and one shorter staging file. No repetition or file modification.",
+    "Both full canonical files retain recorded inode and identical23990-byte100-recordSHA. Workspace has different-inode52-record staging prefix; /tmp has no staging name at independent read time.",
+    "The same-process and publish-time unlink statements are producer-recorded witnesses, not independently observed live by this reviewer. The current inode and timestamp differences are directly read.",
+    "Workspace staging ctime is3.014760800 seconds after its producer publish timestamp; mtime is earlier. These are filesystem metadata observations, not attribution to an actor or kernel/storage cause.",
+    "This one finite canary does not establish that /tmp is permanently stable or explain prior failures. Any future capture discrepancy remains failure.",
+    "Old failed captures are not rehabilitated; no accepted performance result or durability/recovery guarantee is inferred."
+  ],
+  "future_capture_boundary": [
+    "Capture original traces/profiles/ledgers may use a fresh private /tmp root under a new frozen contract.",
+    "Measured service/data/database paths must remain at the existing workspace location to avoid changing storage-performance conditions.",
+    "Original in-place primary and independent audits must pass before one immutable evidence-capsule export; exported copies are not the original filesystem inode.",
+    "No fallback that reconstructs originals from final exports and no waiver for staging leftovers or changed hashes."
+  ]
+}

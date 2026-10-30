@@ -1,0 +1,1479 @@
+{
+  "schema": "r15-recovery-independent-flush-integrity/1",
+  "status": "NOT_ACCEPTED_EVIDENCE_INTEGRITY_FAILURE",
+  "capture": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1",
+  "seal_sha256": "340fb395263ef969aaee303497828935aeed024152aa564308a2f61fc3b31970",
+  "seal_count": 298,
+  "completed_seal_matches": true,
+  "top_seal_mismatches": [],
+  "missing": [],
+  "changed_during_read": [],
+  "freeze_sha256": "250d7ae59ae7432faf314704dcbc6e549fa86cf0856e81c6fda6d4ccf1d25ae6",
+  "freeze_count": 416,
+  "freeze_mismatches": [],
+  "prepared_contract_equal": true,
+  "prepared_freeze_equal": true,
+  "run_seal_mismatches": [
+    {
+      "path": "historical_json/02-S/proxy_large_text/operations.partial.jsonl",
+      "expected": "42c9488e643b2ab747d83e2b95f86f80d16bf6f34569dbb9782ad8b833c65d6e",
+      "actual": "754af9eddcdb8acedd0e434363668d30cda5b27d9b9a453300a026a5f4b7e5ae"
+    },
+    {
+      "path": "historical_json/02-S/proxy_large_text/requests.partial.jsonl",
+      "expected": "0e9578d727adb89b68e9d98b27f84233b68d754863ca7aaf6e0c219c5314989b",
+      "actual": "e7aa8e1a216014d2809734c2f02482bbf65042de3b6b9d12ff608c32ca683c7a"
+    }
+  ],
+  "partial_count": 48,
+  "partials": [
+    {
+      "path": "historical_json/01-A/proxy_large_all/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47427,
+      "final_bytes": 47427,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "e88ad71865862995c1b10c229e60548935a9aba6641a9b414e8410c00a12a457",
+      "final_sha256": "e88ad71865862995c1b10c229e60548935a9aba6641a9b414e8410c00a12a457",
+      "top_partial_expected": "e88ad71865862995c1b10c229e60548935a9aba6641a9b414e8410c00a12a457",
+      "run_partial_expected": "e88ad71865862995c1b10c229e60548935a9aba6641a9b414e8410c00a12a457",
+      "top_final_expected": "e88ad71865862995c1b10c229e60548935a9aba6641a9b414e8410c00a12a457",
+      "run_final_expected": "e88ad71865862995c1b10c229e60548935a9aba6641a9b414e8410c00a12a457",
+      "first_differing_byte": 47427,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "e8a6de95-a7e4-416b-95b3-8b8257f192a5",
+        "6bdfadea-72fb-4e44-a633-c3b8c1a060d7"
+      ],
+      "final_first_last_ids": [
+        "e8a6de95-a7e4-416b-95b3-8b8257f192a5",
+        "6bdfadea-72fb-4e44-a633-c3b8c1a060d7"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/proxy_large_all/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63323,
+      "final_bytes": 63323,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "e106f5488bbaa6a30afeb58c80957db65103fe5367caac294c2ab77aa24c05b4",
+      "final_sha256": "e106f5488bbaa6a30afeb58c80957db65103fe5367caac294c2ab77aa24c05b4",
+      "top_partial_expected": "e106f5488bbaa6a30afeb58c80957db65103fe5367caac294c2ab77aa24c05b4",
+      "run_partial_expected": "e106f5488bbaa6a30afeb58c80957db65103fe5367caac294c2ab77aa24c05b4",
+      "top_final_expected": "e106f5488bbaa6a30afeb58c80957db65103fe5367caac294c2ab77aa24c05b4",
+      "run_final_expected": "e106f5488bbaa6a30afeb58c80957db65103fe5367caac294c2ab77aa24c05b4",
+      "first_differing_byte": 63323,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "37d237a2-ccbf-4dcb-a552-d6c29391ff6d",
+        "c00ba2d4-1d75-44fa-9ff3-713a66599c80"
+      ],
+      "final_first_last_ids": [
+        "37d237a2-ccbf-4dcb-a552-d6c29391ff6d",
+        "c00ba2d4-1d75-44fa-9ff3-713a66599c80"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/proxy_large_text/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47227,
+      "final_bytes": 47227,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "51ad029852f0d947a47edd1b7e007d528399a365eae24f7237a0f45fd1a728cc",
+      "final_sha256": "51ad029852f0d947a47edd1b7e007d528399a365eae24f7237a0f45fd1a728cc",
+      "top_partial_expected": "51ad029852f0d947a47edd1b7e007d528399a365eae24f7237a0f45fd1a728cc",
+      "run_partial_expected": "51ad029852f0d947a47edd1b7e007d528399a365eae24f7237a0f45fd1a728cc",
+      "top_final_expected": "51ad029852f0d947a47edd1b7e007d528399a365eae24f7237a0f45fd1a728cc",
+      "run_final_expected": "51ad029852f0d947a47edd1b7e007d528399a365eae24f7237a0f45fd1a728cc",
+      "first_differing_byte": 47227,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "2e08892f-4c97-40a0-8d0d-9f856c8b3d0c",
+        "c1df6d61-3edb-4774-9d72-aa45c23c8bf4"
+      ],
+      "final_first_last_ids": [
+        "2e08892f-4c97-40a0-8d0d-9f856c8b3d0c",
+        "c1df6d61-3edb-4774-9d72-aa45c23c8bf4"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/proxy_large_text/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63115,
+      "final_bytes": 63115,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "89f51c08b3dd03f5b161b67e150cfe9cecfad141dc995453c2205bfe93d59b3f",
+      "final_sha256": "89f51c08b3dd03f5b161b67e150cfe9cecfad141dc995453c2205bfe93d59b3f",
+      "top_partial_expected": "89f51c08b3dd03f5b161b67e150cfe9cecfad141dc995453c2205bfe93d59b3f",
+      "run_partial_expected": "89f51c08b3dd03f5b161b67e150cfe9cecfad141dc995453c2205bfe93d59b3f",
+      "top_final_expected": "89f51c08b3dd03f5b161b67e150cfe9cecfad141dc995453c2205bfe93d59b3f",
+      "run_final_expected": "89f51c08b3dd03f5b161b67e150cfe9cecfad141dc995453c2205bfe93d59b3f",
+      "first_differing_byte": 63115,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "60d4a8f2-ff5c-4bbd-97a7-cbc9f4d5091c",
+        "731fc3ed-62f8-4d6a-bab9-4aa615a5881e"
+      ],
+      "final_first_last_ids": [
+        "60d4a8f2-ff5c-4bbd-97a7-cbc9f4d5091c",
+        "731fc3ed-62f8-4d6a-bab9-4aa615a5881e"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/proxy_one/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 224094,
+      "final_bytes": 224094,
+      "partial_lines": 120,
+      "final_lines": 120,
+      "partial_sha256": "314b34287749155ccf94ce07cadf3933b1214609af3666946b200d6aabd532d3",
+      "final_sha256": "314b34287749155ccf94ce07cadf3933b1214609af3666946b200d6aabd532d3",
+      "top_partial_expected": "314b34287749155ccf94ce07cadf3933b1214609af3666946b200d6aabd532d3",
+      "run_partial_expected": "314b34287749155ccf94ce07cadf3933b1214609af3666946b200d6aabd532d3",
+      "top_final_expected": "314b34287749155ccf94ce07cadf3933b1214609af3666946b200d6aabd532d3",
+      "run_final_expected": "314b34287749155ccf94ce07cadf3933b1214609af3666946b200d6aabd532d3",
+      "first_differing_byte": 224094,
+      "identical_leading_lines": 120,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "8824fb18-58e2-46fb-a20f-fd7fa82e22f0",
+        "f4f5044c-e76f-46ba-b358-be77f0de73b0"
+      ],
+      "final_first_last_ids": [
+        "8824fb18-58e2-46fb-a20f-fd7fa82e22f0",
+        "f4f5044c-e76f-46ba-b358-be77f0de73b0"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/proxy_one/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 301005,
+      "final_bytes": 301005,
+      "partial_lines": 240,
+      "final_lines": 240,
+      "partial_sha256": "056e81fb36ac227a0071c569a852e5302693f1fb4d87a4351812407d771b14e9",
+      "final_sha256": "056e81fb36ac227a0071c569a852e5302693f1fb4d87a4351812407d771b14e9",
+      "top_partial_expected": "056e81fb36ac227a0071c569a852e5302693f1fb4d87a4351812407d771b14e9",
+      "run_partial_expected": "056e81fb36ac227a0071c569a852e5302693f1fb4d87a4351812407d771b14e9",
+      "top_final_expected": "056e81fb36ac227a0071c569a852e5302693f1fb4d87a4351812407d771b14e9",
+      "run_final_expected": "056e81fb36ac227a0071c569a852e5302693f1fb4d87a4351812407d771b14e9",
+      "first_differing_byte": 301005,
+      "identical_leading_lines": 240,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "b6d60dcf-ee8a-4ab3-9ee4-240d915269f0",
+        "a7178c9c-dce4-45ee-bf10-925bcc628739"
+      ],
+      "final_first_last_ids": [
+        "b6d60dcf-ee8a-4ab3-9ee4-240d915269f0",
+        "a7178c9c-dce4-45ee-bf10-925bcc628739"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/setup/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 313891,
+      "final_bytes": 313891,
+      "partial_lines": 176,
+      "final_lines": 176,
+      "partial_sha256": "7af445fd38ede002b1df5855c891fa3c542572e3af17d48a8f3cdcfd43c7ec32",
+      "final_sha256": "7af445fd38ede002b1df5855c891fa3c542572e3af17d48a8f3cdcfd43c7ec32",
+      "top_partial_expected": "7af445fd38ede002b1df5855c891fa3c542572e3af17d48a8f3cdcfd43c7ec32",
+      "run_partial_expected": "7af445fd38ede002b1df5855c891fa3c542572e3af17d48a8f3cdcfd43c7ec32",
+      "top_final_expected": "7af445fd38ede002b1df5855c891fa3c542572e3af17d48a8f3cdcfd43c7ec32",
+      "run_final_expected": "7af445fd38ede002b1df5855c891fa3c542572e3af17d48a8f3cdcfd43c7ec32",
+      "first_differing_byte": 313891,
+      "identical_leading_lines": 176,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "ad7567c1-eb3d-44b9-87c9-b0ace7f5c151",
+        "75e41e72-7dd2-4390-8c06-e41c827876e7"
+      ],
+      "final_first_last_ids": [
+        "ad7567c1-eb3d-44b9-87c9-b0ace7f5c151",
+        "75e41e72-7dd2-4390-8c06-e41c827876e7"
+      ]
+    },
+    {
+      "path": "historical_json/01-A/setup/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 442147,
+      "final_bytes": 442147,
+      "partial_lines": 352,
+      "final_lines": 352,
+      "partial_sha256": "271d909c6a6b332ca8885770531a4d5a52f0e729e156d0388ff0d18ffd73940a",
+      "final_sha256": "271d909c6a6b332ca8885770531a4d5a52f0e729e156d0388ff0d18ffd73940a",
+      "top_partial_expected": "271d909c6a6b332ca8885770531a4d5a52f0e729e156d0388ff0d18ffd73940a",
+      "run_partial_expected": "271d909c6a6b332ca8885770531a4d5a52f0e729e156d0388ff0d18ffd73940a",
+      "top_final_expected": "271d909c6a6b332ca8885770531a4d5a52f0e729e156d0388ff0d18ffd73940a",
+      "run_final_expected": "271d909c6a6b332ca8885770531a4d5a52f0e729e156d0388ff0d18ffd73940a",
+      "first_differing_byte": 442147,
+      "identical_leading_lines": 352,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "d4b576a5-831a-44f8-a7ee-de03b2d6d09c",
+        "397eb8b0-066f-4408-98b8-d16a2b1ca2c3"
+      ],
+      "final_first_last_ids": [
+        "d4b576a5-831a-44f8-a7ee-de03b2d6d09c",
+        "397eb8b0-066f-4408-98b8-d16a2b1ca2c3"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/proxy_large_all/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47899,
+      "final_bytes": 47899,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "b5d77634e785dc6ebe286edb86839745813eec1cb9f023feeb95c5b3fed5aefc",
+      "final_sha256": "b5d77634e785dc6ebe286edb86839745813eec1cb9f023feeb95c5b3fed5aefc",
+      "top_partial_expected": "b5d77634e785dc6ebe286edb86839745813eec1cb9f023feeb95c5b3fed5aefc",
+      "run_partial_expected": "b5d77634e785dc6ebe286edb86839745813eec1cb9f023feeb95c5b3fed5aefc",
+      "top_final_expected": "b5d77634e785dc6ebe286edb86839745813eec1cb9f023feeb95c5b3fed5aefc",
+      "run_final_expected": "b5d77634e785dc6ebe286edb86839745813eec1cb9f023feeb95c5b3fed5aefc",
+      "first_differing_byte": 47899,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "28ac6f58-2667-4ba8-9170-0a465f2acbbd",
+        "474a329a-688c-4f6d-a282-3a46c684d61d"
+      ],
+      "final_first_last_ids": [
+        "28ac6f58-2667-4ba8-9170-0a465f2acbbd",
+        "474a329a-688c-4f6d-a282-3a46c684d61d"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/proxy_large_all/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 62204,
+      "final_bytes": 62204,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "c683c92300519eb7ca35eb5d370ea6051796e08d5eeb3b44144b34f1639ba0e1",
+      "final_sha256": "c683c92300519eb7ca35eb5d370ea6051796e08d5eeb3b44144b34f1639ba0e1",
+      "top_partial_expected": "c683c92300519eb7ca35eb5d370ea6051796e08d5eeb3b44144b34f1639ba0e1",
+      "run_partial_expected": "c683c92300519eb7ca35eb5d370ea6051796e08d5eeb3b44144b34f1639ba0e1",
+      "top_final_expected": "c683c92300519eb7ca35eb5d370ea6051796e08d5eeb3b44144b34f1639ba0e1",
+      "run_final_expected": "c683c92300519eb7ca35eb5d370ea6051796e08d5eeb3b44144b34f1639ba0e1",
+      "first_differing_byte": 62204,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "e2faea9f-b6f1-4a90-81b7-2dc9ba6dadc1",
+        "48b5c2ae-0af0-48fc-9021-a86e541fb23c"
+      ],
+      "final_first_last_ids": [
+        "e2faea9f-b6f1-4a90-81b7-2dc9ba6dadc1",
+        "48b5c2ae-0af0-48fc-9021-a86e541fb23c"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/proxy_large_text/operations.partial.jsonl",
+      "equal": false,
+      "partial_bytes": 45796,
+      "final_bytes": 47711,
+      "partial_lines": 24,
+      "final_lines": 25,
+      "partial_sha256": "754af9eddcdb8acedd0e434363668d30cda5b27d9b9a453300a026a5f4b7e5ae",
+      "final_sha256": "42c9488e643b2ab747d83e2b95f86f80d16bf6f34569dbb9782ad8b833c65d6e",
+      "top_partial_expected": "754af9eddcdb8acedd0e434363668d30cda5b27d9b9a453300a026a5f4b7e5ae",
+      "run_partial_expected": "42c9488e643b2ab747d83e2b95f86f80d16bf6f34569dbb9782ad8b833c65d6e",
+      "top_final_expected": "42c9488e643b2ab747d83e2b95f86f80d16bf6f34569dbb9782ad8b833c65d6e",
+      "run_final_expected": "42c9488e643b2ab747d83e2b95f86f80d16bf6f34569dbb9782ad8b833c65d6e",
+      "first_differing_byte": 45796,
+      "identical_leading_lines": 24,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": false,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "33d022aa-0ac0-4dab-a11c-069346f1ca50",
+        "32ae8f50-e3a7-4fb9-99c6-1581320a3baa"
+      ],
+      "final_first_last_ids": [
+        "33d022aa-0ac0-4dab-a11c-069346f1ca50",
+        "d7798cb3-81cb-480f-a385-f1e7c8a5b0be"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/proxy_large_text/requests.partial.jsonl",
+      "equal": false,
+      "partial_bytes": 59522,
+      "final_bytes": 62006,
+      "partial_lines": 48,
+      "final_lines": 50,
+      "partial_sha256": "e7aa8e1a216014d2809734c2f02482bbf65042de3b6b9d12ff608c32ca683c7a",
+      "final_sha256": "0e9578d727adb89b68e9d98b27f84233b68d754863ca7aaf6e0c219c5314989b",
+      "top_partial_expected": "e7aa8e1a216014d2809734c2f02482bbf65042de3b6b9d12ff608c32ca683c7a",
+      "run_partial_expected": "0e9578d727adb89b68e9d98b27f84233b68d754863ca7aaf6e0c219c5314989b",
+      "top_final_expected": "0e9578d727adb89b68e9d98b27f84233b68d754863ca7aaf6e0c219c5314989b",
+      "run_final_expected": "0e9578d727adb89b68e9d98b27f84233b68d754863ca7aaf6e0c219c5314989b",
+      "first_differing_byte": 59522,
+      "identical_leading_lines": 48,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": false,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "d0aebdea-b21c-4596-833d-edbf816e7097",
+        "d6c2146c-a155-4bb4-b58c-c50a6f408617"
+      ],
+      "final_first_last_ids": [
+        "d0aebdea-b21c-4596-833d-edbf816e7097",
+        "f53867eb-b4f4-4290-907d-17ae81fa153c"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/proxy_one/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 226460,
+      "final_bytes": 226460,
+      "partial_lines": 120,
+      "final_lines": 120,
+      "partial_sha256": "623614eb08288683a60f2db80f7b4d22f960eda875caf11c6ebe8fa2681988f5",
+      "final_sha256": "623614eb08288683a60f2db80f7b4d22f960eda875caf11c6ebe8fa2681988f5",
+      "top_partial_expected": "623614eb08288683a60f2db80f7b4d22f960eda875caf11c6ebe8fa2681988f5",
+      "run_partial_expected": "623614eb08288683a60f2db80f7b4d22f960eda875caf11c6ebe8fa2681988f5",
+      "top_final_expected": "623614eb08288683a60f2db80f7b4d22f960eda875caf11c6ebe8fa2681988f5",
+      "run_final_expected": "623614eb08288683a60f2db80f7b4d22f960eda875caf11c6ebe8fa2681988f5",
+      "first_differing_byte": 226460,
+      "identical_leading_lines": 120,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "868365cf-4fa1-43d3-b21e-b8ed4adb8660",
+        "356a2443-1f69-4561-8188-baf345a9ec6f"
+      ],
+      "final_first_last_ids": [
+        "868365cf-4fa1-43d3-b21e-b8ed4adb8660",
+        "356a2443-1f69-4561-8188-baf345a9ec6f"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/proxy_one/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 295721,
+      "final_bytes": 295721,
+      "partial_lines": 240,
+      "final_lines": 240,
+      "partial_sha256": "9a9263557b45148863c660c07a258bdeec8c8b521b8c2161280de1c95bc46fb3",
+      "final_sha256": "9a9263557b45148863c660c07a258bdeec8c8b521b8c2161280de1c95bc46fb3",
+      "top_partial_expected": "9a9263557b45148863c660c07a258bdeec8c8b521b8c2161280de1c95bc46fb3",
+      "run_partial_expected": "9a9263557b45148863c660c07a258bdeec8c8b521b8c2161280de1c95bc46fb3",
+      "top_final_expected": "9a9263557b45148863c660c07a258bdeec8c8b521b8c2161280de1c95bc46fb3",
+      "run_final_expected": "9a9263557b45148863c660c07a258bdeec8c8b521b8c2161280de1c95bc46fb3",
+      "first_differing_byte": 295721,
+      "identical_leading_lines": 240,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "05a71aaf-dfde-429b-9247-1363cacbee88",
+        "8c51d8ee-99fc-40a9-a6ad-f040c8875f25"
+      ],
+      "final_first_last_ids": [
+        "05a71aaf-dfde-429b-9247-1363cacbee88",
+        "8c51d8ee-99fc-40a9-a6ad-f040c8875f25"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/setup/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 316728,
+      "final_bytes": 316728,
+      "partial_lines": 176,
+      "final_lines": 176,
+      "partial_sha256": "37eb6b70d423dd66e5d18010422910af8ab456a46b5d11aef91c4abc9c2465d5",
+      "final_sha256": "37eb6b70d423dd66e5d18010422910af8ab456a46b5d11aef91c4abc9c2465d5",
+      "top_partial_expected": "37eb6b70d423dd66e5d18010422910af8ab456a46b5d11aef91c4abc9c2465d5",
+      "run_partial_expected": "37eb6b70d423dd66e5d18010422910af8ab456a46b5d11aef91c4abc9c2465d5",
+      "top_final_expected": "37eb6b70d423dd66e5d18010422910af8ab456a46b5d11aef91c4abc9c2465d5",
+      "run_final_expected": "37eb6b70d423dd66e5d18010422910af8ab456a46b5d11aef91c4abc9c2465d5",
+      "first_differing_byte": 316728,
+      "identical_leading_lines": 176,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "2eb1bf01-93fd-4ad2-9264-29605a396fd4",
+        "7216a1be-a07a-4db6-9077-6ae6984f724a"
+      ],
+      "final_first_last_ids": [
+        "2eb1bf01-93fd-4ad2-9264-29605a396fd4",
+        "7216a1be-a07a-4db6-9077-6ae6984f724a"
+      ]
+    },
+    {
+      "path": "historical_json/02-S/setup/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 434034,
+      "final_bytes": 434034,
+      "partial_lines": 352,
+      "final_lines": 352,
+      "partial_sha256": "65cad7233bf54ae3b99fa05cac9b3f6b1f359e95ea54ed8f41069cea4b2f1b41",
+      "final_sha256": "65cad7233bf54ae3b99fa05cac9b3f6b1f359e95ea54ed8f41069cea4b2f1b41",
+      "top_partial_expected": "65cad7233bf54ae3b99fa05cac9b3f6b1f359e95ea54ed8f41069cea4b2f1b41",
+      "run_partial_expected": "65cad7233bf54ae3b99fa05cac9b3f6b1f359e95ea54ed8f41069cea4b2f1b41",
+      "top_final_expected": "65cad7233bf54ae3b99fa05cac9b3f6b1f359e95ea54ed8f41069cea4b2f1b41",
+      "run_final_expected": "65cad7233bf54ae3b99fa05cac9b3f6b1f359e95ea54ed8f41069cea4b2f1b41",
+      "first_differing_byte": 434034,
+      "identical_leading_lines": 352,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "746e23eb-558a-41db-aec2-51f801a76b3d",
+        "882b928b-dd24-4615-b4f5-9c4ed3573d1f"
+      ],
+      "final_first_last_ids": [
+        "746e23eb-558a-41db-aec2-51f801a76b3d",
+        "882b928b-dd24-4615-b4f5-9c4ed3573d1f"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/proxy_large_all/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47395,
+      "final_bytes": 47395,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "8be908347ef8bfe4ce2cca0095b9c47e264d04121b9e6bab2686304e5f1fefd1",
+      "final_sha256": "8be908347ef8bfe4ce2cca0095b9c47e264d04121b9e6bab2686304e5f1fefd1",
+      "top_partial_expected": "8be908347ef8bfe4ce2cca0095b9c47e264d04121b9e6bab2686304e5f1fefd1",
+      "run_partial_expected": "8be908347ef8bfe4ce2cca0095b9c47e264d04121b9e6bab2686304e5f1fefd1",
+      "top_final_expected": "8be908347ef8bfe4ce2cca0095b9c47e264d04121b9e6bab2686304e5f1fefd1",
+      "run_final_expected": "8be908347ef8bfe4ce2cca0095b9c47e264d04121b9e6bab2686304e5f1fefd1",
+      "first_differing_byte": 47395,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "fbe6c12b-14b3-47ef-b4b5-489b7b96df45",
+        "0a599a45-9220-4e97-98ae-20e53da2d6f2"
+      ],
+      "final_first_last_ids": [
+        "fbe6c12b-14b3-47ef-b4b5-489b7b96df45",
+        "0a599a45-9220-4e97-98ae-20e53da2d6f2"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/proxy_large_all/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63315,
+      "final_bytes": 63315,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "f3fa5fba446714dcaa4a662063f8fec7b40eb33f50fdcfed06de376356c51486",
+      "final_sha256": "f3fa5fba446714dcaa4a662063f8fec7b40eb33f50fdcfed06de376356c51486",
+      "top_partial_expected": "f3fa5fba446714dcaa4a662063f8fec7b40eb33f50fdcfed06de376356c51486",
+      "run_partial_expected": "f3fa5fba446714dcaa4a662063f8fec7b40eb33f50fdcfed06de376356c51486",
+      "top_final_expected": "f3fa5fba446714dcaa4a662063f8fec7b40eb33f50fdcfed06de376356c51486",
+      "run_final_expected": "f3fa5fba446714dcaa4a662063f8fec7b40eb33f50fdcfed06de376356c51486",
+      "first_differing_byte": 63315,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "198ad6fa-dd46-474c-b461-ea5d06f59e5b",
+        "6011e21a-0fba-489b-9cd1-c78a24d14464"
+      ],
+      "final_first_last_ids": [
+        "198ad6fa-dd46-474c-b461-ea5d06f59e5b",
+        "6011e21a-0fba-489b-9cd1-c78a24d14464"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/proxy_large_text/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47229,
+      "final_bytes": 47229,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "fe4e75c91747a384e7ba9b311eb7d8ea0df7f477055be269b3dfeb2e66c9867a",
+      "final_sha256": "fe4e75c91747a384e7ba9b311eb7d8ea0df7f477055be269b3dfeb2e66c9867a",
+      "top_partial_expected": "fe4e75c91747a384e7ba9b311eb7d8ea0df7f477055be269b3dfeb2e66c9867a",
+      "run_partial_expected": "fe4e75c91747a384e7ba9b311eb7d8ea0df7f477055be269b3dfeb2e66c9867a",
+      "top_final_expected": "fe4e75c91747a384e7ba9b311eb7d8ea0df7f477055be269b3dfeb2e66c9867a",
+      "run_final_expected": "fe4e75c91747a384e7ba9b311eb7d8ea0df7f477055be269b3dfeb2e66c9867a",
+      "first_differing_byte": 47229,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "3b1413dc-ec08-4987-8f7c-fdfe92c59b73",
+        "f0b85470-db91-4dba-9b16-152b7a659919"
+      ],
+      "final_first_last_ids": [
+        "3b1413dc-ec08-4987-8f7c-fdfe92c59b73",
+        "f0b85470-db91-4dba-9b16-152b7a659919"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/proxy_large_text/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63116,
+      "final_bytes": 63116,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "6296849969a14765b2f7cacdf7c935fba9bb6547c5c95a2028cd6c157e668d90",
+      "final_sha256": "6296849969a14765b2f7cacdf7c935fba9bb6547c5c95a2028cd6c157e668d90",
+      "top_partial_expected": "6296849969a14765b2f7cacdf7c935fba9bb6547c5c95a2028cd6c157e668d90",
+      "run_partial_expected": "6296849969a14765b2f7cacdf7c935fba9bb6547c5c95a2028cd6c157e668d90",
+      "top_final_expected": "6296849969a14765b2f7cacdf7c935fba9bb6547c5c95a2028cd6c157e668d90",
+      "run_final_expected": "6296849969a14765b2f7cacdf7c935fba9bb6547c5c95a2028cd6c157e668d90",
+      "first_differing_byte": 63116,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "ee081593-e405-4d77-8f21-24e3fd97042f",
+        "4fffc780-d5c5-4936-bbfd-699d35f7c54c"
+      ],
+      "final_first_last_ids": [
+        "ee081593-e405-4d77-8f21-24e3fd97042f",
+        "4fffc780-d5c5-4936-bbfd-699d35f7c54c"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/proxy_one/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 224105,
+      "final_bytes": 224105,
+      "partial_lines": 120,
+      "final_lines": 120,
+      "partial_sha256": "95240f90bb091a0df6c8b461ccb7e6690446df0b811a5db7c42d369e8e7d4afb",
+      "final_sha256": "95240f90bb091a0df6c8b461ccb7e6690446df0b811a5db7c42d369e8e7d4afb",
+      "top_partial_expected": "95240f90bb091a0df6c8b461ccb7e6690446df0b811a5db7c42d369e8e7d4afb",
+      "run_partial_expected": "95240f90bb091a0df6c8b461ccb7e6690446df0b811a5db7c42d369e8e7d4afb",
+      "top_final_expected": "95240f90bb091a0df6c8b461ccb7e6690446df0b811a5db7c42d369e8e7d4afb",
+      "run_final_expected": "95240f90bb091a0df6c8b461ccb7e6690446df0b811a5db7c42d369e8e7d4afb",
+      "first_differing_byte": 224105,
+      "identical_leading_lines": 120,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "0db7f0cc-875a-4fff-a8a9-04a2e8bfba11",
+        "44bfb18d-f9d1-4b22-a7ae-2a7ea7806ee1"
+      ],
+      "final_first_last_ids": [
+        "0db7f0cc-875a-4fff-a8a9-04a2e8bfba11",
+        "44bfb18d-f9d1-4b22-a7ae-2a7ea7806ee1"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/proxy_one/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 301003,
+      "final_bytes": 301003,
+      "partial_lines": 240,
+      "final_lines": 240,
+      "partial_sha256": "95ba1dc3f3fd4e8c9b497c6871a4b0a2686d064fefec11875cb4fd3a59c45edf",
+      "final_sha256": "95ba1dc3f3fd4e8c9b497c6871a4b0a2686d064fefec11875cb4fd3a59c45edf",
+      "top_partial_expected": "95ba1dc3f3fd4e8c9b497c6871a4b0a2686d064fefec11875cb4fd3a59c45edf",
+      "run_partial_expected": "95ba1dc3f3fd4e8c9b497c6871a4b0a2686d064fefec11875cb4fd3a59c45edf",
+      "top_final_expected": "95ba1dc3f3fd4e8c9b497c6871a4b0a2686d064fefec11875cb4fd3a59c45edf",
+      "run_final_expected": "95ba1dc3f3fd4e8c9b497c6871a4b0a2686d064fefec11875cb4fd3a59c45edf",
+      "first_differing_byte": 301003,
+      "identical_leading_lines": 240,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "ae2b3edf-a4bf-4421-ab68-5123b0f08168",
+        "808e7f34-1980-48aa-b01c-4856fbcf506c"
+      ],
+      "final_first_last_ids": [
+        "ae2b3edf-a4bf-4421-ab68-5123b0f08168",
+        "808e7f34-1980-48aa-b01c-4856fbcf506c"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/setup/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 313890,
+      "final_bytes": 313890,
+      "partial_lines": 176,
+      "final_lines": 176,
+      "partial_sha256": "6fd1430f31889e0bb1c08579f6c380523e047a099d7dc82c02aa9a7025834bbf",
+      "final_sha256": "6fd1430f31889e0bb1c08579f6c380523e047a099d7dc82c02aa9a7025834bbf",
+      "top_partial_expected": "6fd1430f31889e0bb1c08579f6c380523e047a099d7dc82c02aa9a7025834bbf",
+      "run_partial_expected": "6fd1430f31889e0bb1c08579f6c380523e047a099d7dc82c02aa9a7025834bbf",
+      "top_final_expected": "6fd1430f31889e0bb1c08579f6c380523e047a099d7dc82c02aa9a7025834bbf",
+      "run_final_expected": "6fd1430f31889e0bb1c08579f6c380523e047a099d7dc82c02aa9a7025834bbf",
+      "first_differing_byte": 313890,
+      "identical_leading_lines": 176,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "67dc9436-c783-4ee9-ace2-93a3632c88b0",
+        "fc5f552c-0254-457f-82b9-155ba7b44a7d"
+      ],
+      "final_first_last_ids": [
+        "67dc9436-c783-4ee9-ace2-93a3632c88b0",
+        "fc5f552c-0254-457f-82b9-155ba7b44a7d"
+      ]
+    },
+    {
+      "path": "historical_json/03-B/setup/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 442155,
+      "final_bytes": 442155,
+      "partial_lines": 352,
+      "final_lines": 352,
+      "partial_sha256": "0cb65e0ce3700f30a571005033a5f23dc30eb68ad23aaa549ea260e143020066",
+      "final_sha256": "0cb65e0ce3700f30a571005033a5f23dc30eb68ad23aaa549ea260e143020066",
+      "top_partial_expected": "0cb65e0ce3700f30a571005033a5f23dc30eb68ad23aaa549ea260e143020066",
+      "run_partial_expected": "0cb65e0ce3700f30a571005033a5f23dc30eb68ad23aaa549ea260e143020066",
+      "top_final_expected": "0cb65e0ce3700f30a571005033a5f23dc30eb68ad23aaa549ea260e143020066",
+      "run_final_expected": "0cb65e0ce3700f30a571005033a5f23dc30eb68ad23aaa549ea260e143020066",
+      "first_differing_byte": 442155,
+      "identical_leading_lines": 352,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "d9507eca-1c93-4ef8-a6dc-5d0b99747bcf",
+        "57f43e38-e5b8-4953-920b-fb486610a904"
+      ],
+      "final_first_last_ids": [
+        "d9507eca-1c93-4ef8-a6dc-5d0b99747bcf",
+        "57f43e38-e5b8-4953-920b-fb486610a904"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/proxy_large_all/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47417,
+      "final_bytes": 47417,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "686bb6d17c7002422aba741ade06b0f8fa4cb0964b72e50773af15261a55b42b",
+      "final_sha256": "686bb6d17c7002422aba741ade06b0f8fa4cb0964b72e50773af15261a55b42b",
+      "top_partial_expected": "686bb6d17c7002422aba741ade06b0f8fa4cb0964b72e50773af15261a55b42b",
+      "run_partial_expected": "686bb6d17c7002422aba741ade06b0f8fa4cb0964b72e50773af15261a55b42b",
+      "top_final_expected": "686bb6d17c7002422aba741ade06b0f8fa4cb0964b72e50773af15261a55b42b",
+      "run_final_expected": "686bb6d17c7002422aba741ade06b0f8fa4cb0964b72e50773af15261a55b42b",
+      "first_differing_byte": 47417,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "d8fbafd1-1ccc-40b5-9544-43ecce53ed74",
+        "a8dbcc6f-c178-4cf5-a09d-c276ac070a7c"
+      ],
+      "final_first_last_ids": [
+        "d8fbafd1-1ccc-40b5-9544-43ecce53ed74",
+        "a8dbcc6f-c178-4cf5-a09d-c276ac070a7c"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/proxy_large_all/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63323,
+      "final_bytes": 63323,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "c7ef436a58ac81579226300f28b05cce5f4a068a1965f4c39f8d2bce8f34a9d7",
+      "final_sha256": "c7ef436a58ac81579226300f28b05cce5f4a068a1965f4c39f8d2bce8f34a9d7",
+      "top_partial_expected": "c7ef436a58ac81579226300f28b05cce5f4a068a1965f4c39f8d2bce8f34a9d7",
+      "run_partial_expected": "c7ef436a58ac81579226300f28b05cce5f4a068a1965f4c39f8d2bce8f34a9d7",
+      "top_final_expected": "c7ef436a58ac81579226300f28b05cce5f4a068a1965f4c39f8d2bce8f34a9d7",
+      "run_final_expected": "c7ef436a58ac81579226300f28b05cce5f4a068a1965f4c39f8d2bce8f34a9d7",
+      "first_differing_byte": 63323,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "3aec4441-baa4-4edc-8b42-159160494691",
+        "7d996b65-c1a7-4f7d-a013-f7eaf467aec9"
+      ],
+      "final_first_last_ids": [
+        "3aec4441-baa4-4edc-8b42-159160494691",
+        "7d996b65-c1a7-4f7d-a013-f7eaf467aec9"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/proxy_large_text/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47245,
+      "final_bytes": 47245,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "49db20ea6f6a067d1481fe9c8a95c3daff89687c532805dd132615d5139f1425",
+      "final_sha256": "49db20ea6f6a067d1481fe9c8a95c3daff89687c532805dd132615d5139f1425",
+      "top_partial_expected": "49db20ea6f6a067d1481fe9c8a95c3daff89687c532805dd132615d5139f1425",
+      "run_partial_expected": "49db20ea6f6a067d1481fe9c8a95c3daff89687c532805dd132615d5139f1425",
+      "top_final_expected": "49db20ea6f6a067d1481fe9c8a95c3daff89687c532805dd132615d5139f1425",
+      "run_final_expected": "49db20ea6f6a067d1481fe9c8a95c3daff89687c532805dd132615d5139f1425",
+      "first_differing_byte": 47245,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "553df724-6361-41df-9c30-06453cc4cc8b",
+        "07cbac84-8d88-4995-9dbc-c12f813eccb0"
+      ],
+      "final_first_last_ids": [
+        "553df724-6361-41df-9c30-06453cc4cc8b",
+        "07cbac84-8d88-4995-9dbc-c12f813eccb0"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/proxy_large_text/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63114,
+      "final_bytes": 63114,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "ee47ea5d92ab5f52f4c70a06bd54d1421d83f05a2aef6014c1153642e46f2bf7",
+      "final_sha256": "ee47ea5d92ab5f52f4c70a06bd54d1421d83f05a2aef6014c1153642e46f2bf7",
+      "top_partial_expected": "ee47ea5d92ab5f52f4c70a06bd54d1421d83f05a2aef6014c1153642e46f2bf7",
+      "run_partial_expected": "ee47ea5d92ab5f52f4c70a06bd54d1421d83f05a2aef6014c1153642e46f2bf7",
+      "top_final_expected": "ee47ea5d92ab5f52f4c70a06bd54d1421d83f05a2aef6014c1153642e46f2bf7",
+      "run_final_expected": "ee47ea5d92ab5f52f4c70a06bd54d1421d83f05a2aef6014c1153642e46f2bf7",
+      "first_differing_byte": 63114,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "a43c0089-8d45-4172-baa9-c21d1b1a5052",
+        "cf8931f2-ff07-4dfb-8250-d0f3c4905f2c"
+      ],
+      "final_first_last_ids": [
+        "a43c0089-8d45-4172-baa9-c21d1b1a5052",
+        "cf8931f2-ff07-4dfb-8250-d0f3c4905f2c"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/proxy_one/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 224097,
+      "final_bytes": 224097,
+      "partial_lines": 120,
+      "final_lines": 120,
+      "partial_sha256": "2f5c4efa7c1829e832e8c9cdba5a2832dcd7a3bb5b281065049ec471f0841334",
+      "final_sha256": "2f5c4efa7c1829e832e8c9cdba5a2832dcd7a3bb5b281065049ec471f0841334",
+      "top_partial_expected": "2f5c4efa7c1829e832e8c9cdba5a2832dcd7a3bb5b281065049ec471f0841334",
+      "run_partial_expected": "2f5c4efa7c1829e832e8c9cdba5a2832dcd7a3bb5b281065049ec471f0841334",
+      "top_final_expected": "2f5c4efa7c1829e832e8c9cdba5a2832dcd7a3bb5b281065049ec471f0841334",
+      "run_final_expected": "2f5c4efa7c1829e832e8c9cdba5a2832dcd7a3bb5b281065049ec471f0841334",
+      "first_differing_byte": 224097,
+      "identical_leading_lines": 120,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "3a31ac8a-f994-4998-9559-33afd2b286ae",
+        "731ed05d-c97c-4853-a353-b10b1579ee5e"
+      ],
+      "final_first_last_ids": [
+        "3a31ac8a-f994-4998-9559-33afd2b286ae",
+        "731ed05d-c97c-4853-a353-b10b1579ee5e"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/proxy_one/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 301000,
+      "final_bytes": 301000,
+      "partial_lines": 240,
+      "final_lines": 240,
+      "partial_sha256": "439d90d26db1de6301cebe6cf9f2401e2b7bc76648086e0c149b434ebcd29f60",
+      "final_sha256": "439d90d26db1de6301cebe6cf9f2401e2b7bc76648086e0c149b434ebcd29f60",
+      "top_partial_expected": "439d90d26db1de6301cebe6cf9f2401e2b7bc76648086e0c149b434ebcd29f60",
+      "run_partial_expected": "439d90d26db1de6301cebe6cf9f2401e2b7bc76648086e0c149b434ebcd29f60",
+      "top_final_expected": "439d90d26db1de6301cebe6cf9f2401e2b7bc76648086e0c149b434ebcd29f60",
+      "run_final_expected": "439d90d26db1de6301cebe6cf9f2401e2b7bc76648086e0c149b434ebcd29f60",
+      "first_differing_byte": 301000,
+      "identical_leading_lines": 240,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "4b591fac-c49f-4e55-8471-a363bb404c2a",
+        "d81c012e-55d6-483c-b5a6-a09bf90a7e34"
+      ],
+      "final_first_last_ids": [
+        "4b591fac-c49f-4e55-8471-a363bb404c2a",
+        "d81c012e-55d6-483c-b5a6-a09bf90a7e34"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/setup/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 313925,
+      "final_bytes": 313925,
+      "partial_lines": 176,
+      "final_lines": 176,
+      "partial_sha256": "7d6a2f0b528d2096d4195fc26bcb567ab4e7ea170080b239e9878cc97b87ad6d",
+      "final_sha256": "7d6a2f0b528d2096d4195fc26bcb567ab4e7ea170080b239e9878cc97b87ad6d",
+      "top_partial_expected": "7d6a2f0b528d2096d4195fc26bcb567ab4e7ea170080b239e9878cc97b87ad6d",
+      "run_partial_expected": "7d6a2f0b528d2096d4195fc26bcb567ab4e7ea170080b239e9878cc97b87ad6d",
+      "top_final_expected": "7d6a2f0b528d2096d4195fc26bcb567ab4e7ea170080b239e9878cc97b87ad6d",
+      "run_final_expected": "7d6a2f0b528d2096d4195fc26bcb567ab4e7ea170080b239e9878cc97b87ad6d",
+      "first_differing_byte": 313925,
+      "identical_leading_lines": 176,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "eef3decc-1bf1-4514-9993-438bb7d9c893",
+        "e4a69119-9c2a-4163-b728-286dda4b123b"
+      ],
+      "final_first_last_ids": [
+        "eef3decc-1bf1-4514-9993-438bb7d9c893",
+        "e4a69119-9c2a-4163-b728-286dda4b123b"
+      ]
+    },
+    {
+      "path": "historical_json/04-B/setup/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 442146,
+      "final_bytes": 442146,
+      "partial_lines": 352,
+      "final_lines": 352,
+      "partial_sha256": "6679dbd044f12532362cb3f4c3dc80cd0b94b70e10bb6e42747cdcdcde237553",
+      "final_sha256": "6679dbd044f12532362cb3f4c3dc80cd0b94b70e10bb6e42747cdcdcde237553",
+      "top_partial_expected": "6679dbd044f12532362cb3f4c3dc80cd0b94b70e10bb6e42747cdcdcde237553",
+      "run_partial_expected": "6679dbd044f12532362cb3f4c3dc80cd0b94b70e10bb6e42747cdcdcde237553",
+      "top_final_expected": "6679dbd044f12532362cb3f4c3dc80cd0b94b70e10bb6e42747cdcdcde237553",
+      "run_final_expected": "6679dbd044f12532362cb3f4c3dc80cd0b94b70e10bb6e42747cdcdcde237553",
+      "first_differing_byte": 442146,
+      "identical_leading_lines": 352,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "97796819-895e-4030-a279-c156d7323e1d",
+        "4bc1625e-7969-4936-9bd2-0e9ff124157c"
+      ],
+      "final_first_last_ids": [
+        "97796819-895e-4030-a279-c156d7323e1d",
+        "4bc1625e-7969-4936-9bd2-0e9ff124157c"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/proxy_large_all/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47868,
+      "final_bytes": 47868,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "163fd438914243195a2dac904cd19e8de04e3e1ec31f04252ad402b870f571b0",
+      "final_sha256": "163fd438914243195a2dac904cd19e8de04e3e1ec31f04252ad402b870f571b0",
+      "top_partial_expected": "163fd438914243195a2dac904cd19e8de04e3e1ec31f04252ad402b870f571b0",
+      "run_partial_expected": "163fd438914243195a2dac904cd19e8de04e3e1ec31f04252ad402b870f571b0",
+      "top_final_expected": "163fd438914243195a2dac904cd19e8de04e3e1ec31f04252ad402b870f571b0",
+      "run_final_expected": "163fd438914243195a2dac904cd19e8de04e3e1ec31f04252ad402b870f571b0",
+      "first_differing_byte": 47868,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "c41eda5f-303f-485d-9761-2430e41240d8",
+        "818b9899-aa52-4d80-935d-a426541f367a"
+      ],
+      "final_first_last_ids": [
+        "c41eda5f-303f-485d-9761-2430e41240d8",
+        "818b9899-aa52-4d80-935d-a426541f367a"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/proxy_large_all/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 62200,
+      "final_bytes": 62200,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "9abb5f5c321964d3d85d64d72d0118cb9343791c7b1fa48c6533a77de670a2de",
+      "final_sha256": "9abb5f5c321964d3d85d64d72d0118cb9343791c7b1fa48c6533a77de670a2de",
+      "top_partial_expected": "9abb5f5c321964d3d85d64d72d0118cb9343791c7b1fa48c6533a77de670a2de",
+      "run_partial_expected": "9abb5f5c321964d3d85d64d72d0118cb9343791c7b1fa48c6533a77de670a2de",
+      "top_final_expected": "9abb5f5c321964d3d85d64d72d0118cb9343791c7b1fa48c6533a77de670a2de",
+      "run_final_expected": "9abb5f5c321964d3d85d64d72d0118cb9343791c7b1fa48c6533a77de670a2de",
+      "first_differing_byte": 62200,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "6e4e3697-695f-4303-b134-ed6ad89d6ab6",
+        "777d3202-9d08-4921-9cbb-323325969e94"
+      ],
+      "final_first_last_ids": [
+        "6e4e3697-695f-4303-b134-ed6ad89d6ab6",
+        "777d3202-9d08-4921-9cbb-323325969e94"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/proxy_large_text/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47687,
+      "final_bytes": 47687,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "5b23975a06c0acc63b35d466b42bddf4702d03523a9821f4d31b7ffc5a0ae4db",
+      "final_sha256": "5b23975a06c0acc63b35d466b42bddf4702d03523a9821f4d31b7ffc5a0ae4db",
+      "top_partial_expected": "5b23975a06c0acc63b35d466b42bddf4702d03523a9821f4d31b7ffc5a0ae4db",
+      "run_partial_expected": "5b23975a06c0acc63b35d466b42bddf4702d03523a9821f4d31b7ffc5a0ae4db",
+      "top_final_expected": "5b23975a06c0acc63b35d466b42bddf4702d03523a9821f4d31b7ffc5a0ae4db",
+      "run_final_expected": "5b23975a06c0acc63b35d466b42bddf4702d03523a9821f4d31b7ffc5a0ae4db",
+      "first_differing_byte": 47687,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "f70aa0e1-c33d-46c5-a5fe-0479054d7bca",
+        "fe65e427-979b-4cc4-9703-e8a57bce59cd"
+      ],
+      "final_first_last_ids": [
+        "f70aa0e1-c33d-46c5-a5fe-0479054d7bca",
+        "fe65e427-979b-4cc4-9703-e8a57bce59cd"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/proxy_large_text/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 61991,
+      "final_bytes": 61991,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "b85b481f6cc514df814b673ca0672efd27e9717662c8aadde0d98f8e8763d9c0",
+      "final_sha256": "b85b481f6cc514df814b673ca0672efd27e9717662c8aadde0d98f8e8763d9c0",
+      "top_partial_expected": "b85b481f6cc514df814b673ca0672efd27e9717662c8aadde0d98f8e8763d9c0",
+      "run_partial_expected": "b85b481f6cc514df814b673ca0672efd27e9717662c8aadde0d98f8e8763d9c0",
+      "top_final_expected": "b85b481f6cc514df814b673ca0672efd27e9717662c8aadde0d98f8e8763d9c0",
+      "run_final_expected": "b85b481f6cc514df814b673ca0672efd27e9717662c8aadde0d98f8e8763d9c0",
+      "first_differing_byte": 61991,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "a4ef71fa-ab91-4d51-adf7-9fb426cb9746",
+        "63453d4a-d185-47a2-9623-41a5a11b78bd"
+      ],
+      "final_first_last_ids": [
+        "a4ef71fa-ab91-4d51-adf7-9fb426cb9746",
+        "63453d4a-d185-47a2-9623-41a5a11b78bd"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/proxy_one/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 226494,
+      "final_bytes": 226494,
+      "partial_lines": 120,
+      "final_lines": 120,
+      "partial_sha256": "73ecbe01990e3532f210b94da6be97462f7cbb9431d75ec0018efff1ef5f9474",
+      "final_sha256": "73ecbe01990e3532f210b94da6be97462f7cbb9431d75ec0018efff1ef5f9474",
+      "top_partial_expected": "73ecbe01990e3532f210b94da6be97462f7cbb9431d75ec0018efff1ef5f9474",
+      "run_partial_expected": "73ecbe01990e3532f210b94da6be97462f7cbb9431d75ec0018efff1ef5f9474",
+      "top_final_expected": "73ecbe01990e3532f210b94da6be97462f7cbb9431d75ec0018efff1ef5f9474",
+      "run_final_expected": "73ecbe01990e3532f210b94da6be97462f7cbb9431d75ec0018efff1ef5f9474",
+      "first_differing_byte": 226494,
+      "identical_leading_lines": 120,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "3a8b5adc-c684-4d7e-9146-8b829057bc9e",
+        "6fbe0e19-3efb-406b-b027-0eb3d5b79301"
+      ],
+      "final_first_last_ids": [
+        "3a8b5adc-c684-4d7e-9146-8b829057bc9e",
+        "6fbe0e19-3efb-406b-b027-0eb3d5b79301"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/proxy_one/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 295701,
+      "final_bytes": 295701,
+      "partial_lines": 240,
+      "final_lines": 240,
+      "partial_sha256": "d6efc017be4a99caac2915e796d921eac6a3d9449036980cd2979db9c9efdfb0",
+      "final_sha256": "d6efc017be4a99caac2915e796d921eac6a3d9449036980cd2979db9c9efdfb0",
+      "top_partial_expected": "d6efc017be4a99caac2915e796d921eac6a3d9449036980cd2979db9c9efdfb0",
+      "run_partial_expected": "d6efc017be4a99caac2915e796d921eac6a3d9449036980cd2979db9c9efdfb0",
+      "top_final_expected": "d6efc017be4a99caac2915e796d921eac6a3d9449036980cd2979db9c9efdfb0",
+      "run_final_expected": "d6efc017be4a99caac2915e796d921eac6a3d9449036980cd2979db9c9efdfb0",
+      "first_differing_byte": 295701,
+      "identical_leading_lines": 240,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "f737c488-c41c-4bd8-8e09-9076032975b4",
+        "aa5f8db2-bb6d-4a14-aff4-bfa8de7f6a4d"
+      ],
+      "final_first_last_ids": [
+        "f737c488-c41c-4bd8-8e09-9076032975b4",
+        "aa5f8db2-bb6d-4a14-aff4-bfa8de7f6a4d"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/setup/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 316757,
+      "final_bytes": 316757,
+      "partial_lines": 176,
+      "final_lines": 176,
+      "partial_sha256": "24b7ace4f85517f17597b8d477bf5c4488d551ff07e77f55616251b198e8c6a5",
+      "final_sha256": "24b7ace4f85517f17597b8d477bf5c4488d551ff07e77f55616251b198e8c6a5",
+      "top_partial_expected": "24b7ace4f85517f17597b8d477bf5c4488d551ff07e77f55616251b198e8c6a5",
+      "run_partial_expected": "24b7ace4f85517f17597b8d477bf5c4488d551ff07e77f55616251b198e8c6a5",
+      "top_final_expected": "24b7ace4f85517f17597b8d477bf5c4488d551ff07e77f55616251b198e8c6a5",
+      "run_final_expected": "24b7ace4f85517f17597b8d477bf5c4488d551ff07e77f55616251b198e8c6a5",
+      "first_differing_byte": 316757,
+      "identical_leading_lines": 176,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "95e57e09-11b5-4939-bcbd-54b6b399f735",
+        "10c7f748-7fe0-4b6a-9552-6df9ef032889"
+      ],
+      "final_first_last_ids": [
+        "95e57e09-11b5-4939-bcbd-54b6b399f735",
+        "10c7f748-7fe0-4b6a-9552-6df9ef032889"
+      ]
+    },
+    {
+      "path": "historical_json/05-S/setup/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 434028,
+      "final_bytes": 434028,
+      "partial_lines": 352,
+      "final_lines": 352,
+      "partial_sha256": "b3eec3e1ce8b48d715ee389c73007744913f023e895a0d9c80663558a797c046",
+      "final_sha256": "b3eec3e1ce8b48d715ee389c73007744913f023e895a0d9c80663558a797c046",
+      "top_partial_expected": "b3eec3e1ce8b48d715ee389c73007744913f023e895a0d9c80663558a797c046",
+      "run_partial_expected": "b3eec3e1ce8b48d715ee389c73007744913f023e895a0d9c80663558a797c046",
+      "top_final_expected": "b3eec3e1ce8b48d715ee389c73007744913f023e895a0d9c80663558a797c046",
+      "run_final_expected": "b3eec3e1ce8b48d715ee389c73007744913f023e895a0d9c80663558a797c046",
+      "first_differing_byte": 434028,
+      "identical_leading_lines": 352,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "20ef42e3-8f90-4a75-bb7e-1e3a5471d69f",
+        "9ab83260-44a0-464a-8ba2-928fa3ae5a07"
+      ],
+      "final_first_last_ids": [
+        "20ef42e3-8f90-4a75-bb7e-1e3a5471d69f",
+        "9ab83260-44a0-464a-8ba2-928fa3ae5a07"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/proxy_large_all/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47404,
+      "final_bytes": 47404,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "1b19121e74a22ef678d9d404001a04fd17f95d71ee74ac85e60f8880bb119e47",
+      "final_sha256": "1b19121e74a22ef678d9d404001a04fd17f95d71ee74ac85e60f8880bb119e47",
+      "top_partial_expected": "1b19121e74a22ef678d9d404001a04fd17f95d71ee74ac85e60f8880bb119e47",
+      "run_partial_expected": "1b19121e74a22ef678d9d404001a04fd17f95d71ee74ac85e60f8880bb119e47",
+      "top_final_expected": "1b19121e74a22ef678d9d404001a04fd17f95d71ee74ac85e60f8880bb119e47",
+      "run_final_expected": "1b19121e74a22ef678d9d404001a04fd17f95d71ee74ac85e60f8880bb119e47",
+      "first_differing_byte": 47404,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "28716903-78cb-4c43-aad9-0cfdd023f0f5",
+        "7182900c-f234-45f5-8f9e-0551959e4319"
+      ],
+      "final_first_last_ids": [
+        "28716903-78cb-4c43-aad9-0cfdd023f0f5",
+        "7182900c-f234-45f5-8f9e-0551959e4319"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/proxy_large_all/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63317,
+      "final_bytes": 63317,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "5e24eaaaa2135491f2bc99e8f75d1efb47592165d6e4a50d08afe09f9465b36b",
+      "final_sha256": "5e24eaaaa2135491f2bc99e8f75d1efb47592165d6e4a50d08afe09f9465b36b",
+      "top_partial_expected": "5e24eaaaa2135491f2bc99e8f75d1efb47592165d6e4a50d08afe09f9465b36b",
+      "run_partial_expected": "5e24eaaaa2135491f2bc99e8f75d1efb47592165d6e4a50d08afe09f9465b36b",
+      "top_final_expected": "5e24eaaaa2135491f2bc99e8f75d1efb47592165d6e4a50d08afe09f9465b36b",
+      "run_final_expected": "5e24eaaaa2135491f2bc99e8f75d1efb47592165d6e4a50d08afe09f9465b36b",
+      "first_differing_byte": 63317,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "58672633-2cb9-4cc7-a94d-cd96a55d90b7",
+        "1fddfccd-4e50-4d0f-8800-addb40659ffc"
+      ],
+      "final_first_last_ids": [
+        "58672633-2cb9-4cc7-a94d-cd96a55d90b7",
+        "1fddfccd-4e50-4d0f-8800-addb40659ffc"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/proxy_large_text/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 47232,
+      "final_bytes": 47232,
+      "partial_lines": 25,
+      "final_lines": 25,
+      "partial_sha256": "4e32fab9d6ab807deea6af1d3421191b9de5151875951a15ac67b24a0081fc41",
+      "final_sha256": "4e32fab9d6ab807deea6af1d3421191b9de5151875951a15ac67b24a0081fc41",
+      "top_partial_expected": "4e32fab9d6ab807deea6af1d3421191b9de5151875951a15ac67b24a0081fc41",
+      "run_partial_expected": "4e32fab9d6ab807deea6af1d3421191b9de5151875951a15ac67b24a0081fc41",
+      "top_final_expected": "4e32fab9d6ab807deea6af1d3421191b9de5151875951a15ac67b24a0081fc41",
+      "run_final_expected": "4e32fab9d6ab807deea6af1d3421191b9de5151875951a15ac67b24a0081fc41",
+      "first_differing_byte": 47232,
+      "identical_leading_lines": 25,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "d60c6186-cdd8-4bea-a0b9-25d34a23dc6f",
+        "c523391b-3243-4f14-a5f4-000c483009bd"
+      ],
+      "final_first_last_ids": [
+        "d60c6186-cdd8-4bea-a0b9-25d34a23dc6f",
+        "c523391b-3243-4f14-a5f4-000c483009bd"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/proxy_large_text/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 63119,
+      "final_bytes": 63119,
+      "partial_lines": 50,
+      "final_lines": 50,
+      "partial_sha256": "f07b5aa36960e97654681f231314115f3e081f11e2426f63adb93497686f2841",
+      "final_sha256": "f07b5aa36960e97654681f231314115f3e081f11e2426f63adb93497686f2841",
+      "top_partial_expected": "f07b5aa36960e97654681f231314115f3e081f11e2426f63adb93497686f2841",
+      "run_partial_expected": "f07b5aa36960e97654681f231314115f3e081f11e2426f63adb93497686f2841",
+      "top_final_expected": "f07b5aa36960e97654681f231314115f3e081f11e2426f63adb93497686f2841",
+      "run_final_expected": "f07b5aa36960e97654681f231314115f3e081f11e2426f63adb93497686f2841",
+      "first_differing_byte": 63119,
+      "identical_leading_lines": 50,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "8a1e65bf-1426-48e7-92ae-f641ed2d5777",
+        "f13ee51b-32b2-4fa9-8431-a7a3434806c8"
+      ],
+      "final_first_last_ids": [
+        "8a1e65bf-1426-48e7-92ae-f641ed2d5777",
+        "f13ee51b-32b2-4fa9-8431-a7a3434806c8"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/proxy_one/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 224063,
+      "final_bytes": 224063,
+      "partial_lines": 120,
+      "final_lines": 120,
+      "partial_sha256": "a01345d561d5fcd30aaae8d4c1e44546eb444becee67d91a6e413b2d9d096a13",
+      "final_sha256": "a01345d561d5fcd30aaae8d4c1e44546eb444becee67d91a6e413b2d9d096a13",
+      "top_partial_expected": "a01345d561d5fcd30aaae8d4c1e44546eb444becee67d91a6e413b2d9d096a13",
+      "run_partial_expected": "a01345d561d5fcd30aaae8d4c1e44546eb444becee67d91a6e413b2d9d096a13",
+      "top_final_expected": "a01345d561d5fcd30aaae8d4c1e44546eb444becee67d91a6e413b2d9d096a13",
+      "run_final_expected": "a01345d561d5fcd30aaae8d4c1e44546eb444becee67d91a6e413b2d9d096a13",
+      "first_differing_byte": 224063,
+      "identical_leading_lines": 120,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "fb7a95d4-4bb1-4d74-ab1c-ee2125e16bc4",
+        "4d22187b-378d-421b-8c35-91fee0e3c48f"
+      ],
+      "final_first_last_ids": [
+        "fb7a95d4-4bb1-4d74-ab1c-ee2125e16bc4",
+        "4d22187b-378d-421b-8c35-91fee0e3c48f"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/proxy_one/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 301007,
+      "final_bytes": 301007,
+      "partial_lines": 240,
+      "final_lines": 240,
+      "partial_sha256": "70d6ab5ceb6301811e468eae5ae06af92852af1a2df0a1c2069e06bf72812115",
+      "final_sha256": "70d6ab5ceb6301811e468eae5ae06af92852af1a2df0a1c2069e06bf72812115",
+      "top_partial_expected": "70d6ab5ceb6301811e468eae5ae06af92852af1a2df0a1c2069e06bf72812115",
+      "run_partial_expected": "70d6ab5ceb6301811e468eae5ae06af92852af1a2df0a1c2069e06bf72812115",
+      "top_final_expected": "70d6ab5ceb6301811e468eae5ae06af92852af1a2df0a1c2069e06bf72812115",
+      "run_final_expected": "70d6ab5ceb6301811e468eae5ae06af92852af1a2df0a1c2069e06bf72812115",
+      "first_differing_byte": 301007,
+      "identical_leading_lines": 240,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "efc0629e-9b0d-4396-9231-39c7f08af1a2",
+        "ba9d60b5-eb8f-4e9f-a54b-55d227fa8b3f"
+      ],
+      "final_first_last_ids": [
+        "efc0629e-9b0d-4396-9231-39c7f08af1a2",
+        "ba9d60b5-eb8f-4e9f-a54b-55d227fa8b3f"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/setup/operations.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 313926,
+      "final_bytes": 313926,
+      "partial_lines": 176,
+      "final_lines": 176,
+      "partial_sha256": "d4e63f2a9e84a6cc81bead215a13c253441170bffec3b09fcd3b5ff670443b17",
+      "final_sha256": "d4e63f2a9e84a6cc81bead215a13c253441170bffec3b09fcd3b5ff670443b17",
+      "top_partial_expected": "d4e63f2a9e84a6cc81bead215a13c253441170bffec3b09fcd3b5ff670443b17",
+      "run_partial_expected": "d4e63f2a9e84a6cc81bead215a13c253441170bffec3b09fcd3b5ff670443b17",
+      "top_final_expected": "d4e63f2a9e84a6cc81bead215a13c253441170bffec3b09fcd3b5ff670443b17",
+      "run_final_expected": "d4e63f2a9e84a6cc81bead215a13c253441170bffec3b09fcd3b5ff670443b17",
+      "first_differing_byte": 313926,
+      "identical_leading_lines": 176,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "791bcf77-2607-4c71-8370-904d3ad129b7",
+        "36195c26-7f48-4d2d-a1e4-d9005977fd42"
+      ],
+      "final_first_last_ids": [
+        "791bcf77-2607-4c71-8370-904d3ad129b7",
+        "36195c26-7f48-4d2d-a1e4-d9005977fd42"
+      ]
+    },
+    {
+      "path": "historical_json/06-A/setup/requests.partial.jsonl",
+      "equal": true,
+      "partial_bytes": 442155,
+      "final_bytes": 442155,
+      "partial_lines": 352,
+      "final_lines": 352,
+      "partial_sha256": "f4d8e607fe66acec10d687b4a918c88d3c947678d887691494aac2e57bceb986",
+      "final_sha256": "f4d8e607fe66acec10d687b4a918c88d3c947678d887691494aac2e57bceb986",
+      "top_partial_expected": "f4d8e607fe66acec10d687b4a918c88d3c947678d887691494aac2e57bceb986",
+      "run_partial_expected": "f4d8e607fe66acec10d687b4a918c88d3c947678d887691494aac2e57bceb986",
+      "top_final_expected": "f4d8e607fe66acec10d687b4a918c88d3c947678d887691494aac2e57bceb986",
+      "run_final_expected": "f4d8e607fe66acec10d687b4a918c88d3c947678d887691494aac2e57bceb986",
+      "first_differing_byte": 442155,
+      "identical_leading_lines": 352,
+      "partial_is_final_prefix": true,
+      "final_is_partial_prefix": true,
+      "partial_trailing_newline": true,
+      "final_trailing_newline": true,
+      "partial_parse_errors": [],
+      "final_parse_errors": [],
+      "partial_first_last_ids": [
+        "53c6e84f-3d8a-4056-bdb9-3ea40642f586",
+        "0f3ac852-6007-412a-84f1-43adadb0d5c8"
+      ],
+      "final_first_last_ids": [
+        "53c6e84f-3d8a-4056-bdb9-3ea40642f586",
+        "0f3ac852-6007-412a-84f1-43adadb0d5c8"
+      ]
+    }
+  ],
+  "primary_sha256": "d5f8a71327e2eb47cf411ae59194bb168762254500401b946afa93c2e73d9619",
+  "primary": {
+    "schema": "r15-recovery-experiment-analysis/1",
+    "status": "FAIL",
+    "error": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1/historical_json/02-S/proxy_large_text/operations.partial.jsonl: hash mismatch"
+  },
+  "raw_modified": false,
+  "root_cause": "UNKNOWN; this audit establishes observed bytes and hash disagreement only"
+}

@@ -1,0 +1,54 @@
+{
+  "schema": "dual-path-canary-post-publish-readback/1",
+  "observations": [
+    {
+      "root": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+      "readback_ns": 1793341468815647769,
+      "producer_witness": {
+        "bytes": 23990,
+        "original_inode": "5704",
+        "pid": 5,
+        "published_ns": 1793341345523762249,
+        "records": 100,
+        "root": "/workspace/scratch/6757c94bd47c/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+        "schema": "dual-path-original-trace-canary/1",
+        "sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271",
+        "source_exists_after_publish": false
+      },
+      "trace_inode": "5704",
+      "trace_rows": 100,
+      "trace_sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271",
+      "trace_hash_matches": true,
+      "trace_inode_matches": true,
+      "staging_exists": true,
+      "staging_inode": "5706",
+      "staging_rows": 52,
+      "staging_bytes": 12470,
+      "staging_prefix_of_trace": true,
+      "staging_sha256": "b22fc45b155cb0efa1eba420afbd0e09c9c5568d2b872253bd25f9a686977f54",
+      "staging_mtime_ns": 1793341337798234772,
+      "staging_ctime_ns": 1793341348538523049
+    },
+    {
+      "root": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+      "readback_ns": 1793341468815837194,
+      "producer_witness": {
+        "bytes": 23990,
+        "original_inode": "1354852",
+        "pid": 5,
+        "published_ns": 1793341345525898382,
+        "records": 100,
+        "root": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c",
+        "schema": "dual-path-original-trace-canary/1",
+        "sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271",
+        "source_exists_after_publish": false
+      },
+      "trace_inode": "1354852",
+      "trace_rows": 100,
+      "trace_sha256": "6ff08ae7ae08893607269618d5cd58ff0417a6520b5aac554a3df63a5b430271",
+      "trace_hash_matches": true,
+      "trace_inode_matches": true,
+      "staging_exists": false
+    }
+  ]
+}

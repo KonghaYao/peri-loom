@@ -493,6 +493,17 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.22
+
+This is a documentation-only handoff release. Performance work was stopped
+early: the 1.5x target and the 1.1x/1.0x acceptance thresholds are not met, and
+no candidate was merged. The measured JSON-row comparison reduced mean latency
+by 5.97%–8.01% (1.064x–1.087x), but groups regressed and business p99 remains
+1.76x–2.34x sqld. The handoff, unfinished-work list, failure records and
+verified evidence manifest are under
+`docs/performance-review/performance-stop-2026-10-30/`; the sealed evidence
+ZIPs are release assets. No runtime behavior changed in this release.
+
 ## v1.1.21
 
 This preview hands successful in-process Hrana results directly from the

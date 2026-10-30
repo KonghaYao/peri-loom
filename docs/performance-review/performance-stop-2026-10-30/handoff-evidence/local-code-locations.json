@@ -1,0 +1,41 @@
+{
+  "scope": "Metadata only; source code remains in local Git worktrees, no remote push/merge/deploy",
+  "worktrees": [
+    {
+      "worktree": "/workspace/scratch/6757c94bd47c/peri-loom-recovery",
+      "commit": "92a35a9ad138f67b9f3a5a9f61d3de0a61a5c925",
+      "branch": "perf/issue20-round15-recovered",
+      "status_short": "?? docs/performance-review/issue20-round15-recovery/independent-go-cpu-diagnostic-build-binding.json\n?? docs/performance-review/issue20-round15-recovery/independent-json-wire-owned-first-build-binding.json\n?? docs/performance-review/issue20-round15-recovery/independent-json-wire-source-review.json\n?? docs/performance-review/issue20-round15-recovery/independent-private-trace-capture-review.json\n?? docs/performance-review/issue20-round15-recovery/independent-private-trace-prepare-supplement.json\n?? docs/performance-review/issue20-round15-recovery/independent-trace-v3-capture-review.json\n?? scripts/perf-reliability/issue20-round15-recovery-v2/experiments/owned-first-76433aad-dual-gate-private-v3.json\n?? scripts/perf-reliability/issue20-round15-recovery-v2/owned-first-private-gate.test.py\n?? scripts/perf-reliability/issue20-round15-recovery-v2/run-owned-first-gate-trace.py\n?? scripts/perf-reliability/issue20-round15-recovery-v2/run-private-owned-first-gate.py"
+    },
+    {
+      "worktree": "/workspace/scratch/6757c94bd47c/peri-loom-next-json-rows",
+      "commit": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+      "branch": "perf/next-json-rows",
+      "status_short": ""
+    },
+    {
+      "worktree": "/workspace/scratch/6757c94bd47c/peri-loom-next-json-wire",
+      "commit": "1059775748132899dd92fcda447d6d46bfc5ad07",
+      "branch": "perf/r15-json-wire",
+      "status_short": ""
+    },
+    {
+      "worktree": "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+      "commit": "76433aad48590753841c0ca6b944620ca0295a53",
+      "branch": "perf/issue20-owned-first",
+      "status_short": ""
+    },
+    {
+      "worktree": "/workspace/scratch/6757c94bd47c/peri-loom-next-cursor-flush",
+      "commit": "5bfad86652b04b6b266d40e79fe8c2189204e946",
+      "branch": "perf/next-cursor-flush",
+      "status_short": ""
+    },
+    {
+      "worktree": "/workspace/scratch/6757c94bd47c/peri-loom-next-authority-read",
+      "commit": "f8f5cef611bdd7ac45150048ec11e68b82ad9eeb",
+      "branch": "perf/next-authority-read",
+      "status_short": ""
+    }
+  ]
+}

@@ -1,0 +1,3455 @@
+{
+  "schema": "r15-independent-private-owned-first-functional/1",
+  "status": "PASS_RAW_EVIDENCE_PRIMARY_PENDING",
+  "capture_root": "/tmp/peri-r15-owned-first-76433-functional-capture-v1",
+  "prepared_root": "/tmp/peri-r15-owned-first-76433-functional-prepared-v2",
+  "primary_report": null,
+  "primary_report_sha256": null,
+  "contract_sha256": "e4a9f00f071e75ae46c22be4b2ae03aa90ec6c2ab782fc0605270a87ac52c346",
+  "freeze_sha256": "8811262868a6166b503f9d89fcfd7e12bba23f3e3a3f6effb258f2275895953a",
+  "frozen_inputs_checked": 379,
+  "exact_sealed_files": 266,
+  "sealed_manifest_sha256": "b41aa4e0233d3ce85fceba7a909c1d11a9aa3b8c1e6ce71a6722b2f8140be3e4",
+  "source_identities": {
+    "A": {
+      "arm": "A",
+      "engine": "peri",
+      "source_commit": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+      "binary_sha256": "289c2df3775b3527252e2a93458d7955f165410482470cc4384b4cdd39135b52",
+      "native_source_commit": "b6746f3f8c460fafb9ac63a4b2a06f0357325688",
+      "native_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+      "profile": {
+        "completion_journal": 1,
+        "guarded_read_journal": 1,
+        "append_fdatasync": 1,
+        "completion_prezero": 1,
+        "work_metrics": 1,
+        "phase_metrics": 0,
+        "wire_diagnostic": 0
+      }
+    },
+    "B": {
+      "arm": "B",
+      "engine": "peri",
+      "source_commit": "76433aad48590753841c0ca6b944620ca0295a53",
+      "binary_sha256": "d868fa9b0f0d12356848c6b352fcd88fac6b53edd65ea0c67c462b8351843a64",
+      "native_source_commit": "b6746f3f8c460fafb9ac63a4b2a06f0357325688",
+      "native_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+      "profile": {
+        "completion_journal": 1,
+        "guarded_read_journal": 1,
+        "append_fdatasync": 1,
+        "completion_prezero": 1,
+        "work_metrics": 1,
+        "phase_metrics": 0,
+        "wire_diagnostic": 0
+      }
+    },
+    "S": {
+      "arm": "S",
+      "engine": "sqld",
+      "source_commit": "40c272de85ee4e62d722c5ccae5da2e76b4253a1",
+      "binary_sha256": "77ec3e1c4e497f9fcf7c775154d1a9afa75f6d140eeec731713362b2af5e496b",
+      "native_source_commit": null,
+      "native_binary_sha256": null,
+      "profile": {
+        "sqlite_journal_mode": "wal",
+        "sqlite_synchronous": 1
+      }
+    }
+  },
+  "business_operations": 12,
+  "business_HTTP_requests": 30,
+  "actual_close_acknowledgements": 12,
+  "original_frontend_bodies_independently_replayed": 60,
+  "original_control_replies_independently_decoded": 16,
+  "setup_businesses_separate": 352,
+  "original_canonical_trace_files_verified": 28,
+  "original_canonical_trace_checks": [
+    {
+      "path": "protobuf/01-B/proxy_empty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621541,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 2418,
+      "sha256": "915a464fb8652f7236fa7b8d200a2f1f9f5e8c5ce299ef2801d77e210c8e72d4",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621542,
+      "nlink": 1,
+      "records": 3,
+      "bytes": 3363,
+      "sha256": "a6eb61d78bb0035c35203d5c4e067d5d268822834b52b5171556557eb14c5df4",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621563,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 2423,
+      "sha256": "67b5362494b68a79ea9c1fb3866e9cd4d2311dfbdaf6ef043a3a3b24413baddf",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621564,
+      "nlink": 1,
+      "records": 3,
+      "bytes": 3363,
+      "sha256": "2a03de3326fc6f88c7e2566478026b9f1080113002eb2c98fb8b816f7de1f4d5",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621585,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 2427,
+      "sha256": "1a96145a975d501e0ef125a520caa78aec634eee346f9c3f498bbb0b8702cd00",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621586,
+      "nlink": 1,
+      "records": 3,
+      "bytes": 3363,
+      "sha256": "aa09a965fba7a72aedd780c4d4f32b1ef1c7b9280b00c65af05cb2acf3c0893c",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621607,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 2430,
+      "sha256": "7a00575fb438d58aa0197cde9a9080e5721e195f72c03e0499364ada6c765607",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621608,
+      "nlink": 1,
+      "records": 3,
+      "bytes": 3374,
+      "sha256": "68385f864a3679878eebeda60eea19b2241e41b57d2563d6985e8ef70c4ff70c",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621629,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 2433,
+      "sha256": "e464c7209fdf376f41c012e729394e173ec35eee1768c208c8817e8f686ec049",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621630,
+      "nlink": 1,
+      "records": 3,
+      "bytes": 3375,
+      "sha256": "da5f8212d568e889c003671cddc431b1386795b1fc684f5f0a490698f03409c7",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621651,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 2442,
+      "sha256": "2192bb488ba2fc65d690b976c681d60276e13685420abbe83df6b09de91c34e9",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621652,
+      "nlink": 1,
+      "records": 3,
+      "bytes": 3385,
+      "sha256": "2dbd108e56d310f878920de0da713d9efd33c3d0f8e3232d6e059b0b85b9a465",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623489,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 1846,
+      "sha256": "aa2fdaa1f8244f6da8c21f6aadaccb5451e7ba6a2551f94efbc262ef6262e61e",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623490,
+      "nlink": 1,
+      "records": 2,
+      "bytes": 2498,
+      "sha256": "3dfa26371749d81c4a2a92f025f0863c9ecbd93a4d36f522c4cbcbaca068c5a7",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623509,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 1848,
+      "sha256": "1f991df328898f375f6367b03f3deb59d467066cc9d431426c87f11e3c0a362c",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623510,
+      "nlink": 1,
+      "records": 2,
+      "bytes": 2501,
+      "sha256": "a5e67fa6cdbe92a184bd4169f4625f4be21cdbb3726f9e8b351bdb35ea7379f9",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623529,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 1864,
+      "sha256": "a01c07f64b646593cce5709de850a06ce2d0730c5454550615fa3cf9925e195b",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623530,
+      "nlink": 1,
+      "records": 2,
+      "bytes": 2503,
+      "sha256": "af31d2bb262f74e529f5edf4b22fc12cc8f97b1168a68b4739a9a5a68f7b90ea",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623549,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 1859,
+      "sha256": "38d77a3bf4223eadc146f9c291abb39aca926d0423a73be5a813400af4217205",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623550,
+      "nlink": 1,
+      "records": 2,
+      "bytes": 2509,
+      "sha256": "d982972c604366d630c31a0dbe6124c0269310cdb8d404f34ada202194bb8070",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623569,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 1861,
+      "sha256": "ff5dfa02ac43a129f9871949b906a345bfba6143a8004667420cb7a92985bf0f",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623570,
+      "nlink": 1,
+      "records": 2,
+      "bytes": 2514,
+      "sha256": "2104660c113c3b3ec787bb92a4d607a193ec6b559953495bb4dc4b27cb76ad5f",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623589,
+      "nlink": 1,
+      "records": 1,
+      "bytes": 1875,
+      "sha256": "b487d5d0f29a5f1ad0b93917e37990dbe3b4f58ecaab1c4cdf47e4f02217f84b",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623590,
+      "nlink": 1,
+      "records": 2,
+      "bytes": 2520,
+      "sha256": "ceb6cab88afe973a46579d1bf4a6ef11a0d68ee7bcade513769fb08e007a9f71",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/setup/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1619786,
+      "nlink": 1,
+      "records": 176,
+      "bytes": 313913,
+      "sha256": "f637929ccbfd7e96a1b580e82b7858bfb200105d19a34b558e40abc78b234231",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "protobuf/01-B/setup/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1619787,
+      "nlink": 1,
+      "records": 352,
+      "bytes": 442167,
+      "sha256": "ec7c0ce45ee84a481c528d5920521621ce03793246115ea935fb207758fc727e",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/setup/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621757,
+      "nlink": 1,
+      "records": 176,
+      "bytes": 313967,
+      "sha256": "8d4b3d1efa96b080b7394cc8948d6e98428bf5ad7a86738fd66d2bbf383a795d",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    },
+    {
+      "path": "historical_json/01-B/setup/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621758,
+      "nlink": 1,
+      "records": 352,
+      "bytes": 442187,
+      "sha256": "d8b6b693fa40220cfc0facf05351b3048b72741ea18dcf7d8b2604e7fe1d507e",
+      "original_metadata_inode_matches": true,
+      "no_staging_name": true,
+      "final_byte_equal": true
+    }
+  ],
+  "run_results": [
+    {
+      "status": "PASS",
+      "run_id": "27dced2e-cae1-4215-91ec-a99bc7ac79e7",
+      "operations": 1,
+      "requests": 3,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 6,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "c8ef6c20-bc54-4a47-8a06-ef5bbff7659f",
+      "operations": 1,
+      "requests": 3,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 6,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "054c3590-2ced-475b-beb8-61f49ca90749",
+      "operations": 1,
+      "requests": 3,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 6,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "9be4814c-a45b-421c-92f2-c6b7bedc9070",
+      "operations": 1,
+      "requests": 3,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 6,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "16bd4ac6-9297-491c-a47e-f3cf1a223603",
+      "operations": 1,
+      "requests": 3,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 6,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "77aeb26c-dcff-44c6-865c-a8c62b14cff0",
+      "operations": 1,
+      "requests": 3,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 6,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "fa9cbf5a-9f4b-4ab9-a865-25ab68f3d697",
+      "operations": 1,
+      "requests": 2,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 4,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "b32dfea8-8478-4c72-ba14-f5cc008ca452",
+      "operations": 1,
+      "requests": 2,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 4,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "c89613d8-0abd-443d-84bd-1f5c1df58554",
+      "operations": 1,
+      "requests": 2,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 4,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "cf1cca91-de4d-43c2-a56b-3d1241a51e16",
+      "operations": 1,
+      "requests": 2,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 4,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "4dc54a92-eaab-4dfc-b8cd-2a3b3f51008e",
+      "operations": 1,
+      "requests": 2,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 4,
+      "scope": "Independent original-body replay"
+    },
+    {
+      "status": "PASS",
+      "run_id": "1c08ab46-72f1-42e9-a26e-02f0276212d8",
+      "operations": 1,
+      "requests": 2,
+      "acknowledgements": 1,
+      "original_body_files_replayed": 4,
+      "scope": "Independent original-body replay"
+    }
+  ],
+  "runtime": {
+    "protobuf": {
+      "snapshots": 14,
+      "per_scene_append_sync_delta": {
+        "proxy_empty": 6,
+        "proxy_one": 6,
+        "proxy_twenty": 6,
+        "proxy_narrow": 39,
+        "proxy_large_text": 39,
+        "proxy_large_all": 39
+      },
+      "total_append_sync_delta": 135,
+      "legacy_audit_sync_delta": 0,
+      "prezero_before": {
+        "prezero_enabled": true,
+        "prezero_write_count": 28,
+        "prezero_write_bytes": 1833796,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 1734747
+      },
+      "prezero_after": {
+        "prezero_enabled": true,
+        "prezero_write_count": 31,
+        "prezero_write_bytes": 2030202,
+        "known_active_extent_bytes": 65536,
+        "known_retained_extent_bytes": 1867769
+      }
+    },
+    "historical_json": {
+      "snapshots": 14,
+      "per_scene_append_sync_delta": {
+        "proxy_empty": 6,
+        "proxy_one": 6,
+        "proxy_twenty": 6,
+        "proxy_narrow": 39,
+        "proxy_large_text": 39,
+        "proxy_large_all": 39
+      },
+      "total_append_sync_delta": 135,
+      "legacy_audit_sync_delta": 0,
+      "prezero_before": {
+        "prezero_enabled": true,
+        "prezero_write_count": 28,
+        "prezero_write_bytes": 1833796,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 1734747
+      },
+      "prezero_after": {
+        "prezero_enabled": true,
+        "prezero_write_count": 31,
+        "prezero_write_bytes": 2030202,
+        "known_active_extent_bytes": 65536,
+        "known_retained_extent_bytes": 1867769
+      }
+    }
+  },
+  "native": {
+    "protobuf": {
+      "before": {
+        "control_requests": 4,
+        "pages": 0,
+        "bytes": 0,
+        "worker_a": {
+          "binary_read_pages_written": 0,
+          "binary_read_page_bytes": 0
+        },
+        "worker_b": {
+          "binary_read_pages_written": 0,
+          "binary_read_page_bytes": 0
+        }
+      },
+      "after": {
+        "control_requests": 4,
+        "pages": 99,
+        "bytes": 39931220,
+        "worker_a": {
+          "binary_read_pages_written": 99,
+          "binary_read_page_bytes": 39931220
+        },
+        "worker_b": {
+          "binary_read_pages_written": 0,
+          "binary_read_page_bytes": 0
+        }
+      }
+    },
+    "historical_json": {
+      "before": {
+        "control_requests": 4,
+        "pages": 0,
+        "bytes": 0,
+        "worker_a": {
+          "binary_read_pages_written": 0,
+          "binary_read_page_bytes": 0
+        },
+        "worker_b": {
+          "binary_read_pages_written": 0,
+          "binary_read_page_bytes": 0
+        }
+      },
+      "after": {
+        "control_requests": 4,
+        "pages": 99,
+        "bytes": 39931220,
+        "worker_a": {
+          "binary_read_pages_written": 99,
+          "binary_read_page_bytes": 39931220
+        },
+        "worker_b": {
+          "binary_read_pages_written": 0,
+          "binary_read_page_bytes": 0
+        }
+      }
+    }
+  },
+  "process_identities_verified_and_now_absent": [
+    {
+      "arm": "B",
+      "role": "service",
+      "global_pid": 149307,
+      "start_ticks": 2418577,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "worker-b",
+      "global_pid": 149327,
+      "start_ticks": 2418628,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "platform",
+      "global_pid": 149312,
+      "start_ticks": 2418604,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "worker-a",
+      "global_pid": 149322,
+      "start_ticks": 2418615,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "authority",
+      "global_pid": 149308,
+      "start_ticks": 2418593,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "service",
+      "global_pid": 150419,
+      "start_ticks": 2420650,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "worker-b",
+      "global_pid": 150438,
+      "start_ticks": 2420704,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "platform",
+      "global_pid": 150424,
+      "start_ticks": 2420680,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "worker-a",
+      "global_pid": 150433,
+      "start_ticks": 2420692,
+      "absent_observed_now": true
+    },
+    {
+      "arm": "B",
+      "role": "authority",
+      "global_pid": 150420,
+      "start_ticks": 2420665,
+      "absent_observed_now": true
+    }
+  ],
+  "service_exit_codes": [
+    0,
+    0
+  ],
+  "private_capture_layout": {
+    "schema": "r15-private-capture-layout/1",
+    "capture_root": "/tmp/peri-r15-owned-first-76433-functional-capture-v1",
+    "service_root": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1",
+    "service_storage_policy": "workspace-journal-database-cache",
+    "original_storage_policy": "private-tmp-no-workspace-live-alias",
+    "export_policy": "after-in-place-dual-audit-single-zip-member-verified"
+  },
+  "service_storage_attestations": [
+    {
+      "leg": "protobuf/01-B",
+      "binding": {
+        "schema": "r15-service-storage-binding/1",
+        "arm": "B",
+        "track": "protobuf",
+        "leg": 1,
+        "alias": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/service",
+        "target": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service",
+        "alias_dev": "27",
+        "alias_ino": "1619720",
+        "target_dev": "27",
+        "target_ino": "1619719",
+        "launcher_argv": [
+          "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/launch-tcp-diagnostic.py",
+          "--repo",
+          "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+          "--identity-directory",
+          "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/process-identities",
+          "--run-dir",
+          "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service",
+          "--listen",
+          "127.0.0.1:19443",
+          "--no-build"
+        ],
+        "outer_log": {
+          "path": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/service.log",
+          "dev": "27",
+          "ino": "1619716"
+        },
+        "created_unix_ns": 1793344726426857795,
+        "service_generated_evidence": {
+          "logs_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs",
+          "owned_proof_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/owned-proof",
+          "scope": "service-owned-workspace-originals-excluded-from-capture-seal"
+        }
+      },
+      "actual_process_storage": [
+        {
+          "schema": "r15-service-storage-processes/1",
+          "observed_unix_ns": 1793344742435669793,
+          "processes": {
+            "service": {
+              "global_pid": 149307,
+              "argv": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/launch-tcp-diagnostic.py",
+                "--repo",
+                "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+                "--identity-directory",
+                "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/process-identities",
+                "--run-dir",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service",
+                "--listen",
+                "127.0.0.1:19443",
+                "--no-build"
+              ],
+              "stderr_realpath": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/service.log"
+            },
+            "authority": {
+              "global_pid": 149308,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "authority",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/backend",
+                "127.0.0.1:58955",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/authority"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/authority.log"
+            },
+            "platform": {
+              "global_pid": 149312,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/peri-platform",
+                "-config",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/platform.json"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/platform.log"
+            },
+            "worker-a": {
+              "global_pid": 149322,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:58955",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/cache-a",
+                "worker-a",
+                "127.0.0.1:35803"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/worker-a.log"
+            },
+            "worker-b": {
+              "global_pid": 149327,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:58955",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/cache-b",
+                "worker-b",
+                "127.0.0.1:44875"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/worker-b.log"
+            }
+          }
+        },
+        {
+          "schema": "r15-service-storage-processes/1",
+          "observed_unix_ns": 1793344746787983391,
+          "processes": {
+            "service": {
+              "global_pid": 149307,
+              "argv": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/launch-tcp-diagnostic.py",
+                "--repo",
+                "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+                "--identity-directory",
+                "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/process-identities",
+                "--run-dir",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service",
+                "--listen",
+                "127.0.0.1:19443",
+                "--no-build"
+              ],
+              "stderr_realpath": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/protobuf/01-B/service.log"
+            },
+            "authority": {
+              "global_pid": 149308,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "authority",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/backend",
+                "127.0.0.1:58955",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/authority"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/authority.log"
+            },
+            "platform": {
+              "global_pid": 149312,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/peri-platform",
+                "-config",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/platform.json"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/platform.log"
+            },
+            "worker-a": {
+              "global_pid": 149322,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:58955",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/cache-a",
+                "worker-a",
+                "127.0.0.1:35803"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/worker-a.log"
+            },
+            "worker-b": {
+              "global_pid": 149327,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:58955",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/cache-b",
+                "worker-b",
+                "127.0.0.1:44875"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/protobuf/01-B/service/logs/worker-b.log"
+            }
+          }
+        }
+      ],
+      "private_outer_log_sha256": "91b0800a59e00ddff481fc34d2d59e272782e003bfb6ff7ce1798c0b18f6630c"
+    },
+    {
+      "leg": "historical_json/01-B",
+      "binding": {
+        "schema": "r15-service-storage-binding/1",
+        "arm": "B",
+        "track": "historical_json",
+        "leg": 1,
+        "alias": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/service",
+        "target": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service",
+        "alias_dev": "27",
+        "alias_ino": "1621691",
+        "target_dev": "27",
+        "target_ino": "1621690",
+        "launcher_argv": [
+          "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/launch-tcp-diagnostic.py",
+          "--repo",
+          "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+          "--identity-directory",
+          "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/process-identities",
+          "--run-dir",
+          "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service",
+          "--listen",
+          "127.0.0.1:19443",
+          "--no-build"
+        ],
+        "outer_log": {
+          "path": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/service.log",
+          "dev": "27",
+          "ino": "1621687"
+        },
+        "created_unix_ns": 1793344747156453865,
+        "service_generated_evidence": {
+          "logs_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs",
+          "owned_proof_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/owned-proof",
+          "scope": "service-owned-workspace-originals-excluded-from-capture-seal"
+        }
+      },
+      "actual_process_storage": [
+        {
+          "schema": "r15-service-storage-processes/1",
+          "observed_unix_ns": 1793344763528489744,
+          "processes": {
+            "service": {
+              "global_pid": 150419,
+              "argv": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/launch-tcp-diagnostic.py",
+                "--repo",
+                "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+                "--identity-directory",
+                "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/process-identities",
+                "--run-dir",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service",
+                "--listen",
+                "127.0.0.1:19443",
+                "--no-build"
+              ],
+              "stderr_realpath": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/service.log"
+            },
+            "authority": {
+              "global_pid": 150420,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "authority",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/backend",
+                "127.0.0.1:33951",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/authority"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/authority.log"
+            },
+            "platform": {
+              "global_pid": 150424,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/peri-platform",
+                "-config",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/platform.json"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/platform.log"
+            },
+            "worker-a": {
+              "global_pid": 150433,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:33951",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/cache-a",
+                "worker-a",
+                "127.0.0.1:38151"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/worker-a.log"
+            },
+            "worker-b": {
+              "global_pid": 150438,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:33951",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/cache-b",
+                "worker-b",
+                "127.0.0.1:41457"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/worker-b.log"
+            }
+          }
+        },
+        {
+          "schema": "r15-service-storage-processes/1",
+          "observed_unix_ns": 1793344767599358366,
+          "processes": {
+            "service": {
+              "global_pid": 150419,
+              "argv": [
+                "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "/workspace/scratch/6757c94bd47c/peri-loom-recovery/scripts/perf-reliability/issue20-round15-recovery-v2/launch-tcp-diagnostic.py",
+                "--repo",
+                "/workspace/scratch/6757c94bd47c/peri-loom-next-owned-first",
+                "--identity-directory",
+                "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/process-identities",
+                "--run-dir",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service",
+                "--listen",
+                "127.0.0.1:19443",
+                "--no-build"
+              ],
+              "stderr_realpath": "/tmp/peri-r15-owned-first-76433-functional-capture-v1/historical_json/01-B/service.log"
+            },
+            "authority": {
+              "global_pid": 150420,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "authority",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/backend",
+                "127.0.0.1:33951",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/authority"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/authority.log"
+            },
+            "platform": {
+              "global_pid": 150424,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-owned-first-go/peri-platform",
+                "-config",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/platform.json"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/platform.log"
+            },
+            "worker-a": {
+              "global_pid": 150433,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:33951",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/cache-a",
+                "worker-a",
+                "127.0.0.1:38151"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/worker-a.log"
+            },
+            "worker-b": {
+              "global_pid": 150438,
+              "argv": [
+                "/workspace/scratch/6757c94bd47c/builds-recovery/candidate-native/peri-loom-v1",
+                "owned-worker",
+                "http://127.0.0.1:33951",
+                "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/cache-b",
+                "worker-b",
+                "127.0.0.1:41457"
+              ],
+              "stderr_realpath": "/workspace/scratch/6757c94bd47c/performance-r15-service-data/owned-first-76433-functional-v1/historical_json/01-B/service/logs/worker-b.log"
+            }
+          }
+        }
+      ],
+      "private_outer_log_sha256": "ddfa195b060f9a4b2596c11a42003d5796c3ebbaae6029625e8896eb8e5532ad"
+    }
+  ],
+  "physical_capture_entry_inventory": [
+    {
+      "path": "historical_json",
+      "dev": 27,
+      "ino": 1621684,
+      "mode": 16877,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf",
+      "dev": 27,
+      "ino": 1619713,
+      "mode": 16877,
+      "bytes": 4096
+    },
+    {
+      "path": "contract.json",
+      "dev": 27,
+      "ino": 1619692,
+      "mode": 33152,
+      "bytes": 10247
+    },
+    {
+      "path": "evidence-sha256.json",
+      "dev": 27,
+      "ino": 1623620,
+      "mode": 33152,
+      "bytes": 34175
+    },
+    {
+      "path": "freeze.json",
+      "dev": 27,
+      "ino": 1619693,
+      "mode": 33152,
+      "bytes": 89681
+    },
+    {
+      "path": "completed.json",
+      "dev": 27,
+      "ino": 1623621,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B",
+      "dev": 27,
+      "ino": 1621685,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/process-identities",
+      "dev": 27,
+      "ino": 1621694,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty",
+      "dev": 27,
+      "ino": 1623527,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow",
+      "dev": 27,
+      "ino": 1623547,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text",
+      "dev": 27,
+      "ino": 1623567,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty",
+      "dev": 27,
+      "ino": 1623487,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/setup",
+      "dev": 27,
+      "ino": 1621756,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all",
+      "dev": 27,
+      "ino": 1623587,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/service",
+      "dev": 27,
+      "ino": 1621691,
+      "mode": 41471,
+      "bytes": 121
+    },
+    {
+      "path": "historical_json/01-B/proxy_one",
+      "dev": 27,
+      "ino": 1623507,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_large_all-before.json",
+      "dev": 27,
+      "ino": 1623585,
+      "mode": 33152,
+      "bytes": 1243
+    },
+    {
+      "path": "historical_json/01-B/native-metrics-before.json",
+      "dev": 27,
+      "ino": 1623472,
+      "mode": 33152,
+      "bytes": 64684
+    },
+    {
+      "path": "historical_json/01-B/runtime-before.json",
+      "dev": 27,
+      "ino": 1623481,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/service.log",
+      "dev": 27,
+      "ino": 1621687,
+      "mode": 33188,
+      "bytes": 397
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty.log",
+      "dev": 27,
+      "ino": 1623526,
+      "mode": 33188,
+      "bytes": 1011
+    },
+    {
+      "path": "historical_json/01-B/service-identity.json",
+      "dev": 27,
+      "ino": 1621693,
+      "mode": 33152,
+      "bytes": 557
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text.log",
+      "dev": 27,
+      "ino": 1623566,
+      "mode": 33188,
+      "bytes": 935
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_narrow-after.json",
+      "dev": 27,
+      "ino": 1623564,
+      "mode": 33152,
+      "bytes": 1239
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow.log",
+      "dev": 27,
+      "ino": 1623546,
+      "mode": 33188,
+      "bytes": 931
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_one-after.json",
+      "dev": 27,
+      "ino": 1623524,
+      "mode": 33152,
+      "bytes": 1236
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_one-before.json",
+      "dev": 27,
+      "ino": 1623505,
+      "mode": 33152,
+      "bytes": 1237
+    },
+    {
+      "path": "historical_json/01-B/runtime-after.json",
+      "dev": 27,
+      "ino": 1623607,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_one.log",
+      "dev": 27,
+      "ino": 1623506,
+      "mode": 33188,
+      "bytes": 918
+    },
+    {
+      "path": "historical_json/01-B/service-storage-processes-after.json",
+      "dev": 27,
+      "ino": 1623611,
+      "mode": 33152,
+      "bytes": 3313
+    },
+    {
+      "path": "historical_json/01-B/native-metrics-after.log",
+      "dev": 27,
+      "ino": 1623609,
+      "mode": 33188,
+      "bytes": 140
+    },
+    {
+      "path": "historical_json/01-B/native-metrics-after-targets.json",
+      "dev": 27,
+      "ino": 1623608,
+      "mode": 33152,
+      "bytes": 239
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_large_all-after.json",
+      "dev": 27,
+      "ino": 1623606,
+      "mode": 33152,
+      "bytes": 1242
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_large_text-after.json",
+      "dev": 27,
+      "ino": 1623584,
+      "mode": 33152,
+      "bytes": 1243
+    },
+    {
+      "path": "historical_json/01-B/processes-before.json",
+      "dev": 27,
+      "ino": 1623480,
+      "mode": 33152,
+      "bytes": 11938
+    },
+    {
+      "path": "historical_json/01-B/service-storage.json",
+      "dev": 27,
+      "ino": 1621692,
+      "mode": 33152,
+      "bytes": 1726
+    },
+    {
+      "path": "historical_json/01-B/native-metrics-before-targets.json",
+      "dev": 27,
+      "ino": 1623482,
+      "mode": 33152,
+      "bytes": 239
+    },
+    {
+      "path": "historical_json/01-B/processes-after.json",
+      "dev": 27,
+      "ino": 1623612,
+      "mode": 33152,
+      "bytes": 11938
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_narrow-before.json",
+      "dev": 27,
+      "ino": 1623545,
+      "mode": 33152,
+      "bytes": 1240
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_empty-before.json",
+      "dev": 27,
+      "ino": 1623485,
+      "mode": 33152,
+      "bytes": 1239
+    },
+    {
+      "path": "historical_json/01-B/identity.json",
+      "dev": 27,
+      "ino": 1621686,
+      "mode": 33152,
+      "bytes": 559
+    },
+    {
+      "path": "historical_json/01-B/process-release.json",
+      "dev": 27,
+      "ino": 1621715,
+      "mode": 33152,
+      "bytes": 910
+    },
+    {
+      "path": "historical_json/01-B/native-metrics-after.json",
+      "dev": 27,
+      "ino": 1623610,
+      "mode": 33152,
+      "bytes": 64800
+    },
+    {
+      "path": "historical_json/01-B/service-storage-processes-before.json",
+      "dev": 27,
+      "ino": 1623479,
+      "mode": 33152,
+      "bytes": 3313
+    },
+    {
+      "path": "historical_json/01-B/lifecycle.json",
+      "dev": 27,
+      "ino": 1623619,
+      "mode": 33152,
+      "bytes": 363
+    },
+    {
+      "path": "historical_json/01-B/setup.log",
+      "dev": 27,
+      "ino": 1621755,
+      "mode": 33188,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/launch-profile.json",
+      "dev": 27,
+      "ino": 1621754,
+      "mode": 33152,
+      "bytes": 377
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_empty-after.json",
+      "dev": 27,
+      "ino": 1623504,
+      "mode": 33152,
+      "bytes": 1238
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty.log",
+      "dev": 27,
+      "ino": 1623486,
+      "mode": 33188,
+      "bytes": 920
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_twenty-before.json",
+      "dev": 27,
+      "ino": 1623525,
+      "mode": 33152,
+      "bytes": 1240
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_twenty-after.json",
+      "dev": 27,
+      "ino": 1623544,
+      "mode": 33152,
+      "bytes": 1239
+    },
+    {
+      "path": "historical_json/01-B/native-metrics-before.log",
+      "dev": 27,
+      "ino": 1623483,
+      "mode": 33188,
+      "bytes": 132
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all.log",
+      "dev": 27,
+      "ino": 1623586,
+      "mode": 33188,
+      "bytes": 1014
+    },
+    {
+      "path": "historical_json/01-B/host-proxy_large_text-before.json",
+      "dev": 27,
+      "ino": 1623565,
+      "mode": 33152,
+      "bytes": 1244
+    },
+    {
+      "path": "historical_json/01-B/process-identities/worker-b.json",
+      "dev": 27,
+      "ino": 1621744,
+      "mode": 33152,
+      "bytes": 564
+    },
+    {
+      "path": "historical_json/01-B/process-identities/worker-a.json",
+      "dev": 27,
+      "ino": 1621740,
+      "mode": 33152,
+      "bytes": 564
+    },
+    {
+      "path": "historical_json/01-B/process-identities/worker-b-post-exec.json",
+      "dev": 27,
+      "ino": 1621745,
+      "mode": 33152,
+      "bytes": 615
+    },
+    {
+      "path": "historical_json/01-B/process-identities/platform.json",
+      "dev": 27,
+      "ino": 1621718,
+      "mode": 33152,
+      "bytes": 573
+    },
+    {
+      "path": "historical_json/01-B/process-identities/worker-a-post-exec.json",
+      "dev": 27,
+      "ino": 1621741,
+      "mode": 33152,
+      "bytes": 615
+    },
+    {
+      "path": "historical_json/01-B/process-identities/authority.json",
+      "dev": 27,
+      "ino": 1621711,
+      "mode": 33152,
+      "bytes": 564
+    },
+    {
+      "path": "historical_json/01-B/process-identities/platform-post-exec.json",
+      "dev": 27,
+      "ino": 1621731,
+      "mode": 33152,
+      "bytes": 624
+    },
+    {
+      "path": "historical_json/01-B/process-identities/authority-post-exec.json",
+      "dev": 27,
+      "ino": 1621716,
+      "mode": 33152,
+      "bytes": 615
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/wire",
+      "dev": 27,
+      "ino": 1623528,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/runtime-before.json",
+      "dev": 27,
+      "ino": 1623542,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623530,
+      "mode": 33152,
+      "bytes": 2503
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/runtime-after.json",
+      "dev": 27,
+      "ino": 1623543,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623536,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/requests.jsonl",
+      "dev": 27,
+      "ino": 1623538,
+      "mode": 33152,
+      "bytes": 2503
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623529,
+      "mode": 33152,
+      "bytes": 1864
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/operations.jsonl",
+      "dev": 27,
+      "ino": 1623537,
+      "mode": 33152,
+      "bytes": 1864
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/run.json",
+      "dev": 27,
+      "ino": 1623531,
+      "mode": 33152,
+      "bytes": 2900
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623541,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1623539,
+      "mode": 33152,
+      "bytes": 1038
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/summary.json",
+      "dev": 27,
+      "ino": 1623540,
+      "mode": 33152,
+      "bytes": 1235
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/wire/c315bca4-2e48-4c6b-91f5-01450b034d21.response.bin",
+      "dev": 27,
+      "ino": 1623533,
+      "mode": 33152,
+      "bytes": 2287
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/wire/ace2d5d3-3fee-48e3-adc1-6329752eaa9c.response.bin",
+      "dev": 27,
+      "ino": 1623535,
+      "mode": 33152,
+      "bytes": 69
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/wire/c315bca4-2e48-4c6b-91f5-01450b034d21.request.bin",
+      "dev": 27,
+      "ino": 1623532,
+      "mode": 33152,
+      "bytes": 266
+    },
+    {
+      "path": "historical_json/01-B/proxy_twenty/wire/ace2d5d3-3fee-48e3-adc1-6329752eaa9c.request.bin",
+      "dev": 27,
+      "ino": 1623534,
+      "mode": 33152,
+      "bytes": 74
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/wire",
+      "dev": 27,
+      "ino": 1623548,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/runtime-before.json",
+      "dev": 27,
+      "ino": 1623562,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623550,
+      "mode": 33152,
+      "bytes": 2509
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/runtime-after.json",
+      "dev": 27,
+      "ino": 1623563,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623556,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/requests.jsonl",
+      "dev": 27,
+      "ino": 1623558,
+      "mode": 33152,
+      "bytes": 2509
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623549,
+      "mode": 33152,
+      "bytes": 1859
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/operations.jsonl",
+      "dev": 27,
+      "ino": 1623557,
+      "mode": 33152,
+      "bytes": 1859
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/run.json",
+      "dev": 27,
+      "ino": 1623551,
+      "mode": 33152,
+      "bytes": 2902
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623561,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1623559,
+      "mode": 33152,
+      "bytes": 1040
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/summary.json",
+      "dev": 27,
+      "ino": 1623560,
+      "mode": 33152,
+      "bytes": 1155
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/wire/1f571c79-5e87-4758-baa5-9195f19e234a.response.bin",
+      "dev": 27,
+      "ino": 1623555,
+      "mode": 33152,
+      "bytes": 69
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/wire/d2c2bc3b-9f65-49d1-bb63-69b278e4bf80.request.bin",
+      "dev": 27,
+      "ino": 1623552,
+      "mode": 33152,
+      "bytes": 251
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/wire/d2c2bc3b-9f65-49d1-bb63-69b278e4bf80.response.bin",
+      "dev": 27,
+      "ino": 1623553,
+      "mode": 33152,
+      "bytes": 844519
+    },
+    {
+      "path": "historical_json/01-B/proxy_narrow/wire/1f571c79-5e87-4758-baa5-9195f19e234a.request.bin",
+      "dev": 27,
+      "ino": 1623554,
+      "mode": 33152,
+      "bytes": 74
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/wire",
+      "dev": 27,
+      "ino": 1623568,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/runtime-before.json",
+      "dev": 27,
+      "ino": 1623582,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623570,
+      "mode": 33152,
+      "bytes": 2514
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/runtime-after.json",
+      "dev": 27,
+      "ino": 1623583,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623576,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/requests.jsonl",
+      "dev": 27,
+      "ino": 1623578,
+      "mode": 33152,
+      "bytes": 2514
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623569,
+      "mode": 33152,
+      "bytes": 1861
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/operations.jsonl",
+      "dev": 27,
+      "ino": 1623577,
+      "mode": 33152,
+      "bytes": 1861
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/run.json",
+      "dev": 27,
+      "ino": 1623571,
+      "mode": 33152,
+      "bytes": 2906
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623581,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1623579,
+      "mode": 33152,
+      "bytes": 1042
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/summary.json",
+      "dev": 27,
+      "ino": 1623580,
+      "mode": 33152,
+      "bytes": 1159
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/wire/b757188b-d782-4994-ac3b-72ac56b798bb.request.bin",
+      "dev": 27,
+      "ino": 1623574,
+      "mode": 33152,
+      "bytes": 74
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/wire/b757188b-d782-4994-ac3b-72ac56b798bb.response.bin",
+      "dev": 27,
+      "ino": 1623575,
+      "mode": 33152,
+      "bytes": 69
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/wire/56fae6d2-47b5-492d-a4e2-e82342e1853f.request.bin",
+      "dev": 27,
+      "ino": 1623572,
+      "mode": 33152,
+      "bytes": 271
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_text/wire/56fae6d2-47b5-492d-a4e2-e82342e1853f.response.bin",
+      "dev": 27,
+      "ino": 1623573,
+      "mode": 33152,
+      "bytes": 25236271
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/wire",
+      "dev": 27,
+      "ino": 1623488,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/runtime-before.json",
+      "dev": 27,
+      "ino": 1623502,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623490,
+      "mode": 33152,
+      "bytes": 2498
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/runtime-after.json",
+      "dev": 27,
+      "ino": 1623503,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623496,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/requests.jsonl",
+      "dev": 27,
+      "ino": 1623498,
+      "mode": 33152,
+      "bytes": 2498
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623489,
+      "mode": 33152,
+      "bytes": 1846
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/operations.jsonl",
+      "dev": 27,
+      "ino": 1623497,
+      "mode": 33152,
+      "bytes": 1846
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/run.json",
+      "dev": 27,
+      "ino": 1623491,
+      "mode": 33152,
+      "bytes": 2898
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623501,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1623499,
+      "mode": 33152,
+      "bytes": 1037
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/summary.json",
+      "dev": 27,
+      "ino": 1623500,
+      "mode": 33152,
+      "bytes": 1144
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/wire/c08f27b5-bab9-4f10-a46f-7031eea0041c.request.bin",
+      "dev": 27,
+      "ino": 1623494,
+      "mode": 33152,
+      "bytes": 74
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/wire/57aeabf4-b19a-4768-9a18-9f804bc70ab9.request.bin",
+      "dev": 27,
+      "ino": 1623492,
+      "mode": 33152,
+      "bytes": 252
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/wire/c08f27b5-bab9-4f10-a46f-7031eea0041c.response.bin",
+      "dev": 27,
+      "ino": 1623495,
+      "mode": 33152,
+      "bytes": 69
+    },
+    {
+      "path": "historical_json/01-B/proxy_empty/wire/57aeabf4-b19a-4768-9a18-9f804bc70ab9.response.bin",
+      "dev": 27,
+      "ino": 1623493,
+      "mode": 33152,
+      "bytes": 376
+    },
+    {
+      "path": "historical_json/01-B/setup/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621758,
+      "mode": 33152,
+      "bytes": 442187
+    },
+    {
+      "path": "historical_json/01-B/setup/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623463,
+      "mode": 33152,
+      "bytes": 1431
+    },
+    {
+      "path": "historical_json/01-B/setup/requests.jsonl",
+      "dev": 27,
+      "ino": 1623476,
+      "mode": 33152,
+      "bytes": 442187
+    },
+    {
+      "path": "historical_json/01-B/setup/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621757,
+      "mode": 33152,
+      "bytes": 313967
+    },
+    {
+      "path": "historical_json/01-B/setup/operations.jsonl",
+      "dev": 27,
+      "ino": 1623475,
+      "mode": 33152,
+      "bytes": 313967
+    },
+    {
+      "path": "historical_json/01-B/setup/run.json",
+      "dev": 27,
+      "ino": 1621759,
+      "mode": 33152,
+      "bytes": 2851
+    },
+    {
+      "path": "historical_json/01-B/setup/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623478,
+      "mode": 33152,
+      "bytes": 636
+    },
+    {
+      "path": "historical_json/01-B/setup/summary.json",
+      "dev": 27,
+      "ino": 1623477,
+      "mode": 33152,
+      "bytes": 1115
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/wire",
+      "dev": 27,
+      "ino": 1623588,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/runtime-before.json",
+      "dev": 27,
+      "ino": 1623604,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623590,
+      "mode": 33152,
+      "bytes": 2520
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/runtime-after.json",
+      "dev": 27,
+      "ino": 1623605,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623598,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/requests.jsonl",
+      "dev": 27,
+      "ino": 1623600,
+      "mode": 33152,
+      "bytes": 2520
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623589,
+      "mode": 33152,
+      "bytes": 1875
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/operations.jsonl",
+      "dev": 27,
+      "ino": 1623599,
+      "mode": 33152,
+      "bytes": 1875
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/run.json",
+      "dev": 27,
+      "ino": 1623591,
+      "mode": 33152,
+      "bytes": 2905
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623603,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1623601,
+      "mode": 33152,
+      "bytes": 1042
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/summary.json",
+      "dev": 27,
+      "ino": 1623602,
+      "mode": 33152,
+      "bytes": 1238
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/wire/429ba069-e725-44f8-95a8-3f9e4ae7a50c.request.bin",
+      "dev": 27,
+      "ino": 1623596,
+      "mode": 33152,
+      "bytes": 74
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/wire/429ba069-e725-44f8-95a8-3f9e4ae7a50c.response.bin",
+      "dev": 27,
+      "ino": 1623597,
+      "mode": 33152,
+      "bytes": 69
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/wire/e256d841-7fec-49f3-aa41-842672ee75e2.response.bin",
+      "dev": 27,
+      "ino": 1623595,
+      "mode": 33152,
+      "bytes": 25589931
+    },
+    {
+      "path": "historical_json/01-B/proxy_large_all/wire/e256d841-7fec-49f3-aa41-842672ee75e2.request.bin",
+      "dev": 27,
+      "ino": 1623594,
+      "mode": 33152,
+      "bytes": 277
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/wire",
+      "dev": 27,
+      "ino": 1623508,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/runtime-before.json",
+      "dev": 27,
+      "ino": 1623522,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1623510,
+      "mode": 33152,
+      "bytes": 2501
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/runtime-after.json",
+      "dev": 27,
+      "ino": 1623523,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/trace-finalization.json",
+      "dev": 27,
+      "ino": 1623516,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/requests.jsonl",
+      "dev": 27,
+      "ino": 1623518,
+      "mode": 33152,
+      "bytes": 2501
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1623509,
+      "mode": 33152,
+      "bytes": 1848
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/operations.jsonl",
+      "dev": 27,
+      "ino": 1623517,
+      "mode": 33152,
+      "bytes": 1848
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/run.json",
+      "dev": 27,
+      "ino": 1623511,
+      "mode": 33152,
+      "bytes": 2896
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1623521,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1623519,
+      "mode": 33152,
+      "bytes": 1037
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/summary.json",
+      "dev": 27,
+      "ino": 1623520,
+      "mode": 33152,
+      "bytes": 1142
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/wire/b35e9a92-1e4a-4782-87bc-41637396a454.response.bin",
+      "dev": 27,
+      "ino": 1623513,
+      "mode": 33152,
+      "bytes": 471
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/wire/6d17e40a-f77d-4beb-9d53-cc19bc68160d.request.bin",
+      "dev": 27,
+      "ino": 1623514,
+      "mode": 33152,
+      "bytes": 74
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/wire/b35e9a92-1e4a-4782-87bc-41637396a454.request.bin",
+      "dev": 27,
+      "ino": 1623512,
+      "mode": 33152,
+      "bytes": 282
+    },
+    {
+      "path": "historical_json/01-B/proxy_one/wire/6d17e40a-f77d-4beb-9d53-cc19bc68160d.response.bin",
+      "dev": 27,
+      "ino": 1623515,
+      "mode": 33152,
+      "bytes": 69
+    },
+    {
+      "path": "protobuf/01-B",
+      "dev": 27,
+      "ino": 1619714,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/process-identities",
+      "dev": 27,
+      "ino": 1619723,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty",
+      "dev": 27,
+      "ino": 1621583,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow",
+      "dev": 27,
+      "ino": 1621605,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text",
+      "dev": 27,
+      "ino": 1621627,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty",
+      "dev": 27,
+      "ino": 1621539,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/setup",
+      "dev": 27,
+      "ino": 1619785,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all",
+      "dev": 27,
+      "ino": 1621649,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/service",
+      "dev": 27,
+      "ino": 1619720,
+      "mode": 41471,
+      "bytes": 114
+    },
+    {
+      "path": "protobuf/01-B/proxy_one",
+      "dev": 27,
+      "ino": 1621524,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_large_all-before.json",
+      "dev": 27,
+      "ino": 1621647,
+      "mode": 33152,
+      "bytes": 1243
+    },
+    {
+      "path": "protobuf/01-B/native-metrics-before.json",
+      "dev": 27,
+      "ino": 1621536,
+      "mode": 33152,
+      "bytes": 64688
+    },
+    {
+      "path": "protobuf/01-B/runtime-before.json",
+      "dev": 27,
+      "ino": 1621533,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/service.log",
+      "dev": 27,
+      "ino": 1619716,
+      "mode": 33188,
+      "bytes": 383
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty.log",
+      "dev": 27,
+      "ino": 1621582,
+      "mode": 33188,
+      "bytes": 1004
+    },
+    {
+      "path": "protobuf/01-B/service-identity.json",
+      "dev": 27,
+      "ino": 1619722,
+      "mode": 33152,
+      "bytes": 551
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text.log",
+      "dev": 27,
+      "ino": 1621626,
+      "mode": 33188,
+      "bytes": 1008
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_narrow-after.json",
+      "dev": 27,
+      "ino": 1621624,
+      "mode": 33152,
+      "bytes": 1239
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow.log",
+      "dev": 27,
+      "ino": 1621604,
+      "mode": 33188,
+      "bytes": 1004
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_one-after.json",
+      "dev": 27,
+      "ino": 1621580,
+      "mode": 33152,
+      "bytes": 1236
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_one-before.json",
+      "dev": 27,
+      "ino": 1621559,
+      "mode": 33152,
+      "bytes": 1237
+    },
+    {
+      "path": "protobuf/01-B/runtime-after.json",
+      "dev": 27,
+      "ino": 1621671,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_one.log",
+      "dev": 27,
+      "ino": 1621560,
+      "mode": 33188,
+      "bytes": 1001
+    },
+    {
+      "path": "protobuf/01-B/service-storage-processes-after.json",
+      "dev": 27,
+      "ino": 1621675,
+      "mode": 33152,
+      "bytes": 3229
+    },
+    {
+      "path": "protobuf/01-B/native-metrics-after.log",
+      "dev": 27,
+      "ino": 1621673,
+      "mode": 33188,
+      "bytes": 140
+    },
+    {
+      "path": "protobuf/01-B/native-metrics-after-targets.json",
+      "dev": 27,
+      "ino": 1621672,
+      "mode": 33152,
+      "bytes": 239
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_large_all-after.json",
+      "dev": 27,
+      "ino": 1621670,
+      "mode": 33152,
+      "bytes": 1242
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_large_text-after.json",
+      "dev": 27,
+      "ino": 1621646,
+      "mode": 33152,
+      "bytes": 1243
+    },
+    {
+      "path": "protobuf/01-B/processes-before.json",
+      "dev": 27,
+      "ino": 1621532,
+      "mode": 33152,
+      "bytes": 11842
+    },
+    {
+      "path": "protobuf/01-B/service-storage.json",
+      "dev": 27,
+      "ino": 1619721,
+      "mode": 33152,
+      "bytes": 1670
+    },
+    {
+      "path": "protobuf/01-B/native-metrics-before-targets.json",
+      "dev": 27,
+      "ino": 1621534,
+      "mode": 33152,
+      "bytes": 239
+    },
+    {
+      "path": "protobuf/01-B/processes-after.json",
+      "dev": 27,
+      "ino": 1621676,
+      "mode": 33152,
+      "bytes": 11842
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_narrow-before.json",
+      "dev": 27,
+      "ino": 1621603,
+      "mode": 33152,
+      "bytes": 1240
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_empty-before.json",
+      "dev": 27,
+      "ino": 1621537,
+      "mode": 33152,
+      "bytes": 1239
+    },
+    {
+      "path": "protobuf/01-B/identity.json",
+      "dev": 27,
+      "ino": 1619715,
+      "mode": 33152,
+      "bytes": 559
+    },
+    {
+      "path": "protobuf/01-B/process-release.json",
+      "dev": 27,
+      "ino": 1619744,
+      "mode": 33152,
+      "bytes": 898
+    },
+    {
+      "path": "protobuf/01-B/native-metrics-after.json",
+      "dev": 27,
+      "ino": 1621674,
+      "mode": 33152,
+      "bytes": 64817
+    },
+    {
+      "path": "protobuf/01-B/service-storage-processes-before.json",
+      "dev": 27,
+      "ino": 1621531,
+      "mode": 33152,
+      "bytes": 3229
+    },
+    {
+      "path": "protobuf/01-B/lifecycle.json",
+      "dev": 27,
+      "ino": 1621683,
+      "mode": 33152,
+      "bytes": 356
+    },
+    {
+      "path": "protobuf/01-B/setup.log",
+      "dev": 27,
+      "ino": 1619784,
+      "mode": 33188,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/launch-profile.json",
+      "dev": 27,
+      "ino": 1619783,
+      "mode": 33152,
+      "bytes": 377
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_empty-after.json",
+      "dev": 27,
+      "ino": 1621558,
+      "mode": 33152,
+      "bytes": 1238
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty.log",
+      "dev": 27,
+      "ino": 1621538,
+      "mode": 33188,
+      "bytes": 913
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_twenty-before.json",
+      "dev": 27,
+      "ino": 1621581,
+      "mode": 33152,
+      "bytes": 1240
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_twenty-after.json",
+      "dev": 27,
+      "ino": 1621602,
+      "mode": 33152,
+      "bytes": 1239
+    },
+    {
+      "path": "protobuf/01-B/native-metrics-before.log",
+      "dev": 27,
+      "ino": 1621535,
+      "mode": 33188,
+      "bytes": 132
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all.log",
+      "dev": 27,
+      "ino": 1621648,
+      "mode": 33188,
+      "bytes": 927
+    },
+    {
+      "path": "protobuf/01-B/host-proxy_large_text-before.json",
+      "dev": 27,
+      "ino": 1621625,
+      "mode": 33152,
+      "bytes": 1244
+    },
+    {
+      "path": "protobuf/01-B/process-identities/worker-b.json",
+      "dev": 27,
+      "ino": 1619773,
+      "mode": 33152,
+      "bytes": 554
+    },
+    {
+      "path": "protobuf/01-B/process-identities/worker-a.json",
+      "dev": 27,
+      "ino": 1619769,
+      "mode": 33152,
+      "bytes": 554
+    },
+    {
+      "path": "protobuf/01-B/process-identities/worker-b-post-exec.json",
+      "dev": 27,
+      "ino": 1619774,
+      "mode": 33152,
+      "bytes": 605
+    },
+    {
+      "path": "protobuf/01-B/process-identities/platform.json",
+      "dev": 27,
+      "ino": 1619747,
+      "mode": 33152,
+      "bytes": 563
+    },
+    {
+      "path": "protobuf/01-B/process-identities/worker-a-post-exec.json",
+      "dev": 27,
+      "ino": 1619770,
+      "mode": 33152,
+      "bytes": 605
+    },
+    {
+      "path": "protobuf/01-B/process-identities/authority.json",
+      "dev": 27,
+      "ino": 1619740,
+      "mode": 33152,
+      "bytes": 552
+    },
+    {
+      "path": "protobuf/01-B/process-identities/platform-post-exec.json",
+      "dev": 27,
+      "ino": 1619760,
+      "mode": 33152,
+      "bytes": 614
+    },
+    {
+      "path": "protobuf/01-B/process-identities/authority-post-exec.json",
+      "dev": 27,
+      "ino": 1619745,
+      "mode": 33152,
+      "bytes": 603
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire",
+      "dev": 27,
+      "ino": 1621584,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/runtime-before.json",
+      "dev": 27,
+      "ino": 1621600,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621586,
+      "mode": 33152,
+      "bytes": 3363
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/runtime-after.json",
+      "dev": 27,
+      "ino": 1621601,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621594,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/requests.jsonl",
+      "dev": 27,
+      "ino": 1621596,
+      "mode": 33152,
+      "bytes": 3363
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621585,
+      "mode": 33152,
+      "bytes": 2427
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/operations.jsonl",
+      "dev": 27,
+      "ino": 1621595,
+      "mode": 33152,
+      "bytes": 2427
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/run.json",
+      "dev": 27,
+      "ino": 1621587,
+      "mode": 33152,
+      "bytes": 2909
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621599,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1621597,
+      "mode": 33152,
+      "bytes": 1549
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/summary.json",
+      "dev": 27,
+      "ino": 1621598,
+      "mode": 33152,
+      "bytes": 1228
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire/1f7f35d0-6487-44f5-9ac4-0b86f2296431.request.bin",
+      "dev": 27,
+      "ino": 1621588,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire/9a445329-8810-48e1-ba96-0a0c2e445950.response.bin",
+      "dev": 27,
+      "ino": 1621593,
+      "mode": 33152,
+      "bytes": 6
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire/9a445329-8810-48e1-ba96-0a0c2e445950.request.bin",
+      "dev": 27,
+      "ino": 1621592,
+      "mode": 33152,
+      "bytes": 38
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire/d31475e4-726b-4066-b902-bcaf458297ad.response.bin",
+      "dev": 27,
+      "ino": 1621591,
+      "mode": 33152,
+      "bytes": 590
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire/1f7f35d0-6487-44f5-9ac4-0b86f2296431.response.bin",
+      "dev": 27,
+      "ino": 1621589,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_twenty/wire/d31475e4-726b-4066-b902-bcaf458297ad.request.bin",
+      "dev": 27,
+      "ino": 1621590,
+      "mode": 33152,
+      "bytes": 90
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire",
+      "dev": 27,
+      "ino": 1621606,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/runtime-before.json",
+      "dev": 27,
+      "ino": 1621622,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621608,
+      "mode": 33152,
+      "bytes": 3374
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/runtime-after.json",
+      "dev": 27,
+      "ino": 1621623,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621616,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/requests.jsonl",
+      "dev": 27,
+      "ino": 1621618,
+      "mode": 33152,
+      "bytes": 3374
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621607,
+      "mode": 33152,
+      "bytes": 2430
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/operations.jsonl",
+      "dev": 27,
+      "ino": 1621617,
+      "mode": 33152,
+      "bytes": 2430
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/run.json",
+      "dev": 27,
+      "ino": 1621609,
+      "mode": 33152,
+      "bytes": 2911
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621621,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1621619,
+      "mode": 33152,
+      "bytes": 1552
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/summary.json",
+      "dev": 27,
+      "ino": 1621620,
+      "mode": 33152,
+      "bytes": 1228
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire/db8b7a28-097e-4d39-8579-98af3e3eb01d.request.bin",
+      "dev": 27,
+      "ino": 1621612,
+      "mode": 33152,
+      "bytes": 75
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire/80462195-fa3b-41eb-b2b2-fda16186c923.request.bin",
+      "dev": 27,
+      "ino": 1621610,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire/80462195-fa3b-41eb-b2b2-fda16186c923.response.bin",
+      "dev": 27,
+      "ino": 1621611,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire/d338cb26-a8ce-44d7-ab85-a95784d85142.response.bin",
+      "dev": 27,
+      "ino": 1621615,
+      "mode": 33152,
+      "bytes": 6
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire/d338cb26-a8ce-44d7-ab85-a95784d85142.request.bin",
+      "dev": 27,
+      "ino": 1621614,
+      "mode": 33152,
+      "bytes": 38
+    },
+    {
+      "path": "protobuf/01-B/proxy_narrow/wire/db8b7a28-097e-4d39-8579-98af3e3eb01d.response.bin",
+      "dev": 27,
+      "ino": 1621613,
+      "mode": 33152,
+      "bytes": 224711
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire",
+      "dev": 27,
+      "ino": 1621628,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/runtime-before.json",
+      "dev": 27,
+      "ino": 1621644,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621630,
+      "mode": 33152,
+      "bytes": 3375
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/runtime-after.json",
+      "dev": 27,
+      "ino": 1621645,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621638,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/requests.jsonl",
+      "dev": 27,
+      "ino": 1621640,
+      "mode": 33152,
+      "bytes": 3375
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621629,
+      "mode": 33152,
+      "bytes": 2433
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/operations.jsonl",
+      "dev": 27,
+      "ino": 1621639,
+      "mode": 33152,
+      "bytes": 2433
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/run.json",
+      "dev": 27,
+      "ino": 1621631,
+      "mode": 33152,
+      "bytes": 2915
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621643,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1621641,
+      "mode": 33152,
+      "bytes": 1554
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/summary.json",
+      "dev": 27,
+      "ino": 1621642,
+      "mode": 33152,
+      "bytes": 1232
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire/cfd43593-7430-4b05-89fc-3cbfae6e1602.response.bin",
+      "dev": 27,
+      "ino": 1621633,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire/cfd43593-7430-4b05-89fc-3cbfae6e1602.request.bin",
+      "dev": 27,
+      "ino": 1621632,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire/cb7f0e25-fdbe-4f64-9e0c-fbbc9573a7e4.response.bin",
+      "dev": 27,
+      "ino": 1621635,
+      "mode": 33152,
+      "bytes": 20338463
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire/cb7f0e25-fdbe-4f64-9e0c-fbbc9573a7e4.request.bin",
+      "dev": 27,
+      "ino": 1621634,
+      "mode": 33152,
+      "bytes": 95
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire/97c21574-455c-4276-b500-ac4b7f366dd4.request.bin",
+      "dev": 27,
+      "ino": 1621636,
+      "mode": 33152,
+      "bytes": 38
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_text/wire/97c21574-455c-4276-b500-ac4b7f366dd4.response.bin",
+      "dev": 27,
+      "ino": 1621637,
+      "mode": 33152,
+      "bytes": 6
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire",
+      "dev": 27,
+      "ino": 1621540,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/runtime-before.json",
+      "dev": 27,
+      "ino": 1621556,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621542,
+      "mode": 33152,
+      "bytes": 3363
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/runtime-after.json",
+      "dev": 27,
+      "ino": 1621557,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621550,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/requests.jsonl",
+      "dev": 27,
+      "ino": 1621552,
+      "mode": 33152,
+      "bytes": 3363
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621541,
+      "mode": 33152,
+      "bytes": 2418
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/operations.jsonl",
+      "dev": 27,
+      "ino": 1621551,
+      "mode": 33152,
+      "bytes": 2418
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/run.json",
+      "dev": 27,
+      "ino": 1621543,
+      "mode": 33152,
+      "bytes": 2907
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621555,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1621553,
+      "mode": 33152,
+      "bytes": 1548
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/summary.json",
+      "dev": 27,
+      "ino": 1621554,
+      "mode": 33152,
+      "bytes": 1137
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire/d377552c-04b2-49ee-9816-0b5d7cfe4e2f.request.bin",
+      "dev": 27,
+      "ino": 1621544,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire/d377552c-04b2-49ee-9816-0b5d7cfe4e2f.response.bin",
+      "dev": 27,
+      "ino": 1621545,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire/734c4edd-1634-4630-a683-24227eb0c8c9.request.bin",
+      "dev": 27,
+      "ino": 1621548,
+      "mode": 33152,
+      "bytes": 38
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire/5c974485-e191-4fe8-b6ca-53fa1c60ad79.response.bin",
+      "dev": 27,
+      "ino": 1621547,
+      "mode": 33152,
+      "bytes": 90
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire/5c974485-e191-4fe8-b6ca-53fa1c60ad79.request.bin",
+      "dev": 27,
+      "ino": 1621546,
+      "mode": 33152,
+      "bytes": 76
+    },
+    {
+      "path": "protobuf/01-B/proxy_empty/wire/734c4edd-1634-4630-a683-24227eb0c8c9.response.bin",
+      "dev": 27,
+      "ino": 1621549,
+      "mode": 33152,
+      "bytes": 6
+    },
+    {
+      "path": "protobuf/01-B/setup/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1619787,
+      "mode": 33152,
+      "bytes": 442167
+    },
+    {
+      "path": "protobuf/01-B/setup/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621514,
+      "mode": 33152,
+      "bytes": 1431
+    },
+    {
+      "path": "protobuf/01-B/setup/requests.jsonl",
+      "dev": 27,
+      "ino": 1621528,
+      "mode": 33152,
+      "bytes": 442167
+    },
+    {
+      "path": "protobuf/01-B/setup/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1619786,
+      "mode": 33152,
+      "bytes": 313913
+    },
+    {
+      "path": "protobuf/01-B/setup/operations.jsonl",
+      "dev": 27,
+      "ino": 1621527,
+      "mode": 33152,
+      "bytes": 313913
+    },
+    {
+      "path": "protobuf/01-B/setup/run.json",
+      "dev": 27,
+      "ino": 1619788,
+      "mode": 33152,
+      "bytes": 2851
+    },
+    {
+      "path": "protobuf/01-B/setup/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621530,
+      "mode": 33152,
+      "bytes": 636
+    },
+    {
+      "path": "protobuf/01-B/setup/summary.json",
+      "dev": 27,
+      "ino": 1621529,
+      "mode": 33152,
+      "bytes": 1115
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire",
+      "dev": 27,
+      "ino": 1621650,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/runtime-before.json",
+      "dev": 27,
+      "ino": 1621668,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621652,
+      "mode": 33152,
+      "bytes": 3385
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/runtime-after.json",
+      "dev": 27,
+      "ino": 1621669,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621662,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/requests.jsonl",
+      "dev": 27,
+      "ino": 1621664,
+      "mode": 33152,
+      "bytes": 3385
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621651,
+      "mode": 33152,
+      "bytes": 2442
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/operations.jsonl",
+      "dev": 27,
+      "ino": 1621663,
+      "mode": 33152,
+      "bytes": 2442
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/run.json",
+      "dev": 27,
+      "ino": 1621653,
+      "mode": 33152,
+      "bytes": 2914
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621667,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1621665,
+      "mode": 33152,
+      "bytes": 1555
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/summary.json",
+      "dev": 27,
+      "ino": 1621666,
+      "mode": 33152,
+      "bytes": 1151
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire/893df923-043e-47c9-8294-66f7bc8371f0.response.bin",
+      "dev": 27,
+      "ino": 1621661,
+      "mode": 33152,
+      "bytes": 6
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire/893df923-043e-47c9-8294-66f7bc8371f0.request.bin",
+      "dev": 27,
+      "ino": 1621660,
+      "mode": 33152,
+      "bytes": 38
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire/111df3c1-2b39-4dc4-a021-908df64cde67.request.bin",
+      "dev": 27,
+      "ino": 1621658,
+      "mode": 33152,
+      "bytes": 101
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire/111df3c1-2b39-4dc4-a021-908df64cde67.response.bin",
+      "dev": 27,
+      "ino": 1621659,
+      "mode": 33152,
+      "bytes": 20493728
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire/3c0b2bcb-8078-454b-a1bf-7b57d0e8e6eb.response.bin",
+      "dev": 27,
+      "ino": 1621657,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_large_all/wire/3c0b2bcb-8078-454b-a1bf-7b57d0e8e6eb.request.bin",
+      "dev": 27,
+      "ino": 1621656,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire",
+      "dev": 27,
+      "ino": 1621562,
+      "mode": 16832,
+      "bytes": 4096
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/runtime-before.json",
+      "dev": 27,
+      "ino": 1621578,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/requests.trace.jsonl",
+      "dev": 27,
+      "ino": 1621564,
+      "mode": 33152,
+      "bytes": 3363
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/runtime-after.json",
+      "dev": 27,
+      "ino": 1621579,
+      "mode": 33152,
+      "bytes": 891
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/trace-finalization.json",
+      "dev": 27,
+      "ino": 1621572,
+      "mode": 33152,
+      "bytes": 1423
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/requests.jsonl",
+      "dev": 27,
+      "ino": 1621574,
+      "mode": 33152,
+      "bytes": 3363
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/operations.trace.jsonl",
+      "dev": 27,
+      "ino": 1621563,
+      "mode": 33152,
+      "bytes": 2423
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/operations.jsonl",
+      "dev": 27,
+      "ino": 1621573,
+      "mode": 33152,
+      "bytes": 2423
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/run.json",
+      "dev": 27,
+      "ino": 1621565,
+      "mode": 33152,
+      "bytes": 2905
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/SHA256SUMS.json",
+      "dev": 27,
+      "ino": 1621577,
+      "mode": 33152,
+      "bytes": 733
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire-body-manifest.json",
+      "dev": 27,
+      "ino": 1621575,
+      "mode": 33152,
+      "bytes": 1549
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/summary.json",
+      "dev": 27,
+      "ino": 1621576,
+      "mode": 33152,
+      "bytes": 1225
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire/d3d0122f-67ce-418e-98a6-3d54b8c2fb0b.request.bin",
+      "dev": 27,
+      "ino": 1621570,
+      "mode": 33152,
+      "bytes": 38
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire/c56a6168-f570-41b6-9e2d-1f5b1cebd376.request.bin",
+      "dev": 27,
+      "ino": 1621566,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire/c56a6168-f570-41b6-9e2d-1f5b1cebd376.response.bin",
+      "dev": 27,
+      "ino": 1621567,
+      "mode": 33152,
+      "bytes": 0
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire/d3d0122f-67ce-418e-98a6-3d54b8c2fb0b.response.bin",
+      "dev": 27,
+      "ino": 1621571,
+      "mode": 33152,
+      "bytes": 6
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire/0697b19e-e90a-4591-baef-761e99c15df1.request.bin",
+      "dev": 27,
+      "ino": 1621568,
+      "mode": 33152,
+      "bytes": 87
+    },
+    {
+      "path": "protobuf/01-B/proxy_one/wire/0697b19e-e90a-4591-baef-761e99c15df1.response.bin",
+      "dev": 27,
+      "ino": 1621569,
+      "mode": 33152,
+      "bytes": 115
+    }
+  ],
+  "no_unexpected_staging_or_extra_files": true,
+  "raw_originals_copied_or_reconstructed": false,
+  "performance_acceptance": false,
+  "capacity_proven": false,
+  "recovery_proven": false,
+  "audit_script": "/tmp/audit-private-owned-first.py",
+  "audit_script_sha256": "77e720a251d83e7d3abe761eeb298db816d266ae051c9fccae759a391ca75ef0",
+  "independent_run_base_sha256": "d5aa44e01f1ff72e01c4863fe41fd222dda80fbed1eabd5653bd6c51fc76d20a",
+  "independent_wire_decoder_sha256": "c01563d00bdb207eafdb352c13c6a6cb4a3ac48e6fd0fc9e345f348043c6421b",
+  "limits": [
+    "This is an in-place dual-protocol B-only functional evidence check, with six single operations per protocol. No timing, performance or 1.5x claim. A/S declared identities were not executed.",
+    "Every original canonical trace dev/inode/nlink and complete content was checked at its original /tmp location; final exports are byte-equal secondary publications. No copied or reconstructed raw was used.",
+    "All 60 original frontend request/response bodies were decoded by the independent wire decoder against complete typed fixture, SQL/parameters, actual conditional probe, terminal EOF and close ACK.",
+    "Native raw GetMetrics replies independently decoded with quiescence poll followed by separate final; each protocol 0 to99pages/39931220bytes binds actual format selection, not a direct capture of private Go/Rust wire.",
+    "Each protocol135 successful append Sync and legacy0 are exported counter deltas, not all filesystem/maintenance synchronization calls. Prezero absolute counters include setup.",
+    "Collector physical paths are private /tmp; actual platformconfig/backend/cache paths remain workspace. Service-generated logs/proof excluded from capture seal. Same device observed, not proof of a different backend.",
+    "Same-inode checks apply to original paths only. Exported/extracted capsule copies cannot inherit original filesystem identity.",
+    "Prior failed captures remain NOT_ACCEPTED; root cause UNKNOWN. This successful run does not establish permanent filesystem stability."
+  ]
+}

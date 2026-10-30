@@ -1,0 +1,242 @@
+{
+  "schema": "peri-loom-stop-handoff/1",
+  "overall_target_met": false,
+  "new_experiments_stopped": true,
+  "contents": {
+    "README.md": {
+      "source": "/tmp/peri-loom-stop-handoff-20261030/README.md",
+      "role": "Generated handoff overview",
+      "bytes": 915,
+      "sha256": "f0d91ccf219101ce891e9ef70e8e13449d6ead4baaae11d9174d600329ed7bc5"
+    },
+    "未完成事项.md": {
+      "source": "/tmp/peri-loom-stop-handoff-20261030/未完成事项.md",
+      "role": "User-requested completed/unfinished status and continuation instructions",
+      "bytes": 8981,
+      "sha256": "cb798dcaf407b6feb5b497963f02fd38586eae4ba42a45216267b99697e30008"
+    },
+    "evidence/peri-loom-r15-recovery-evidence-qualified-v1.zip": {
+      "source": "/workspace/scratch/6757c94bd47c/deliverables/peri-loom-r15-recovery-evidence-qualified-v1.zip",
+      "role": "Qualified diagnostic; performance NOT ACCEPTED",
+      "bytes": 12816400,
+      "sha256": "372743e0bceb6fa42526a0488f495bf5cf0ea40fbc3852c9340617b0733bb507"
+    },
+    "evidence/peri-loom-r15-verified-targeted-v2-evidence.zip": {
+      "source": "/workspace/scratch/6757c94bd47c/deliverables/peri-loom-r15-verified-targeted-v2-evidence.zip",
+      "role": "Accepted targeted evidence; combined candidate not promoted",
+      "bytes": 8625228,
+      "sha256": "a36dcc99cd1258bc35462908bf7e7f474eb5b15c6b796f628bb82dad773fb7e2"
+    },
+    "evidence/peri-loom-r15-json-and-cpu-evidence-v3.zip": {
+      "source": "/workspace/scratch/6757c94bd47c/deliverables/peri-loom-r15-json-and-cpu-evidence-v3.zip",
+      "role": "JSON-only gate, functional tests and qualified CPU/phase diagnostics",
+      "bytes": 7288599,
+      "sha256": "73ff183ba44fb3cc39866dfb9633be7335d769562f9d68114e6926382156c802"
+    },
+    "evidence/json-wire-private-preflight-v1-capsule.zip": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-private-preflight-v1-capsule.zip",
+      "role": "JSON wire functional evidence",
+      "bytes": 734167,
+      "sha256": "76b2ac89b4fbc16705f8299986d3df4bbea624f3a531ed18c135a8e9374f4f19"
+    },
+    "evidence/json-wire-private-gate-v1-capsule.zip": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-private-gate-v1-capsule.zip",
+      "role": "Accepted JSON wire comparison; target not met",
+      "bytes": 2727066,
+      "sha256": "2de26ae5f9aeb097fab208ed55397a1e6733334cd5010c71242688d94f20dd42"
+    },
+    "evidence/owned-first-functional-capsule.zip": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/owned-first-private-functional-v1-capsule.zip",
+      "role": "Owned first-page JSON/protobuf FUNCTIONAL ONLY, no performance claim",
+      "bytes": 1365939,
+      "sha256": "c04eb21a4f77f3d2ab409d03135dcd2775c5337cf11c000437edc996dc9ce795"
+    },
+    "handoff-evidence/owned-first-export-verification.json": {
+      "source": "/tmp/peri-r15-owned-first-76433-functional-capture-v1-export-verification.json",
+      "role": "Original completed capsule export verification",
+      "bytes": 788,
+      "sha256": "c0735e07cbb115f30ec05e1717031c1fc5411a54f018dc688f3e20d0f72a260a"
+    },
+    "handoff-evidence/failures/cursor-flush-independent-analysis.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1-independent-analysis.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 47268,
+      "sha256": "62f4073a88e187eb073756e7ed6030c3bd6419e30a50ab843b32ae8df776eda7"
+    },
+    "handoff-evidence/failures/cursor-flush-independent-integrity.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1-independent-integrity.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 67003,
+      "sha256": "4422b7695d8e2e15dc555d9f0d162618ac5cbd88862b58def607a64268800e26"
+    },
+    "handoff-evidence/failures/workspace-staging-independent-analysis.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1-independent-failure-analysis.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 61171,
+      "sha256": "5c8833d819c1b817022aa259dd20aa5bcb32c77ae470f4c115dc4394ef00e91c"
+    },
+    "handoff-evidence/failures/dual-path-canary-independent-review.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/dual-path-canary-independent-review.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 5598,
+      "sha256": "677b18155c7ea5bee2967153c57473e6b3be8311a3e8d8044bedc6757effeb6e"
+    },
+    "handoff-evidence/code-binding/json-wire-source-review.json": {
+      "source": "/workspace/scratch/6757c94bd47c/peri-loom-recovery/docs/performance-review/issue20-round15-recovery/independent-json-wire-source-review.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 5180,
+      "sha256": "e9d20b349f7cfd8cff7fb6e9ada6e64d35d6d8326c19ade25447762bb5f13911"
+    },
+    "handoff-evidence/code-binding/owned-first-source-test-review.json": {
+      "source": "/workspace/scratch/6757c94bd47c/peri-loom-recovery/docs/performance-review/issue20-round15-recovery/independent-owned-first-source-test-review.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 2961,
+      "sha256": "da579f26b2ea751e149672d66f138006c77e12bdd8a22b03528023358003bcb4"
+    },
+    "handoff-evidence/code-binding/both-candidate-build-binding.json": {
+      "source": "/workspace/scratch/6757c94bd47c/peri-loom-recovery/docs/performance-review/issue20-round15-recovery/independent-json-wire-owned-first-build-binding.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 5461,
+      "sha256": "f58bba8dc2b1da8668bc8ce2bc282090423c3f1f765586317ea467c0ab2dee81"
+    },
+    "handoff-evidence/code-binding/json-wire-handoff.json": {
+      "source": "/workspace/scratch/6757c94bd47c/recovery-json-wire-validation/handoff.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 1802,
+      "sha256": "ea3f275b8aa2bf84eee482fc125933a6e26666a347605a08edb2a6d7a2be362e"
+    },
+    "handoff-evidence/code-binding/owned-first-build-binding.json": {
+      "source": "/workspace/scratch/6757c94bd47c/recovered-owned-first-validation/final-source-build-binding.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 1985,
+      "sha256": "fc0afcf363a7cfd9845ae6c22b237b18d69832e872fce06efe7033f0a845c78f"
+    },
+    "handoff-evidence/gate-draft/guards.stdout.log": {
+      "source": "/workspace/scratch/6757c94bd47c/recovered-owned-first-gate-preparation/guards.stdout.log",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "handoff-evidence/gate-draft/guards.stderr.log": {
+      "source": "/workspace/scratch/6757c94bd47c/recovered-owned-first-gate-preparation/guards.stderr.log",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 104,
+      "sha256": "c6b9b1f09add0403cc07e90bfdf272129b1ddfa2f8f7675ea8218862f2516371"
+    },
+    "handoff-evidence/gate-draft/validation.json": {
+      "source": "/workspace/scratch/6757c94bd47c/recovered-owned-first-gate-preparation/validation.json",
+      "role": "Existing report or raw test output; original status retained",
+      "bytes": 1775,
+      "sha256": "8f104150cdf0111b26da7136efc359bdae122613116e3580fb3a1ce15c46f2f7"
+    },
+    "handoff-evidence/owned-first-raw-independent-analysis.json": {
+      "source": "/tmp/peri-r15-owned-first-76433-functional-capture-v1-independent-raw-analysis.json",
+      "role": "Original audit or observation, unchanged",
+      "bytes": 97425,
+      "sha256": "ae6f5596487ce830efed793ab8e65e6b577e091bf46c84ab6eb1a9ec2a3ffb92"
+    },
+    "handoff-evidence/owned-first-independent-analysis.json": {
+      "source": "/tmp/peri-r15-owned-first-76433-functional-capture-v1-independent-analysis.json",
+      "role": "Original audit or observation, unchanged",
+      "bytes": 98278,
+      "sha256": "1c9338c5c9ca49ccbbf0ee09bae613d652f29370187420578ebefbb499365eac"
+    },
+    "handoff-evidence/owned-first-independent-preparation.json": {
+      "source": "/tmp/owned-first-private-functional-independent-preparation.json",
+      "role": "Original audit or observation, unchanged",
+      "bytes": 5928,
+      "sha256": "b04d258b40498094a26e71294fe7f511c2597b3bbd9e04cf8f8f514ee137cb50"
+    },
+    "handoff-evidence/canary-post-publish-readback.json": {
+      "source": "/tmp/trace-canary-7a58f325fb724b55a764dc8c2453144c/post-publish-readback.json",
+      "role": "Original audit or observation, unchanged",
+      "bytes": 2062,
+      "sha256": "b41d383c4add641aa6235600f667b8bf3e53c2d3e37502a277e60438d1a925ce"
+    },
+    "handoff-evidence/failure-originals/cursor-flush-json-gate-v1/02-S/proxy_large_text/SHA256SUMS.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1/historical_json/02-S/proxy_large_text/SHA256SUMS.json",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 543,
+      "sha256": "b2120fc98e1ccfc8827790aec09105e15960f71f9185143532d37ec619204f18"
+    },
+    "handoff-evidence/failure-originals/cursor-flush-json-gate-v1/02-S/proxy_large_text/operations.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1/historical_json/02-S/proxy_large_text/operations.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 47711,
+      "sha256": "42c9488e643b2ab747d83e2b95f86f80d16bf6f34569dbb9782ad8b833c65d6e"
+    },
+    "handoff-evidence/failure-originals/cursor-flush-json-gate-v1/02-S/proxy_large_text/operations.partial.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1/historical_json/02-S/proxy_large_text/operations.partial.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 45796,
+      "sha256": "754af9eddcdb8acedd0e434363668d30cda5b27d9b9a453300a026a5f4b7e5ae"
+    },
+    "handoff-evidence/failure-originals/cursor-flush-json-gate-v1/02-S/proxy_large_text/requests.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1/historical_json/02-S/proxy_large_text/requests.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 62006,
+      "sha256": "0e9578d727adb89b68e9d98b27f84233b68d754863ca7aaf6e0c219c5314989b"
+    },
+    "handoff-evidence/failure-originals/cursor-flush-json-gate-v1/02-S/proxy_large_text/requests.partial.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1/historical_json/02-S/proxy_large_text/requests.partial.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 59522,
+      "sha256": "e7aa8e1a216014d2809734c2f02482bbf65042de3b6b9d12ff608c32ca683c7a"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/SHA256SUMS.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/SHA256SUMS.json",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 636,
+      "sha256": "45cbf8e0c3f3c971e11bd13b71527a3893fd03427f6102d88010373e87d256bb"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/operations.append-bce62ad9-6759-45b3-b0f3-1cad4bf6f8bc.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/operations.append-bce62ad9-6759-45b3-b0f3-1cad4bf6f8bc.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 215506,
+      "sha256": "10ca166e428a576b206a25a3e7ada4b5edb305b2727e5a51e82b8090740aa271"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/operations.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/operations.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 313900,
+      "sha256": "5caf05552eb1d11481d907c8a28467f3b113ca3a462b3b2bb73197b95ba6ca13"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/operations.trace.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/operations.trace.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 313900,
+      "sha256": "5caf05552eb1d11481d907c8a28467f3b113ca3a462b3b2bb73197b95ba6ca13"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/requests.append-86d45d74-79a4-4096-99ee-68d26ca0942c.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/requests.append-86d45d74-79a4-4096-99ee-68d26ca0942c.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 303680,
+      "sha256": "8c7584ca58318ad12968cf89ed774b67379af1852ca3cc5871e472cda4182fd9"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/requests.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/requests.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 442157,
+      "sha256": "9f722e4ce083a7e0b81cf1c00453d437f5a4a040b533a22e22f32f8836b94728"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/requests.trace.jsonl": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/requests.trace.jsonl",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 442157,
+      "sha256": "9f722e4ce083a7e0b81cf1c00453d437f5a4a040b533a22e22f32f8836b94728"
+    },
+    "handoff-evidence/failure-originals/json-wire-trace-preflight-v1/01-B/setup/trace-finalization.json": {
+      "source": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/json-wire-trace-preflight-v1/historical_json/01-B/setup/trace-finalization.json",
+      "role": "Original failed evidence, no repair or acceptance",
+      "bytes": 1431,
+      "sha256": "7a9783359e577f644af10bbfb8b319f144983887234c6f27194fbc41d389f43e"
+    },
+    "handoff-evidence/local-code-locations.json": {
+      "source": "/tmp/peri-loom-stop-handoff-20261030/local-code-locations.json",
+      "role": "Generated exact local code identity, no repository source bytes",
+      "bytes": 2420,
+      "sha256": "686fe28ca818460975f01cd79dfc2310bbdfbd584942ac5859facc94d039e2b6"
+    }
+  },
+  "manifest_self_hash": "Excluded to avoid self reference; included in external verification"
+}

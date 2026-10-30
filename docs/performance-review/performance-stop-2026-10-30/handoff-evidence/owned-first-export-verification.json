@@ -1,0 +1,17 @@
+{
+  "schema": "r15-private-capture-export/1",
+  "status": "PASS",
+  "capture_root": "/tmp/peri-r15-owned-first-76433-functional-capture-v1",
+  "private_zip": "/tmp/peri-r15-owned-first-76433-functional-capture-v1-capsule.zip",
+  "published_zip": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/owned-first-private-functional-v1-capsule.zip",
+  "zip_sha256": "c04eb21a4f77f3d2ab409d03135dcd2775c5337cf11c000437edc996dc9ce795",
+  "bytes": 1365939,
+  "members": 316,
+  "zip_dev": "27",
+  "zip_ino": "1365883",
+  "publication": "completed-private-ZIP-hardlink-no-clobber",
+  "manifest_sha256": "2e325bd80276b275449db34a7a17724e44c0dfbfed5ba5c4fd887e972528cfcd",
+  "source_in_place_audit_scope": true,
+  "copy_member_verification": true,
+  "completed_unix_ns": 1793349292547761332
+}

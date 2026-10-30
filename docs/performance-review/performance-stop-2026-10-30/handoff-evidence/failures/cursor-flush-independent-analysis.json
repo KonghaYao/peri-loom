@@ -1,0 +1,1403 @@
+{
+  "schema": "r15-recovery-independent-flush-gate-qualified/1",
+  "status": "NOT_ACCEPTED_EVIDENCE_INTEGRITY_FAILURE",
+  "integrity_report": "/workspace/scratch/6757c94bd47c/performance-r15-recovery/cursor-flush-json-gate-v1-independent-integrity.json",
+  "integrity_sha256": "4422b7695d8e2e15dc555d9f0d162618ac5cbd88862b58def607a64268800e26",
+  "strict_original_run_results": [
+    {
+      "directory": "historical_json/01-A/proxy_one",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "3294235f-7c9e-4fd5-9df8-a3b690da6a6d",
+        "operations": 120,
+        "requests": 240,
+        "acknowledgements": 120,
+        "timed": {
+          "count": 100,
+          "mean_ms": 12.253743760000022,
+          "p50_ms": 10.776699000000008,
+          "p95_ms": 20.58333900000025,
+          "p99_ms": 23.484853999999814,
+          "max_ms": 45.46447499999999
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/01-A/proxy_large_text",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "ce086671-cd0f-40ec-86d5-552ed84f642e",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 337.6036884000004,
+          "p50_ms": 327.78924800000095,
+          "p95_ms": 374.5629060000001,
+          "p99_ms": 427.4900490000009,
+          "max_ms": 427.4900490000009
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/01-A/proxy_large_all",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "20019a72-b8ab-47e2-883c-93ebc5e11e5e",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 359.2822564999998,
+          "p50_ms": 346.3119569999981,
+          "p95_ms": 416.75692100000015,
+          "p99_ms": 416.99047100000007,
+          "max_ms": 416.99047100000007
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/02-S/proxy_one",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "9d860cf6-dbb0-4b22-9b3b-2685f017369a",
+        "operations": 120,
+        "requests": 240,
+        "acknowledgements": 120,
+        "timed": {
+          "count": 100,
+          "mean_ms": 4.368706659999969,
+          "p50_ms": 4.095801000000165,
+          "p95_ms": 5.71585099999993,
+          "p99_ms": 8.019542000000001,
+          "max_ms": 9.031630999999834
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/02-S/proxy_large_text",
+      "status": "FAIL",
+      "error": "run seal operations.partial.jsonl"
+    },
+    {
+      "directory": "historical_json/02-S/proxy_large_all",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "df4b0179-9eda-4e0b-8c1e-7edda6e61bc9",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 159.71779734999978,
+          "p50_ms": 154.76455500000156,
+          "p95_ms": 187.80921599999783,
+          "p99_ms": 199.49122200000056,
+          "max_ms": 199.49122200000056
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/03-B/proxy_one",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "aad98075-d42d-4ab1-ba2f-99a4afc952e8",
+        "operations": 120,
+        "requests": 240,
+        "acknowledgements": 120,
+        "timed": {
+          "count": 100,
+          "mean_ms": 11.190168689999949,
+          "p50_ms": 10.272022000000106,
+          "p95_ms": 16.37799999999993,
+          "p99_ms": 20.90572500000053,
+          "max_ms": 22.7676849999998
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/03-B/proxy_large_text",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "2a86407c-bef4-4c24-9c2d-64a8bd2311eb",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 336.2553224000001,
+          "p50_ms": 337.7211189999998,
+          "p95_ms": 363.3168649999998,
+          "p99_ms": 390.97264600000017,
+          "max_ms": 390.97264600000017
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/03-B/proxy_large_all",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "89338dab-c495-46d2-9b53-3896b8c27f13",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 364.45157425000025,
+          "p50_ms": 357.28721100000257,
+          "p95_ms": 418.7626679999994,
+          "p99_ms": 444.85178200000155,
+          "max_ms": 444.85178200000155
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/04-B/proxy_one",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "bf0d2cec-202f-4acc-a37a-e52cc6780d43",
+        "operations": 120,
+        "requests": 240,
+        "acknowledgements": 120,
+        "timed": {
+          "count": 100,
+          "mean_ms": 11.231808690000006,
+          "p50_ms": 10.78126700000007,
+          "p95_ms": 14.717208000000028,
+          "p99_ms": 19.26927999999998,
+          "max_ms": 38.861383999999816
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/04-B/proxy_large_text",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "5e11dcd0-7e17-4761-8b95-a2a4fc543145",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 337.28864390000024,
+          "p50_ms": 334.1893340000006,
+          "p95_ms": 392.04149999999936,
+          "p99_ms": 414.21416000000136,
+          "max_ms": 414.21416000000136
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/04-B/proxy_large_all",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "4b1d1dd9-878c-462d-a89f-857d38cd3e5a",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 335.9240969999999,
+          "p50_ms": 329.3139519999968,
+          "p95_ms": 398.35952200000065,
+          "p99_ms": 405.7792410000002,
+          "max_ms": 405.7792410000002
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/05-S/proxy_one",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "0faaf140-1873-4165-9f17-e4005dd59b18",
+        "operations": 120,
+        "requests": 240,
+        "acknowledgements": 120,
+        "timed": {
+          "count": 100,
+          "mean_ms": 4.013378729999954,
+          "p50_ms": 3.6527209999999286,
+          "p95_ms": 5.608502000000044,
+          "p99_ms": 8.564245999999912,
+          "max_ms": 13.672071999999844
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/05-S/proxy_large_text",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "226714ef-6f0a-4692-8950-135367353bb3",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 132.8131380500003,
+          "p50_ms": 127.35165099999995,
+          "p95_ms": 149.33708600000136,
+          "p99_ms": 205.6415589999997,
+          "max_ms": 205.6415589999997
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/05-S/proxy_large_all",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "b04e67cc-ccd6-4dc0-b665-93c2f3d6e9c3",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 151.75063970000036,
+          "p50_ms": 148.25718900000174,
+          "p95_ms": 187.12270100000023,
+          "p99_ms": 192.54993099999956,
+          "max_ms": 192.54993099999956
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/06-A/proxy_one",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "76d478ea-8f3c-4ece-b006-1ae6c92ff07f",
+        "operations": 120,
+        "requests": 240,
+        "acknowledgements": 120,
+        "timed": {
+          "count": 100,
+          "mean_ms": 10.757935720000004,
+          "p50_ms": 9.774305999999342,
+          "p95_ms": 14.39525699999922,
+          "p99_ms": 22.391903000000184,
+          "max_ms": 22.483052000000043
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/06-A/proxy_large_text",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "7c2a7ca2-6a9a-4718-9489-326c8574372a",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 342.61770830000006,
+          "p50_ms": 335.51715299999887,
+          "p95_ms": 386.39806000000044,
+          "p99_ms": 420.7870470000016,
+          "max_ms": 420.7870470000016
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    },
+    {
+      "directory": "historical_json/06-A/proxy_large_all",
+      "status": "PASS",
+      "result": {
+        "status": "PASS",
+        "run_id": "24dd6265-9a44-4c12-970c-dbaebbd92eb2",
+        "operations": 25,
+        "requests": 50,
+        "acknowledgements": 25,
+        "timed": {
+          "count": 20,
+          "mean_ms": 346.69727085000034,
+          "p50_ms": 334.1900000000005,
+          "p95_ms": 374.75562400000126,
+          "p99_ms": 441.8928530000012,
+          "max_ms": 441.8928530000012
+        },
+        "original_body_files_replayed": 0,
+        "scope": "Recorded complete ledgers and SDK/proof digests; screen bodies are not retained or replayed"
+      }
+    }
+  ],
+  "run_count": 18,
+  "all_businesses": 1020,
+  "all_HTTP": 2040,
+  "all_ACK": 1020,
+  "tracks": {
+    "historical_json": {
+      "timed_businesses": 840,
+      "warmup_businesses": 180,
+      "pooled": {
+        "proxy_one": {
+          "arms": {
+            "A": {
+              "count": 200,
+              "mean_ms": 11.505839740000015,
+              "p50_ms": 10.411264000000301,
+              "p95_ms": 17.69458799999984,
+              "p99_ms": 23.38125100000002,
+              "max_ms": 45.46447499999999
+            },
+            "B": {
+              "count": 200,
+              "mean_ms": 11.210988689999976,
+              "p50_ms": 10.453142999999955,
+              "p95_ms": 15.869197999999415,
+              "p99_ms": 20.90572500000053,
+              "max_ms": 38.861383999999816
+            },
+            "S": {
+              "count": 200,
+              "mean_ms": 4.191042694999961,
+              "p50_ms": 3.935230999999476,
+              "p95_ms": 5.71585099999993,
+              "p99_ms": 8.564245999999912,
+              "max_ms": 13.672071999999844
+            }
+          },
+          "ratios": {
+            "mean_ms": {
+              "B_over_S": 2.6749879459293076,
+              "B_over_A": 0.974373791338759,
+              "A_over_B_speedup": 1.0263001826291236,
+              "latency_drop_percent": 2.562620866124099,
+              "A_over_S": 2.745340617437953
+            },
+            "p50_ms": {
+              "B_over_S": 2.656297177980491,
+              "B_over_A": 1.0040224702783114,
+              "A_over_B_speedup": 0.9959936451649372,
+              "latency_drop_percent": -0.4022470278311374,
+              "A_over_S": 2.6456551089381253
+            },
+            "p95_ms": {
+              "B_over_S": 2.7763491385621513,
+              "B_over_A": 0.8968390787058482,
+              "A_over_B_speedup": 1.1150272370412475,
+              "latency_drop_percent": 10.316092129415178,
+              "A_over_S": 3.0957049090328033
+            },
+            "p99_ms": {
+              "B_over_S": 2.44104676582162,
+              "B_over_A": 0.894123458150315,
+              "A_over_B_speedup": 1.1184137837840795,
+              "latency_drop_percent": 10.587654184968498,
+              "A_over_S": 2.730100349756448
+            }
+          }
+        },
+        "proxy_large_text": {
+          "arms": {
+            "A": {
+              "count": 40,
+              "mean_ms": 340.11069835000023,
+              "p50_ms": 332.28849400000036,
+              "p95_ms": 386.39806000000044,
+              "p99_ms": 427.4900490000009,
+              "max_ms": 427.4900490000009
+            },
+            "B": {
+              "count": 40,
+              "mean_ms": 336.77198315000015,
+              "p50_ms": 337.11959800000113,
+              "p95_ms": 390.97264600000017,
+              "p99_ms": 414.21416000000136,
+              "max_ms": 414.21416000000136
+            },
+            "S": {
+              "count": 40,
+              "mean_ms": 144.32123052500032,
+              "p50_ms": 141.81951500000014,
+              "p95_ms": 186.91433899999993,
+              "p99_ms": 224.96764900000016,
+              "max_ms": 224.96764900000016
+            }
+          },
+          "ratios": {
+            "mean_ms": {
+              "B_over_S": 2.3334888562473988,
+              "B_over_A": 0.9901834455187756,
+              "A_over_B_speedup": 1.0099138745710714,
+              "latency_drop_percent": 0.9816554481224427,
+              "A_over_S": 2.3566227720812285
+            },
+            "p50_ms": {
+              "B_over_S": 2.3771030242206144,
+              "B_over_A": 1.0145388843948377,
+              "A_over_B_speedup": 0.9856694655882903,
+              "latency_drop_percent": -1.4538884394837748,
+              "A_over_S": 2.3430378675318417
+            },
+            "p95_ms": {
+              "B_over_S": 2.0917209888322175,
+              "B_over_A": 1.0118390501235945,
+              "A_over_B_speedup": 0.988299473002007,
+              "latency_drop_percent": -1.1839050123594541,
+              "A_over_S": 2.0672467509301176
+            },
+            "p99_ms": {
+              "B_over_S": 1.841216556430303,
+              "B_over_A": 0.9689445660055598,
+              "A_over_B_speedup": 1.0320507850335188,
+              "latency_drop_percent": 3.105543399444022,
+              "A_over_S": 1.900228992480606
+            }
+          }
+        },
+        "proxy_large_all": {
+          "arms": {
+            "A": {
+              "count": 40,
+              "mean_ms": 352.98976367500006,
+              "p50_ms": 346.3119569999981,
+              "p95_ms": 416.75692100000015,
+              "p99_ms": 441.8928530000012,
+              "max_ms": 441.8928530000012
+            },
+            "B": {
+              "count": 40,
+              "mean_ms": 350.18783562500005,
+              "p50_ms": 342.1126449999974,
+              "p95_ms": 405.7792410000002,
+              "p99_ms": 444.85178200000155,
+              "max_ms": 444.85178200000155
+            },
+            "S": {
+              "count": 40,
+              "mean_ms": 155.73421852500005,
+              "p50_ms": 150.686437999997,
+              "p95_ms": 187.80921599999783,
+              "p99_ms": 199.49122200000056,
+              "max_ms": 199.49122200000056
+            }
+          },
+          "ratios": {
+            "mean_ms": {
+              "B_over_S": 2.248624861907175,
+              "B_over_A": 0.9920622965923177,
+              "A_over_B_speedup": 1.008001214676687,
+              "latency_drop_percent": 0.7937703407682295,
+              "A_over_S": 2.26661659215463
+            },
+            "p50_ms": {
+              "B_over_S": 2.2703612185723325,
+              "B_over_A": 0.9878741928624756,
+              "A_over_B_speedup": 1.0122746471414428,
+              "latency_drop_percent": 1.2125807137524425,
+              "A_over_S": 2.298229101413924
+            },
+            "p95_ms": {
+              "B_over_S": 2.1605928060527386,
+              "B_over_A": 0.9736592736752656,
+              "A_over_B_speedup": 1.0270533307050076,
+              "latency_drop_percent": 2.6340726324734387,
+              "A_over_S": 2.2190440377537435
+            },
+            "p99_ms": {
+              "B_over_S": 2.229931610725209,
+              "B_over_A": 1.0066960327145196,
+              "A_over_B_speedup": 0.9933485059075242,
+              "latency_drop_percent": -0.6696032714519573,
+              "A_over_S": 2.215099233789845
+            }
+          }
+        }
+      },
+      "pairs": [
+        {
+          "leg_order_A_S_B": [
+            1,
+            2,
+            3
+          ],
+          "scenes": {
+            "proxy_one": {
+              "arms": {
+                "A": {
+                  "count": 100,
+                  "mean_ms": 12.253743760000022,
+                  "p50_ms": 10.776699000000008,
+                  "p95_ms": 20.58333900000025,
+                  "p99_ms": 23.484853999999814,
+                  "max_ms": 45.46447499999999
+                },
+                "S": {
+                  "count": 100,
+                  "mean_ms": 4.368706659999969,
+                  "p50_ms": 4.095801000000165,
+                  "p95_ms": 5.71585099999993,
+                  "p99_ms": 8.019542000000001,
+                  "max_ms": 9.031630999999834
+                },
+                "B": {
+                  "count": 100,
+                  "mean_ms": 11.190168689999949,
+                  "p50_ms": 10.272022000000106,
+                  "p95_ms": 16.37799999999993,
+                  "p99_ms": 20.90572500000053,
+                  "max_ms": 22.7676849999998
+                }
+              },
+              "ratios": {
+                "mean_ms": {
+                  "B_over_S": 2.5614374140652485,
+                  "B_over_A": 0.9132040712755959,
+                  "A_over_B_speedup": 1.0950454903285358,
+                  "latency_drop_percent": 8.679592872440411,
+                  "A_over_S": 2.8048904890309365
+                },
+                "p50_ms": {
+                  "B_over_S": 2.507939716797689,
+                  "B_over_A": 0.9531696115851522,
+                  "A_over_B_speedup": 1.0491312226550815,
+                  "latency_drop_percent": 4.683038841484777,
+                  "A_over_S": 2.6311578614291986
+                },
+                "p95_ms": {
+                  "B_over_S": 2.865365104863673,
+                  "B_over_A": 0.7956920886353632,
+                  "A_over_B_speedup": 1.2567675540359227,
+                  "latency_drop_percent": 20.43079113646368,
+                  "A_over_S": 3.601097894259403
+                },
+                "p99_ms": {
+                  "B_over_S": 2.6068477476644585,
+                  "B_over_A": 0.8901790490160465,
+                  "A_over_B_speedup": 1.123369507634833,
+                  "latency_drop_percent": 10.98209509839535,
+                  "A_over_S": 2.928453270772796
+                }
+              }
+            },
+            "proxy_large_text": {
+              "arms": {
+                "A": {
+                  "count": 20,
+                  "mean_ms": 337.6036884000004,
+                  "p50_ms": 327.78924800000095,
+                  "p95_ms": 374.5629060000001,
+                  "p99_ms": 427.4900490000009,
+                  "max_ms": 427.4900490000009
+                },
+                "S": {
+                  "count": 20,
+                  "mean_ms": 155.82932300000033,
+                  "p50_ms": 156.36685300000136,
+                  "p95_ms": 186.91433899999993,
+                  "p99_ms": 224.96764900000016,
+                  "max_ms": 224.96764900000016
+                },
+                "B": {
+                  "count": 20,
+                  "mean_ms": 336.2553224000001,
+                  "p50_ms": 337.7211189999998,
+                  "p95_ms": 363.3168649999998,
+                  "p99_ms": 390.97264600000017,
+                  "max_ms": 390.97264600000017
+                }
+              },
+              "ratios": {
+                "mean_ms": {
+                  "B_over_S": 2.157843696721954,
+                  "B_over_A": 0.9960060685166369,
+                  "A_over_B_speedup": 1.00400994693668,
+                  "latency_drop_percent": 0.39939314833631334,
+                  "A_over_S": 2.166496535443459
+                },
+                "p50_ms": {
+                  "B_over_S": 2.1597999353481705,
+                  "B_over_A": 1.0302995630899976,
+                  "A_over_B_speedup": 0.9705915015637536,
+                  "latency_drop_percent": -3.0299563089997594,
+                  "A_over_S": 2.0962834623268787
+                },
+                "p95_ms": {
+                  "B_over_S": 1.9437613344367333,
+                  "B_over_A": 0.9699755613280074,
+                  "A_over_B_speedup": 1.03095380942473,
+                  "latency_drop_percent": 3.002443867199256,
+                  "A_over_S": 2.0039281523500465
+                },
+                "p99_ms": {
+                  "B_over_S": 1.7379060844432788,
+                  "B_over_A": 0.9145771858656746,
+                  "A_over_B_speedup": 1.093401426860949,
+                  "latency_drop_percent": 8.54228141343254,
+                  "A_over_S": 1.900228992480606
+                }
+              }
+            },
+            "proxy_large_all": {
+              "arms": {
+                "A": {
+                  "count": 20,
+                  "mean_ms": 359.2822564999998,
+                  "p50_ms": 346.3119569999981,
+                  "p95_ms": 416.75692100000015,
+                  "p99_ms": 416.99047100000007,
+                  "max_ms": 416.99047100000007
+                },
+                "S": {
+                  "count": 20,
+                  "mean_ms": 159.71779734999978,
+                  "p50_ms": 154.76455500000156,
+                  "p95_ms": 187.80921599999783,
+                  "p99_ms": 199.49122200000056,
+                  "max_ms": 199.49122200000056
+                },
+                "B": {
+                  "count": 20,
+                  "mean_ms": 364.45157425000025,
+                  "p50_ms": 357.28721100000257,
+                  "p95_ms": 418.7626679999994,
+                  "p99_ms": 444.85178200000155,
+                  "max_ms": 444.85178200000155
+                }
+              },
+              "ratios": {
+                "mean_ms": {
+                  "B_over_S": 2.281846984474462,
+                  "B_over_A": 1.0143879015912396,
+                  "A_over_B_speedup": 0.9858161739028338,
+                  "latency_drop_percent": -1.4387901591239594,
+                  "A_over_S": 2.2494816636663333
+                },
+                "p50_ms": {
+                  "B_over_S": 2.3085855220531535,
+                  "B_over_A": 1.0316918136326565,
+                  "A_over_B_speedup": 0.969281704852278,
+                  "latency_drop_percent": -3.1691813632656496,
+                  "A_over_S": 2.2376697106129666
+                },
+                "p95_ms": {
+                  "B_over_S": 2.229723742630416,
+                  "B_over_A": 1.004812750308229,
+                  "A_over_B_speedup": 0.9952103013155909,
+                  "latency_drop_percent": -0.4812750308228919,
+                  "A_over_S": 2.2190440377537435
+                },
+                "p99_ms": {
+                  "B_over_S": 2.229931610725209,
+                  "B_over_A": 1.0668152222596028,
+                  "A_over_B_speedup": 0.9373694517424651,
+                  "latency_drop_percent": -6.681522225960279,
+                  "A_over_S": 2.0902697713686815
+                }
+              }
+            }
+          }
+        },
+        {
+          "leg_order_A_S_B": [
+            6,
+            5,
+            4
+          ],
+          "scenes": {
+            "proxy_one": {
+              "arms": {
+                "A": {
+                  "count": 100,
+                  "mean_ms": 10.757935720000004,
+                  "p50_ms": 9.774305999999342,
+                  "p95_ms": 14.39525699999922,
+                  "p99_ms": 22.391903000000184,
+                  "max_ms": 22.483052000000043
+                },
+                "S": {
+                  "count": 100,
+                  "mean_ms": 4.013378729999954,
+                  "p50_ms": 3.6527209999999286,
+                  "p95_ms": 5.608502000000044,
+                  "p99_ms": 8.564245999999912,
+                  "max_ms": 13.672071999999844
+                },
+                "B": {
+                  "count": 100,
+                  "mean_ms": 11.231808690000006,
+                  "p50_ms": 10.78126700000007,
+                  "p95_ms": 14.717208000000028,
+                  "p99_ms": 19.26927999999998,
+                  "max_ms": 38.861383999999816
+                }
+              },
+              "ratios": {
+                "mean_ms": {
+                  "B_over_S": 2.798591771576996,
+                  "B_over_A": 1.0440486894822236,
+                  "A_over_B_speedup": 0.9578097363408705,
+                  "latency_drop_percent": -4.404868948222362,
+                  "A_over_S": 2.6805184468598924
+                },
+                "p50_ms": {
+                  "B_over_S": 2.951571444958507,
+                  "B_over_A": 1.1030212272872157,
+                  "A_over_B_speedup": 0.9066008661133499,
+                  "latency_drop_percent": -10.302122728721574,
+                  "A_over_S": 2.6758972283948137
+                },
+                "p95_ms": {
+                  "B_over_S": 2.6240889278456017,
+                  "B_over_A": 1.022365074829913,
+                  "A_over_B_speedup": 0.9781241795318237,
+                  "latency_drop_percent": -2.23650748299129,
+                  "A_over_S": 2.566684829567522
+                },
+                "p99_ms": {
+                  "B_over_S": 2.2499680649061435,
+                  "B_over_A": 0.8605467788959171,
+                  "A_over_B_speedup": 1.1620518773924198,
+                  "latency_drop_percent": 13.945322110408288,
+                  "A_over_S": 2.6145796138971735
+                }
+              }
+            },
+            "proxy_large_text": {
+              "arms": {
+                "A": {
+                  "count": 20,
+                  "mean_ms": 342.61770830000006,
+                  "p50_ms": 335.51715299999887,
+                  "p95_ms": 386.39806000000044,
+                  "p99_ms": 420.7870470000016,
+                  "max_ms": 420.7870470000016
+                },
+                "S": {
+                  "count": 20,
+                  "mean_ms": 132.8131380500003,
+                  "p50_ms": 127.35165099999995,
+                  "p95_ms": 149.33708600000136,
+                  "p99_ms": 205.6415589999997,
+                  "max_ms": 205.6415589999997
+                },
+                "B": {
+                  "count": 20,
+                  "mean_ms": 337.28864390000024,
+                  "p50_ms": 334.1893340000006,
+                  "p95_ms": 392.04149999999936,
+                  "p99_ms": 414.21416000000136,
+                  "max_ms": 414.21416000000136
+                }
+              },
+              "ratios": {
+                "mean_ms": {
+                  "B_over_S": 2.539572883015691,
+                  "B_over_A": 0.9844460333750945,
+                  "A_over_B_speedup": 1.0157997148625608,
+                  "latency_drop_percent": 1.555396662490549,
+                  "A_over_S": 2.5796974104400303
+                },
+                "p50_ms": {
+                  "B_over_S": 2.624146066233572,
+                  "B_over_A": 0.9960424705916652,
+                  "A_over_B_speedup": 1.0039732536766068,
+                  "latency_drop_percent": 0.39575294083348256,
+                  "A_over_S": 2.634572464239188
+                },
+                "p95_ms": {
+                  "B_over_S": 2.625211931616208,
+                  "B_over_A": 1.0146052493120667,
+                  "A_over_B_speedup": 0.9856049933489212,
+                  "latency_drop_percent": -1.4605249312066748,
+                  "A_over_S": 2.5874219884001013
+                },
+                "p99_ms": {
+                  "B_over_S": 2.0142531597905364,
+                  "B_over_A": 0.9843795405612848,
+                  "A_over_B_speedup": 1.015868330044536,
+                  "latency_drop_percent": 1.562045943871515,
+                  "A_over_S": 2.046215993723342
+                }
+              }
+            },
+            "proxy_large_all": {
+              "arms": {
+                "A": {
+                  "count": 20,
+                  "mean_ms": 346.69727085000034,
+                  "p50_ms": 334.1900000000005,
+                  "p95_ms": 374.75562400000126,
+                  "p99_ms": 441.8928530000012,
+                  "max_ms": 441.8928530000012
+                },
+                "S": {
+                  "count": 20,
+                  "mean_ms": 151.75063970000036,
+                  "p50_ms": 148.25718900000174,
+                  "p95_ms": 187.12270100000023,
+                  "p99_ms": 192.54993099999956,
+                  "max_ms": 192.54993099999956
+                },
+                "B": {
+                  "count": 20,
+                  "mean_ms": 335.9240969999999,
+                  "p50_ms": 329.3139519999968,
+                  "p95_ms": 398.35952200000065,
+                  "p99_ms": 405.7792410000002,
+                  "max_ms": 405.7792410000002
+                }
+              },
+              "ratios": {
+                "mean_ms": {
+                  "B_over_S": 2.213658523378199,
+                  "B_over_A": 0.9689262801994727,
+                  "A_over_B_speedup": 1.0320702621402014,
+                  "latency_drop_percent": 3.107371980052731,
+                  "A_over_S": 2.284651132511829
+                },
+                "p50_ms": {
+                  "B_over_S": 2.22123429036546,
+                  "B_over_A": 0.9854093539603108,
+                  "A_over_B_speedup": 1.0148066851416115,
+                  "latency_drop_percent": 1.4590646039689181,
+                  "A_over_S": 2.2541234071286524
+                },
+                "p95_ms": {
+                  "B_over_S": 2.1288679560049752,
+                  "B_over_A": 1.062984773245189,
+                  "A_over_B_speedup": 0.9407472479093913,
+                  "latency_drop_percent": -6.298477324518892,
+                  "A_over_S": 2.0027266707741718
+                },
+                "p99_ms": {
+                  "B_over_S": 2.1073974884987163,
+                  "B_over_A": 0.918275184233403,
+                  "A_over_B_speedup": 1.088998175241796,
+                  "latency_drop_percent": 8.172481576659695,
+                  "A_over_S": 2.294952019484246
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "independent_evidence_acceptance": false,
+  "performance_acceptance": false,
+  "limits": [
+    "Two original partials disagree with run seal and full final; full final diagnostics cannot repair or supersede failed evidence acceptance.",
+    "Original final files match both run and campaign seals. 17 unaffected scene runs pass the unchanged strict independent verifier; affected run retains FAIL.",
+    "Body-observed is clone collector timing, not the SDK body-consumption completion timestamp.",
+    "Gate does not retain original HTTP bodies; proof digests/typed results/EOF/ACK are recorded evidence only, separate functional raw-body replay exists.",
+    "Business elapsed time includes fresh logical connection, complete typed rows, executed conditional probe, and actual close ACK; final proof/hash processing is outside clock.",
+    "Each wide pair N20 and pooled N40: p99 is sample maximum. Pooled one N200 p99 rank198. No resample or raw rewrite performed.",
+    "Successful runtime/lifecycle/final checks cannot override original partial integrity failure. The campaign is NOT ACCEPTED.",
+    "Native work metrics OFF; original control RPC bodies verified, private Go/Rust fetch bytes not captured.",
+    "Prezero absolute counts include setup and successful zero writes, not independent durability proof.",
+    "A e509 JSON-row candidate versus B5bfad Flush timing candidate, shared native0af and FDATASYNC1/PREZERO1."
+  ],
+  "contract_sha256": "fcf5d8ec3890503523722f1fe8e17f7af7947e2a18e8589995a9517f6e8e44f5",
+  "freeze_sha256": "250d7ae59ae7432faf314704dcbc6e549fa86cf0856e81c6fda6d4ccf1d25ae6",
+  "sealed_manifest_sha256": "340fb395263ef969aaee303497828935aeed024152aa564308a2f61fc3b31970",
+  "source_identities": {
+    "A": {
+      "arm": "A",
+      "engine": "peri",
+      "source_commit": "e5096d2f6dce8ed540d6c7f0f907dd33b30d19c6",
+      "binary_sha256": "289c2df3775b3527252e2a93458d7955f165410482470cc4384b4cdd39135b52",
+      "native_source_commit": "b6746f3f8c460fafb9ac63a4b2a06f0357325688",
+      "native_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+      "profile": {
+        "completion_journal": 1,
+        "guarded_read_journal": 1,
+        "append_fdatasync": 1,
+        "completion_prezero": 1,
+        "work_metrics": 0,
+        "phase_metrics": 0,
+        "wire_diagnostic": 0
+      }
+    },
+    "B": {
+      "arm": "B",
+      "engine": "peri",
+      "source_commit": "5bfad86652b04b6b266d40e79fe8c2189204e946",
+      "binary_sha256": "020bde6502f879007242480399c9ff6581e42b6bd292cdb6150e5fe59cb124de",
+      "native_source_commit": "b6746f3f8c460fafb9ac63a4b2a06f0357325688",
+      "native_binary_sha256": "0af0e316387b4713bed548d24d2a37e2071fde568849b93dd57ba9dff1cf5519",
+      "profile": {
+        "completion_journal": 1,
+        "guarded_read_journal": 1,
+        "append_fdatasync": 1,
+        "completion_prezero": 1,
+        "work_metrics": 0,
+        "phase_metrics": 0,
+        "wire_diagnostic": 0
+      }
+    },
+    "S": {
+      "arm": "S",
+      "engine": "sqld",
+      "source_commit": "40c272de85ee4e62d722c5ccae5da2e76b4253a1",
+      "binary_sha256": "77ec3e1c4e497f9fcf7c775154d1a9afa75f6d140eeec731713362b2af5e496b",
+      "native_source_commit": null,
+      "native_binary_sha256": null,
+      "profile": {
+        "sqlite_journal_mode": "wal",
+        "sqlite_synchronous": 1
+      }
+    }
+  },
+  "setup_businesses_separate": 1056,
+  "original_control_replies_independently_decoded": 32,
+  "process_identities_verified_and_now_absent": [
+    {
+      "leg": "historical_json/01-A",
+      "role": "authority",
+      "global_pid": 123150,
+      "start_ticks": 1801922,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/01-A",
+      "role": "worker-b",
+      "global_pid": 123169,
+      "start_ticks": 1801957,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/01-A",
+      "role": "worker-a",
+      "global_pid": 123164,
+      "start_ticks": 1801945,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/01-A",
+      "role": "service",
+      "global_pid": 123149,
+      "start_ticks": 1801910,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/01-A",
+      "role": "platform",
+      "global_pid": 123154,
+      "start_ticks": 1801933,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/02-S",
+      "role": "service",
+      "global_pid": 124623,
+      "start_ticks": 1809121,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "role": "authority",
+      "global_pid": 124738,
+      "start_ticks": 1814714,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "role": "worker-b",
+      "global_pid": 124759,
+      "start_ticks": 1814751,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "role": "worker-a",
+      "global_pid": 124754,
+      "start_ticks": 1814738,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "role": "service",
+      "global_pid": 124737,
+      "start_ticks": 1814701,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "role": "platform",
+      "global_pid": 124743,
+      "start_ticks": 1814725,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "role": "authority",
+      "global_pid": 126213,
+      "start_ticks": 1821999,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "role": "worker-b",
+      "global_pid": 126232,
+      "start_ticks": 1822031,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "role": "worker-a",
+      "global_pid": 126227,
+      "start_ticks": 1822020,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "role": "service",
+      "global_pid": 126212,
+      "start_ticks": 1821986,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "role": "platform",
+      "global_pid": 126217,
+      "start_ticks": 1822009,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/05-S",
+      "role": "service",
+      "global_pid": 127682,
+      "start_ticks": 1829165,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "role": "authority",
+      "global_pid": 127798,
+      "start_ticks": 1834598,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "role": "worker-b",
+      "global_pid": 127818,
+      "start_ticks": 1834632,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "role": "worker-a",
+      "global_pid": 127813,
+      "start_ticks": 1834620,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "role": "service",
+      "global_pid": 127796,
+      "start_ticks": 1834586,
+      "absent_observed_now": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "role": "platform",
+      "global_pid": 127803,
+      "start_ticks": 1834609,
+      "absent_observed_now": true
+    }
+  ],
+  "service_exit_codes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "runtime": [
+    {
+      "leg": "historical_json/01-A",
+      "snapshots": 8,
+      "per_scene_append_sync_delta": {
+        "proxy_one": 720,
+        "proxy_large_text": 975,
+        "proxy_large_all": 975
+      },
+      "total_append_sync_delta": 2670,
+      "legacy_audit_sync_delta": 0,
+      "prezero_before": {
+        "prezero_enabled": true,
+        "prezero_write_count": 28,
+        "prezero_write_bytes": 1833796,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 1734747
+      },
+      "prezero_after": {
+        "prezero_enabled": true,
+        "prezero_write_count": 65,
+        "prezero_write_bytes": 4256608,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 4016320
+      }
+    },
+    {
+      "leg": "historical_json/03-B",
+      "snapshots": 8,
+      "per_scene_append_sync_delta": {
+        "proxy_one": 720,
+        "proxy_large_text": 975,
+        "proxy_large_all": 975
+      },
+      "total_append_sync_delta": 2670,
+      "legacy_audit_sync_delta": 0,
+      "prezero_before": {
+        "prezero_enabled": true,
+        "prezero_write_count": 28,
+        "prezero_write_bytes": 1833796,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 1734747
+      },
+      "prezero_after": {
+        "prezero_enabled": true,
+        "prezero_write_count": 65,
+        "prezero_write_bytes": 4256608,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 4016320
+      }
+    },
+    {
+      "leg": "historical_json/04-B",
+      "snapshots": 8,
+      "per_scene_append_sync_delta": {
+        "proxy_one": 720,
+        "proxy_large_text": 975,
+        "proxy_large_all": 975
+      },
+      "total_append_sync_delta": 2670,
+      "legacy_audit_sync_delta": 0,
+      "prezero_before": {
+        "prezero_enabled": true,
+        "prezero_write_count": 28,
+        "prezero_write_bytes": 1833796,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 1734747
+      },
+      "prezero_after": {
+        "prezero_enabled": true,
+        "prezero_write_count": 65,
+        "prezero_write_bytes": 4256608,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 4016320
+      }
+    },
+    {
+      "leg": "historical_json/06-A",
+      "snapshots": 8,
+      "per_scene_append_sync_delta": {
+        "proxy_one": 720,
+        "proxy_large_text": 975,
+        "proxy_large_all": 975
+      },
+      "total_append_sync_delta": 2670,
+      "legacy_audit_sync_delta": 0,
+      "prezero_before": {
+        "prezero_enabled": true,
+        "prezero_write_count": 28,
+        "prezero_write_bytes": 1833796,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 1734747
+      },
+      "prezero_after": {
+        "prezero_enabled": true,
+        "prezero_write_count": 65,
+        "prezero_write_bytes": 4256608,
+        "known_active_extent_bytes": 196608,
+        "known_retained_extent_bytes": 4016320
+      }
+    }
+  ],
+  "native": [
+    {
+      "leg": "historical_json/01-A",
+      "boundary": "before",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/01-A",
+      "boundary": "after",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "boundary": "before",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/03-B",
+      "boundary": "after",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "boundary": "before",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/04-B",
+      "boundary": "after",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "boundary": "before",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    },
+    {
+      "leg": "historical_json/06-A",
+      "boundary": "after",
+      "control_requests": 4,
+      "quiescence_poll": 1,
+      "status": "disabled",
+      "original_replies_verified": true
+    }
+  ],
+  "original_partials_total": 48,
+  "original_partials_equal": 46,
+  "original_partials_mismatch": 2,
+  "formal_performance_acceptance": false,
+  "capacity_proven": false,
+  "recovery_proven": false,
+  "runtime_status": "RUNTIME_PROFILE_IDENTITY_CHECKS_PASS_ONLY",
+  "threshold_diagnostics": {
+    "historical_json": {
+      "accepted_target_claim": false,
+      "raw_finals_only_scenes": {
+        "proxy_one": {
+          "both_pairs_all_four_metrics_at_most_1_5": false,
+          "both_pairs_all_four_metrics_improve_vs_A": false,
+          "paired_B_over_A": {
+            "mean_ms": [
+              0.9132040712755959,
+              1.0440486894822236
+            ],
+            "p50_ms": [
+              0.9531696115851522,
+              1.1030212272872157
+            ],
+            "p95_ms": [
+              0.7956920886353632,
+              1.022365074829913
+            ],
+            "p99_ms": [
+              0.8901790490160465,
+              0.8605467788959171
+            ]
+          }
+        },
+        "proxy_large_text": {
+          "both_pairs_all_four_metrics_at_most_1_5": false,
+          "both_pairs_all_four_metrics_improve_vs_A": false,
+          "paired_B_over_A": {
+            "mean_ms": [
+              0.9960060685166369,
+              0.9844460333750945
+            ],
+            "p50_ms": [
+              1.0302995630899976,
+              0.9960424705916652
+            ],
+            "p95_ms": [
+              0.9699755613280074,
+              1.0146052493120667
+            ],
+            "p99_ms": [
+              0.9145771858656746,
+              0.9843795405612848
+            ]
+          }
+        },
+        "proxy_large_all": {
+          "both_pairs_all_four_metrics_at_most_1_5": false,
+          "both_pairs_all_four_metrics_improve_vs_A": false,
+          "paired_B_over_A": {
+            "mean_ms": [
+              1.0143879015912396,
+              0.9689262801994727
+            ],
+            "p50_ms": [
+              1.0316918136326565,
+              0.9854093539603108
+            ],
+            "p95_ms": [
+              1.004812750308229,
+              1.062984773245189
+            ],
+            "p99_ms": [
+              1.0668152222596028,
+              0.918275184233403
+            ]
+          }
+        }
+      }
+    }
+  }
+}

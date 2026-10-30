@@ -1,0 +1,50 @@
+{
+  "schema": "r15-recovery-original-traces/3",
+  "publication": "no-clobber-link-original-inode-then-unlink",
+  "entries": {
+    "operations.trace.jsonl": {
+      "staging_name": "operations.append-bce62ad9-6759-45b3-b0f3-1cad4bf6f8bc.jsonl",
+      "canonical_name": "operations.trace.jsonl",
+      "dev": "27",
+      "ino": "1617768",
+      "original_nlink": "1",
+      "final_nlink": "1",
+      "records": 176,
+      "bytes": 313900,
+      "sha256": "5caf05552eb1d11481d907c8a28467f3b113ca3a462b3b2bb73197b95ba6ca13",
+      "closed_before_publish": true,
+      "steps": [
+        "append",
+        "fsync",
+        "identity_readback",
+        "close",
+        "link_noreplace",
+        "unlink_staging",
+        "fsync_directory",
+        "canonical_readback"
+      ]
+    },
+    "requests.trace.jsonl": {
+      "staging_name": "requests.append-86d45d74-79a4-4096-99ee-68d26ca0942c.jsonl",
+      "canonical_name": "requests.trace.jsonl",
+      "dev": "27",
+      "ino": "1617769",
+      "original_nlink": "1",
+      "final_nlink": "1",
+      "records": 352,
+      "bytes": 442157,
+      "sha256": "9f722e4ce083a7e0b81cf1c00453d437f5a4a040b533a22e22f32f8836b94728",
+      "closed_before_publish": true,
+      "steps": [
+        "append",
+        "fsync",
+        "identity_readback",
+        "close",
+        "link_noreplace",
+        "unlink_staging",
+        "fsync_directory",
+        "canonical_readback"
+      ]
+    }
+  }
+}
