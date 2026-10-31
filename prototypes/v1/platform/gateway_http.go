@@ -134,6 +134,17 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		if permit != nil {
 			defer permit.finish()
 		}
+		collector := pipelineAuditCollectorFrom(ctx)
+		needsAudit := !hranaProbeRequest(ctx, action) || result.code != ""
+		// Only a successful read-only statement may hand its completion row to
+		// the pipeline collector; every other record keeps its own barrier.
+		batchCompletion := needsAudit && collector.Active() && completion != nil && pipelineBatchableCompletion(action, &result, needsOperation)
+		var flushFailure error
+		if needsAudit && !batchCompletion {
+			// A synchronous record enters the chain after the prepared rows, so
+			// those have to be durable first or the chain would reorder.
+			flushFailure = collector.Flush()
+		}
 		if result.operationPending && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
 			gateway.settleOperationCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, identifier)
@@ -172,11 +183,23 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, persist)
 				}
 				completion.Release()
+				completion = nil
+			} else if batchCompletion {
+				consumed, err := collector.Add(event, completion)
+				if !consumed {
+					// The collector closed between the check and the handoff, so
+					// the row keeps the synchronous barrier.
+					auditErr = gateway.recordAuditEvent(event, completion, principal, &result)
+				} else {
+					auditErr = err
+				}
+				completion = nil
 			} else {
 				auditErr = gateway.recordAuditEvent(event, completion, principal, &result)
+				completion = nil
 			}
-			completion = nil
 			leaveAudit()
+			auditErr = errors.Join(flushFailure, auditErr)
 			if auditErr != nil {
 				if result.code != "outcome_unknown" {
 					// A refusal that already answered before dispatch stays that
@@ -203,6 +226,12 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			// instead of shrinking the completion budget for the next request.
 			completion.Release()
 			completion = nil
+		}
+		if action != "open" && (result.operationPending || result.code == "outcome_unknown" || action == "close") {
+			// A committing step ends batching for this pipeline: a later flush
+			// failure must not be able to rewrite the answer of an operation that
+			// already ran. Its own record was flushed before it was written.
+			collector.Seal()
 		}
 		// One account answers "did this request hold an admission permit" separately
 		// from "was it refused", so the goodput numbers are not read off the codes.
@@ -382,6 +411,21 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			permit = result.permit
 		}
 	}
+}
+
+// pipelineBatchableCompletion reports whether one request may defer its
+// completion row to the pipeline collector. Only a statement that was both
+// dispatched and proven non-committing qualifies: a write, an open, a close, an
+// unknown outcome, a cursor step or any refusal keeps its synchronous barrier.
+func pipelineBatchableCompletion(action string, result *gatewayResult, needsOperation bool) bool {
+	if result.code != "" || !result.dispatched || needsOperation {
+		return false
+	}
+	switch action {
+	case "execute", "query", "statement":
+		return true
+	}
+	return false
 }
 
 // recordAuditEvent charges one request to the budget its traffic belongs to.

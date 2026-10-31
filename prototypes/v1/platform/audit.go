@@ -303,29 +303,79 @@ func (audit *fileAudit) recordCompletion(event AuditEvent, reservation *auditRes
 }
 
 func (audit *fileAudit) recordCompletionOperation(event AuditEvent, reservation *auditReservation, change func(*operationEdit) error) error {
-	if err := validateAudit(event); err != nil {
-		reservation.Release()
+	request, err := audit.prepareCompletionOperation(event, reservation, change)
+	if err != nil {
 		return err
 	}
+	return audit.submitCompletionBatch([]*auditRequest{request})
+}
+
+// prepareCompletionOperation validates one completion and moves its held slot
+// into the admitted budget without enqueueing it. The record is not durable and
+// has no sequence yet; submitCompletionBatch is what makes it visible to the
+// writer, so several prepared completions can share one barrier while remaining
+// accounted for from reservation until the barrier returns.
+func (audit *fileAudit) prepareCompletionOperation(event AuditEvent, reservation *auditReservation, change func(*operationEdit) error) (*auditRequest, error) {
+	if err := validateAudit(event); err != nil {
+		reservation.Release()
+		return nil, err
+	}
 	bytes := min(auditEventBytes(event), reservation.charged)
-	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, enqueued: time.Now(), done: make(chan error, 1), operationChange: change}
+	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, done: make(chan error, 1), operationChange: change}
 	audit.queueMutex.Lock()
+	defer audit.queueMutex.Unlock()
 	if !reservation.active {
-		audit.queueMutex.Unlock()
-		return ErrStateClosed
+		return nil, ErrStateClosed
 	}
 	if audit.closing {
 		audit.releaseReservationLocked(reservation)
-		audit.queueMutex.Unlock()
-		return ErrStateClosed
+		return nil, ErrStateClosed
 	}
 	audit.releaseReservationLocked(reservation)
 	audit.admitted[AuditClassCompletion]++
 	audit.admittedBytes[AuditClassCompletion] += request.bytes
 	audit.observeMaximumLocked()
-	audit.enqueueLocked(request)
+	return request, nil
+}
+
+// submitCompletionBatch enqueues prepared completions under one queue lock, so
+// the writer can only take them as one pending batch, and waits for every member.
+// Each caller still decides its own response from its own error: a batch shares
+// the barrier, not the answer.
+func (audit *fileAudit) submitCompletionBatch(requests []*auditRequest) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	audit.queueMutex.Lock()
+	if audit.closing {
+		// The shutdown that started between preparation and submission will never
+		// drain these records, so their admission charge goes back here.
+		for _, request := range requests {
+			audit.admitted[request.class]--
+			audit.admittedBytes[request.class] -= request.bytes
+		}
+		audit.queueMutex.Unlock()
+		return ErrStateClosed
+	}
+	for _, request := range requests {
+		request.enqueued = time.Now()
+		audit.enqueueLocked(request)
+	}
 	audit.queueMutex.Unlock()
-	return audit.waitObserved(request)
+	var failure error
+	for _, request := range requests {
+		failure = errors.Join(failure, audit.waitObserved(request))
+	}
+	return failure
+}
+
+// discardPrepared returns the admission charge of a prepared completion that will
+// never be submitted. Nothing was written, so no sequence is consumed.
+func (audit *fileAudit) discardPrepared(request *auditRequest) {
+	audit.queueMutex.Lock()
+	audit.admitted[request.class]--
+	audit.admittedBytes[request.class] -= request.bytes
+	audit.queueMutex.Unlock()
 }
 
 func auditSegmentPath(path string, start uint64) string {
