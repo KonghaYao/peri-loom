@@ -394,7 +394,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	// post-dispatch answer, which carries the execution proof instead of
 	// pretending nothing ran.
 	if admission, ok := gateway.config.Audit.(AuditAdmission); ok {
-		reservation, reserveErr := admission.ReserveCompletion()
+		reservation, reserveErr := gateway.reserveCompletionFor(ctx, action, admission)
 		if reserveErr == nil {
 			completion = reservation
 		} else if errors.Is(reserveErr, ErrAuditOverloaded) {

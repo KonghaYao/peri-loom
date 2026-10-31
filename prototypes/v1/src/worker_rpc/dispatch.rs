@@ -8,11 +8,16 @@ use turso_core::Value as SqlValue;
 use crate::metrics::{Metrics, Operation};
 use crate::ownership::types::OwnershipCommand;
 use crate::runtime::{result_reservation_bytes, BudgetLane};
-use crate::session::{Budget, StatementResult};
+use crate::session::{
+    AdmissionError, Budget, GuardedIntentReason, GuardedStatementOutcome, SqlEvidence,
+    StatementResult,
+};
 
 use super::diagnostics::Action;
-use super::outcome::execution_completed;
-use super::protocol::{NamedStatementArg, SessionState, StatementArg, WorkerCommand};
+use super::outcome::{execution_completed, execution_rejected};
+use super::protocol::{
+    BatchStatement, NamedStatementArg, SessionState, StatementArg, WorkerCommand,
+};
 use super::server::State;
 use super::session_entry::SessionCall;
 use super::sessions::{rows, value};
@@ -51,6 +56,28 @@ impl RequestMemory {
                 sql_bytes(sql, args, named_args),
                 if *want_rows { result } else { 0 },
             ),
+            // The block may return up to `max_result_bytes` of its own plus one
+            // statement that crosses that boundary, so the reservation covers
+            // both rather than treating the block as a single result.
+            WorkerCommand::GuardedReadonlyBatch {
+                statements,
+                max_result_bytes,
+                ..
+            } => {
+                let input = statements.iter().fold(0u64, |total, statement| {
+                    total.saturating_add(sql_bytes(
+                        &statement.sql,
+                        &statement.args,
+                        &statement.named_args,
+                    ))
+                });
+                (
+                    input,
+                    result_reservation_bytes(
+                        max_result_bytes.saturating_add(Budget::trusted_default().max_result_bytes),
+                    ),
+                )
+            }
             WorkerCommand::OpenReadCursor {
                 sql,
                 args,
@@ -156,6 +183,18 @@ impl State {
                 ensure!(control, "control authorization required");
                 self.runtime
                     .capacity_trace_page(&stream_id, after_sequence, max_events)
+            }
+            WorkerCommand::Capabilities => {
+                // A capability answer is a fact about this worker binary, not
+                // about a session or an execution lane, so it needs no session and
+                // no durable evidence. Only v1 asks: v2 callers carry a writer
+                // state the answer does not describe.
+                ensure!(!control, "SQL authorization required");
+                ensure!(
+                    version == 1,
+                    "readonly batch capabilities require protocol v1"
+                );
+                Ok(json!({"readonly_batch_protocol": 1}))
             }
             WorkerCommand::WriterProfileStatus => {
                 ensure!(
@@ -398,18 +437,7 @@ impl State {
                         encoded_statement_result(result)
                     }
                     crate::session::GuardedStatementOutcome::RequiresIntent(reason) => {
-                        let reason = match reason {
-                            crate::session::GuardedIntentReason::EngineWritable => {
-                                "engine_writable"
-                            }
-                            crate::session::GuardedIntentReason::TransactionContext => {
-                                "transaction_context"
-                            }
-                            crate::session::GuardedIntentReason::ConnectionControl => {
-                                "connection_control"
-                            }
-                        };
-                        json!({"requires_intent": true, "reason": reason})
+                        json!({"requires_intent": true, "reason": guarded_intent_reason(reason)})
                     }
                 });
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
@@ -419,6 +447,31 @@ impl State {
                     self.diagnostics.emit(Action::Query, request_id, error);
                 }
                 result
+            }
+            WorkerCommand::GuardedReadonlyBatch {
+                statements,
+                max_result_bytes,
+                ..
+            } => {
+                // A block the caller cannot describe is refused before any
+                // statement runs, so an invalid block is never partially executed.
+                let prepared = prepare_guarded_batch(statements)?;
+                if Instant::now() >= deadline {
+                    return Err(anyhow::Error::new(AdmissionError::Deadline)
+                        .context(SqlEvidence::NotExecuted));
+                }
+                let call = call.context("worker session RPC guard absent")?;
+                let items = crate::slow_diagnostics::native("guarded_readonly_batch", || {
+                    run_guarded_batch(&prepared, max_result_bytes, deadline, |statement| {
+                        call.handle().guarded_readonly_statement(
+                            &statement.sql,
+                            &statement.args,
+                            &statement.named_args,
+                            statement.want_rows,
+                        )
+                    })
+                })?;
+                Ok(json!({"items": items.items, "next": items.next}))
             }
             WorkerCommand::OpenReadCursor {
                 sql,
@@ -589,6 +642,155 @@ fn encoded_statement_result(result: StatementResult) -> Value {
     })
 }
 
+/// The largest block one batch command carries. It matches the platform's
+/// pipeline audit batch, so a block never spans more statements than one durable
+/// batch and a single call cannot hide an unbounded amount of work.
+const MAX_GUARDED_BATCH_STATEMENTS: usize = 8;
+
+#[derive(Debug)]
+struct PreparedBatchStatement {
+    sql: String,
+    args: Vec<SqlValue>,
+    named_args: Vec<(String, SqlValue)>,
+    want_rows: bool,
+}
+
+struct GuardedBatchItems {
+    items: Vec<Value>,
+    next: usize,
+}
+
+/// Validates the whole block before any statement runs: an invalid argument or an
+/// oversized statement is `NotExecuted` for the entire command, so a malformed
+/// block can never be half executed.
+fn prepare_guarded_batch(statements: Vec<BatchStatement>) -> Result<Vec<PreparedBatchStatement>> {
+    let prepared = (|| -> Result<Vec<PreparedBatchStatement>> {
+        ensure!(!statements.is_empty(), "empty guarded readonly batch");
+        ensure!(
+            statements.len() <= MAX_GUARDED_BATCH_STATEMENTS,
+            "guarded readonly batch limit exceeded"
+        );
+        let budget = Budget::trusted_default();
+        let mut prepared = Vec::with_capacity(statements.len());
+        for statement in statements {
+            ensure!(
+                statement.sql.len() <= budget.max_sql_bytes,
+                "SQL byte budget exceeded"
+            );
+            let args = statement
+                .args
+                .into_iter()
+                .map(native_arg)
+                .collect::<Result<Vec<_>>>()?;
+            let named_args = statement
+                .named_args
+                .into_iter()
+                .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                .collect::<Result<Vec<_>>>()?;
+            prepared.push(PreparedBatchStatement {
+                sql: statement.sql,
+                args,
+                named_args,
+                want_rows: statement.want_rows,
+            });
+        }
+        Ok(prepared)
+    })();
+    prepared.map_err(|error| error.context(SqlEvidence::NotExecuted))
+}
+
+/// Runs one guarded statement per entry and stops at the first entry that is not
+/// a settled read. Each statement keeps its own budget, evidence and verdict; the
+/// block only removes round trips. `next` counts the entries already decided, so
+/// a caller resumes at `next` and never replays an entry the worker ran.
+fn run_guarded_batch<F>(
+    statements: &[PreparedBatchStatement],
+    max_result_bytes: usize,
+    deadline: Instant,
+    mut execute: F,
+) -> Result<GuardedBatchItems>
+where
+    F: FnMut(&PreparedBatchStatement) -> Result<GuardedStatementOutcome>,
+{
+    let mut items = Vec::with_capacity(statements.len());
+    let mut bytes = 0u64;
+    let mut next = 0usize;
+    for (index, statement) in statements.iter().enumerate() {
+        // Checked at entry boundaries: a deadline that expires mid-statement is
+        // answered by that statement's own budget and evidence, never by a
+        // half-decided entry.
+        if Instant::now() >= deadline {
+            break;
+        }
+        next = index + 1;
+        match execute(statement) {
+            Ok(GuardedStatementOutcome::Executed(result)) => {
+                let item = json!({"index": index, "status": "ok", "result": encoded_statement_result(result)});
+                bytes = bytes.saturating_add(go_html_escaped_json_len(&item));
+                items.push(item);
+                // The entry that crosses the budget is still returned: it ran and
+                // settled, so hiding it would leave the caller without its result.
+                if bytes > max_result_bytes as u64 {
+                    break;
+                }
+            }
+            Ok(GuardedStatementOutcome::RequiresIntent(reason)) => {
+                items.push(json!({"index": index, "status": "requires_intent", "reason": guarded_intent_reason(reason)}));
+                break;
+            }
+            Err(error) => {
+                let mut item =
+                    json!({"index": index, "status": "error", "error": format!("{error:#}")});
+                if execution_completed(&error) {
+                    item["execution_completed"] = json!(true);
+                } else if execution_rejected(&error) {
+                    item["execution_completed"] = json!(false);
+                }
+                items.push(item);
+                break;
+            }
+        }
+    }
+    Ok(GuardedBatchItems { items, next })
+}
+
+/// The JSON byte count the platform's `encoding/json` would produce for this
+/// item. HTML escaping turns `<`, `>` and `&` into six bytes and U+2028/U+2029
+/// into three more than their UTF-8 form; serde emits all of them raw, so the
+/// scan adds the difference. Counting an upper bound keeps a block under the
+/// caller's pipeline budget without encoding the response twice.
+fn go_html_escaped_json_len(item: &Value) -> u64 {
+    let encoded = serde_json::to_vec(item).expect("guarded batch item serializes");
+    let mut total = 0u64;
+    let mut index = 0usize;
+    while index < encoded.len() {
+        let byte = encoded[index];
+        if byte == b'<' || byte == b'>' || byte == b'&' {
+            total = total.saturating_add(6);
+            index += 1;
+        } else if byte == 0xE2
+            && index + 2 < encoded.len()
+            && encoded[index + 1] == 0x80
+            && matches!(encoded[index + 2], 0xA8 | 0xA9)
+        {
+            total = total.saturating_add(6);
+            index += 3;
+        } else {
+            total = total.saturating_add(1);
+            index += 1;
+        }
+    }
+    total
+}
+
+fn guarded_intent_reason(reason: GuardedIntentReason) -> &'static str {
+    match reason {
+        GuardedIntentReason::EngineWritable => "engine_writable",
+        GuardedIntentReason::TransactionContext => "transaction_context",
+        GuardedIntentReason::ConnectionControl => "connection_control",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_cursor_first(
     call: Option<&SessionCall>,
@@ -689,5 +891,275 @@ mod memory_tests {
         );
         assert_eq!(query.lane, BudgetLane::Sql);
         assert!(query.bytes > execute.bytes);
+
+        let batch = RequestMemory::for_command(
+            &WorkerCommand::GuardedReadonlyBatch {
+                session: session(),
+                statements: vec![
+                    super::BatchStatement {
+                        sql: "SELECT 1".into(),
+                        args: vec![],
+                        named_args: vec![],
+                        want_rows: true,
+                    },
+                    super::BatchStatement {
+                        sql: "SELECT 2".into(),
+                        args: vec![],
+                        named_args: vec![],
+                        want_rows: true,
+                    },
+                ],
+                max_result_bytes: 1024,
+            },
+            false,
+        );
+        assert_eq!(batch.lane, BudgetLane::Sql);
+        // Input is the aggregate SQL text; output covers the block budget plus
+        // one statement that crosses it.
+        assert_eq!(
+            batch.bytes,
+            16 + crate::runtime::result_reservation_bytes(
+                1024 + Budget::trusted_default().max_result_bytes
+            )
+        );
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use std::time::{Duration, Instant};
+
+    use anyhow::{anyhow, Result};
+    use serde_json::json;
+    use turso_core::Value;
+
+    use super::{
+        go_html_escaped_json_len, prepare_guarded_batch, run_guarded_batch, BatchStatement,
+        GuardedIntentReason, GuardedStatementOutcome, StatementResult,
+    };
+    use crate::session::{SqlEvidence, UnsettledSqlOutcome};
+
+    fn statement(sql: &str) -> BatchStatement {
+        BatchStatement {
+            sql: sql.into(),
+            args: vec![],
+            named_args: vec![],
+            want_rows: true,
+        }
+    }
+
+    fn result(value: i64) -> StatementResult {
+        StatementResult {
+            cols: vec![],
+            rows: vec![vec![Value::from_i64(value)]],
+            affected_row_count: 0,
+            last_insert_rowid: None,
+            autocommit: true,
+            rows_read: 1,
+            rows_written: 0,
+            query_duration_ms: 0.5,
+        }
+    }
+
+    fn prepared(count: usize) -> Vec<super::PreparedBatchStatement> {
+        prepare_guarded_batch(
+            (0..count)
+                .map(|index| statement(&format!("SELECT {index}")))
+                .collect(),
+        )
+        .expect("valid batch")
+    }
+
+    #[test]
+    fn an_invalid_block_is_rejected_before_any_statement_runs() -> Result<()> {
+        for block in [
+            vec![],
+            (0..9)
+                .map(|index| statement(&format!("SELECT {index}")))
+                .collect(),
+            vec![BatchStatement {
+                sql: "SELECT ?".into(),
+                args: vec![super::StatementArg::Blob {
+                    base64: "not base64".into(),
+                }],
+                named_args: vec![],
+                want_rows: true,
+            }],
+        ] {
+            let error = prepare_guarded_batch(block).expect_err("invalid block admitted");
+            assert!(error.downcast_ref::<UnsettledSqlOutcome>().is_none());
+            assert_eq!(
+                error.downcast_ref::<SqlEvidence>(),
+                Some(&SqlEvidence::NotExecuted)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_settled_statement_is_reported_in_order() -> Result<()> {
+        let prepared = prepared(3);
+        let items = run_guarded_batch(
+            &prepared,
+            usize::MAX,
+            Instant::now() + Duration::from_secs(5),
+            |statement| {
+                let value: i64 = statement.sql.trim_start_matches("SELECT ").parse()?;
+                Ok(GuardedStatementOutcome::Executed(result(value)))
+            },
+        )?;
+        assert_eq!(items.next, 3);
+        assert_eq!(items.items.len(), 3);
+        for (index, item) in items.items.iter().enumerate() {
+            assert_eq!(item["index"], index);
+            assert_eq!(item["status"], "ok");
+            assert_eq!(
+                item["result"]["rows"],
+                json!([[index as i64]]),
+                "item {index}"
+            );
+            for field in [
+                "cols",
+                "rows",
+                "affected_row_count",
+                "last_insert_rowid",
+                "autocommit",
+                "rows_read",
+                "rows_written",
+                "query_duration_ms",
+            ] {
+                assert!(item["result"].get(field).is_some(), "{field} missing");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_refused_write_stops_the_block_after_the_reads() -> Result<()> {
+        let prepared = prepared(3);
+        let items = run_guarded_batch(
+            &prepared,
+            usize::MAX,
+            Instant::now() + Duration::from_secs(5),
+            |statement| {
+                if statement.sql == "SELECT 1" {
+                    return Ok(GuardedStatementOutcome::RequiresIntent(
+                        GuardedIntentReason::EngineWritable,
+                    ));
+                }
+                Ok(GuardedStatementOutcome::Executed(result(0)))
+            },
+        )?;
+        assert_eq!(items.next, 2);
+        assert_eq!(items.items[0]["status"], "ok");
+        assert_eq!(
+            items.items[1],
+            json!({"index": 1, "status": "requires_intent", "reason": "engine_writable"})
+        );
+        assert_eq!(items.items.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn a_settled_failure_stops_and_keeps_the_completion_proof() -> Result<()> {
+        let prepared = prepared(3);
+        let items = run_guarded_batch(
+            &prepared,
+            usize::MAX,
+            Instant::now() + Duration::from_secs(5),
+            |statement| {
+                if statement.sql == "SELECT 1" {
+                    return Err(anyhow!("private syntax failure").context(SqlEvidence::Settled));
+                }
+                Ok(GuardedStatementOutcome::Executed(result(0)))
+            },
+        )?;
+        assert_eq!(items.next, 2);
+        assert_eq!(items.items[0]["status"], "ok");
+        assert_eq!(items.items[1]["index"], 1);
+        assert_eq!(items.items[1]["status"], "error");
+        assert_eq!(items.items[1]["execution_completed"], true);
+        assert!(
+            items.items[1]["error"]
+                .as_str()
+                .is_some_and(|text| text.ends_with("private syntax failure")),
+            "{}",
+            items.items[1]
+        );
+        assert_eq!(items.items.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn an_unsettled_failure_carries_no_completion_proof() -> Result<()> {
+        let prepared = prepared(1);
+        let items = run_guarded_batch(
+            &prepared,
+            usize::MAX,
+            Instant::now() + Duration::from_secs(5),
+            |_| Err(anyhow!("lost reply").context(UnsettledSqlOutcome)),
+        )?;
+        assert_eq!(items.next, 1);
+        assert_eq!(items.items[0]["status"], "error");
+        assert!(items.items[0].get("execution_completed").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn the_statement_that_crosses_the_result_budget_is_returned_and_stops_the_block() -> Result<()>
+    {
+        let prepared = prepared(4);
+        let single = json!({"index": 0, "status": "ok", "result": super::encoded_statement_result(result(0))});
+        let budget = go_html_escaped_json_len(&single) as usize;
+        let items = run_guarded_batch(
+            &prepared,
+            budget,
+            Instant::now() + Duration::from_secs(5),
+            |_| Ok(GuardedStatementOutcome::Executed(result(0))),
+        )?;
+        // One entry fits exactly; the second crosses and is still reported.
+        assert_eq!(items.next, 2);
+        assert_eq!(items.items.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn the_deadline_is_checked_at_entry_boundaries() -> Result<()> {
+        let prepared = prepared(4);
+        let mut calls = 0;
+        let items = run_guarded_batch(
+            &prepared,
+            usize::MAX,
+            Instant::now() + Duration::from_millis(30),
+            |_| {
+                calls += 1;
+                std::thread::sleep(Duration::from_millis(40));
+                Ok(GuardedStatementOutcome::Executed(result(0)))
+            },
+        )?;
+        assert_eq!(calls, 1);
+        assert_eq!(items.next, 1);
+        assert_eq!(items.items.len(), 1);
+        assert_eq!(items.items[0]["status"], "ok");
+        Ok(())
+    }
+
+    #[test]
+    fn the_result_estimate_applies_the_platform_html_escapes() {
+        let plain = json!({"text": "abc"});
+        let escaped = json!({"text": "<>&"});
+        let escaped_bytes = serde_json::to_vec(&escaped).expect("json").len() as u64;
+        assert_eq!(
+            go_html_escaped_json_len(&plain),
+            plain.to_string().len() as u64
+        );
+        // Go's encoding/json turns each of the three ASCII characters into six
+        // bytes, so the estimate is five more per character.
+        assert_eq!(go_html_escaped_json_len(&escaped), escaped_bytes + 3 * 5);
+        // serde emits U+2028/U+2029 raw; Go escapes each to six bytes, three
+        // more than the three-byte UTF-8 form.
+        let line = json!({"text": "\u{2028}\u{2029}"});
+        let line_bytes = serde_json::to_vec(&line).expect("json").len() as u64;
+        assert_eq!(go_html_escaped_json_len(&line), line_bytes + 2 * 3);
     }
 }

@@ -74,6 +74,20 @@ pub enum WorkerCommand {
         #[serde(default = "want_rows_default")]
         want_rows: bool,
     },
+    // The same guarded statement, repeated for a caller-known contiguous block of
+    // read-only work. Each statement keeps its own budget, deadline check and
+    // engine verdict; the block only removes round trips, never evidence.
+    GuardedReadonlyBatch {
+        session: String,
+        statements: Vec<BatchStatement>,
+        // Remaining pipeline result budget in JSON bytes. The worker stops after
+        // the statement that crosses it and reports how many it decided.
+        max_result_bytes: usize,
+    },
+    // Feature discovery for a caller that must know whether this worker parses
+    // the batch command before it sends one. Answered before any session exists;
+    // an older worker rejects the request as invalid before dispatch.
+    Capabilities,
     OpenReadCursor {
         session: String,
         sql: String,
@@ -174,6 +188,21 @@ impl AdmissionRejection {
 
 fn want_rows_default() -> bool {
     true
+}
+
+/// One entry of `guarded_readonly_batch`. The defaults mirror
+/// `GuardedReadonlyStatement`, so a statement that names only its SQL behaves the
+/// same on both commands.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchStatement {
+    pub sql: String,
+    #[serde(default)]
+    pub args: Vec<StatementArg>,
+    #[serde(default)]
+    pub named_args: Vec<NamedStatementArg>,
+    #[serde(default = "want_rows_default")]
+    pub want_rows: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

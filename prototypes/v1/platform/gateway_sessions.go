@@ -339,6 +339,16 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	// same prepared statement before each step, including automatic reprepare.
 	if action == "statement" {
 		key := committingStatementKey{worker: session.worker.ID, digest: digestHex([]byte(request.SQL))}
+		// A planned block already decided this entry when its first entry sent
+		// the block: consuming that item avoids a second worker call, while the
+		// authorization, placement, admission, permit and completion checks
+		// above and after this point still run for the entry. An entry the
+		// block did not reach runs the single-statement path from here.
+		if step, planned := guardedBatchStepFrom(ctx); planned {
+			if result, handled := gateway.guardedBatchStatement(ctx, step, key, session, currentBinding, requestID, stage, request.SQL, frozen, permit, quota); handled {
+				return result
+			}
+		}
 		if gateway.committingStatements.remembered(key) {
 			return gateway.committingStatement(ctx, session, currentBinding, requestID, stage, frozen, permit, quota)
 		}

@@ -140,6 +140,26 @@ func normalizeCommandArguments(fields map[string]any) error {
 		}
 		fields["named_args"] = normalized
 	}
+	if present, exists := fields["statements"]; exists {
+		statements, ok := present.([]map[string]any)
+		if !ok {
+			return errCommandNotEncodable
+		}
+		normalized := make([]map[string]any, len(statements))
+		for index, statement := range statements {
+			// Each entry carries its own args and named_args; the digest must
+			// cover their canonical spelling, not the one the client chose.
+			entry := make(map[string]any, len(statement))
+			for key, value := range statement {
+				entry[key] = value
+			}
+			if err := normalizeCommandArguments(entry); err != nil {
+				return err
+			}
+			normalized[index] = entry
+		}
+		fields["statements"] = normalized
+	}
 	return nil
 }
 

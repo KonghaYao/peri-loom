@@ -59,19 +59,23 @@ type hranaStream struct {
 }
 
 type hranaRequest struct {
-	Baton    string `json:"baton"`
-	Requests []struct {
-		Type  string         `json:"type"`
-		SQL   string         `json:"sql"`
-		SQLID int            `json:"sql_id"`
-		Stmt  hranaStatement `json:"stmt"`
-		Batch struct {
-			Steps []struct {
-				Stmt      hranaStatement  `json:"stmt"`
-				Condition json.RawMessage `json:"condition"`
-			} `json:"steps"`
-		} `json:"batch"`
-	} `json:"requests"`
+	Baton    string               `json:"baton"`
+	Requests []hranaPipelineEntry `json:"requests"`
+}
+
+type hranaPipelineEntry struct {
+	Type  string         `json:"type"`
+	SQL   string         `json:"sql"`
+	SQLID int            `json:"sql_id"`
+	Stmt  hranaStatement `json:"stmt"`
+	Batch struct {
+		Steps []hranaBatchStep `json:"steps"`
+	} `json:"batch"`
+}
+
+type hranaBatchStep struct {
+	Stmt      hranaStatement  `json:"stmt"`
+	Condition json.RawMessage `json:"condition"`
 }
 
 type hranaStatement struct {
@@ -318,12 +322,20 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 		return true
 	}
-	for _, entry := range pipeline.Requests {
+	// A block owns the completion slots its entries will need. The defer covers
+	// every early return between planning and the end of the last block.
+	var batches []*guardedBatch
+	defer func() {
+		for _, batch := range batches {
+			batch.Close()
+		}
+	}()
+	for entryIndex := 0; entryIndex < len(pipeline.Requests); entryIndex++ {
+		entry := pipeline.Requests[entryIndex]
 		if ctx.Err() != nil {
 			limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 			return
 		}
-		previousResults := len(response.Results)
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
 			reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
 			if reply.status != 200 || reply.code != "" {
@@ -349,153 +361,78 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			stream.session = opened.Session
 		}
-		switch entry.Type {
-		case "describe":
-			if entry.SQL == "" {
-				entry.SQL = stream.storedSQL[entry.SQLID]
+		// A contiguous run of top-level executes is sent as one block when the
+		// worker parses the command and the block fits the remaining result
+		// budget. Every entry below still runs its own dispatch, audit and
+		// settlement; only the worker round trip is shared.
+		batch := (*guardedBatch)(nil)
+		count := 1
+		if entry.Type == "execute" {
+			remaining := resultLimit - resultBytes - resultReserve
+			batch = handler.planGuardedBatch(request.Context(), stream, pipeline.Requests, entryIndex, remaining)
+			if batch != nil {
+				count = batch.length()
+				batches = append(batches, batch)
 			}
-			if entry.SQL == "" {
-				missing := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
-				rememberLocalFailure(missing)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": missing.code}})
-				continue
+		}
+		for offset := 0; offset < count; offset++ {
+			entry := pipeline.Requests[entryIndex+offset]
+			entryRequest := request
+			if batch != nil {
+				entryRequest = request.WithContext(withGuardedBatch(request.Context(), batch, offset))
 			}
-			reply := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": stream.session, "sql": entry.SQL})
-			if reply.unknown {
-				failPipeline(reply)
-				return
-			}
-			if reply.code != "" {
-				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
-			} else {
-				var result map[string]any
-				if json.Unmarshal(reply.result, &result) != nil || !validDescribeResult(reply.result) {
-					failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true})
-					return
+			previousResults := len(response.Results)
+			switch entry.Type {
+			case "describe":
+				if entry.SQL == "" {
+					entry.SQL = stream.storedSQL[entry.SQLID]
 				}
-				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "describe", "result": result}})
-			}
-		case "get_autocommit":
-			isAutocommit, reply := handler.autocommit(request, credential, stream.session)
-			if reply.code != "" {
+				if entry.SQL == "" {
+					missing := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
+					rememberLocalFailure(missing)
+					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": missing.code}})
+					continue
+				}
+				reply := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": stream.session, "sql": entry.SQL})
 				if reply.unknown {
 					failPipeline(reply)
 					return
 				}
-				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
-				continue
-			}
-			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "get_autocommit", "is_autocommit": isAutocommit}})
-		case "sequence":
-			if entry.SQL == "" {
-				entry.SQL = stream.storedSQL[entry.SQLID]
-			}
-			if entry.SQL == "" {
-				missing := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
-				rememberLocalFailure(missing)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": missing.code}})
-				continue
-			}
-			dispatched = true
-			reply := handler.call(request, credential, "/v1/sql/execute", map[string]any{"session": stream.session, "sql": entry.SQL})
-			if ctx.Err() != nil {
-				limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
-				return
-			}
-			if reply.unknown {
-				failPipeline(reply)
-				return
-			}
-			if reply.code != "" {
-				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
-			} else {
-				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "sequence"}})
-			}
-		case "store_sql":
-			if len(stream.storedSQL) >= 64 && stream.storedSQL[entry.SQLID] == "" {
-				if !flushAudit() {
-					return
+				if reply.code != "" {
+					rememberFailure(reply)
+					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
+				} else {
+					var result map[string]any
+					if json.Unmarshal(reply.result, &result) != nil || !validDescribeResult(reply.result) {
+						failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true})
+						return
+					}
+					response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "describe", "result": result}})
 				}
-				http.Error(writer, "stored SQL limit", 413)
-				return
-			}
-			stream.storedSQL[entry.SQLID] = entry.SQL
-			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "store_sql"}})
-		case "close_sql":
-			delete(stream.storedSQL, entry.SQLID)
-			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "close_sql"}})
-		case "close":
-			if stream.session != "" {
-				reply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": stream.session})
-				if reply.status != 200 || reply.code != "" {
-					if firstFailure != nil {
-						if firstFailureLocal {
-							failPipelineWithResults(response.Results, *firstFailure, reply)
-						} else {
-							failPipeline(*firstFailure, reply)
-						}
-					} else {
+			case "get_autocommit":
+				isAutocommit, reply := handler.autocommit(request, credential, stream.session)
+				if reply.code != "" {
+					if reply.unknown {
 						failPipeline(reply)
+						return
 					}
-					return
-				}
-			}
-			stream.session = ""
-			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "close"}})
-		case "execute":
-			if entry.Stmt.SQL == "" {
-				entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
-			}
-			dispatched = true
-			value, reply := handler.executeWithin(request, credential, stream.session, entry.Stmt, resultLimit)
-			if ctx.Err() != nil {
-				limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
-				return
-			}
-			if reply.unknown {
-				failPipeline(reply)
-				return
-			}
-			if reply.code != "" {
-				rememberFailure(reply)
-				response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
-			} else {
-				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}})
-			}
-		case "batch":
-			results := make([]any, len(entry.Batch.Steps))
-			errors := make([]any, len(entry.Batch.Steps))
-			batchResultBytes := 0
-			for index, step := range entry.Batch.Steps {
-				if ctx.Err() != nil {
-					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
-					return
-				}
-				isAutocommit := false
-				if hranaConditionNeedsAutocommit(step.Condition) {
-					var conditionReply hranaReply
-					isAutocommit, conditionReply = handler.autocommit(request, credential, stream.session)
-					if conditionReply.code != "" {
-						if conditionReply.unknown {
-							failPipeline(conditionReply)
-							return
-						}
-						rememberFailure(conditionReply)
-						errors[index] = map[string]any{"message": hranaErrorMessage(conditionReply), "code": conditionReply.code}
-						continue
-					}
-				}
-				if !hranaCondition(step.Condition, results, errors, isAutocommit) {
+					rememberFailure(reply)
+					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
 					continue
 				}
-				if step.Stmt.SQL == "" {
-					step.Stmt.SQL = stream.storedSQL[step.Stmt.SQLID]
+				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "get_autocommit", "is_autocommit": isAutocommit}})
+			case "sequence":
+				if entry.SQL == "" {
+					entry.SQL = stream.storedSQL[entry.SQLID]
+				}
+				if entry.SQL == "" {
+					missing := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
+					rememberLocalFailure(missing)
+					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": "missing SQL", "code": missing.code}})
+					continue
 				}
 				dispatched = true
-				value, reply := handler.executeWithin(request, credential, stream.session, step.Stmt, resultLimit)
+				reply := handler.call(request, credential, "/v1/sql/execute", map[string]any{"session": stream.session, "sql": entry.SQL})
 				if ctx.Err() != nil {
 					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 					return
@@ -506,33 +443,136 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				}
 				if reply.code != "" {
 					rememberFailure(reply)
-					errors[index] = map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}
-					continue
+					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
+				} else {
+					response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "sequence"}})
 				}
-				encoded, err := json.Marshal(value)
-				if err != nil || len(encoded) > resultLimit-resultBytes-batchResultBytes-resultReserve {
+			case "store_sql":
+				if len(stream.storedSQL) >= 64 && stream.storedSQL[entry.SQLID] == "" {
+					if !flushAudit() {
+						return
+					}
+					http.Error(writer, "stored SQL limit", 413)
+					return
+				}
+				stream.storedSQL[entry.SQLID] = entry.SQL
+				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "store_sql"}})
+			case "close_sql":
+				delete(stream.storedSQL, entry.SQLID)
+				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "close_sql"}})
+			case "close":
+				if stream.session != "" {
+					reply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": stream.session})
+					if reply.status != 200 || reply.code != "" {
+						if firstFailure != nil {
+							if firstFailureLocal {
+								failPipelineWithResults(response.Results, *firstFailure, reply)
+							} else {
+								failPipeline(*firstFailure, reply)
+							}
+						} else {
+							failPipeline(reply)
+						}
+						return
+					}
+				}
+				stream.session = ""
+				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "close"}})
+			case "execute":
+				if entry.Stmt.SQL == "" {
+					entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
+				}
+				dispatched = true
+				value, reply := handler.executeWithin(entryRequest, credential, stream.session, entry.Stmt, resultLimit)
+				if ctx.Err() != nil {
+					limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+					return
+				}
+				if reply.unknown {
+					failPipeline(reply)
+					return
+				}
+				if reply.code != "" {
+					rememberFailure(reply)
+					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
+				} else {
+					response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}})
+				}
+			case "batch":
+				results := make([]any, len(entry.Batch.Steps))
+				errors := make([]any, len(entry.Batch.Steps))
+				batchResultBytes := 0
+				for index, step := range entry.Batch.Steps {
+					if ctx.Err() != nil {
+						limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+						return
+					}
+					isAutocommit := false
+					if hranaConditionNeedsAutocommit(step.Condition) {
+						var conditionReply hranaReply
+						isAutocommit, conditionReply = handler.autocommit(request, credential, stream.session)
+						if conditionReply.code != "" {
+							if conditionReply.unknown {
+								failPipeline(conditionReply)
+								return
+							}
+							rememberFailure(conditionReply)
+							errors[index] = map[string]any{"message": hranaErrorMessage(conditionReply), "code": conditionReply.code}
+							continue
+						}
+					}
+					if !hranaCondition(step.Condition, results, errors, isAutocommit) {
+						continue
+					}
+					if step.Stmt.SQL == "" {
+						step.Stmt.SQL = stream.storedSQL[step.Stmt.SQLID]
+					}
+					dispatched = true
+					value, reply := handler.executeWithin(request, credential, stream.session, step.Stmt, resultLimit)
+					if ctx.Err() != nil {
+						limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+						return
+					}
+					if reply.unknown {
+						failPipeline(reply)
+						return
+					}
+					if reply.code != "" {
+						rememberFailure(reply)
+						errors[index] = map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}
+						continue
+					}
+					encoded, err := json.Marshal(value)
+					if err != nil || len(encoded) > resultLimit-resultBytes-batchResultBytes-resultReserve {
+						limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+						return
+					}
+					batchResultBytes += len(encoded)
+					results[index] = value
+					if !flushIfFull() {
+						return
+					}
+				}
+				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "batch", "result": map[string]any{"step_results": results, "step_errors": errors}}})
+			}
+			if len(response.Results) > previousResults {
+				encoded, err := json.Marshal(response.Results[len(response.Results)-1])
+				if err != nil || len(encoded) > resultLimit-resultBytes-resultReserve {
 					limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
 					return
 				}
-				batchResultBytes += len(encoded)
-				results[index] = value
-				if !flushIfFull() {
-					return
-				}
+				resultBytes += len(encoded)
 			}
-			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "batch", "result": map[string]any{"step_results": results, "step_errors": errors}}})
-		}
-		if len(response.Results) > previousResults {
-			encoded, err := json.Marshal(response.Results[len(response.Results)-1])
-			if err != nil || len(encoded) > resultLimit-resultBytes-resultReserve {
-				limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+			if !flushIfFull() {
 				return
 			}
-			resultBytes += len(encoded)
 		}
-		if !flushIfFull() {
-			return
+		if batch != nil {
+			// Release the slots the block did not consume before the next block
+			// reserves its own.
+			batch.Close()
 		}
+		entryIndex += count - 1
 	}
 	if ctx.Err() != nil {
 		limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
@@ -919,14 +959,11 @@ func (handler *hranaHTTP) execute(request *http.Request, credential, session str
 	return handler.executeWithin(request, credential, session, statement, 0)
 }
 
-// executeWithin runs one statement. resultLimit caps the bytes the cursor
-// fallback may materialize before it refuses; zero keeps the gateway-wide
-// fallback budget for callers that only reach the fallback with discarded rows.
-func (handler *hranaHTTP) executeWithin(request *http.Request, credential, session string, statement hranaStatement, resultLimit int) (any, hranaReply) {
-	invalid := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
-	if statement.SQL == "" {
-		return nil, invalid
-	}
+// hranaStatementArguments validates the bound arguments of one execute entry
+// exactly as the internal gateway request requires. Both the single-statement
+// path and the block planner use it, so a statement is admitted by the same rule
+// whichever path sends it.
+func hranaStatementArguments(statement hranaStatement) ([]sqlArgument, []namedSQLArgument, bool) {
 	args := make([]sqlArgument, len(statement.Args))
 	for index, argument := range statement.Args {
 		args[index] = sqlArgument{Type: argument.Type, Value: argument.Value, Base64: argument.Base64}
@@ -936,12 +973,27 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
 		namedArgs[index] = namedSQLArgument{Name: argument.Name, Value: sqlArgument{Type: argument.Value.Type, Value: argument.Value.Value, Base64: argument.Value.Base64}}
 	}
 	if !validSQLArguments(args) || len(args)+len(namedArgs) > 999 {
-		return nil, invalid
+		return nil, nil, false
 	}
 	for _, argument := range namedArgs {
 		if argument.Name == "" || len(argument.Name) > 256 || !validSQLArguments([]sqlArgument{argument.Value}) {
-			return nil, invalid
+			return nil, nil, false
 		}
+	}
+	return args, namedArgs, true
+}
+
+// executeWithin runs one statement. resultLimit caps the bytes the cursor
+// fallback may materialize before it refuses; zero keeps the gateway-wide
+// fallback budget for callers that only reach the fallback with discarded rows.
+func (handler *hranaHTTP) executeWithin(request *http.Request, credential, session string, statement hranaStatement, resultLimit int) (any, hranaReply) {
+	invalid := hranaReply{status: http.StatusBadRequest, code: "invalid_arguments"}
+	if statement.SQL == "" {
+		return nil, invalid
+	}
+	args, namedArgs, ok := hranaStatementArguments(statement)
+	if !ok {
+		return nil, invalid
 	}
 	if statement.WantRows && strings.Contains(strings.ToUpper(statement.SQL), "RETURNING") {
 		prepared := handler.probe(request, credential, "/v1/sql/describe", map[string]any{"session": session, "sql": statement.SQL})
