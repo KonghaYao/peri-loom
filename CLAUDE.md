@@ -247,6 +247,42 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
   不作为 R1/R2 的结论；B1 仍是唯一稳定 FAIL。
 - 容器内存 206.2→259.2MiB（idle 259.1MiB），仍未证实是否泄漏；H2 仍受 projection 全 NULL 限制。
 
+#### R4：pipeline 只读审计批提交（2026-10-30）
+
+分支 `perf/issue28-r4-pipeline-audit-batch`，commit `e82e36d`，merge `c815711`（已合入 `main`）。
+
+- **方案**：pipeline 内只读成功语句的 completion audit 先 prepare，每 8 条一次批量提交、
+  共用一次 fsync；pipeline 对外响应前 flush；写/open/close/outcome_unknown 保持同步路径，
+  committing step 后 Seal。
+- **耐久语义变更（协调者批准）**：只读成功 completion 的持久化时点从“执行后立即”改为
+  “pipeline 响应前”。已确认响应仍满足“响应前 durable”；未响应/崩溃时可能丢失已执行只读
+  step 的审计记录（无数据效果、无 sequence 缺口）。不得宣称“所有已执行语句必有审计”。
+- **受控 A/B/B/A（同容器同数据，n=15 中位数）**：
+  - B1 json-pipeline：base1 57.742ms、base2 37.427ms；cand1 22.592ms、cand2 23.322ms
+    → 相对基线 −37.7%~−60.9%，两轮同向。
+  - B1 protobuf-pipeline：base1 45.661ms、base2 37.799ms；cand1 19.946ms、cand2 22.084ms
+    → −41.6%~−56.3%。
+  - B1 仍高于 20ms 目标（约 22.6–23.3ms），但过 ≥10% 验收门槛。
+- **机制证据**：B1 每请求 audit fsync 22 → 5（扣 fixture discovery）；operation journal fsync
+  保持 4/请求不变；F1 JSON 12.794→7.822ms（−38.9%）、protobuf 12.721→5.868ms（−53.9%）；
+  X1 16 并发 91.84→61.33ms（−33.2%），4 级均 −11%~−33%；
+  H1 JSON 438.99→446.75ms（+1.8%，噪声内）、protobuf 410.05→409.86ms（−0.04%）。
+- **wire 字节**：B1 JSON 参考 4,968（实测 4,973–4,988，差异仅 `query_duration_ms` 数字位数）、
+  protobuf 686；F1 312/40；H1 25,162,268/23,600,883。
+- **质量门**：所有运行 `warnings=[]`、无 429、无 `audit_unavailable`、`session_seats=0`、
+  `active_permits=0`；审计链 111,185 条记录连续、无重复/缺口。
+- **剩余风险 / 未验证**：
+  1. v2 `completionReservedMaximum=64`，单 pipeline 最多持 7 条未 flush completion，
+     约 10 条并发长 pipeline 可能吃满 slot 导致无关请求 503；本轮容器为 v1，v2 未做并发容器验证。
+  2. 反序边界（写之前只读批次 flush 失败）未被 `TestPipelineAuditBatchMixedWriteDoesNotMask`
+     覆盖，verifier 判为非阻塞但需记录。
+  3. 跨请求审计顺序按 flush 顺序，不再严格等于执行顺序（v1 单请求内顺序保持）。
+  4. 未跑 W1 写场景容器 A/B；写路径由全量 Go 测试与混合写测试覆盖。
+- **测试**：`go test ./...` 仅 2 个已知基线失败
+  （`TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`、`TestRegistryEntriesStillExist`）；
+  新增 9 个测试与 `-race` 通过；harness 离线测试 16/16。
+- 容器最终恢复 r2（SHA `c35ce353…`）。
+
 ## 代码约定
 
 - 提交信息用中文全角冒号：`feat(v1)：…`、`fix(authority)：…`、`docs(capacity)：…`。
