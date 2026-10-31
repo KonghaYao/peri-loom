@@ -13,8 +13,8 @@ type hranaCorrelationKey struct{}
 type hranaStepKey struct{}
 
 type hranaCorrelation struct {
-	outer string
-	next  atomic.Uint64
+	outer   string
+	next    atomic.Uint64
 	started time.Time
 }
 

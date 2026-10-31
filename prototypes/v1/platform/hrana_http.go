@@ -248,6 +248,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 		}
 	}
+	// Every step of this pipeline is one gateway request whose completion row may
+	// otherwise wait for its own barrier. The collector batches only successful
+	// read-only completions; a committing step flushes and seals it.
+	collector := newPipelineAuditCollector()
+	request = request.WithContext(withPipelineAuditCollector(request.Context(), collector))
+	defer collector.Abort()
 	ctx, cancel := context.WithTimeout(request.Context(), handler.timeout)
 	defer cancel()
 	request = request.WithContext(ctx)
@@ -265,7 +271,20 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			firstFailure, firstFailureLocal = &reply, true
 		}
 	}
+	// flushAudit settles the prepared read-only completions before any reply that
+	// reports their steps. A failure means the chain cannot cover what the client
+	// is about to be told, so the only honest answer is audit_unavailable.
+	flushAudit := func() bool {
+		if err := collector.Flush(); err != nil {
+			writePipelineAuditFailure(writer, dispatched)
+			return false
+		}
+		return true
+	}
 	limitFailure := func(status int, code string) {
+		if !flushAudit() {
+			return
+		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(status)
 		_ = json.NewEncoder(writer).Encode(map[string]any{
@@ -274,6 +293,30 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				"outcome_unknown": code == "pipeline_timeout", "retryable": false,
 			},
 		})
+	}
+	failPipeline := func(reply hranaReply, cleanup ...hranaReply) {
+		if !flushAudit() {
+			return
+		}
+		hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply, cleanup...)
+	}
+	failPipelineWithResults := func(results []any, reply hranaReply, cleanup ...hranaReply) {
+		if !flushAudit() {
+			return
+		}
+		hranaPipelineFailureWithResults(writer, pipeline.Baton, dispatched, reply, results, cleanup...)
+	}
+	// A full batch is paid for as soon as it exists, so a long pipeline pays one
+	// barrier per pipelineAuditBatchMaximum statements instead of one per step.
+	flushIfFull := func() bool {
+		if collector.Pending() < pipelineAuditBatchMaximum {
+			return true
+		}
+		if err := collector.Flush(); err != nil {
+			writePipelineAuditFailure(writer, dispatched)
+			return false
+		}
+		return true
 	}
 	for _, entry := range pipeline.Requests {
 		if ctx.Err() != nil {
@@ -284,14 +327,14 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
 			reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
 			if reply.status != 200 || reply.code != "" {
-				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+				failPipeline(reply)
 				return
 			}
 			var opened struct {
 				Session string `json:"session"`
 			}
 			if json.Unmarshal(reply.result, &opened) != nil {
-				hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
+				failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
 				return
 			}
 			if !publicSessionID(opened.Session) {
@@ -301,7 +344,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				if opened.Session != "" {
 					go handler.cleanupRetiredSession(opened.Session, 0)
 				}
-				hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
+				failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
 				return
 			}
 			stream.session = opened.Session
@@ -319,7 +362,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			reply := handler.call(request, credential, "/v1/sql/describe", map[string]any{"session": stream.session, "sql": entry.SQL})
 			if reply.unknown {
-				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+				failPipeline(reply)
 				return
 			}
 			if reply.code != "" {
@@ -328,7 +371,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			} else {
 				var result map[string]any
 				if json.Unmarshal(reply.result, &result) != nil || !validDescribeResult(reply.result) {
-					hranaPipelineFailure(writer, pipeline.Baton, dispatched, hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true})
+					failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_describe", unknown: true})
 					return
 				}
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "describe", "result": result}})
@@ -337,7 +380,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			isAutocommit, reply := handler.autocommit(request, credential, stream.session)
 			if reply.code != "" {
 				if reply.unknown {
-					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+					failPipeline(reply)
 					return
 				}
 				rememberFailure(reply)
@@ -362,7 +405,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			if reply.unknown {
-				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+				failPipeline(reply)
 				return
 			}
 			if reply.code != "" {
@@ -373,6 +416,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 		case "store_sql":
 			if len(stream.storedSQL) >= 64 && stream.storedSQL[entry.SQLID] == "" {
+				if !flushAudit() {
+					return
+				}
 				http.Error(writer, "stored SQL limit", 413)
 				return
 			}
@@ -387,12 +433,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				if reply.status != 200 || reply.code != "" {
 					if firstFailure != nil {
 						if firstFailureLocal {
-							hranaPipelineFailureWithResults(writer, pipeline.Baton, dispatched, *firstFailure, response.Results, reply)
+							failPipelineWithResults(response.Results, *firstFailure, reply)
 						} else {
-							hranaPipelineFailure(writer, pipeline.Baton, dispatched, *firstFailure, reply)
+							failPipeline(*firstFailure, reply)
 						}
 					} else {
-						hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+						failPipeline(reply)
 					}
 					return
 				}
@@ -410,7 +456,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			if reply.unknown {
-				hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+				failPipeline(reply)
 				return
 			}
 			if reply.code != "" {
@@ -434,7 +480,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					isAutocommit, conditionReply = handler.autocommit(request, credential, stream.session)
 					if conditionReply.code != "" {
 						if conditionReply.unknown {
-							hranaPipelineFailure(writer, pipeline.Baton, dispatched, conditionReply)
+							failPipeline(conditionReply)
 							return
 						}
 						rememberFailure(conditionReply)
@@ -455,7 +501,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 					return
 				}
 				if reply.unknown {
-					hranaPipelineFailure(writer, pipeline.Baton, dispatched, reply)
+					failPipeline(reply)
 					return
 				}
 				if reply.code != "" {
@@ -470,6 +516,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				}
 				batchResultBytes += len(encoded)
 				results[index] = value
+				if !flushIfFull() {
+					return
+				}
 			}
 			response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "batch", "result": map[string]any{"step_results": results, "step_errors": errors}}})
 		}
@@ -481,15 +530,27 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			resultBytes += len(encoded)
 		}
+		if !flushIfFull() {
+			return
+		}
 	}
 	if ctx.Err() != nil {
 		limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
+		return
+	}
+	// The success response reports every step, so it may not be written until the
+	// read-only completions that cover them are durable.
+	if err := collector.Flush(); err != nil {
+		writePipelineAuditFailure(writer, dispatched)
 		return
 	}
 	if stream.session != "" {
 		if pipeline.Baton == "" {
 			identifier, err := controller.RandomID()
 			if err != nil {
+				if !flushAudit() {
+					return
+				}
 				http.Error(writer, "baton unavailable", 503)
 				return
 			}
@@ -694,6 +755,21 @@ func hranaPipelineFailureReply(writer http.ResponseWriter, baton string, dispatc
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(reply.status)
 	_ = json.NewEncoder(writer).Encode(body)
+}
+
+// writePipelineAuditFailure answers a pipeline whose prepared read-only
+// completions could not be made durable. No committing step can be hidden behind
+// this answer: a write or close flushes the collector and seals it before its
+// own synchronous record, so only read-only rows can be outstanding here.
+func writePipelineAuditFailure(writer http.ResponseWriter, dispatched bool) {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(writer).Encode(map[string]any{
+		"error": map[string]any{
+			"code": "audit_unavailable", "partial_execution_possible": dispatched,
+			"outcome_unknown": false, "retryable": false,
+		},
+	})
 }
 
 // Only the Hrana adapter can attach this context value. A probe answers a
