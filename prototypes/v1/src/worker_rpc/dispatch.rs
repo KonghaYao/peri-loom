@@ -985,6 +985,17 @@ mod batch_tests {
                 named_args: vec![],
                 want_rows: true,
             }],
+            // One statement above the worker SQL budget rejects the block
+            // before the statements that would otherwise run.
+            vec![
+                statement("SELECT 1"),
+                BatchStatement {
+                    sql: " ".repeat(crate::session::Budget::trusted_default().max_sql_bytes + 1),
+                    args: vec![],
+                    named_args: vec![],
+                    want_rows: true,
+                },
+            ],
         ] {
             let error = prepare_guarded_batch(block).expect_err("invalid block admitted");
             assert!(error.downcast_ref::<UnsettledSqlOutcome>().is_none());
