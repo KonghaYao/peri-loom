@@ -647,6 +647,39 @@ counts as resolved history, not as an open isolation). Experimental Hrana remain
 its documented gaps, and this release claims neither an SP01 pass nor a capacity
 result.
 
+## v1.1.25
+
+This release changes Hrana response encoding and pipeline audit commit timing. SQL,
+quota, admission and failure semantics are unchanged. Cursor rows are encoded
+directly into a reused buffer, large results are decoded by reading top-level spans
+without the duplicate compression pass, and read-only successful completions inside
+a pipeline commit in batches of eight sharing one fsync, flushed before the pipeline
+response is sent.
+
+Under controlled A/B/B/A runs on the same container and data (n=15 medians), B1
+pipeline latency fell by 37.7%–60.9% for JSON and 41.6%–56.3% for protobuf, and
+per-request audit fsyncs dropped from 22 to 5 (fixture discovery excluded). F1
+improved from 12.794 to 7.822 ms (JSON) and 12.721 to 5.868 ms (protobuf); X1 at 16
+concurrent requests improved from 91.84 to 61.33 ms, with every concurrency level
+between −11% and −33%. H1 stayed within noise (JSON 438.99→446.75 ms, protobuf
+410.05→409.86 ms). Wire bytes are unchanged for the cursor paths and F1/H1; the only
+B1 JSON difference is the digit count of `query_duration_ms`. The audit chain was
+continuous across 111,185 records. The R3 pipeline row-encoding experiment improved
+R1-1000 JSON by 8.8% and regressed protobuf by 2.2%, below the 10% threshold, and
+was not merged; its branch and commit `44c14be` remain as evidence.
+
+The durability change is bounded. Read-only successful completions are now persisted
+before the pipeline response rather than immediately after each step executes. A
+confirmed response is still durable before it is returned, but a pipeline that never
+responds or crashes may lose audit records for read-only steps that already ran.
+Those steps have no data effect and leave no sequence gap. This release does not
+claim that every executed statement has an audit record.
+
+B1 is still above the 20 ms target for the JSON pipeline (about 22.6–23.3 ms) and
+close to it for protobuf (19.9–22.1 ms). The E1 known gap and the existing run,
+recovery and capacity boundaries are unchanged. This preview is not a capacity or
+full Hrana compatibility claim.
+
 ## v1.1.24
 
 This release hardens crash-recovery evidence; it does not add the crash-recovery
