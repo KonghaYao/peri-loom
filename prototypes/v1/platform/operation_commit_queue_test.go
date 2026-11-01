@@ -855,9 +855,10 @@ func TestOperationCommitQueueLinksBehindInFlightBatch(test *testing.T) {
 	}
 }
 
-// The namespace fence is not relaxed: two commits for one namespace cannot even be ordered
-// while the first is waiting, so they never share a barrier.
-func TestOperationNamespaceFenceStillSerializesCommits(test *testing.T) {
+// The namespace fence orders the submit, not the barrier. While one commit's barrier is
+// outstanding, a second commit of the same namespace must still be ordered: holding the fence
+// across the barrier is what kept same-namespace appends from ever sharing a flush.
+func TestOperationNamespaceFenceReleasesBeforeBarrier(test *testing.T) {
 	store, _ := commitQueueStore(test)
 	defer store.Close()
 	journal := store.operations
@@ -867,17 +868,15 @@ func TestOperationNamespaceFenceStillSerializesCommits(test *testing.T) {
 
 	first := make(chan error, 1)
 	go func() {
-		first <- beginOperation(store, database, "fenced_first", "gateway", "execute", "tool_rpc", "worker-a", "", nil)
+		first <- beginOperation(store, database, "released_first", "gateway", "execute", "tool_rpc", "worker-a", "", nil)
 	}()
 	waitOrdered(test, store, 1)
 	second := make(chan error, 1)
 	go func() {
-		second <- beginOperation(store, database, "fenced_second", "gateway", "execute", "tool_rpc", "worker-a", "", nil)
+		second <- beginOperation(store, database, "released_second", "gateway", "execute", "tool_rpc", "worker-a", "", nil)
 	}()
-	time.Sleep(200 * time.Millisecond)
-	if ordered := operationOrderedTotal(store); ordered != 1 {
-		test.Fatalf("a second same-namespace append was ordered behind the fence: %d", ordered)
-	}
+	// The first append holds its batch inside the write gate, so its barrier is outstanding.
+	waitOrdered(test, store, 2)
 	release()
 	if err := <-first; err != nil {
 		test.Fatal(err)
@@ -885,7 +884,69 @@ func TestOperationNamespaceFenceStillSerializesCommits(test *testing.T) {
 	if err := <-second; err != nil {
 		test.Fatal(err)
 	}
+	// The gate held the first batch open, so the second append landed in a later batch and
+	// paid its own barrier; what this case proves is that it was ordered at all.
 	if syncs := journal.syncs - start["syncs"]; syncs != 2 {
-		test.Fatalf("same-namespace appends shared a barrier: %d", syncs)
+		test.Fatalf("syncs = %d, want one barrier per batch", syncs)
+	}
+}
+
+// Two settles of one namespace queued together must ride one barrier. They can only queue
+// together if the fence is dropped between submit and wait, and both must still be durable.
+func TestSameNamespaceSettlesShareOneBarrier(test *testing.T) {
+	store, directory := commitQueueStore(test)
+	database := securityDatabase()
+	const settles = 2
+	identifiers := make([]string, settles)
+	for index := range identifiers {
+		identifiers[index] = fmt.Sprintf("shared_%d", index)
+		if err := beginOperation(store, database, identifiers[index], "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
+			test.Fatal(err)
+		}
+	}
+	release := gatePop(test, store)
+	before := store.operations.stats()
+	var group sync.WaitGroup
+	failures := make([]error, settles)
+	for index := range failures {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			failures[index] = updateOperation(store, database, identifiers[index], func(record *OperationRecord) {
+				record.State, record.BusinessOutcome, record.ExecutionProven = "terminal", "completed", true
+			})
+		}()
+	}
+	waitOrdered(test, store, 2*settles)
+	release()
+	group.Wait()
+	for index, failure := range failures {
+		if failure != nil {
+			test.Fatalf("settle %d failed: %v", index, failure)
+		}
+	}
+	after := store.operations.stats()
+	syncs := after["operation_journal_syncs_total"] - before["operation_journal_syncs_total"]
+	coalesced := after["operation_journal_coalesced_total"] - before["operation_journal_coalesced_total"]
+	if syncs != 1 || coalesced != settles-1 {
+		test.Fatalf("syncs = %d, coalesced = %d, want one barrier covering %d settles", syncs, coalesced, settles)
+	}
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := OpenStateStore(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reopened.Close()
+	state, err := reopened.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, identifier := range identifiers {
+		record, found := state.Operations[operationKey(database, identifier)]
+		if !found || record.State != "terminal" || !record.ExecutionProven {
+			test.Fatalf("a coalesced settle was not durable: %s %+v", identifier, record.OperationStatus)
+		}
 	}
 }
