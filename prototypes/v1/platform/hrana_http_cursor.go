@@ -201,6 +201,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 	results := make([]any, len(readSteps))
 	failures := make([]any, len(readSteps))
 	var rowFrame hranaProtoCursorRowFrame
+	var pageScanner hranaCursorPageScanner
 	startResponse := func() bool {
 		if sentHeader {
 			return true
@@ -376,43 +377,44 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 				failed = true
 				return true
 			}
-			var page struct {
-				Rows             [][]any `json:"rows"`
-				Done             bool    `json:"done"`
-				AffectedRowCount *uint32 `json:"affected_row_count"`
-				LastInsertRowid  *int64  `json:"last_insert_rowid"`
-			}
-			decoder := json.NewDecoder(bytes.NewReader(reply.result))
-			decoder.UseNumber()
-			if decoder.Decode(&page) != nil || page.Rows == nil {
-				log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
-				failed = true
-				return true
-			}
-			if writeCursor && page.Done {
-				// The worker's done page is the commit proof, recorded before any
-				// row frame is written: a disconnect on the final page must not be
-				// reported as an unproven or rolled-back write.
-				writeCommitted = true
-			}
-			for _, row := range page.Rows {
-				rowFrame.begin()
-				for _, cell := range row {
-					if rowFrame.appendCell(cell) != nil {
+			done := false
+			affected := uint64(0)
+			var lastRowid any
+			if writeCursor {
+				var page struct {
+					Rows             [][]any `json:"rows"`
+					Done             bool    `json:"done"`
+					AffectedRowCount *uint32 `json:"affected_row_count"`
+					LastInsertRowid  *int64  `json:"last_insert_rowid"`
+				}
+				decoder := json.NewDecoder(bytes.NewReader(reply.result))
+				decoder.UseNumber()
+				if decoder.Decode(&page) != nil || page.Rows == nil {
+					log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
+					failed = true
+					return true
+				}
+				if page.Done {
+					// The worker's done page is the commit proof, recorded before any
+					// row frame is written: a disconnect on the final page must not be
+					// reported as an unproven or rolled-back write.
+					writeCommitted = true
+				}
+				for _, row := range page.Rows {
+					rowFrame.begin()
+					for _, cell := range row {
+						if rowFrame.appendCell(cell) != nil {
+							failed = true
+							return true
+						}
+					}
+					if writeEncoded(rowFrame.frame()) != nil {
 						failed = true
 						return true
 					}
 				}
-				if writeEncoded(rowFrame.frame()) != nil {
-					failed = true
-					return true
-				}
-			}
-			if page.Done {
-				active = false
-				affected := uint64(0)
-				var lastRowid any
-				if writeCursor {
+				done = page.Done
+				if done {
 					if page.AffectedRowCount == nil {
 						failed = true
 						return true
@@ -422,6 +424,38 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 						lastRowid = strconv.FormatInt(*page.LastInsertRowid, 10)
 					}
 				}
+			} else {
+				// A read cursor page is written straight from its token spans;
+				// the scanner already proved the shape the old decode relied on.
+				page, err := pageScanner.scan(reply.result, true, false)
+				if err != nil {
+					log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
+					failed = true
+					return true
+				}
+				for rowIndex := 0; rowIndex < page.rows; rowIndex++ {
+					if request.Context().Err() != nil {
+						clientStopped = true
+						failed = true
+						return true
+					}
+					rowFrame.begin()
+					if rowFrame.appendPageRow(&page, rowIndex) != nil {
+						failed = true
+						return true
+					}
+					if writeEncoded(rowFrame.frame()) != nil {
+						failed = true
+						return true
+					}
+				}
+				if flusher, ok := writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				done = page.done
+			}
+			if done {
+				active = false
 				frame, err := hranaProtoCursorStreamEntry(map[string]any{"type": "step_end", "affected_row_count": json.Number(strconv.FormatUint(affected, 10)), "last_insert_rowid": lastRowid})
 				if err != nil || writeFrame(frame) != nil {
 					failed = true

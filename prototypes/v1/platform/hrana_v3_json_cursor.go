@@ -412,6 +412,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 	}()
 	encoder := json.NewEncoder(writer)
 	var rowEncoder hranaJSONCursorRow
+	var pageScanner hranaCursorPageScanner
 	flusher, _ := writer.(http.Flusher)
 	start := func() bool {
 		if started {
@@ -455,6 +456,27 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		}
 		rowEncoder.begin()
 		if err := rowEncoder.appendCells(cells); err != nil {
+			if errors.Is(err, errHranaJSONCursorValue) {
+				fatal("invalid cursor value")
+			} else {
+				clientStopped = true
+				failed = true
+			}
+			return false
+		}
+		if _, err := writer.Write(rowEncoder.bytes()); err != nil {
+			clientStopped = true
+			failed = true
+			return false
+		}
+		return true
+	}
+	writePageRow := func(page *hranaCursorPage, index int) bool {
+		if !start() {
+			return false
+		}
+		rowEncoder.begin()
+		if err := rowEncoder.appendPageRow(page, index); err != nil {
 			if errors.Is(err, errHranaJSONCursorValue) {
 				fatal("invalid cursor value")
 			} else {
@@ -613,6 +635,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			if !firstPage {
 				reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
 			}
+			fused := firstPage
 			firstPage = false
 			if reply.code != "" || reply.status != http.StatusOK {
 				if request.Context().Err() != nil {
@@ -627,38 +650,36 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				fatal("cursor fetch failed: " + reply.code)
 				return
 			}
-			var page struct {
-				Rows             [][]any `json:"rows"`
-				Done             bool    `json:"done"`
-				AffectedRowCount *uint32 `json:"affected_row_count"`
-				LastInsertRowid  *int64  `json:"last_insert_rowid"`
-			}
-			decoder := json.NewDecoder(bytes.NewReader(reply.result))
-			decoder.UseNumber()
-			if decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 || len(page.Rows) == 0 && !page.Done {
-				fatal("invalid cursor page")
-				return
-			}
-			if writing && page.Done {
-				writeCommitted = true
-			}
-			for _, row := range page.Rows {
-				if len(row) != len(metadata.Cols) {
-					fatal("invalid cursor row")
+			done := false
+			affected := uint32(0)
+			var rowid any
+			if writing {
+				var page struct {
+					Rows             [][]any `json:"rows"`
+					Done             bool    `json:"done"`
+					AffectedRowCount *uint32 `json:"affected_row_count"`
+					LastInsertRowid  *int64  `json:"last_insert_rowid"`
+				}
+				decoder := json.NewDecoder(bytes.NewReader(reply.result))
+				decoder.UseNumber()
+				if decoder.Decode(&page) != nil || page.Rows == nil || len(page.Rows) > 256 || len(page.Rows) == 0 && !page.Done {
+					fatal("invalid cursor page")
 					return
 				}
-				if !writeRow(row) {
-					return
+				if page.Done {
+					writeCommitted = true
 				}
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-			if page.Done {
-				active = false
-				affected := uint32(0)
-				var rowid any
-				if writing {
+				for _, row := range page.Rows {
+					if len(row) != len(metadata.Cols) {
+						fatal("invalid cursor row")
+						return
+					}
+					if !writeRow(row) {
+						return
+					}
+				}
+				done = page.Done
+				if done {
 					if page.AffectedRowCount == nil {
 						fatal("write cursor result unknown")
 						return
@@ -668,6 +689,35 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 						rowid = json.Number(strconv.FormatInt(*page.LastInsertRowid, 10))
 					}
 				}
+			} else {
+				// A read cursor page is written straight from its token spans;
+				// the scanner already proved the shape the old decode relied on.
+				page, err := pageScanner.scan(reply.result, true, fused)
+				if err != nil || page.rows > 256 || page.rows == 0 && !page.done {
+					fatal("invalid cursor page")
+					return
+				}
+				for rowIndex := 0; rowIndex < page.rows; rowIndex++ {
+					if request.Context().Err() != nil {
+						clientStopped = true
+						failed = true
+						return
+					}
+					if len(page.row(rowIndex)) != len(metadata.Cols) {
+						fatal("invalid cursor row")
+						return
+					}
+					if !writePageRow(&page, rowIndex) {
+						return
+					}
+				}
+				done = page.done
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if done {
+				active = false
 				if !write(map[string]any{"type": "step_end", "affected_row_count": affected, "last_insert_rowid": rowid}) {
 					return
 				}
