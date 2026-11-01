@@ -207,7 +207,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R8 | 无代码改动（归因轮） | 拆解 11–12ms 小查询的 8 次屏障 | 4 次 audit + 4 次 journal fsync；8 次屏障语义上全部必需，严格口径可省 0；即使 8 个屏障全消失仍 5.5ms vs sqld 3.7ms ≈ 1.49× | 小查询差距是耐久模型的价格，不再做屏障削减 |
 | R9 | 无代码改动（测量轮） | 单库并发小查询的扩展性与错误分类 | conc=8 时 143–161 qps / p50 48.7–51.5ms，`operation_journal_coalesced_total` 恒为 0、`batch_max=1`、`queue_max=1`；同机 sqld conc=8 为 1510 qps / p50 4.83ms | 单命名空间无合并是结构性上限；并发下另有 502 误分类缺陷 |
 | R11 | `perf/issue28-r11-session-record-outcome` / `6f8b35d` | 会话 open/close 只写结果记录，去掉派发前的 intent | 同镜像同卷交错 A/B（每档 A,B,B,A 共 4 样本/侧，每样本 320 次查询）：串行 32.2→41.3 qps（p50 30.1→24.1ms，**+28%/−20%**）、conc=8 183.9→233.6 qps（**+27%**）、conc=32 205.1→374.9 qps（**+83%**）、conc=64 256.8→504.8 qps（**+97%**）；journal appends 4.02→2.02、syncs 4.04→2.02 每查询，conc=64 时 journal+audit 屏障合计 0.82→0.25 次/请求 | 合入 `main` |
-| R12 | `perf/issue28-r12-completion-fence` / `c43d48c` | 统一完成日志：命名空间 fence 在等屏障前释放，完成记录按审计顺序提交 | v2 卷（`completion_journal_v2`）同二进制交错 A/B（2 轮 × 4 档 × 4 样本/侧）：串行 50.2→53.8 qps（+7%）、conc=8 115.7→177.4（**+53%**）、conc=32 193.6→443.6（**+129%**）、conc=64 140.4→546.2（**+289%**）；`journal_sync` 0.74–0.77→0.10–0.17 次/请求，`coalesced` 40–92→1000–1120，`batch_max` 3–4→16–32；同窗口 v1 卷 r11 vs r12 为 +1.5%~+5.4%（无回归） | 合入 `main` |
+| R12 | `perf/issue28-r12-completion-journal` / `c43d48c` | 统一完成日志：命名空间 fence 在等屏障前释放，完成记录按审计顺序提交 | v2 卷（`completion_journal_v2`）同二进制交错 A/B（2 轮 × 4 档 × 4 样本/侧）：串行 50.2→53.8 qps（+7%）、conc=8 115.7→177.4（**+53%**）、conc=32 193.6→443.6（**+129%**）、conc=64 140.4→546.2（**+289%**）；`journal_sync` 0.74–0.77→0.10–0.17 次/请求，`coalesced` 40–92→1000–1120，`batch_max` 3–4→16–32；同窗口 v1 卷 r11 vs r12 为 +1.5%~+5.4%（无回归） | 合入 `main` |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -581,7 +581,7 @@ close 只拆除会话。R8 当年把 8 次屏障判为「语义上全部必需�
 吞吐 = 1/fsync 延迟，与并发无关。v1 没有该问题——同库 SQL 完成走审计文件（不持 fence），
 journal 只承载 open/close。
 
-**改动**（分支 `perf/issue28-r12-completion-fence` / `c43d48c`）：
+**改动**（分支 `perf/issue28-r12-completion-journal` / `c43d48c`）：
 
 - `auditReservation.RecordOperation` → `RecordOperationDeferred`：只做
   `prepareCompletionOperation` + 入队（新增 `fileAudit.enqueueCompletion`），把屏障作为返回值
