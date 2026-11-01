@@ -448,6 +448,46 @@ merge `fffd305`（已合入 `main`）。
      仓库文档已明确列为「需评审」。
   2. 仅修上述 502 误分类（Rust 证据携带），风险低，不改变任何耐久时点。
 
+#### R10：SQL 提交在屏障前释放命名空间 fence（2026-11-01，已合入 `main`）
+
+**改动**（分支 `perf/issue28-r10-fence-barrier-split` / `b79419f`，合并 `a9c81bf`）：
+
+- `operation_store.go`：`updateOperationsAudit` 拆成 `enqueueOperationsAudit`（应用编辑、定序，返回 commit）
+  与 `awaitOperationCommit`（付屏障、结算、compaction、poison 判定）。后者逐字保留原尾部逻辑与错误分支。
+- `operation_state.go`：新增 `submitOperationRecords`，仅 `beginCorrelatedOperation`（intent）与
+  `updateOperation`（settle）在 `wait()` 之前释放 fence。控制面 `release` / `retirement` / `transport`
+  仍然横跨屏障持有 fence，未改。
+- 不变量：定序仍由提交时的状态锁决定（revision 链不变）；客户端在 `wait()` 返回后才收到回复，
+  即「先 durable 再应答」不变；屏障失败仍 poison 并 fail-closed，同一批次内的多条记录原子生效。
+- 测试：`TestOperationNamespaceFenceReleasesBeforeBarrier` 取代旧的
+  `TestOperationNamespaceFenceStillSerializesCommits`（旧测试断言的正是被推翻的语义）；
+  新增 `TestSameNamespaceSettlesShareOneBarrier`——同命名空间两笔 settle 在 gate 下排队，
+  要求恰好 1 次 fsync、coalesced=1，并在 `OpenStateStore` 重开后可恢复出两条 terminal 记录。
+
+**测量**：同一镜像 digest、同一 bench 卷（`/tmp/threads-subset.db` 重新导入）、同一导入校验，
+只切换 `/usr/local/bin/peri-platform`（候选为本地交叉编译的 linux/arm64 静态二进制，Rust worker 仍用镜像内版本）。
+A/B 交替 3 轮（conc=64 为 2 轮），每档 320 次查询，`connect → all → close`。
+
+| 并发 | 基线 qps（中位） | 候选 qps（中位） | 变化 | 基线 p50 | 候选 p50 | 变化 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 54.8 | 60.9 | 无回归（噪声内） | 17.5ms | 14.4ms | 噪声内 |
+| 8 | 150.5 | 178.6 | **+19%** | 50.7ms | 43.6ms | −14% |
+| 32 | 74.2 | 151.7 | **+104%** | 422.3ms | 212.3ms | **−50%** |
+| 64 | 260.3 | 344.7 | **+32%** | 233.7ms | 168.4ms | **−24%** |
+
+- 机制指标（conc=32）：`journal_sync` 0.80→0.48 次/请求，`coalesced` 0→442，`batch_max` 1→15，
+  `queue_max` 1→15；conc=64 时 `batch_max` 触顶 32、`queue_max` 62，说明队列上限而不是 fence 成为新边界。
+- 三轮全部同向：conc=32 时候选最差一轮（132.3 qps / p50 246ms）仍优于基线最好一轮（87.4 qps / p50 367ms）。
+- Go 全量套件（`PERI_RUST_BINARY` 指向不存在的路径）失败集合与基线**逐条一致**：18 项，全部是缺 Rust
+  二进制的 native 测试 + 已知既存失败 `TestHranaGatewayResponseMatchesEnvelope`。
+- **未覆盖**：native 集成与 crash-recovery 端到端（需要 linux/arm64 Rust 二进制，本机磁盘不足无法构建）。
+  该缺口由 Go 侧提交队列/恢复单测覆盖，但不等价于真实进程崩溃演练。
+
+**顺带发现**：`dev.py` 的 `experimental_environment` 只转发固定名单的 `PERI_*`，`PERI_WORKER_MAX_DB_SESSIONS`
+不在其中，因此 worker 每库会话上限固定 16，而网关 `max_sessions` 配额可被调到更高——本次压测为了
+conc=32/64 干净可比，仅在 bench 侧挂载了改过的 `dev.py` 副本（未进仓库）。产品侧的「配额可高于 worker
+上限 → 执行前拒绝被记为 502 outcome_unknown」仍是待修项。
+
 **环境事件（2026-11-01 23:03，不归因任何轮次）**：宿主磁盘耗尽（曾低至 473 MiB / 228 GB），
 OrbStack VM 出现 BTRFS 写 I/O error（`Transaction 19922 aborted`）并被强制停机。
 `peri-cf-peri-loom-1`（v1.1.24，另一个项目的容器）因此变成 `Exited (255)`，其卷
