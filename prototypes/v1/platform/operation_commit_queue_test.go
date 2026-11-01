@@ -950,3 +950,80 @@ func TestSameNamespaceSettlesShareOneBarrier(test *testing.T) {
 		}
 	}
 }
+
+// Two settlements of one database share one barrier: the namespace fence is released
+// before either waits, so a session open and the close that follows it cannot queue
+// behind each other's fsync.
+func TestSameNamespacePendingSettlesShareOneBarrier(test *testing.T) {
+	store, directory := commitQueueStore(test)
+	database := securityDatabase()
+	const settles = 2
+	identifiers := make([]string, settles)
+	for index := range identifiers {
+		identifiers[index] = fmt.Sprintf("deferred_%d", index)
+	}
+	release := gatePop(test, store)
+	before := store.operations.stats()
+	var group sync.WaitGroup
+	failures := make([]error, settles)
+	operationIDs := make([]string, settles)
+	for index := range failures {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			digest, err := freezeCommandValue(nil)
+			if err != nil {
+				failures[index] = err
+				return
+			}
+			operationIDs[index], failures[index] = settleNonCommittingOperation(store, database, identifiers[index], "gateway", "open", "open_session", "worker-a", "", digest.digest(), func(record *OperationRecord) {
+				record.State, record.BusinessOutcome, record.ExecutionProven, record.CleanupOutcome = "terminal", "not_executed", false, "pending"
+			})
+		}()
+	}
+	waitOrdered(test, store, settles)
+	release()
+	group.Wait()
+	for index, failure := range failures {
+		if failure != nil {
+			test.Fatalf("pending settle %d failed: %v", index, failure)
+		}
+	}
+	after := store.operations.stats()
+	syncs := after["operation_journal_syncs_total"] - before["operation_journal_syncs_total"]
+	coalesced := after["operation_journal_coalesced_total"] - before["operation_journal_coalesced_total"]
+	if syncs != 1 || coalesced != settles-1 {
+		test.Fatalf("syncs = %d, coalesced = %d, want one barrier covering %d pending settles", syncs, coalesced, settles)
+	}
+	live, err := store.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	for index, operationID := range operationIDs {
+		record, found := live.Operations[operationKey(database, operationID)]
+		if !found || record.State != "terminal" || record.CleanupOutcome != "pending" {
+			test.Fatalf("a coalesced pending settle was not durable: %s %+v", identifiers[index], record.OperationStatus)
+		}
+	}
+	if err := store.Close(); err != nil {
+		test.Fatal(err)
+	}
+	reopened, err := OpenStateStore(directory)
+	if err != nil {
+		test.Fatal(err)
+	}
+	defer reopened.Close()
+	state, err := reopened.Snapshot()
+	if err != nil {
+		test.Fatal(err)
+	}
+	// An open whose close never reached the journal may still own a worker
+	// session, so recovery quarantines it exactly as it did before the intent
+	// was dropped.
+	for index, operationID := range operationIDs {
+		record, found := state.Operations[operationKey(database, operationID)]
+		if !found || record.State != "quarantined" || !record.MayHaveCommitted || record.CleanupOutcome != "unknown" {
+			test.Fatalf("recovery did not account for the undischarged open %s: %+v", identifiers[index], record.OperationStatus)
+		}
+	}
+}

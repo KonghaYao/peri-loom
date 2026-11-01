@@ -54,6 +54,20 @@ func (gateway *Gateway) settlePlacement(ctx context.Context, database controller
 	}
 }
 
+// beginSessionOpen prepares the record an open keeps. An open submits no SQL, so it
+// needs no durable intent: a crash between the call and the reply leaves nothing to
+// reconcile, and the worker session it may have created is reclaimed by the worker's
+// own idle sweep. Its record is written once, after the call, and is the cleanup the
+// later close discharges. Only the admission rule still runs before dispatch, so an
+// isolated database or an exhausted operation capacity refuses the request before any
+// SQL reaches the worker.
+func (gateway *Gateway) beginSessionOpen(database controller.DatabaseID, requestID, worker string, command frozenCommand) (string, *pendingOperation, error) {
+	if err := verifyNonCommittingAdmission(gateway.config.State, database, "gateway", "open", "open_session"); err != nil {
+		return "", nil, err
+	}
+	return "", pendingOutcomeOperation(database, worker, "", "open", "open_session", requestID, command), nil
+}
+
 func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) (result gatewayResult) {
 	if gateway.authorize(principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
@@ -94,14 +108,14 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		return gateway.admissionFailure(database, err)
 	}
 	leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
-	operationID, err := registerOperation(gateway.config.State, database, requestID, "gateway", "open", "open_session", worker.ID, "", openCommand)
+	operationID, pending, err := gateway.beginSessionOpen(database, requestID, worker.ID, openCommand)
 	leaveIntent()
 	if err != nil {
 		return gateway.admissionFailure(database, err)
 	}
 	defer func() {
 		result.operationID, result.operationStage, result.operationDatabase = operationID, "open_session", database
-		result.operationPending = true
+		result.operationPending, result.operationDeferred = operationID != "", pending
 	}()
 	var reply struct {
 		Session  string `json:"session"`
@@ -358,7 +372,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	// operation record; the client request that needed the answer records its
 	// own. The read-only admission check still refuses an isolated database.
 	if hranaProbeRequest(ctx, action) {
-		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", action, stage); err != nil {
 			return gateway.admissionFailure(session.database, err)
 		}
 	} else {
