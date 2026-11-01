@@ -203,6 +203,9 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R3 | `perf/issue28-r3-pipeline-row-encoding` / `44c14be`（未合并） | pipeline 大结果直接编码 | R1-1000 JSON 69.33→63.25ms（−8.8%）；protobuf 65.52→66.97ms（+2.2%）；编码层微基准 JSON −42%、protobuf −44% | 未达 10%，不合入；保留分支 |
 | R5 | `perf/issue28-r5-worker-read-batch` / `d739a3d`（merge `e31543a`） | pipeline 连续只读 execute 合并为 worker 批命令（≤8 条/批） | B1 配对中位 json −10.5%（4/4 同向）、protobuf −23.4%（4/4）；候选 B1 首轮 15.2–16.0ms（<20ms）；F1/X1/H1 无 >10% 回归 | 合入 `main` |
 | R6 | `perf/issue28-r6-cursor-page-transcode` / `e062d0b`（merge `fffd305`） | 只读 cursor 页 span 校验后直接转码 Hrana JSON/protobuf，去掉页级物化 | H1 json 474.0/465.7→333.2/331.9ms（−28.7%~−29.7%）；H1 protobuf −34.1%~−35.0%；H3 json −30.4%~−30.7%、protobuf −33.0%~−34.3%；W1/B1/X1 健康环境复测无候选回归 | 合入 `main` |
+| R7 | `perf/issue28-r7-cursor-describe-elide` / `67e5d4b`（未合入） | 只读 cursor 首步省略 `describe`，写语句由 worker 返回新错误后回退 | 候选无法构建（见 R9 环境事件，宿主仅 8.1 GiB 可用而镜像构建需 6–8 GiB）；改用 `/v1/metrics` 的 `action_latency_ns_total` 直接实测被省略的 `describe`：均值 0.391ms/次（101 次），占串行单查询 16.4ms 的 **2.4%** | 不合入；分支与提交保留作证据 |
+| R8 | 无代码改动（归因轮） | 拆解 11–12ms 小查询的 8 次屏障 | 4 次 audit + 4 次 journal fsync；8 次屏障语义上全部必需，严格口径可省 0；即使 8 个屏障全消失仍 5.5ms vs sqld 3.7ms ≈ 1.49× | 小查询差距是耐久模型的价格，不再做屏障削减 |
+| R9 | 无代码改动（测量轮） | 单库并发小查询的扩展性与错误分类 | conc=8 时 143–161 qps / p50 48.7–51.5ms，`operation_journal_coalesced_total` 恒为 0、`batch_max=1`、`queue_max=1`；同机 sqld conc=8 为 1510 qps / p50 4.83ms | 单命名空间无合并是结构性上限；并发下另有 502 误分类缺陷 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -367,6 +370,91 @@ merge `fffd305`（已合入 `main`）。
   seal；后续 `--recover` 被 clean marker 放行，authority 在写入 dirty marker 后因 dirty seal 拒绝启动，
   使卷进入需要 S05 evidence 的状态。R6 复测改在新卷 `peri-loom-issue28b-data` 完成；实验期间旧卷、marker 与
   失败证据保持原样，清理阶段两个测试卷已删除（证据见 `/tmp/peri-issue28/recovery-inspect`，详见“当前交付缺口”）。
+
+#### R7：只读 cursor 首步省略 describe（2026-11-01，未合入）
+
+分支 `perf/issue28-r7-cursor-describe-elide`，commit `67e5d4b`（基于 `9c922f4`），23 文件 +609/−91，
+新增 `hrana_cursor_describe_elision_test.go`。只读 cursor 首步不再发 `describe`；worker 对写语句返回
+新错误 `RequiresWriteCursor`，gateway 归为 `cursor_write_required`（400）后回退 `describe` + 写 cursor；
+同步 `sqlcontract` 谓词、`web/sqlcontract.js`、`sdk/typescript/client.ts`。
+
+- **未测候选（环境限制）**：宿主在磁盘事故后只剩 8.1 GiB，构建 linux/arm64 候选镜像需 6–8 GiB。
+  改测「被省略动作本身的成本」：`/v1/metrics` 的 `action_latency_ns_total`（v1.1.26 镜像，100 次串行
+  `session_by_id`）给出 `describe` 均值 **0.391ms/次**（`n=101`）。即该改动的**上限**是单查询
+  **16.4ms 的 2.4%**，低于协议 10% 门槛，也低于 A/B 噪声下限。
+- **决策：不合入**。2.4% 的收益对应 609 行改动、一个新的对外错误码和一个新的审计抑制条件；
+  分支与提交保留作证据。
+- 自测（交付时）：`cargo fmt --check`、`cargo check`、`clippy -D warnings`、`go build` PASS；
+  `cargo test` 674 passed / 1 failed（`object_store::local::pack::tests::actual_store_lock_serializes_two_independent_processes`，
+  磁盘满导致无法在基线复跑确认，列为已知 flaky）；`node --test` 30/30 PASS。
+- 两处与设计不符已记录：实测屏障为 3 audit / 4 journal（在 Go mock 路径，与 R8 的 4/4 不是同一流程，
+  以 R8 的 `/v1/metrics` 口径为准）；未实现「新标志」（旧 worker 遇未知字段返回 400 会让网关走
+  `outcome_unknown`，反而污染会话）。
+
+#### R8：小查询 8 次屏障的归因（归因轮，无代码改动）
+
+- 11–12ms 的串行小查询中 **7.94ms 是 8 次 fsync**：audit 4 次 × 0.942ms + journal 4 次 × 1.042ms，
+  占 75–81%。归属：`open` 1 audit + 2 journal、`close` 1 audit + 2 journal、`cursor_start` 1 audit、
+  `statement` 1 audit。`operation_journal_coalesced_total=0`、`batch_max=1`。
+- **判定：8 次屏障语义上全部必需，严格口径可省 0。** 依据：`open` intent 必须在 dispatch 前 durable
+  （否则 worker 已建会话而平台无记录）；合并成单条 pre-dispatch 记录会让每次正常重启都隔离命名空间
+  （`state.go:75-98` + `gateway_operations.go:121-129`）；4 条 audit 分属 4 个独立事实；`/v3/cursor`
+  是流式（`hrana_v3_json_cursor.go:416-443`/`700-723` 先 flush baton 与行），无法把 `statement`
+  探针审计提前合批。
+- 三条需要契约变更的方向（只读会话省略 open/close journal 省 4.17ms；v2 unified completion 省 1.88ms；
+  `/v3/cursor` 首帧前 audit collector 省 0.94ms）**均未实施**，代价分别是丢失 durable session 清单 /
+  失败分类变 Unknown（与 `prototypes/v1/platform/README.md:486-491` 冲突）/ 需新设计与故障测试。
+- **核心结论**：即使 8 个屏障全消失，peri 仍 5.5ms vs sqld 3.7ms ≈ **1.49×**，恰在 1.5× 门禁线上。
+  小查询差距是持久化模型的价格，不是编码效率问题。
+
+#### R9：单库并发下的扩展性与错误分类（2026-11-01，测量轮）
+
+**方法**：同机（macOS 26.6.2 / arm64 / 10 vCPU）、Docker host network、固定镜像 digest
+（peri `sha256:c7614c0b…`、sqld `sha256:6dd3eb27…`），数据为 `/tmp/threads-subset.db` 重新导入全新卷
+（导入 11.6s，验证 8,625 messages）。每个「查询」= `connect → all → close`（与串行基准同一 SDK 流程）；
+每档 320 次查询，`CONC` = 1/8/32/64。bench 项目的 `max_concurrent`/`max_sessions` 临时提到 256
+（仅限一次性 bench 卷，与产品默认值无关）。
+
+| 并发 | loom qps | loom p50 | loom 失败 | sqld qps | sqld p50 | sqld 失败 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 34.3–53.9 | 18.4–31.7ms | 0 | 157.4 | 5.93ms | 0 |
+| 8 | 143–161 | 48.7–51.5ms | 0 | 1,510.5 | 4.83ms | 0 |
+| 32 | 113.2 | 221.2ms | 114/320（35.6%） | 2,168.6 | 13.06ms | 0 |
+| 64 | 70.6 | 427.0ms | 126×502 + 114×429 | 2,049.3 | 27.21ms | 0 |
+
+- **并发下屏障完全不合并**：`operation_journal_syncs_total` 恒为 4.04 次/查询（8 路并行时也一样），
+  `coalesced_total=0`、`batch_max=1`、`queue_max=1`；audit 侧确实合并（每请求 fsync 0.80→0.59），
+  所以瓶颈在 journal 侧。
+- **结构性原因**（仓库内已有记录）：`operation-journal-commit-queue-experiment.md` §2——按命名空间的
+  fence（`lockOperationNamespace`，64 条带）包裹每次 operation commit，且**横跨屏障持有**，
+  因此同一命名空间的两个 commit 永不重叠、无法共享一次 fsync；合并只对跨命名空间或 fence 外的追加生效。
+- **对照**：同机 sqld 在 8 路并发即 1,510 qps（loom 的 10.6 倍），32 路 2,168 qps（19 倍）且零失败。
+  loom 的串行成本 65% 是 fsync（100 次串行：journal 5.94ms + audit 4.69ms = 10.63ms / 平台侧 14.32ms），
+  并发下这部分只能排队，所以吞吐上限 ≈ 1 条 fsync 链（约 143 qps）而非 CPU 上限。
+- **同期发现的缺陷（未修）**：worker 在**执行前**拒绝 `open_session`（`database session capacity exceeded`，
+  `src/runtime.rs:196`）时，回复不携带 `execution_completed` 证据，平台按 `sqlWorkerFailureFromReply`
+  只能判为 ambiguous，于是 `/v1/sql/open` 返回 **502 `outcome_unknown`**（日志证据：
+  `SQL outcome unknown: ... action=open stage=open_session ... observation=database session capacity exceeded`）。
+  客户端无法区分「可能已提交」与「明确未执行」。修复点在 Rust：让该拒绝携带 rejected/not-executed 证据；
+  另需注意网关 `max_sessions` 配额可以高于 worker 每库上限（默认都是 16，属一致；本次把网关提到 256
+  才暴露不一致）。
+- **逐 action 分解**（串行 100 次，v1.1.26）：`open` 5.276ms、`close` 4.596ms、`cursor_start` 2.044ms、
+  `statement` 1.868ms、`describe` 0.391ms，合计 14.32ms。`open`+`close` 占 69%，几乎全由 fsync 决定。
+- **待观察**：同期串行 100 次查询的延迟从 11.5ms 漂到 30.4ms；journal compaction 2 次（19.3ms）、
+  audit head checkpoint 13 次（79.3ms，0.79ms/查询）不足以解释全部漂移，未归因。
+- **候选方向（需授权，均未实施）**：
+  1. 把屏障移出命名空间 fence，使同库 commit 可共享一次 fsync。预期：journal 5.94ms/查询 → 约 1.5ms，
+     并发吞吐数倍提升。代价：改变 fencing 语义（后续同库操作可能早于前一条记录 durable 就被 dispatch），
+     仓库文档已明确列为「需评审」。
+  2. 仅修上述 502 误分类（Rust 证据携带），风险低，不改变任何耐久时点。
+
+**环境事件（2026-11-01 23:03，不归因任何轮次）**：宿主磁盘耗尽（曾低至 473 MiB / 228 GB），
+OrbStack VM 出现 BTRFS 写 I/O error（`Transaction 19922 aborted`）并被强制停机。
+`peri-cf-peri-loom-1`（v1.1.24，另一个项目的容器）因此变成 `Exited (255)`，其卷
+`peri-cf_peri-loom-data-v9` 的最后一次事务存在丢失可能——**未触碰、未重启、未校验**。
+后续只清理本项目构建缓存（`cargo clean` + `go clean -cache`，回收 8.4 GiB），并仅启动 OrbStack
+（未重启 daemon、未 prune）。事故后可用空间 8.1 GiB / 97% 占用，这是 R7 候选无法构建、R9 只能用
+已发布镜像的原因。
 
 ## 代码约定
 
