@@ -313,7 +313,7 @@ func (gateway *Gateway) dispatchGuardedBatch(ctx context.Context, batch *guarded
 // false return means this entry is not covered by a decided block item and the
 // caller must run the single-statement path.
 func (gateway *Gateway) guardedBatchStatement(ctx context.Context, step guardedBatchStep, key committingStatementKey, session *gatewaySession, binding controller.Binding, requestID, stage, sql string, frozen frozenCommand, permit *admissionPermit, quota Quotas) (gatewayResult, bool) {
-	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", "statement", stage); err != nil {
 		return operationAdmissionFailure(err), true
 	}
 	batch := step.batch

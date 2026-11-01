@@ -105,7 +105,9 @@ type gatewayResult struct {
 
 // pendingOperation carries everything the single terminal record of an
 // unregistered operation needs. Non-committing operations skip the durable
-// intent, so their record is written once, after the worker call.
+// intent, so their record is written once, after the worker call. outcome asks
+// for that record even when the call succeeded: the action cannot commit, but the
+// resource it opened or closed stays accounted for.
 type pendingOperation struct {
 	database  controller.DatabaseID
 	requestID string
@@ -114,6 +116,7 @@ type pendingOperation struct {
 	worker    string
 	session   string
 	digest    string
+	outcome   bool
 }
 
 func NewGateway(config GatewayConfig) (*Gateway, error) {

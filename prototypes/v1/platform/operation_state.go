@@ -258,6 +258,21 @@ func nonCommittingOperation(action string, writeCursor bool) bool {
 	return false
 }
 
+// deferredRecordOperation reports whether an action's only durable record is the
+// one written after its call. Open and close submit no SQL, so a crash between
+// the dispatch and the reply leaves nothing to reconcile: no intent is needed
+// before the call. They still record their outcome, because the session they
+// opened or closed is a resource the platform accounts for - an open keeps
+// cleanup_outcome=pending until a close discharges it, and an open whose reply was
+// lost still quarantines nothing and is settled by the unknown path.
+func deferredRecordOperation(action string) bool {
+	switch action {
+	case "open", "close":
+		return true
+	}
+	return false
+}
+
 // readonlyStatementAction reports whether an action still sends a statement a
 // worker describe could classify. A statement action is classified and executed
 // by the guarded read-only RPC, so only the older execute/query paths ask.
@@ -337,13 +352,14 @@ func readOperationState(store StateStore, visit func(State) error) error {
 
 // verifyNonCommittingAdmission refuses an unregistered operation the durable
 // writer would reject, before SQL reaches the worker. The writer repeats every
-// check inside its commit.
-func verifyNonCommittingAdmission(store StateStore, database controller.DatabaseID, source string) error {
+// check inside its commit, including the retirement exemption a session close
+// needs to run inside an isolated namespace.
+func verifyNonCommittingAdmission(store StateStore, database controller.DatabaseID, source, action, stage string) error {
 	if store == nil || database.Validate() != nil {
 		return errors.New("operation registration unavailable")
 	}
 	return readOperationState(store, func(state State) error {
-		return operationAdmission(stateAdmissionView{state: state}, database, source, false)
+		return operationAdmission(stateAdmissionView{state: state}, database, source, retirementOperation(action, stage))
 	})
 }
 
@@ -351,12 +367,25 @@ func verifyNonCommittingAdmission(store StateStore, database controller.Database
 // that cannot commit. The record is created already settled, so the request
 // pays one sidecar commit instead of a registration plus a settlement.
 func settleNonCommittingOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, change func(*OperationRecord)) (string, error) {
-	return settleNonCommittingOperationUsing(store, database, requestID, source, action, stage, worker, session, digest, change, func(edit func(*operationEdit) error) error {
-		return updateOperationRecords(store, edit)
+	return settleNonCommittingOperationUsing(store, database, requestID, source, action, stage, worker, session, digest, func(_ *operationEdit, record *OperationRecord) error {
+		if change != nil {
+			change(record)
+		}
+		return nil
+	}, func(edit func(*operationEdit) error) (func() error, error) {
+		return submitOperationRecords(store, edit)
 	})
 }
 
-func settleNonCommittingOperationUsing(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, change func(*OperationRecord), persist func(func(*operationEdit) error) error) (string, error) {
+// settleNonCommittingOperationUsing writes the only durable record of an operation
+// that cannot commit. The record is created already settled, so the request pays
+// one barrier instead of a registration plus a settlement. apply sees the whole
+// edit, not only the new record, so an action that finishes another one (a close
+// discharging the open it closed) does it inside the same batch and the same
+// barrier. submit queues the edit and hands back the barrier, so the namespace
+// fence is released before the request waits on it: two settlements of the same
+// database then share one fsync instead of queueing behind each other.
+func settleNonCommittingOperationUsing(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, apply func(*operationEdit, *OperationRecord) error, submit func(func(*operationEdit) error) (func() error, error)) (string, error) {
 	operationID, err := controller.RandomID()
 	if err != nil {
 		return "", err
@@ -366,23 +395,31 @@ func settleNonCommittingOperationUsing(store StateStore, database controller.Dat
 	}
 	caller := newDurabilityCaller(store, operationID, requestID, "terminal", source)
 	unlock := lockObservedOperationNamespace(database.Namespace, caller)
-	defer unlock()
-	err = persist(func(edit *operationEdit) error {
+	wait, err := submit(func(edit *operationEdit) error {
 		edit.caller = caller
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
 		}
-		if err := operationAdmission(edit, database, source, false); err != nil {
+		if err := operationAdmission(edit, database, source, retirementOperation(action, stage)); err != nil {
 			return err
 		}
 		record := seedOperationRecord(edit, database, operationID, requestID, source, action, stage, worker, session, digest)
-		if change != nil {
-			change(&record)
+		if apply != nil {
+			if err := apply(edit, &record); err != nil {
+				return err
+			}
 		}
 		edit.put(operationKey(database, operationID), record)
 		return nil
 	})
-	return operationID, err
+	unlock()
+	if err != nil {
+		return operationID, err
+	}
+	if wait == nil {
+		return operationID, nil
+	}
+	return operationID, wait()
 }
 
 // beginCorrelatedOperation registers the durable intent of one operation and

@@ -44,11 +44,11 @@ func TestHranaReadonlyProbeLeavesNoRecordOrAuditRow(test *testing.T) {
 			test.Fatal("readonly probe wrote an audit row")
 		}
 	}
-	// The client action pays only for its session open: that open is a committing
-	// operation with an intent and a settlement. The cursor open and fetch are
-	// proven non-committing, so on a known outcome they write no sidecar record.
-	if grew := sidecarRevision(store) - before; grew != 2 {
-		test.Fatalf("client cursor request cost %d operation sidecar revisions, want 2", grew)
+	// The client action pays only for its session open: an open cannot commit, so
+	// it skips the intent and writes one outcome record. The cursor open and fetch
+	// are proven non-committing, so on a known outcome they write no sidecar record.
+	if grew := sidecarRevision(store) - before; grew != 1 {
+		test.Fatalf("client cursor request cost %d operation sidecar revisions, want 1", grew)
 	}
 	var opened struct {
 		Result struct {
@@ -133,10 +133,11 @@ func TestHranaFailedProbeKeepsAuditRow(test *testing.T) {
 	// The refused request pays for the session it opened and for the retirement
 	// of that session, which the platform still owes: a failed probe makes the
 	// session's outcome unknown, and the close_session below is the only path
-	// that returns the session and its quota to an accounted end. The cursor
-	// itself never dispatched, so no cursor operation is recorded above.
-	if grew := sidecarRevision(store) - before; grew != 4 {
-		test.Fatalf("refused cursor request cost %d operation sidecar revisions, want 4", grew)
+	// that returns the session and its quota to an accounted end. Neither writes
+	// an intent, so each costs one outcome record. The cursor itself never
+	// dispatched, so no cursor operation is recorded above.
+	if grew := sidecarRevision(store) - before; grew != 2 {
+		test.Fatalf("refused cursor request cost %d operation sidecar revisions, want 2", grew)
 	}
 }
 
@@ -180,10 +181,10 @@ func TestHranaAutocommitProbeCostsNoSQLOrRecord(test *testing.T) {
 			test.Fatal("autocommit probe wrote an audit row")
 		}
 	}
-	// Only the client's own session open and close remain: each is a
-	// registration plus a settlement, and the probe and the skipped step add
-	// nothing.
-	if grew := sidecarRevision(store) - before; grew != 4 {
-		test.Fatalf("autocommit probe cost %d operation sidecar revisions, want 4", grew)
+	// Only the client's own session open and close remain: neither writes an
+	// intent, so each costs one outcome record, and the probe and the skipped
+	// step add nothing.
+	if grew := sidecarRevision(store) - before; grew != 2 {
+		test.Fatalf("autocommit probe cost %d operation sidecar revisions, want 2", grew)
 	}
 }

@@ -60,10 +60,10 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 	if err != nil {
 		return &SQLRPCError{cause: err}
 	}
-	operationID, err := registerOperation(gateway.config.State, session.database, requestID, "gateway", "close", "close_session", session.worker.ID, session.upstream, command)
-	if err != nil {
+	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", "close", "close_session"); err != nil {
 		return &SQLRPCError{cause: err}
 	}
+	pending := pendingOutcomeOperation(session.database, session.worker.ID, session.upstream, "close", "close_session", requestID, command)
 	var closed struct {
 		Closed bool `json:"closed"`
 	}
@@ -75,7 +75,7 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 	if err != nil {
 		result = gateway.upstreamFailure(err, session, permit)
 	}
-	gateway.settleOperationCaller(session.database, operationID, "close_session", &result, permit, requestID)
+	gateway.settlePendingOperation(pending, &result, permit)
 	if result.code == "outcome_unknown" {
 		return &SQLRPCError{Ambiguous: true, cause: err}
 	}
@@ -119,14 +119,7 @@ func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseI
 			observed = &status
 		}
 		if stage == "close_session" && result.code == "" {
-			keys := edit.matching(func(_ string, opened OperationRecord) bool {
-				return opened.Source == "gateway" && opened.Action == "open" && opened.State == "terminal" && opened.Session == record.Session && opened.Worker == record.Worker && opened.Database == record.Database && opened.CleanupOutcome == "pending"
-			})
-			for _, openedKey := range keys {
-				opened, _ := edit.record(openedKey)
-				opened.CleanupOutcome = "completed"
-				edit.put(openedKey, opened)
-			}
+			dischargePendingOpenSessions(edit, record)
 		}
 		return nil
 	})
@@ -149,8 +142,15 @@ func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseI
 // worker's own verdict on the statement about to be sent, never a guess from its
 // text, and may be nil for an action that has no statement to classify.
 func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, stage, requestID string, writeCursor bool, command frozenCommand, classify func() bool) (string, *pendingOperation, error) {
+	if deferredRecordOperation(action) {
+		pending := pendingOutcomeOperation(session.database, session.worker.ID, session.upstream, action, stage, requestID, command)
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", action, stage); err != nil {
+			return "", nil, err
+		}
+		return "", pending, nil
+	}
 	if nonCommittingOperation(action, writeCursor) {
-		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", action, stage); err != nil {
 			return "", nil, err
 		}
 		return "", pendingDispatchOperation(session, action, stage, requestID, command), nil
@@ -160,7 +160,7 @@ func (gateway *Gateway) beginDispatchOperation(session *gatewaySession, action, 
 		// admission rule an unregistered operation must pass: an isolated database
 		// or an exhausted capacity still refuses the request before any SQL reaches
 		// the worker, and that refusal is the same one the committing path reports.
-		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+		if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", action, stage); err != nil {
 			return "", nil, err
 		}
 		if classify() {
@@ -175,34 +175,75 @@ func pendingDispatchOperation(session *gatewaySession, action, stage, requestID 
 	return &pendingOperation{database: session.database, requestID: requestID, action: action, stage: stage, worker: session.worker.ID, session: session.upstream, digest: command.digest()}
 }
 
+// pendingOutcomeOperation is the pending form of an action whose only durable
+// trace is the record written after its call: it skips the intent, but keeps that
+// record even when the call succeeds.
+func pendingOutcomeOperation(database controller.DatabaseID, worker, session, action, stage, requestID string, command frozenCommand) *pendingOperation {
+	return &pendingOperation{database: database, requestID: requestID, action: action, stage: stage, worker: worker, session: session, digest: command.digest(), outcome: true}
+}
+
 // settlePendingOperation settles a dispatched operation that was never registered.
 // A pending operation is one the platform proved cannot commit: its action is in
 // nonCommittingOperation, or the worker classified its statement read-only. Its
 // audit row is already the durable completion barrier, so a known outcome writes no
 // second record; the sidecar would only put another forced commit between a read and
 // its reply. An uncertain outcome is the exception: the record is what lets recovery
-// and admission isolate the namespace, so it is still written and quarantined.
+// and admission isolate the namespace, so it is still written and quarantined. An
+// action in deferredRecordOperation is the other exception: it skips the intent, so
+// the record after the call is the only trace of the resource it opened or closed.
 func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit) {
-	_ = gateway.settlePendingOperationUsing(pending, result, permit, func(change func(*operationEdit) error) error {
-		return updateOperationRecords(gateway.config.State, change)
+	_ = gateway.settlePendingOperationUsing(pending, result, permit, func(change func(*operationEdit) error) (func() error, error) {
+		return submitOperationRecords(gateway.config.State, change)
 	})
 }
 
-func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error) error {
-	if result.code != "outcome_unknown" {
+func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error)) error {
+	unknown := result.code == "outcome_unknown"
+	if !unknown && !pending.outcome {
 		return nil
 	}
-	operationID, err := settleNonCommittingOperationUsing(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(record *OperationRecord) {
+	// observed keeps the committed copy of the record whose outcome the reply must
+	// quote: an open whose reply was lost is answered from its own record, so the
+	// reply cannot claim a commit the record does not.
+	var observed *OperationStatus
+	operationID, err := settleNonCommittingOperationUsing(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(edit *operationEdit, record *OperationRecord) error {
 		applyOperationOutcome(record, *result, pending.stage)
-	}, persist)
+		if pending.stage == "open_session" && unknown {
+			status := record.OperationStatus
+			observed = &status
+		}
+		if pending.action == "close" && !unknown {
+			dischargePendingOpenSessions(edit, *record)
+		}
+		return nil
+	}, submit)
 	result.operationID, result.operationStage = operationID, pending.stage
 	if err != nil {
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)
 		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, pending.stage, pending.database
+	} else if observed != nil {
+		result.operationObservation = observed
 	}
-	gateway.holdOperation(pending.database, operationID, permit)
+	if unknown || err != nil {
+		gateway.holdOperation(pending.database, operationID, permit)
+	}
 	return err
+}
+
+// dischargePendingOpenSessions marks the open records a successful close finished.
+// It runs inside the close's own edit, so one barrier covers the close and every
+// open it discharges, and the same rule decides it whether the close carried an
+// intent or only its outcome record.
+func dischargePendingOpenSessions(edit *operationEdit, closed OperationRecord) {
+	keys := edit.matching(func(_ string, opened OperationRecord) bool {
+		return opened.Source == "gateway" && opened.Action == "open" && opened.State == "terminal" && opened.Session == closed.Session && opened.Worker == closed.Worker && opened.Database == closed.Database && opened.CleanupOutcome == "pending"
+	})
+	for _, openedKey := range keys {
+		opened, _ := edit.record(openedKey)
+		opened.CleanupOutcome = "completed"
+		edit.put(openedKey, opened)
+	}
 }
 
 // applyOperationOutcome derives the durable record of a dispatched operation

@@ -126,7 +126,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		identifier = correlationValues[0]
 	}
 	defer func() {
-		needsOperation := result.operationPending || result.operationDeferred != nil && result.code == "outcome_unknown"
+		needsOperation := result.operationPending || result.operationDeferred != nil && (result.code == "outcome_unknown" || result.operationDeferred.outcome)
 		unified := needsOperation && unifiedCompletionReservation(completion) && (!hranaProbeRequest(ctx, action) || result.code != "")
 		if result.finish != nil {
 			defer result.finish()
@@ -176,11 +176,16 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				persist := func(change func(*operationEdit) error) error {
 					return reservation.RecordOperation(event, change)
 				}
+				// The unified reservation already carries the audit row, so its
+				// commit is the barrier and the caller has nothing left to await.
+				submit := func(change func(*operationEdit) error) (func() error, error) {
+					return nil, persist(change)
+				}
 				if result.operationPending {
 					caller := newDurabilityCaller(gateway.config.State, result.operationID, identifier, "completion", "gateway")
 					auditErr = gateway.settleOperationUsingCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, persist, caller)
 				} else {
-					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, persist)
+					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, submit)
 				}
 				completion.Release()
 				completion = nil

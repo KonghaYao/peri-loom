@@ -20,7 +20,7 @@ import (
 // intent only then. A transport error is not that proof: it keeps the existing
 // unknown/operation semantics and is never replayed as a statement.
 func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID, stage string, key committingStatementKey, command map[string]any, frozen frozenCommand, permit *admissionPermit, quota Quotas) gatewayResult {
-	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway"); err != nil {
+	if err := verifyNonCommittingAdmission(gateway.config.State, session.database, "gateway", "statement", stage); err != nil {
 		return operationAdmissionFailure(err)
 	}
 	guarded := make(map[string]any, len(command))
