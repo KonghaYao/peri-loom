@@ -207,6 +207,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R8 | 无代码改动（归因轮） | 拆解 11–12ms 小查询的 8 次屏障 | 4 次 audit + 4 次 journal fsync；8 次屏障语义上全部必需，严格口径可省 0；即使 8 个屏障全消失仍 5.5ms vs sqld 3.7ms ≈ 1.49× | 小查询差距是耐久模型的价格，不再做屏障削减 |
 | R9 | 无代码改动（测量轮） | 单库并发小查询的扩展性与错误分类 | conc=8 时 143–161 qps / p50 48.7–51.5ms，`operation_journal_coalesced_total` 恒为 0、`batch_max=1`、`queue_max=1`；同机 sqld conc=8 为 1510 qps / p50 4.83ms | 单命名空间无合并是结构性上限；并发下另有 502 误分类缺陷 |
 | R11 | `perf/issue28-r11-session-record-outcome` / `6f8b35d` | 会话 open/close 只写结果记录，去掉派发前的 intent | 同镜像同卷交错 A/B（每档 A,B,B,A 共 4 样本/侧，每样本 320 次查询）：串行 32.2→41.3 qps（p50 30.1→24.1ms，**+28%/−20%**）、conc=8 183.9→233.6 qps（**+27%**）、conc=32 205.1→374.9 qps（**+83%**）、conc=64 256.8→504.8 qps（**+97%**）；journal appends 4.02→2.02、syncs 4.04→2.02 每查询，conc=64 时 journal+audit 屏障合计 0.82→0.25 次/请求 | 合入 `main` |
+| R12 | `perf/issue28-r12-completion-journal` / `c43d48c` | 统一完成日志：命名空间 fence 在等屏障前释放，完成记录按审计顺序提交 | v2 卷（`completion_journal_v2`）同二进制交错 A/B（2 轮 × 4 档 × 4 样本/侧）：串行 50.2→53.8 qps（+7%）、conc=8 115.7→177.4（**+53%**）、conc=32 193.6→443.6（**+129%**）、conc=64 140.4→546.2（**+289%**）；`journal_sync` 0.74–0.77→0.10–0.17 次/请求，`coalesced` 40–92→1000–1120，`batch_max` 3–4→16–32；同窗口 v1 卷 r11 vs r12 为 +1.5%~+5.4%（无回归） | 合入 `main` |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -557,6 +558,70 @@ close 只拆除会话。R8 当年把 8 次屏障判为「语义上全部必需�
   写路径冒烟 `{"ok":true,"rows":40,"sum":2340}`。
 - **未覆盖**：native 集成与 crash-recovery 端到端（同 R10 缺口，需 linux/arm64 Rust 二进制）；
   v2 完成日志下的 unified 完工路径未实测。
+
+#### R12：v2 完成日志不再逐条独占屏障（2026-11-02，已合入 `main`）
+
+**归因**：补 R11 留下的「v2 unified 完工路径未实测」缺口。先在 `completion_journal_v2` 卷上做
+交错 A/B：v2 串行 +31.7%，但 conc=8/32/64 分别 −38.7%/−55.4%/−65.2%，`journal_sync` 恒
+0.76–0.80 次/请求（v1 为 journal 0.40 + 审计 0.80，且随并发下降）。
+
+打开 durability observer（`PERI_DURABILITY_OBSERVER=1`，需同时 `--sql-open-observer`；8 秒高并发
+窗口、7,190 次完成提交）读到：
+
+| 观测项 | 值 |
+|---|---|
+| journal 批次 | 1.05 条/次 fsync（`batch_max` 4） |
+| committer 忙碌占比 | 86.5%（858 次 fsync/s，sync 均值 1.00ms） |
+| prepare 并发 | 最多 4（p50 12.9µs，state lock 均值 124µs） |
+| 请求相位 | open/close 的 `audit` 段均值 284ms；intent/native 各约 1ms |
+| 记录数 | 4 条/查询（1,284 条 / 320 查询）；v1 为 journal 2 条 + 审计 4 条 |
+
+即 v2 的完工记录在 `unified` 分支里由 `persist` 闭包**在命名空间 fence 内**完成「提交 + 等屏障」。
+同库所有请求共用一个 fence，于是每个请求要独占一次 fsync 才轮到下一个：队列永远只有 1 条，
+吞吐 = 1/fsync 延迟，与并发无关。v1 没有该问题——同库 SQL 完成走审计文件（不持 fence），
+journal 只承载 open/close。
+
+**改动**（分支 `perf/issue28-r12-completion-journal` / `c43d48c`）：
+
+- `auditReservation.RecordOperation` → `RecordOperationDeferred`：只做
+  `prepareCompletionOperation` + 入队（新增 `fileAudit.enqueueCompletion`），把屏障作为返回值
+  交给调用方。
+- `gateway_http.go` 的 unified `submit` 直接返回该屏障；`settleOperationUsingCaller` 改为
+  「入队 → 释放 fence → 等屏障」，与 R10/R11 的 `settleNonCommittingOperationUsing` 同形。
+  v1 路径包装为 `return nil, updateOperationRecords(...)`，语义不变。
+- `recordUnifiedBatch` 改为**按审计队列顺序**逐条提交 delta、收集屏障后并行等待（原来每条一个
+  goroutine，各自提交、各自等待）。顺序即 fence 顺序：`audit.pending` 是 FIFO 前缀，记录在
+  fence 持有期间入队，因此视图推进与审计链顺序不变。
+- 新增 `TestUnifiedCompletionDropsNamespaceFenceBeforeBarrier`：同库两个 close，用 committer
+  闸门把第一个关在屏障里，断言第二个仍能完成 admitted 入队；把等待挪回 fence 内该用例即超时失败
+  （已做变异验证）。
+- 语义：fence 只保证「同一命名空间的记录按 fence 顺序入队」，不再要求上一条持久化后才放行；
+  读取路径仍先 `settleOperations` 等未确认提交，因此读不到未持久化的视图。
+- 顺带闭合 R11 的「v2 未实测」：v2 下 open/close 结果记录与审计行共享一个屏障，本轮实测生效。
+
+**测量**（同一 `completion_journal_v2` 卷、同一镜像 digest、只切换 `peri-platform`；交错
+A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
+
+| 并发 | 基线 qps（中位） | 候选 qps（中位） | 变化 | 基线 p50 | 候选 p50 | 变化 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 50.2 | 53.8 | +7.1% | 19.3ms | 18.0ms | **−6.7%** |
+| 8 | 115.7 | 177.4 | **+53%** | 62.7ms | 37.5ms | **−40%** |
+| 32 | 193.6 | 443.6 | **+129%** | 156.6ms | 66.5ms | **−58%** |
+| 64 | 140.4 | 546.2 | **+289%** | 430.0ms | 105.6ms | **−75%** |
+
+- conc=32/64 两侧样本完全不重叠（基线最好 233.6/169.5 低于候选最差 335.9/499.2）；
+  conc=8 有一枚基线样本 191.2 高于候选最低 173.6，中位仍 +53%。
+- 机制：`journal_sync` 0.74–0.77→0.10–0.17 次/请求（c32/c64）、0.75→0.42（c8），串行仍 0.80；
+  `coalesced` 40–92→1000–1120；`batch_max` 3–4→16–32。
+- 同窗口跨格式（两侧都用 r12；v1 `audit_file_v1` vs v2 `completion_journal_v2`）：
+  串行 38.2→45.9 qps（+20%）、conc=32 349.0→398.7（+14%）、conc=64 433.3→550.1（+27%），
+  **conc=8 仍是 247.2 vs 185.5（−25%）**：该档 v2 的 journal 批次只有 5–6 条，每条完成仍各等
+  一次屏障，差距留作下一轮。
+- v1 卷同二进制对照（`audit_file_v1`，r11 vs r12）：c8 +1.5%、c32 +1.1%、c64 +5.4%
+  （4 样本/侧），无回归。
+- Go 全量套件失败集合与基线**逐条一致**（27 项）；`gofmt`/`go vet`/`go build` 干净；
+  v2 卷写路径冒烟 `{"ok":true,"rows":40,"sum":2340}`。
+- **未覆盖**：native 集成与 crash-recovery 端到端（同 R10/R11 缺口，需 linux/arm64 Rust 二进制）。
 
 ## 代码约定
 

@@ -173,17 +173,15 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			var auditErr error
 			if unified {
 				reservation := completion.(*auditReservation)
-				persist := func(change func(*operationEdit) error) error {
-					return reservation.RecordOperation(event, change)
-				}
-				// The unified reservation already carries the audit row, so its
-				// commit is the barrier and the caller has nothing left to await.
+				// The reservation already carries the audit row, so its barrier is
+				// the only wait. Each settlement queues under its namespace fence and
+				// pays the barrier after releasing it.
 				submit := func(change func(*operationEdit) error) (func() error, error) {
-					return nil, persist(change)
+					return reservation.RecordOperationDeferred(event, change)
 				}
 				if result.operationPending {
 					caller := newDurabilityCaller(gateway.config.State, result.operationID, identifier, "completion", "gateway")
-					auditErr = gateway.settleOperationUsingCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, persist, caller)
+					auditErr = gateway.settleOperationUsingCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, submit, caller)
 				} else {
 					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, submit)
 				}

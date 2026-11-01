@@ -323,7 +323,7 @@ func TestUnifiedCompletionAuditOutlivesOperationRetention(test *testing.T) {
 		if err != nil {
 			test.Fatal(err)
 		}
-		err = held.(*auditReservation).RecordOperation(completionAuditEvent(identifier), func(edit *operationEdit) error {
+		wait, err := held.(*auditReservation).RecordOperationDeferred(completionAuditEvent(identifier), func(edit *operationEdit) error {
 			key := operationKey(securityDatabase(), identifier)
 			record, _ := edit.record(key)
 			record.State, record.BusinessOutcome, record.ExecutionProven = "terminal", "completed", true
@@ -331,6 +331,9 @@ func TestUnifiedCompletionAuditOutlivesOperationRetention(test *testing.T) {
 			return nil
 		})
 		if err != nil {
+			test.Fatal(err)
+		}
+		if err := wait(); err != nil {
 			test.Fatal(err)
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func unifiedStore(test *testing.T) (*stateStore, *fileAudit, string) {
@@ -134,6 +135,58 @@ func TestUnifiedCompletionGatewayUsesOneBarrier(test *testing.T) {
 	response = gatewayHTTP(test, gateway, credential, "/v1/sql/close", map[string]any{"session": session})
 	if response.Code != 200 {
 		test.Fatalf("close: %s", response.Body.String())
+	}
+}
+
+// Closing sessions of one database must not queue behind each other: each
+// settlement queues its record under the namespace fence and pays the barrier
+// only after the fence is dropped. The second close here has to reach the queue
+// while the first one is still inside its barrier.
+func TestUnifiedCompletionDropsNamespaceFenceBeforeBarrier(test *testing.T) {
+	gateway, _, credential, store, audit, _ := unifiedGateway(test)
+	const closes = 2
+	sessions := make([]string, closes)
+	for index := range sessions {
+		sessions[index] = unifiedOpenSession(test, gateway, credential)
+	}
+	ordered := operationOrderedTotal(store)
+	release := gatePop(test, store)
+	var once sync.Once
+	open := func() { once.Do(release) }
+	defer open()
+	codes := make([]int, closes)
+	bodies := make([]string, closes)
+	var group sync.WaitGroup
+	for index := range sessions {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			response := gatewayHTTP(test, gateway, credential, "/v1/sql/close", map[string]any{"session": sessions[index]})
+			codes[index], bodies[index] = response.Code, response.Body.String()
+		}(index)
+	}
+	// The first close is parked inside its barrier; the second one is only able
+	// to admit itself if the fence was dropped before that barrier.
+	waitOrdered(test, store, ordered+1)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		audit.queueMutex.Lock()
+		admitted := audit.admitted[AuditClassCompletion]
+		audit.queueMutex.Unlock()
+		if admitted >= closes {
+			break
+		}
+		if time.Now().After(deadline) {
+			test.Fatalf("only %d of %d closes were admitted while one barrier was held", admitted, closes)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	open()
+	group.Wait()
+	for index, code := range codes {
+		if code != 200 {
+			test.Fatalf("close %d: %d %s", index, code, bodies[index])
+		}
 	}
 }
 
