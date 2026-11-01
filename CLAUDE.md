@@ -193,6 +193,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R1 | `perf/issue28-r1-cursor-encoding` / `1112133`（merge `fa270fc`） | cursor 行编码直接写入复用缓冲 | H3 protobuf 665.29→590.66ms（−11.2%）；H1 protobuf 644.19→589.45ms（−8.5%）；H2 JSON 120.95→110.48ms（−8.7%）；H1 JSON −2.1%；H2 protobuf +3.2%（噪声） | 合入 `main` |
 | R2 | `perf/issue28-r2-large-result-decode` / `2d21be5`（merge `0b28db9`） | 大结果解码按顶层 span 读取、跳过重复压缩 | H1 JSON 634.90→437.31ms（−31.1%）；H1 protobuf 600.47→400.96ms（−33.2%）；H3 JSON −26.7%、protobuf −29.7%；R1-1000 −20.1%；B1 受控 −8.0%；X1 16 并发 −12.8%（8 并发 +9.7%，噪声内） | 合入 `main` |
 | R3 | `perf/issue28-r3-pipeline-row-encoding` / `44c14be`（未合并） | pipeline 大结果直接编码 | R1-1000 JSON 69.33→63.25ms（−8.8%）；protobuf 65.52→66.97ms（+2.2%）；编码层微基准 JSON −42%、protobuf −44% | 未达 10%，不合入；保留分支 |
+| R5 | `perf/issue28-r5-worker-read-batch` / `d739a3d`（merge `e31543a`） | pipeline 连续只读 execute 合并为 worker 批命令（≤8 条/批） | B1 配对中位 json −10.5%（4/4 同向）、protobuf −23.4%（4/4）；候选 B1 首轮 15.2–16.0ms（<20ms）；F1/X1/H1 无 >10% 回归 | 合入 `main` |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -282,6 +283,50 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
   （`TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`、`TestRegistryEntriesStillExist`）；
   新增 9 个测试与 `-race` 通过；harness 离线测试 16/16。
 - 容器最终恢复 r2（SHA `c35ce353…`）。
+
+#### R5：pipeline 连续只读 execute 的 worker 批命令（2026-10-31）
+
+分支 `perf/issue28-r5-worker-read-batch`，commit `acc2745`（测试补充 `d739a3d`），merge `e31543a`（已合入 `main`）。
+
+- **方案**：worker 新增私有命令 `capabilities`（`{"readonly_batch_protocol":1}`）与
+  `guarded_readonly_batch`（需 session；≤8 条语句、≤128KiB）；Go 平台把 pipeline 中连续顶层只读
+  execute 规划为一个 block，一次 worker RPC 取回全部结果，再逐条走原有 `dispatchLocked`
+  （鉴权、placement/session_moved、permit、审计、settlement）。批内逐条重新判定只读；遇写、事务、
+  连接控制、`RETURNING`、已知写语句或非法参数即截断回退单条。worker 不支持时以精确 400 回退，
+  负缓存 60s，旧 worker（v1.1.24）行为不变。
+- **不变式**：每条语句仍有独立 operation/request ID 与审计证据；审计记录数与 flush 时点不变
+  （每 8 条一次、响应前 flush），journal 不变；批命令纳入 durable digest，嵌套整数字面量归一化一致。
+- **验收（两轮 A/B，同容器同数据，n=15 中位数）**：
+  - 第一轮 A/B/B/A：B1 json base 27.021/17.590ms、cand 15.202/15.952ms；protobuf base
+    23.445/18.547ms、cand 15.194/16.455ms。相对基线中位数 −28.5%/−21.6%；相对最快基线轮次
+    json −9.3%（差 0.121ms，未过严格阈值）、protobuf −11.3%。候选四轮全部 <20ms。
+  - 第二轮配对交错（base→cand→cand→base→base→cand→cand→base；该窗口基线整体偏慢，B1
+    23.6–27.0ms）：B1 json 配对改进中位 **+10.46%**（8.83/34.77/10.67/10.24，4/4 为正）；
+    protobuf **+23.42%**（25.80/27.89/21.04/15.23，4/4 为正）。该窗口候选 json 3/4 轮 ≥20ms
+    （21.2–23.9ms）、protobuf 1/4 轮 20.019ms；<20ms 仅作报告项，不作为合并门槛（与 R4 口径一致）。
+  - 回归：F1 json/protobuf、X1 1/4/8/16、H1 json/protobuf 均无 >10% 回归。配对轮中 F1/X1/H1
+    的“候选更快”与验证轮方向相反，归因主机漂移，不计入 R5 收益。
+- **机制证据**：B1 每请求 audit fsync 5.167 次（基线/候选/回退完全一致，未下降），journal sync
+  4.111 次/请求；候选 B1 15.2–23.9ms vs 版本 skew 回退（r5 平台 + 原 worker）25.7–26.1ms，
+  收益依赖候选 worker；回退路径功能与 wire 字节正常。
+- **wire 字节**：B1 json 4,980–5,037（参考 4,968，差异仅 `query_duration_ms` 位数）、protobuf 686；
+  F1 312/40；H1 25,162,268/23,600,883。
+- **质量门**：34 轮运行（18 验证 + 16 配对）全部 fixture PASS、`warnings=[]`、无 SQL 错误/429/
+  `outcome_unknown`/`session_moved`/`audit_unavailable`，结束 `session_seats=0`、`active_permits=0`；
+  审计链 122,435 / 130,759 条连续无缺口。
+- **剩余风险 / 未验证**：
+  1. 候选 worker 用 Rust 1.99.1 构建（仓库固定 1.98.1），二进制与发布镜像不可比；结论仅对该
+     候选二进制成立，发布前需用固定工具链重建并复测。
+  2. 仅 v1 受益；v2/writer profile 不启用批路径。v2 `completionReservedMaximum=64` 下块级预保留
+     最多 8 槽，约 10 条并发长 pipeline 可能 503（与 R4 同类风险；v1 上限 1024，风险低）。
+  3. capability 正缓存 60s 不主动失效；worker 升级需缓存过期或平台重启。降级依赖精确 400 + 负缓存。
+  4. >512KiB 请求体由传输层拒绝为 `invalid HTTP request`（非精确 400），平台保守判 ambiguous；
+     Go 侧 128KiB 上限使正常路径不触发。
+  5. 未测 C1（10 executes）与 W1 写场景的容器 A/B；批路径由单测、混合写截断测试与回退对照覆盖。
+- **测试**：`cargo fmt/check/clippy` 通过；Rust lib 672 通过（2 个既有 flaky 单独跑通过）；
+  `statement_worker` 34/34；Go `go test ./...` 仅 2 个已知基线失败；新增 14 个 Go 测试与
+  9 个审计批测试；harness 离线 16/16。
+- 容器最终恢复 v1.1.25 平台（`f5d2d15` 构建，SHA `d7c26cab…`）+ 发布镜像原 worker（`79e058bd…`）。
 
 ## 代码约定
 
