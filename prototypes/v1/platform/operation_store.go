@@ -173,7 +173,12 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 	return store.updateOperationsAudit(change, nil, false)
 }
 
-func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool) error {
+// enqueueOperationsAudit applies the edit to the live view and orders its delta in the
+// journal, but returns before the barrier. It reports the queued commit through out so a
+// caller can drop a namespace fence before paying the barrier: holding that fence across the
+// barrier is what keeps two commits of one namespace from ever sharing one, which is the whole
+// reason same-namespace concurrency stays fsync-bound. A no-op mutation leaves out nil.
+func (store *stateStore) enqueueOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool, out **operationCommit) error {
 	preparation := store.observeOperationPreparation()
 	unlock := store.lockOperationMutationStateObserved(preparation)
 	preparation.mark("state_gate")
@@ -256,9 +261,42 @@ func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error
 	}
 	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert})
 	store.cost.observeCommit()
+	*out = commit
 	unlock()
+	return nil
+}
+
+// submitOperationsAudit queues one edit and hands back the wait function that makes it
+// durable. The wait is separate so the caller can release its namespace fence first.
+func (store *stateStore) submitOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool) (func() error, error) {
+	var commit *operationCommit
+	if err := store.enqueueOperationsAudit(change, event, reserved, &commit); err != nil {
+		return nil, err
+	}
+	if commit == nil {
+		return func() error { return nil }, nil
+	}
+	return func() error { return store.awaitOperationCommit(commit) }, nil
+}
+
+func (store *stateStore) submitOperations(change func(*operationEdit) error) (func() error, error) {
+	return store.submitOperationsAudit(change, nil, false)
+}
+
+// updateOperationsAudit applies one edit and returns only after its appended delta is durable.
+func (store *stateStore) updateOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool) error {
+	wait, err := store.submitOperationsAudit(change, event, reserved)
+	if err != nil {
+		return err
+	}
+	return wait()
+}
+
+// awaitOperationCommit pays one commit's barrier and settles the view without holding the
+// namespace fence.
+func (store *stateStore) awaitOperationCommit(commit *operationCommit) error {
 	store.operations.waitObserved(commit)
-	unlock = store.lockOperationMutationState()
+	unlock := store.lockOperationMutationState()
 	// Another waiter may have settled this commit before us; settling again is what makes
 	// the outcome definite either way.
 	settleErr := store.settleOperations()

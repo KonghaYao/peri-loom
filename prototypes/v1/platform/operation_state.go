@@ -143,6 +143,25 @@ func removeKnownDatabaseOperations(state *State, database controller.DatabaseID)
 	return nil
 }
 
+// submitOperationRecords applies one operation edit and returns the wait function for its
+// barrier. The caller must call it before replying to a client, but it is deliberately not
+// part of the edit: dropping the namespace fence before the wait is what lets two commits of
+// one namespace share a barrier instead of paying one fsync each.
+func submitOperationRecords(store StateStore, change func(*operationEdit) error) (func() error, error) {
+	if change == nil {
+		change = func(*operationEdit) error { return nil }
+	}
+	if narrow, ok := store.(interface {
+		submitOperations(func(*operationEdit) error) (func() error, error)
+	}); ok {
+		return narrow.submitOperations(change)
+	}
+	if err := updateOperationRecords(store, change); err != nil {
+		return nil, err
+	}
+	return func() error { return nil }, nil
+}
+
 func updateOperationRecords(store StateStore, change func(*operationEdit) error) error {
 	if change == nil {
 		change = func(*operationEdit) error { return nil }
@@ -373,12 +392,12 @@ func settleNonCommittingOperationUsing(store StateStore, database controller.Dat
 func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, operationID, requestID, source, action, stage, worker, session string, command frozenCommand) error {
 	caller := newDurabilityCaller(store, operationID, requestID, "intent", source)
 	unlock := lockObservedOperationNamespace(database.Namespace, caller)
-	defer unlock()
 	digest := command.digest()
 	if store == nil || database.Validate() != nil || !sqlLabel(requestID) || source == "management" && !labelPattern.MatchString(requestID) {
+		unlock()
 		return errors.New("operation registration unavailable")
 	}
-	return updateOperationRecords(store, func(edit *operationEdit) error {
+	wait, err := submitOperationRecords(store, func(edit *operationEdit) error {
 		edit.caller = caller
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
@@ -389,12 +408,16 @@ func beginCorrelatedOperation(store StateStore, database controller.DatabaseID, 
 		edit.put(operationKey(database, operationID), seedOperationRecord(edit, database, operationID, requestID, source, action, stage, worker, session, digest))
 		return nil
 	})
+	unlock()
+	if err != nil {
+		return err
+	}
+	return wait()
 }
 
 func updateOperation(store StateStore, database controller.DatabaseID, requestID string, change func(*OperationRecord)) error {
 	unlock := lockOperationNamespace(database.Namespace)
-	defer unlock()
-	return updateOperationRecords(store, func(edit *operationEdit) error {
+	wait, err := submitOperationRecords(store, func(edit *operationEdit) error {
 		key := operationKey(database, requestID)
 		record, exists := edit.record(key)
 		if !exists || record.State != "in_flight" {
@@ -404,6 +427,11 @@ func updateOperation(store StateStore, database controller.DatabaseID, requestID
 		edit.put(key, record)
 		return nil
 	})
+	unlock()
+	if err != nil {
+		return err
+	}
+	return wait()
 }
 
 func finishOperation(store StateStore, database controller.DatabaseID, requestID string, failure error, businessCompleted bool) error {
