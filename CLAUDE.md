@@ -206,6 +206,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R7 | `perf/issue28-r7-cursor-describe-elide` / `67e5d4b`（未合入） | 只读 cursor 首步省略 `describe`，写语句由 worker 返回新错误后回退 | 候选无法构建（见 R9 环境事件，宿主仅 8.1 GiB 可用而镜像构建需 6–8 GiB）；改用 `/v1/metrics` 的 `action_latency_ns_total` 直接实测被省略的 `describe`：均值 0.391ms/次（101 次），占串行单查询 16.4ms 的 **2.4%** | 不合入；分支与提交保留作证据 |
 | R8 | 无代码改动（归因轮） | 拆解 11–12ms 小查询的 8 次屏障 | 4 次 audit + 4 次 journal fsync；8 次屏障语义上全部必需，严格口径可省 0；即使 8 个屏障全消失仍 5.5ms vs sqld 3.7ms ≈ 1.49× | 小查询差距是耐久模型的价格，不再做屏障削减 |
 | R9 | 无代码改动（测量轮） | 单库并发小查询的扩展性与错误分类 | conc=8 时 143–161 qps / p50 48.7–51.5ms，`operation_journal_coalesced_total` 恒为 0、`batch_max=1`、`queue_max=1`；同机 sqld conc=8 为 1510 qps / p50 4.83ms | 单命名空间无合并是结构性上限；并发下另有 502 误分类缺陷 |
+| R11 | `perf/issue28-r11-session-record-outcome` / `6f8b35d` | 会话 open/close 只写结果记录，去掉派发前的 intent | 同镜像同卷交错 A/B（每档 A,B,B,A 共 4 样本/侧，每样本 320 次查询）：串行 32.2→41.3 qps（p50 30.1→24.1ms，**+28%/−20%**）、conc=8 183.9→233.6 qps（**+27%**）、conc=32 205.1→374.9 qps（**+83%**）、conc=64 256.8→504.8 qps（**+97%**）；journal appends 4.02→2.02、syncs 4.04→2.02 每查询，conc=64 时 journal+audit 屏障合计 0.82→0.25 次/请求 | 合入 `main` |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -495,6 +496,67 @@ OrbStack VM 出现 BTRFS 写 I/O error（`Transaction 19922 aborted`）并被强
 后续只清理本项目构建缓存（`cargo clean` + `go clean -cache`，回收 8.4 GiB），并仅启动 OrbStack
 （未重启 daemon、未 prune）。事故后可用空间 8.1 GiB / 97% 占用，这是 R7 候选无法构建、R9 只能用
 已发布镜像的原因。
+
+#### R11：会话开关只写结果记录（2026-11-01，已合入 `main`）
+
+**归因**：相位剖面（`--sql-open-observer`，采样 1000‰、阈值 0）把串行一次
+`connect → all(SELECT …) → close` 的 5 个请求拆开，每查询网关侧约 22ms：
+
+| 动作 | 合计 | intent | terminal | audit | native |
+|---|---:|---:|---:|---:|---:|
+| open | 8.04ms | 2.43 | 2.35 | 2.05 | 1.08 |
+| statement | 2.86ms | — | — | 2.08 | 0.62 |
+| cursor_start | 3.20ms | 0.04 | 0.00 | 2.08 | 0.94 |
+| describe（探针） | 0.72ms | — | — | — | 0.55 |
+| close | 7.30ms | 2.23 | 2.32 | 2.30 | 0.37 |
+
+即 open/close 各付 **2 次 journal 屏障**，而它们都不可能改数据：open 不下发 SQL，
+close 只拆除会话。R8 当年把 8 次屏障判为「语义上全部必需」，是把这两条记录当成
+会话账目的一部分；本轮把「账目」与「派发前 intent」拆开。
+
+**改动**（分支 `perf/issue28-r11-session-record-outcome` / `6f8b35d`）：
+
+- 新增 `deferredRecordOperation`（open、close）：不写 intent，由
+  `settlePendingOperation` 在调用后写**一条已结算**的记录。
+- `beginSessionOpen`、`closeTrackedSession`、`beginDispatchOperation` 走 pending 路径，
+  准入仍复用 `verifyNonCommittingAdmission`（close 带 retirement 豁免，隔离库内仍可关会话）。
+- `settleNonCommittingOperationUsing` 改为「入队 → 释放命名空间 fence → 等屏障」，
+  否则同库两条结果记录会串行（R10 修过的形态）；新增
+  `TestSameNamespacePendingSettlesShareOneBarrier` 固定该性质，并要求重开后未解除的 open
+  仍按原规则被隔离。
+- 完工路径 `needsOperation` 现在也覆盖 deferred 记录，因此在 v2 完成日志
+  （`PERI_COMPLETION_JOURNAL=1`）下审计行与结果记录共享一个屏障。**本 bench 卷是
+  `audit_file_v1`，该收益未实测**。
+- 不变：未知 open 仍不隔离、未知 close 仍隔离、close 仍在同一批次里把 open 的
+  `cleanup_outcome` 置 completed、记录仍绑定命令摘要（digest）、恢复期把未解除的 open
+  视为可能存活的会话。**放弃的只有**：open/close 在「派发后、回复前」崩溃时不再留下
+  in-flight 标记，会话资源转由 worker 空闲回收。
+- 测试期望更新：`gateway_probe_test.go` 的三处 sidecar revision 计数（open 由 2 → 1，
+  含 close 的用例 4 → 2）。
+
+**测量**：同一镜像 digest、同一 bench 卷，只切换 `peri-platform`。本轮改为**交错** A/B：
+同一并发档内按 A,B,B,A 连续起停两侧容器，使宿主噪声落在两侧而不是某一整块扫描上；
+2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询。
+
+| 并发 | 基线 qps（中位） | 候选 qps（中位） | 变化 | 基线 p50 | 候选 p50 | 变化 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 32.2 | 41.3 | **+28%** | 30.1ms | 24.1ms | **−20%** |
+| 8 | 183.9 | 233.6 | **+27%** | 40.6ms | 32.8ms | **−19%** |
+| 32 | 205.1 | 374.9 | **+83%** | 150.7ms | 80.7ms | **−46%** |
+| 64 | 256.8 | 504.8 | **+97%** | 232.3ms | 118.2ms | **−49%** |
+
+- 每档 4 个样本同向：conc=32 候选最差 292.7 qps 仍高于基线最好 240.7 qps；
+  conc=64 候选最差 462.2 高于基线最好 263.2。
+- 机制：`journal_appends` 4.02→2.02、`journal_syncs` 4.04→2.02 次/查询（串行实测），
+  conc=64 时 `journal_sync` 0.44→0.15 次/请求、`audit fsync` 0.38→0.10 次/请求
+  （少一次屏障后审计行也更容易合批）、`batch_max` 26→27。
+- 绝对数字比 R10 低（宿主 load 3.1–3.7，串行基线从 55 qps 掉到 32 qps），
+  因此只比较同窗口内的比值。
+- Go 全量套件失败集合与基线**逐条一致**（27 项，均为 `PERI_RUST_BINARY` 指向不存在路径的
+  native 测试 + 既存 `TestHranaGatewayResponseMatchesEnvelope`）；`gofmt`/`go vet`/`go build` 干净；
+  写路径冒烟 `{"ok":true,"rows":40,"sum":2340}`。
+- **未覆盖**：native 集成与 crash-recovery 端到端（同 R10 缺口，需 linux/arm64 Rust 二进制）；
+  v2 完成日志下的 unified 完工路径未实测。
 
 ## 代码约定
 
