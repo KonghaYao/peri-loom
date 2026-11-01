@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 type hranaProtoCursorRowFrame struct {
 	buffer  []byte
 	scratch []byte
+	text    []byte
 }
 
 const (
@@ -35,6 +37,49 @@ func (frame *hranaProtoCursorRowFrame) begin() {
 		frame.buffer = make([]byte, hranaProtoCursorRowHeader, 512)
 	}
 	frame.buffer = frame.buffer[:hranaProtoCursorRowHeader]
+}
+
+func (frame *hranaProtoCursorRowFrame) appendPageRow(page *hranaCursorPage, index int) error {
+	for _, cell := range page.row(index) {
+		if err := frame.appendPageCell(page, cell); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// appendPageCell writes one cell straight from its token. Blobs, booleans and
+// objects still take the decode-then-encode fallback.
+func (frame *hranaProtoCursorRowFrame) appendPageCell(page *hranaCursorPage, cell hranaCursorPageCell) error {
+	token := page.cellBytes(cell)
+	switch cell.kind {
+	case hranaCursorPageCellNull:
+		frame.buffer = append(frame.buffer, 0x0a, 0x02, 0x0a, 0x00)
+	case hranaCursorPageCellInteger:
+		integer, err := strconv.ParseInt(string(token), 10, 64)
+		if err != nil {
+			return err
+		}
+		frame.appendInteger(integer)
+	case hranaCursorPageCellFloat:
+		converted, err := strconv.ParseFloat(string(token), 64)
+		if err != nil {
+			return err
+		}
+		return frame.appendFloat(converted)
+	case hranaCursorPageCellText:
+		frame.text = hranaCursorPageAppendText(frame.text[:0], token)
+		frame.appendTextBytes(frame.text)
+	default:
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(token))
+		decoder.UseNumber()
+		if decoder.Decode(&value) != nil {
+			return errors.New("invalid cursor value")
+		}
+		return frame.appendCell(value)
+	}
+	return nil
 }
 
 func (frame *hranaProtoCursorRowFrame) appendCell(cell any) error {
@@ -95,6 +140,16 @@ func (frame *hranaProtoCursorRowFrame) appendFloat(value float64) error {
 }
 
 func (frame *hranaProtoCursorRowFrame) appendText(text string) {
+	length := len(text)
+	inner := 1 + hranaProtoUvarintSize(uint64(length)) + length
+	frame.buffer = append(frame.buffer, 0x0a)
+	frame.buffer = binary.AppendUvarint(frame.buffer, uint64(inner))
+	frame.buffer = append(frame.buffer, 0x22)
+	frame.buffer = binary.AppendUvarint(frame.buffer, uint64(length))
+	frame.buffer = append(frame.buffer, text...)
+}
+
+func (frame *hranaProtoCursorRowFrame) appendTextBytes(text []byte) {
 	length := len(text)
 	inner := 1 + hranaProtoUvarintSize(uint64(length)) + length
 	frame.buffer = append(frame.buffer, 0x0a)

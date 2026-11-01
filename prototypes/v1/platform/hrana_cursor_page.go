@@ -1,6 +1,9 @@
 package platform
 
-import "errors"
+import (
+	"errors"
+	"unicode/utf8"
+)
 
 // hranaCursorPageCellKind classifies one cursor row cell the way the Hrana
 // encoders dispatch after a full json.Decoder pass: the four shapes that can be
@@ -63,9 +66,11 @@ const hranaCursorPageMaxDepth = 10000
 // scan parses body as the read cursor page shape: an object with exactly the
 // done and rows members, where every row is an array (or null, which
 // json.Unmarshal also accepts for a [][]json.RawMessage row) and rows is an
-// array of those. It is a strict JSON syntax scan as well, so it can stand in
-// for the json.Unmarshal calls that used to accept or reject the page.
-func (scanner *hranaCursorPageScanner) scan(body []byte, record bool) (hranaCursorPage, error) {
+// array of those. allowMetadata additionally accepts the fused first page's
+// cols and autocommit members, which the old adapter decode ignored. scan is a
+// strict JSON syntax scan as well, so it can stand in for the json.Unmarshal
+// calls that used to accept or reject the page.
+func (scanner *hranaCursorPageScanner) scan(body []byte, record, allowMetadata bool) (hranaCursorPage, error) {
 	scanner.body = body
 	scanner.record = record
 	scanner.done = false
@@ -154,6 +159,13 @@ func (scanner *hranaCursorPageScanner) scan(body []byte, record bool) (hranaCurs
 					return hranaCursorPage{}, errHranaCursorPage
 				}
 				rowsShapeInvalid = true
+			case "cols", "autocommit":
+				if !allowMetadata {
+					return hranaCursorPage{}, errHranaCursorPage
+				}
+				if position, err = scanner.value(position, 2); err != nil {
+					return hranaCursorPage{}, errHranaCursorPage
+				}
 			default:
 				return hranaCursorPage{}, errHranaCursorPage
 			}
@@ -535,4 +547,168 @@ func hranaCursorPageDigit(character byte) bool {
 
 func hranaCursorPageHex(character byte) bool {
 	return hranaCursorPageDigit(character) || character >= 'a' && character <= 'f' || character >= 'A' && character <= 'F'
+}
+
+func hranaCursorPageHex4(token []byte) uint32 {
+	var value uint32
+	for index := 0; index < 4; index++ {
+		value <<= 4
+		switch character := token[index]; {
+		case character >= '0' && character <= '9':
+			value |= uint32(character - '0')
+		case character >= 'a' && character <= 'f':
+			value |= uint32(character-'a') + 10
+		default:
+			value |= uint32(character-'A') + 10
+		}
+	}
+	return value
+}
+
+// hranaCursorPageAppendText appends the decoded value of one text token. It
+// reproduces encoding/json's unescaping, including U+FFFD for lone surrogate
+// escapes, without allocating the intermediate string.
+func hranaCursorPageAppendText(destination, token []byte) []byte {
+	for position := 1; position < len(token)-1; {
+		character := token[position]
+		if character != '\\' {
+			destination = append(destination, character)
+			position++
+			continue
+		}
+		switch escape := token[position+1]; escape {
+		case '"', '\\', '/':
+			destination = append(destination, escape)
+			position += 2
+		case 'b':
+			destination = append(destination, '\b')
+			position += 2
+		case 'f':
+			destination = append(destination, '\f')
+			position += 2
+		case 'n':
+			destination = append(destination, '\n')
+			position += 2
+		case 'r':
+			destination = append(destination, '\r')
+			position += 2
+		case 't':
+			destination = append(destination, '\t')
+			position += 2
+		case 'u':
+			unit := hranaCursorPageHex4(token[position+2:])
+			position += 6
+			if unit >= 0xd800 && unit <= 0xdbff {
+				if position+5 < len(token)-1 && token[position] == '\\' && token[position+1] == 'u' {
+					low := hranaCursorPageHex4(token[position+2:])
+					if low >= 0xdc00 && low <= 0xdfff {
+						destination = utf8.AppendRune(destination, 0x10000+(rune(unit)-0xd800)<<10+(rune(low)-0xdc00))
+						position += 6
+						continue
+					}
+				}
+				destination = utf8.AppendRune(destination, utf8.RuneError)
+				continue
+			}
+			if unit >= 0xdc00 && unit <= 0xdfff {
+				destination = utf8.AppendRune(destination, utf8.RuneError)
+				continue
+			}
+			destination = utf8.AppendRune(destination, rune(unit))
+		}
+	}
+	return destination
+}
+
+// hranaJSONAppendPageText appends one text token with exactly the escaping
+// hranaJSONAppendString applies to its decoded value: the worker's escapes are
+// normalized, and raw HTML and line-separator characters are escaped.
+func hranaJSONAppendPageText(destination, token []byte) []byte {
+	const hex = "0123456789abcdef"
+	destination = append(destination, '"')
+	for position := 1; position < len(token)-1; {
+		character := token[position]
+		if character != '\\' {
+			switch character {
+			case '<':
+				destination = append(destination, `\u003c`...)
+			case '>':
+				destination = append(destination, `\u003e`...)
+			case '&':
+				destination = append(destination, `\u0026`...)
+			default:
+				if character == 0xe2 && position+2 < len(token)-1 && token[position+1] == 0x80 && (token[position+2] == 0xa8 || token[position+2] == 0xa9) {
+					destination = append(destination, '\\', 'u', '2', '0', '2', hex[token[position+2]&0xf])
+					position += 3
+					continue
+				}
+				destination = append(destination, character)
+			}
+			position++
+			continue
+		}
+		switch escape := token[position+1]; escape {
+		case '"', '\\':
+			destination = append(destination, '\\', escape)
+			position += 2
+		case '/':
+			destination = append(destination, '/')
+			position += 2
+		case 'b', 'f', 'n', 'r', 't':
+			destination = append(destination, '\\', escape)
+			position += 2
+		case 'u':
+			unit := hranaCursorPageHex4(token[position+2:])
+			position += 6
+			if unit >= 0xd800 && unit <= 0xdbff {
+				if position+5 < len(token)-1 && token[position] == '\\' && token[position+1] == 'u' {
+					low := hranaCursorPageHex4(token[position+2:])
+					if low >= 0xdc00 && low <= 0xdfff {
+						destination = utf8.AppendRune(destination, 0x10000+(rune(unit)-0xd800)<<10+(rune(low)-0xdc00))
+						position += 6
+						continue
+					}
+				}
+				destination = utf8.AppendRune(destination, utf8.RuneError)
+				continue
+			}
+			if unit >= 0xdc00 && unit <= 0xdfff {
+				destination = utf8.AppendRune(destination, utf8.RuneError)
+				continue
+			}
+			switch unit {
+			case 0x08:
+				destination = append(destination, '\\', 'b')
+			case 0x0c:
+				destination = append(destination, '\\', 'f')
+			case 0x0a:
+				destination = append(destination, '\\', 'n')
+			case 0x0d:
+				destination = append(destination, '\\', 'r')
+			case 0x09:
+				destination = append(destination, '\\', 't')
+			case '"':
+				destination = append(destination, '\\', '"')
+			case '\\':
+				destination = append(destination, '\\', '\\')
+			case '<':
+				destination = append(destination, `\u003c`...)
+			case '>':
+				destination = append(destination, `\u003e`...)
+			case '&':
+				destination = append(destination, `\u0026`...)
+			case 0x2028:
+				destination = append(destination, `\u2028`...)
+			case 0x2029:
+				destination = append(destination, `\u2029`...)
+			default:
+				if unit < 0x20 {
+					destination = append(destination, '\\', 'u', '0', '0', hex[unit>>4], hex[unit&0xf])
+				} else {
+					destination = utf8.AppendRune(destination, rune(unit))
+				}
+			}
+		}
+	}
+	return append(destination, '"')
 }

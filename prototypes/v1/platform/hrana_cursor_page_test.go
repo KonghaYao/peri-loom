@@ -66,6 +66,8 @@ func hranaCursorPageValidatorCorpus() []struct {
 		{"missing-rows", `{"done":true}`, false},
 		{"missing-done", `{"rows":[]}`, false},
 		{"extra-field", `{"done":true,"rows":[],"extra":1}`, false},
+		{"fused-cols", `{"done":true,"rows":[],"cols":[]}`, false},
+		{"fused-autocommit", `{"done":true,"rows":[],"autocommit":true}`, false},
 		{"rows-null", `{"rows":null,"done":true}`, false},
 		{"rows-scalar", `{"rows":1,"done":true}`, false},
 		{"rows-bool-element", `{"rows":[true],"done":true}`, false},
@@ -118,7 +120,7 @@ func TestHranaCursorPageStructure(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			body := []byte(scenario.body)
 			var scanner hranaCursorPageScanner
-			page, err := scanner.scan(body, true)
+			page, err := scanner.scan(body, true, false)
 			if err != nil {
 				t.Fatalf("scan rejected accepted page %s: %v", scenario.body, err)
 			}
@@ -283,6 +285,32 @@ func TestHranaCursorPageRandomizedDifferential(t *testing.T) {
 	}
 }
 
+// TestHranaCursorPageFusedFirstPage covers the cursor_start page, which the
+// Hrana JSON adapter reads directly and whose cols/autocommit members the old
+// struct decode ignored.
+func TestHranaCursorPageFusedFirstPage(t *testing.T) {
+	for _, scenario := range []struct {
+		body string
+		rows int
+	}{
+		{`{"cols":[{"name":"a","decltype":"TEXT"}],"rows":[[1]],"done":true,"autocommit":false}`, 1},
+		{`{"cols":[],"rows":[],"done":false,"autocommit":null}`, 0},
+		{`{"cols":[],"rows":[[1]],"done":false}`, 1},
+	} {
+		var scanner hranaCursorPageScanner
+		if _, err := scanner.scan([]byte(scenario.body), true, false); err == nil {
+			t.Fatalf("plain scan accepted fused page %s", scenario.body)
+		}
+		page, err := scanner.scan([]byte(scenario.body), true, true)
+		if err != nil {
+			t.Fatalf("fused scan rejected %s: %v", scenario.body, err)
+		}
+		if page.rows != scenario.rows {
+			t.Fatalf("fused page %s scanned rows=%d, want %d", scenario.body, page.rows, scenario.rows)
+		}
+	}
+}
+
 func TestHranaCursorPageDepthMatchesLegacy(t *testing.T) {
 	for _, depth := range []int{1, 2, 100, 9995, 9997, 9998, 9999, 10001} {
 		body := json.RawMessage(`{"done":false,"rows":[[` + strings.Repeat("[", depth) + strings.Repeat("]", depth) + `]]}`)
@@ -298,7 +326,7 @@ func TestHranaCursorPageDepthMatchesLegacy(t *testing.T) {
 // 256-row shape the H1 cursor benchmark fetches.
 func hranaCursorPageBenchmarkCorpus() []byte {
 	chunk := `plain \"quoted\" \\ slash \n \t <html> & 中文 😀 \u2028 end `
-	repeats := 24200000/256/4/len(chunk) + 1
+	repeats := 242*1024*1024/10/256/4/len(chunk) + 1
 	text := `"` + strings.Repeat(chunk, repeats) + `"`
 	var builder bytes.Buffer
 	builder.Grow(24400000)

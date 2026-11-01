@@ -32,7 +32,7 @@ func validCursorFetchResult(encoded json.RawMessage, maxRows int) bool {
 	// scan accepts the same member spellings and row shapes as the old
 	// json.Unmarshal pair without copying every cell into a RawMessage.
 	var scanner hranaCursorPageScanner
-	page, err := scanner.scan(encoded, false)
+	page, err := scanner.scan(encoded, false, false)
 	return err == nil && page.rows <= maxRows
 }
 

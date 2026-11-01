@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,59 @@ func (row *hranaJSONCursorRow) appendCells(cells []any) error {
 		}
 	}
 	row.buffer = append(row.buffer, `],"type":"row"}`...)
+	return nil
+}
+
+func (row *hranaJSONCursorRow) appendPageRow(page *hranaCursorPage, index int) error {
+	row.buffer = append(row.buffer, `{"row":[`...)
+	for position, cell := range page.row(index) {
+		if position != 0 {
+			row.buffer = append(row.buffer, ',')
+		}
+		if err := row.appendPageCell(page, cell); err != nil {
+			return err
+		}
+	}
+	row.buffer = append(row.buffer, `],"type":"row"}`...)
+	return nil
+}
+
+// appendPageCell writes one cell straight from its token. Only the shapes that
+// the encoders already render from a decoded value are handled here; every
+// other shape falls back to the exact decode-then-encode path.
+func (row *hranaJSONCursorRow) appendPageCell(page *hranaCursorPage, cell hranaCursorPageCell) error {
+	token := page.cellBytes(cell)
+	switch cell.kind {
+	case hranaCursorPageCellNull:
+		row.buffer = append(row.buffer, `{"type":"null"}`...)
+	case hranaCursorPageCellInteger:
+		row.buffer = append(row.buffer, `{"type":"integer","value":"`...)
+		row.buffer = append(row.buffer, token...)
+		row.buffer = append(row.buffer, '"', '}')
+	case hranaCursorPageCellFloat:
+		converted, err := strconv.ParseFloat(string(token), 64)
+		if err != nil {
+			return errHranaJSONCursorValue
+		}
+		if math.IsNaN(converted) || math.IsInf(converted, 0) {
+			return errHranaJSONCursorEncode
+		}
+		row.buffer = append(row.buffer, `{"type":"float","value":`...)
+		row.buffer = hranaJSONAppendFloat(row.buffer, converted)
+		row.buffer = append(row.buffer, '}')
+	case hranaCursorPageCellText:
+		row.buffer = append(row.buffer, `{"type":"text","value":`...)
+		row.buffer = hranaJSONAppendPageText(row.buffer, token)
+		row.buffer = append(row.buffer, '}')
+	default:
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(token))
+		decoder.UseNumber()
+		if decoder.Decode(&value) != nil {
+			return errHranaJSONCursorValue
+		}
+		return row.appendCell(value)
+	}
 	return nil
 }
 
