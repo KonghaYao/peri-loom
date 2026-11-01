@@ -28,16 +28,12 @@ func validCursorOpenResult(encoded json.RawMessage) bool {
 }
 
 func validCursorFetchResult(encoded json.RawMessage, maxRows int) bool {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 2 {
-		return false
-	}
-	var done bool
-	if json.Unmarshal(fields["done"], &done) != nil || string(fields["done"]) != "true" && string(fields["done"]) != "false" {
-		return false
-	}
-	var rows [][]json.RawMessage
-	return json.Unmarshal(fields["rows"], &rows) == nil && rows != nil && len(rows) <= maxRows
+	// The page is already valid JSON when it reaches the gateway; a structural
+	// scan accepts the same member spellings and row shapes as the old
+	// json.Unmarshal pair without copying every cell into a RawMessage.
+	var scanner hranaCursorPageScanner
+	page, err := scanner.scan(encoded, false)
+	return err == nil && page.rows <= maxRows
 }
 
 func validCursorFetchResponse(encoded json.RawMessage, maxRows int, writing bool) bool {
