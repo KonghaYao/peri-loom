@@ -128,6 +128,13 @@ scripts/p0-gate.sh
   最小 SQL／官方 JS SDK 矩阵已纳入 `.github/workflows/v1-baseline.yml` 发布门禁；E1 known-gap 如上，
   远端 CI 结果以 tag run 为准，不宣称完整支持矩阵。
   下一项：正常重启的 clean proof、lease fencing 与持久身份轮换；launcher 并发锁已有针对性回归。
+- **失败启动后的 authority 封印恢复缺口（2026-11-01 观测）**：一次 startup 失败可留下 clean marker +
+  dirty backend seal；随后 `dev.py --recover` 会因 clean marker 放行，但 authority 在 `startup.rs:101`
+  先写入 dirty marker，再在 `seal.rs:99` 因 dirty seal 拒绝启动，marker 随之保持 dirty。此后 `--recover`
+  要求 S05 evidence；无 evidence 时 recovery plan 为 `Unclassified`，`--reconciled` 对 dirty seal 也不可
+  接管；`recover_interrupted_startup` 又因 `dev.py:1155` 的「teardown_completed + services_started」
+  短路返回 False，于是该卷没有受支持的就地恢复路径。本次保留旧卷 `peri-loom-issue28-data` 原样，改在新卷
+  重建测试环境；修复需重评 marker/seal 写入顺序或失败回滚，属耐久时点变更，未实施。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
   单机 Issue 28 基线与实验协议见下节，仍不构成容量或 SLA 证明。
@@ -194,6 +201,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R2 | `perf/issue28-r2-large-result-decode` / `2d21be5`（merge `0b28db9`） | 大结果解码按顶层 span 读取、跳过重复压缩 | H1 JSON 634.90→437.31ms（−31.1%）；H1 protobuf 600.47→400.96ms（−33.2%）；H3 JSON −26.7%、protobuf −29.7%；R1-1000 −20.1%；B1 受控 −8.0%；X1 16 并发 −12.8%（8 并发 +9.7%，噪声内） | 合入 `main` |
 | R3 | `perf/issue28-r3-pipeline-row-encoding` / `44c14be`（未合并） | pipeline 大结果直接编码 | R1-1000 JSON 69.33→63.25ms（−8.8%）；protobuf 65.52→66.97ms（+2.2%）；编码层微基准 JSON −42%、protobuf −44% | 未达 10%，不合入；保留分支 |
 | R5 | `perf/issue28-r5-worker-read-batch` / `d739a3d`（merge `e31543a`） | pipeline 连续只读 execute 合并为 worker 批命令（≤8 条/批） | B1 配对中位 json −10.5%（4/4 同向）、protobuf −23.4%（4/4）；候选 B1 首轮 15.2–16.0ms（<20ms）；F1/X1/H1 无 >10% 回归 | 合入 `main` |
+| R6 | `perf/issue28-r6-cursor-page-transcode` / `e062d0b`（merge `fffd305`） | 只读 cursor 页 span 校验后直接转码 Hrana JSON/protobuf，去掉页级物化 | H1 json 474.0/465.7→333.2/331.9ms（−28.7%~−29.7%）；H1 protobuf −34.1%~−35.0%；H3 json −30.4%~−30.7%、protobuf −33.0%~−34.3%；W1/B1/X1 健康环境复测无候选回归 | 合入 `main` |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -327,6 +335,37 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
   `statement_worker` 34/34；Go `go test ./...` 仅 2 个已知基线失败；新增 14 个 Go 测试与
   9 个审计批测试；harness 离线 16/16。
 - 容器最终恢复 v1.1.25 平台（`f5d2d15` 构建，SHA `d7c26cab…`）+ 发布镜像原 worker（`79e058bd…`）。
+
+#### R6：只读 cursor 页直接转码 Hrana JSON/protobuf（2026-11-01）
+
+分支 `perf/issue28-r6-cursor-page-transcode`，commit `c777f76`（span 校验）、`e062d0b`（直接转码），
+merge `fffd305`（已合入 `main`）。
+
+- **方案**：只读 cursor 页不再物化为 `[][]any` 或页级 `RawMessage`；`hranaCursorPageScanner` 在页字节上做
+  span 校验（`validCursorFetchResponse` 语义不变），Hrana JSON 与 protobuf 按 span 直接转码进复用缓冲，
+  fused first page 同路径。diff 仅 8 个 cursor 相关文件；pipeline 处理器 `hrana_http.go`/`hrana_protobuf.go`
+  不在其中。
+- **验收（同容器同数据，n=15 中位数，两轮基线/候选）**：
+  - H1（20MB 单行）json base 473.993/465.679ms → cand 333.225/331.893ms（同轮配对 −28.7%~−29.7%）；
+    protobuf 421.143/422.912 → 277.476/275.060ms（−34.1%~−35.0%）。
+  - H3（content+projection）json 470.949/466.744 → 327.868/323.436ms（−30.4%~−30.7%）；
+    protobuf 430.074/416.078 → 282.581/278.872ms（−33.0%~−34.3%）。
+  - 主指标 PASS：`max(cand) ≤ 0.90 × min(base)`——json 333.225/465.679=0.716，protobuf
+    277.476/421.143=0.659；对最快基线轮次同样达标（0.747/0.680）。
+- **回归门（健康环境复测）**：首次在退化环境中出现的 W1 insert +49.6% 未能复现。新卷 A/B/B/A：
+  base 25.137/26.056ms、cand 23.154/30.991ms（运行中位 25.6→27.1ms，+5.8%，两次运行不重叠且单轮噪声
+  ±30–50%）；随后 8 轮配对（B C C B ×2）base 中位 38.41ms vs cand 37.44ms（−2.5%，base 含 74.097ms
+  离群轮）。B1 候选 25.127/25.337ms vs 基线 35.418/20.562ms；X1 候选 13.180/12.800ms vs 基线
+  19.287/11.802ms——均无候选回归；两组首个运行均为基线且显著偏慢，存在冷启动/主机漂移，不宣称
+  pipeline 收益。机制上 R6 diff 不进入写或 pipeline 处理路径，无法解释 W1 回归。
+- **正确性**：新增 10 个测试/104 子测试；4000+2000 随机差分；JSON/protobuf 输出与旧路径逐字节一致；
+  微基准页校验 −77%、转码 −49%/−57%。
+- **测试**：`cargo fmt --check`、`go build ./cmd/peri-platform ./cmd/peri`、cursor 定向 `go test`、
+  harness 离线 16/16 通过；Go 全量仍只有 2 个已知基线失败。
+- **环境事件（不归因 R6）**：原 `peri-loom-issue28` 卷在一次 startup 失败后留下 clean marker + dirty
+  seal；后续 `--recover` 被 clean marker 放行，authority 在写入 dirty marker 后因 dirty seal 拒绝启动，
+  使卷进入需要 S05 evidence 的状态。R6 复测改在新卷 `peri-loom-issue28b-data` 完成，旧卷、marker 与失败证据
+  保持原样未动（详见“当前交付缺口”）。
 
 ## 代码约定
 
