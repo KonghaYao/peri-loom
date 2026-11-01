@@ -133,8 +133,9 @@ scripts/p0-gate.sh
   先写入 dirty marker，再在 `seal.rs:99` 因 dirty seal 拒绝启动，marker 随之保持 dirty。此后 `--recover`
   要求 S05 evidence；无 evidence 时 recovery plan 为 `Unclassified`，`--reconciled` 对 dirty seal 也不可
   接管；`recover_interrupted_startup` 又因 `dev.py:1155` 的「teardown_completed + services_started」
-  短路返回 False，于是该卷没有受支持的就地恢复路径。本次保留旧卷 `peri-loom-issue28-data` 原样，改在新卷
-  重建测试环境；修复需重评 marker/seal 写入顺序或失败回滚，属耐久时点变更，未实施。
+  短路返回 False，于是该卷没有受支持的就地恢复路径。本次先保留旧卷 `peri-loom-issue28-data` 取证，随后在
+  独立新卷重建测试环境；清理阶段两个测试卷均已删除，证据保留在 `/tmp/peri-issue28/recovery-inspect` 与
+  失败记录中。修复需重评 marker/seal 写入顺序或失败回滚，属耐久时点变更，未实施。
 - **性能验收尚未证明 PASS**：功能测试不等于容量或公平性保证；
   运行与安全边界以 `prototypes/v1/platform/README.md` 和 `prototypes/v1/stress/CAPACITY.md` 为准。
   单机 Issue 28 基线与实验协议见下节，仍不构成容量或 SLA 证明。
@@ -364,8 +365,8 @@ merge `fffd305`（已合入 `main`）。
   harness 离线 16/16 通过；Go 全量仍只有 2 个已知基线失败。
 - **环境事件（不归因 R6）**：原 `peri-loom-issue28` 卷在一次 startup 失败后留下 clean marker + dirty
   seal；后续 `--recover` 被 clean marker 放行，authority 在写入 dirty marker 后因 dirty seal 拒绝启动，
-  使卷进入需要 S05 evidence 的状态。R6 复测改在新卷 `peri-loom-issue28b-data` 完成，旧卷、marker 与失败证据
-  保持原样未动（详见“当前交付缺口”）。
+  使卷进入需要 S05 evidence 的状态。R6 复测改在新卷 `peri-loom-issue28b-data` 完成；实验期间旧卷、marker 与
+  失败证据保持原样，清理阶段两个测试卷已删除（证据见 `/tmp/peri-issue28/recovery-inspect`，详见“当前交付缺口”）。
 
 ## 代码约定
 
