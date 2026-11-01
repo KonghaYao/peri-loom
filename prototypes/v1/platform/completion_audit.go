@@ -10,11 +10,19 @@ func unifiedCompletionReservation(reservation AuditReservation) bool {
 	return ok && held != nil && held.audit != nil && held.audit.completionStore != nil
 }
 
-func (reservation *auditReservation) RecordOperation(event AuditEvent, change func(*operationEdit) error) error {
+// RecordOperationDeferred queues the unified record for this reservation and
+// returns its barrier instead of paying it here. The caller holds a namespace
+// fence while it queues, so it must drop the fence before calling the wait:
+// otherwise every completion of one database waits alone.
+func (reservation *auditReservation) RecordOperationDeferred(event AuditEvent, change func(*operationEdit) error) (func() error, error) {
 	if !unifiedCompletionReservation(reservation) || change == nil {
-		return errors.New("unified completion reservation required")
+		return nil, errors.New("unified completion reservation required")
 	}
-	return reservation.audit.recordCompletionOperation(event, reservation, change)
+	request, err := reservation.audit.prepareCompletionOperation(event, reservation, change)
+	if err != nil {
+		return nil, err
+	}
+	return reservation.audit.enqueueCompletion(request)
 }
 
 func (journal *operationJournal) completionAdmissionAvailable() bool {
@@ -45,19 +53,31 @@ func (journal *operationJournal) completionStatus() map[string]any {
 }
 
 // These are already admitted requests. Each may enqueue one bounded operation
-// delta, and the journal orders audit hashes under its own queue lock. Parallel
-// submitters share the existing group commit without a timer or another fsync.
+// delta. Records are submitted in audit order and awaited together: submission
+// order is the only ordering the view and the audit chain need, and waiting
+// afterwards lets the whole batch share one barrier.
 func (audit *fileAudit) recordUnifiedBatch(batch []*auditRequest) error {
 	if len(batch) == 0 || len(batch) > auditBatchMaximum {
 		return errors.New("invalid completion batch")
 	}
-	var group sync.WaitGroup
-	group.Add(len(batch))
+	waits := make([]func() error, 0, len(batch))
+	waiting := make([]*auditRequest, 0, len(batch))
 	for _, request := range batch {
-		go func(request *auditRequest) {
+		wait, err := audit.completionStore.submitOperationsAudit(request.operationChange, &request.event, request.class == AuditClassCompletion)
+		if err != nil {
+			request.failure = err
+			continue
+		}
+		waits = append(waits, wait)
+		waiting = append(waiting, request)
+	}
+	var group sync.WaitGroup
+	group.Add(len(waits))
+	for index, wait := range waits {
+		go func(index int, wait func() error) {
 			defer group.Done()
-			request.failure = audit.completionStore.updateOperationsAudit(request.operationChange, &request.event, request.class == AuditClassCompletion)
-		}(request)
+			waiting[index].failure = wait()
+		}(index, wait)
 	}
 	group.Wait()
 	return nil

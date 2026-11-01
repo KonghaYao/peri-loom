@@ -88,24 +88,23 @@ func (gateway *Gateway) settleOperation(database controller.DatabaseID, operatio
 
 func (gateway *Gateway) settleOperationCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, requestID string) {
 	caller := newDurabilityCaller(gateway.config.State, operationID, requestID, "terminal", "gateway")
-	_ = gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, func(change func(*operationEdit) error) error {
-		return updateOperationRecords(gateway.config.State, change)
+	_ = gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, func(change func(*operationEdit) error) (func() error, error) {
+		return nil, updateOperationRecords(gateway.config.State, change)
 	}, caller)
 }
 
-func (gateway *Gateway) settleOperationUsing(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error) error {
-	return gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, persist, nil)
+func (gateway *Gateway) settleOperationUsing(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error)) error {
+	return gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, submit, nil)
 }
 
-func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, persist func(func(*operationEdit) error) error, caller *durabilityCaller) error {
+func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), caller *durabilityCaller) error {
 	unlock := lockObservedOperationNamespace(database.Namespace, caller)
-	defer unlock()
 	result.operationID, result.operationStage = operationID, stage
 	// observed keeps the committed copy of a record whose outcome the reply must
 	// quote; the edit below only exposes a value copy, and the reply is written
 	// after this function returns. It is request-local, so no lock is shared.
 	var observed *OperationStatus
-	err := persist(func(edit *operationEdit) error {
+	wait, err := submit(func(edit *operationEdit) error {
 		edit.caller = caller
 		key := operationKey(database, operationID)
 		record, exists := edit.record(key)
@@ -123,6 +122,12 @@ func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseI
 		}
 		return nil
 	})
+	// The record is ordered for one namespace before the fence drops, so several
+	// settlements of one database can share the barrier they wait for afterwards.
+	unlock()
+	if err == nil && wait != nil {
+		err = wait()
+	}
 	if err != nil {
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)

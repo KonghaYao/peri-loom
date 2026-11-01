@@ -338,6 +338,25 @@ func (audit *fileAudit) prepareCompletionOperation(event AuditEvent, reservation
 	return request, nil
 }
 
+// enqueueCompletion enqueues one prepared completion and hands the barrier back
+// to the caller. The caller can drop a namespace fence before waiting, so
+// completions of one namespace share a barrier instead of queueing behind it.
+func (audit *fileAudit) enqueueCompletion(request *auditRequest) (func() error, error) {
+	audit.queueMutex.Lock()
+	if audit.closing {
+		// The shutdown will never drain this record, so its admission charge goes
+		// back here, exactly like a rejected batch.
+		audit.admitted[request.class]--
+		audit.admittedBytes[request.class] -= request.bytes
+		audit.queueMutex.Unlock()
+		return nil, ErrStateClosed
+	}
+	request.enqueued = time.Now()
+	audit.enqueueLocked(request)
+	audit.queueMutex.Unlock()
+	return func() error { return audit.waitObserved(request) }, nil
+}
+
 // submitCompletionBatch enqueues prepared completions under one queue lock, so
 // the writer can only take them as one pending batch, and waits for every member.
 // Each caller still decides its own response from its own error: a batch shares
