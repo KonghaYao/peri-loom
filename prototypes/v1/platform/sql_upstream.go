@@ -35,6 +35,12 @@ type SQLRPCError struct {
 	// keeps an HTTP status, a dropped socket or an elapsed deadline from ever
 	// claiming what happened to a statement.
 	evidence sqlcontract.Evidence
+	// unsupportedCommand marks the one refusal an older worker sends for a
+	// command it cannot parse: the request was rejected before the session was
+	// read, so nothing ran. Only the capability probe and the guarded batch
+	// consume it; it never releases an earlier unknown and never authorises a
+	// replay.
+	unsupportedCommand bool
 	// workerFailure is the failure text a worker reported for a statement. It is
 	// classified for the client contract and logged, never echoed to the caller.
 	workerFailure string
@@ -165,6 +171,13 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		if version == 2 && !writerCommandValid(operation, encoded, fields) {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}
+	case "capabilities", "guarded_readonly_batch":
+		// Private v1 commands: a v2 caller carries writer state the reply does
+		// not describe, and the blocks are validated as a whole so a malformed
+		// body never reaches the worker.
+		if version != 1 || !guardedBatchCommandValid(operation, encoded) {
+			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
+		}
 	case "writer_profile_status":
 		if version != 2 || len(fields) != 1 {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
@@ -233,6 +246,14 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		// body may prove non-execution through a status the worker never used for
 		// it. This classification explains the request it answers and nothing else:
 		// it releases no earlier unknown and authorises no replay.
+		// capabilities/guarded_readonly_batch are parsed by the worker before it
+		// reads a session; an older worker rejects them as an invalid request.
+		// That exact body, and only that body, proves the command was never
+		// executed. It stays a request-level fact: it releases no earlier unknown
+		// and authorises no replay.
+		if (operation == "capabilities" || operation == "guarded_readonly_batch") && unsupportedWorkerCommand(ctx, response) {
+			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenHTTPStatus, &SQLRPCError{StatusCode: response.StatusCode, unsupportedCommand: true})
+		}
 		if rejection := admissionRejection(ctx, response); rejection != nil {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenAdmissionRejected, rejection)
 		}
@@ -254,6 +275,25 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		return err
 	}
 	return sqlDecode(ctx, body, requestID, output)
+}
+
+// unsupportedWorkerCommandBody is the worker's parse refusal for a request body
+// it cannot decode as a WorkerRequest. The worker answers it before it reads a
+// session or dispatches anything, which is what makes it proof of non-execution.
+const unsupportedWorkerCommandBody = `{"error":"invalid worker request"}`
+
+// unsupportedWorkerCommand accepts the one non-200 body that proves a worker did
+// not understand a command. A different status, a partial or extended body or a
+// cancelled request proves nothing and stays ambiguous.
+func unsupportedWorkerCommand(ctx context.Context, response *http.Response) bool {
+	if response.StatusCode != http.StatusBadRequest || ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(len(unsupportedWorkerCommandBody))+1))
+	if err != nil || string(body) != unsupportedWorkerCommandBody || ctx.Err() != nil {
+		return false
+	}
+	return true
 }
 
 // admissionRejection reads the one non-200 body that carries admission evidence:

@@ -777,10 +777,27 @@ mod tests {
 pub(super) fn result_row_count(result: &JsonValue) -> Option<usize> {
     match result {
         JsonValue::Array(rows) => Some(rows.len()),
-        JsonValue::Object(fields) => fields
-            .get("rows")
-            .and_then(JsonValue::as_array)
-            .map(Vec::len),
+        JsonValue::Object(fields) => {
+            // A guarded batch answers one row count per statement; the block is
+            // the result of the request, so its rows are the sum of its entries.
+            if let Some(items) = fields.get("items").and_then(JsonValue::as_array) {
+                return Some(
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            item.get("result")
+                                .and_then(|result| result.get("rows"))
+                                .and_then(JsonValue::as_array)
+                                .map(Vec::len)
+                        })
+                        .sum(),
+                );
+            }
+            fields
+                .get("rows")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len)
+        }
         _ => None,
     }
 }

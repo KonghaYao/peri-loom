@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -526,5 +527,83 @@ func TestFrozenCommandDigestMatchesWriterWire(test *testing.T) {
 	}
 	if frozen.digest() != commandDigest(frozen.bytes()) {
 		test.Fatal("the digest does not cover the frozen bytes")
+	}
+}
+
+// A block command is a logical command like any other: its durable digest
+// covers the bytes the worker received, and canonical argument spelling cannot
+// give one block two identities.
+func TestGuardedBatchDigestBindsTransmittedCommandAndArgumentSpelling(t *testing.T) {
+	statement := func(sql string, value string) map[string]any {
+		return map[string]any{
+			"sql":        sql,
+			"args":       []sqlArgument{{Type: "integer", Value: json.RawMessage(strconv.Quote(value))}},
+			"named_args": []namedSQLArgument{},
+			"want_rows":  true,
+		}
+	}
+	command := func(sql, value string) map[string]any {
+		return map[string]any{
+			"command":          "guarded_readonly_batch",
+			"session":          strings.Repeat("a", 64),
+			"statements":       []map[string]any{statement(sql, value)},
+			"max_result_bytes": 1024,
+		}
+	}
+	first, err := freezeCommand(command("SELECT ?", "007"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := freezeCommand(command("SELECT ?", "7"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.digest() != second.digest() {
+		t.Fatal("the same integer under two spellings changed the block digest")
+	}
+	if !bytes.Contains(first.bytes(), []byte(`"value":"7"`)) {
+		t.Fatalf("normalized integer is not the canonical spelling: %s", first.bytes())
+	}
+	other, err := freezeCommand(command("SELECT ? + 1", "7"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.digest() == other.digest() {
+		t.Fatal("different SQL shares one block digest")
+	}
+
+	fixture := newGatewayFixture(t)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "capabilities":
+			return guardedBatchCapability(), nil
+		case "guarded_readonly_batch":
+			return nil, &SQLRPCError{Ambiguous: true}
+		case "open_session":
+			return map[string]any{"session": strings.Repeat("a", 64), "readonly": false}, nil
+		}
+		return nil, nil
+	})
+	response := runGuardedBatchPipeline(t, newHranaHTTP(fixture.gateway), fixture, guardedBatchPipelineBody(2, "SELECT 1"))
+	if response.Code == http.StatusOK {
+		t.Fatalf("ambiguous block answered success: %s", response.Body.String())
+	}
+	transmitted := transmittedCommand(t, fixture.upstream, "guarded_readonly_batch")
+	state, err := fixture.state.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := 0
+	for _, record := range state.Operations {
+		if record.Digest != commandDigest(transmitted) {
+			continue
+		}
+		matching++
+		if !record.MayHaveCommitted || record.BusinessOutcome != "unknown" {
+			t.Fatalf("block record lost its uncertainty: %+v", record.OperationStatus)
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("block digest records=%d, want one", matching)
 	}
 }

@@ -437,6 +437,7 @@ impl State {
             &parsed.command,
             WorkerCommand::Query { .. }
                 | WorkerCommand::Statement { .. }
+                | WorkerCommand::GuardedReadonlyBatch { .. }
                 | WorkerCommand::FetchReadCursor { .. }
                 | WorkerCommand::FetchWriteCursor { .. }
                 | WorkerCommand::OpenReadCursorFirst { .. }
@@ -459,6 +460,7 @@ impl State {
                 | WorkerCommand::Describe { .. }
                 | WorkerCommand::Statement { .. }
                 | WorkerCommand::GuardedReadonlyStatement { .. }
+                | WorkerCommand::GuardedReadonlyBatch { .. }
                 | WorkerCommand::SessionAutocommit { .. }
                 | WorkerCommand::OpenReadCursor { .. }
                 | WorkerCommand::FetchReadCursor { .. }
@@ -520,6 +522,22 @@ impl State {
                 | WorkerCommand::OpenWriteCursorFirst { session, sql, .. } => {
                     ensure!(
                         sql.len() <= Budget::trusted_default().max_sql_bytes,
+                        "SQL byte budget exceeded"
+                    );
+                    call = Some(self.sessions.begin(session, deadline)?);
+                }
+                WorkerCommand::GuardedReadonlyBatch {
+                    session,
+                    statements,
+                    ..
+                } => {
+                    // The block is v1 only: a v2 caller carries writer state the
+                    // block cannot report, and a version check here rejects it
+                    // before any statement runs.
+                    ensure!(version == 1, "guarded readonly batch requires protocol v1");
+                    ensure!(
+                        statements.iter().all(|statement| statement.sql.len()
+                            <= Budget::trusted_default().max_sql_bytes),
                         "SQL byte budget exceeded"
                     );
                     call = Some(self.sessions.begin(session, deadline)?);

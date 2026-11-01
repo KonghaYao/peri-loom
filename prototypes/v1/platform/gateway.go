@@ -23,6 +23,10 @@ type Gateway struct {
 	// committingStatements remembers only the statements a worker proved
 	// committing, never the read-only verdict that would skip an intent.
 	committingStatements committingStatementCache
+	// readonlyBatch caches whether a worker parses the guarded read-only block
+	// command. A positive answer is a property of that binary; a negative one is
+	// re-asked after its TTL.
+	readonlyBatch readonlyBatchCapabilityCache
 	// cleanup is the in-process age account of the cleanup facts whose durable
 	// record carries no timestamp.
 	cleanup *cleanupLedger

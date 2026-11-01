@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{ensure, Result};
 use peri_loom_v1::ownership::types::AccessRole;
 use peri_loom_v1::worker_rpc::protocol::{
-    NamedStatementArg, StatementArg, WorkerCommand, WorkerRequest,
+    BatchStatement, NamedStatementArg, StatementArg, WorkerCommand, WorkerRequest,
 };
 use peri_loom_v1::worker_rpc::server::{WorkerLimits, WorkerServer};
 use serde_json::{json, Value};
@@ -131,6 +131,22 @@ impl Worker {
                 args,
                 named_args: vec![],
                 want_rows: true,
+            },
+            false,
+        )
+    }
+
+    fn guarded_batch(
+        &self,
+        session: &str,
+        statements: Vec<BatchStatement>,
+        max_result_bytes: usize,
+    ) -> Result<Value> {
+        self.call(
+            WorkerCommand::GuardedReadonlyBatch {
+                session: session.into(),
+                statements,
+                max_result_bytes,
             },
             false,
         )
@@ -1230,5 +1246,303 @@ fn guarded_write_refusal_wire_shape_carries_no_statement_counters() -> Result<()
         worker.call(WorkerCommand::CloseSession { session }, false)?["ok"],
         true
     );
+    Ok(())
+}
+
+fn batch_statement(sql: &str) -> BatchStatement {
+    BatchStatement {
+        sql: sql.into(),
+        args: vec![],
+        named_args: vec![],
+        want_rows: true,
+    }
+}
+
+fn batch_bound_statement(sql: &str, args: Vec<StatementArg>) -> BatchStatement {
+    BatchStatement {
+        sql: sql.into(),
+        args,
+        named_args: vec![],
+        want_rows: true,
+    }
+}
+
+fn statement_result_without_duration(result: &Value) -> Value {
+    let mut result = result.clone();
+    if let Some(fields) = result.as_object_mut() {
+        fields.remove("query_duration_ms");
+    }
+    result
+}
+
+#[test]
+fn capabilities_answer_the_readonly_batch_protocol_on_v1_only() -> Result<()> {
+    let worker = Worker::new()?;
+    let capabilities = worker.call(WorkerCommand::Capabilities, false)?;
+    assert_eq!(capabilities["ok"], true, "{capabilities}");
+    assert_eq!(
+        capabilities["result"],
+        json!({"readonly_batch_protocol": 1})
+    );
+    let session = worker.session()?;
+    let empty = worker.guarded_batch(&session, vec![], 1024)?;
+    assert_eq!(empty["ok"], false, "{empty}");
+    assert_eq!(empty["execution_completed"], false, "{empty}");
+    // A capability request creates no session and changes no state: the same
+    // session keeps working after the empty batch was refused.
+    assert_eq!(
+        worker.statement(&session, "SELECT 5", vec![])?["result"]["rows"],
+        json!([[5]])
+    );
+
+    let profile = Worker::with_profile(true)?;
+    assert!(
+        profile.call(WorkerCommand::Capabilities, false).is_err(),
+        "v2 worker answered a v1-only capability command"
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_batch_matches_the_single_statement_results_field_by_field() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    assert_eq!(
+        worker.statement(
+            &session,
+            "CREATE TABLE batch_values(value INTEGER, label TEXT)",
+            vec![]
+        )?["ok"],
+        true
+    );
+    assert_eq!(
+        worker.statement(
+            &session,
+            "INSERT INTO batch_values VALUES (1, 'one'), (2, 'two')",
+            vec![]
+        )?["ok"],
+        true
+    );
+    let select = "SELECT value, label FROM batch_values WHERE value >= ? ORDER BY value";
+    let single = worker.guarded_statement(
+        &session,
+        select,
+        vec![StatementArg::Integer { value: "1".into() }],
+    )?;
+    assert_eq!(single["ok"], true, "{single}");
+    let repeated = (0..3)
+        .map(|_| batch_bound_statement(select, vec![StatementArg::Integer { value: "1".into() }]))
+        .collect::<Vec<_>>();
+    let batch = worker.guarded_batch(&session, repeated, usize::MAX)?;
+    assert_eq!(batch["ok"], true, "{batch}");
+    let items = batch["result"]["items"].as_array().expect("batch items");
+    assert_eq!(batch["result"]["next"], 3);
+    assert_eq!(items.len(), 3);
+    for (index, item) in items.iter().enumerate() {
+        assert_eq!(item["index"], index, "{batch}");
+        assert_eq!(item["status"], "ok", "{batch}");
+        assert_eq!(
+            statement_result_without_duration(&item["result"]),
+            statement_result_without_duration(&single["result"]),
+            "item {index} differs from the single statement path"
+        );
+    }
+    assert_eq!(items[2]["result"]["rows"], json!([[1, "one"], [2, "two"]]));
+    Ok(())
+}
+
+#[test]
+fn guarded_batch_stops_before_a_write_and_proves_it_did_not_run() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    assert_eq!(
+        worker.statement(&session, "CREATE TABLE batch_writes(value INTEGER)", vec![])?["ok"],
+        true
+    );
+    let batch = worker.guarded_batch(
+        &session,
+        vec![
+            batch_statement("SELECT 1"),
+            batch_statement("INSERT INTO batch_writes VALUES (1)"),
+            batch_statement("SELECT 3"),
+        ],
+        usize::MAX,
+    )?;
+    assert_eq!(batch["ok"], true, "{batch}");
+    let items = batch["result"]["items"].as_array().expect("batch items");
+    assert_eq!(batch["result"]["next"], 2);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["status"], "ok");
+    assert_eq!(
+        items[1],
+        json!({"index": 1, "status": "requires_intent", "reason": "engine_writable"})
+    );
+    // The refused write never ran, and the session that answered the block is
+    // still usable for the statement the block did not reach.
+    assert_eq!(
+        worker.statement(&session, "SELECT count(*) FROM batch_writes", vec![])?["result"]["rows"],
+        json!([[0]])
+    );
+    assert_eq!(
+        worker.guarded_statement(&session, "SELECT 3", vec![])?["result"]["rows"],
+        json!([[3]])
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_batch_reports_a_sql_error_and_keeps_the_session_usable() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    // Integer overflow settles while stepping, so the failure proves the
+    // statement ran. A prepare failure proves the opposite and is tested below.
+    let batch = worker.guarded_batch(
+        &session,
+        vec![
+            batch_statement("SELECT 1"),
+            batch_statement("SELECT 1 UNION ALL SELECT abs(-9223372036854775808)"),
+            batch_statement("SELECT 3"),
+        ],
+        usize::MAX,
+    )?;
+    assert_eq!(batch["ok"], true, "{batch}");
+    let items = batch["result"]["items"].as_array().expect("batch items");
+    assert_eq!(batch["result"]["next"], 2);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["status"], "ok");
+    assert_eq!(items[1]["index"], 1);
+    assert_eq!(items[1]["status"], "error");
+    assert_eq!(items[1]["execution_completed"], true, "{batch}");
+    // A statement that cannot be prepared never entered execution.
+    let rejected = worker.guarded_batch(
+        &session,
+        vec![
+            batch_statement("SELECT 1"),
+            batch_statement("SELECT * FROM batch_missing_table"),
+        ],
+        usize::MAX,
+    )?;
+    assert_eq!(rejected["ok"], true, "{rejected}");
+    assert_eq!(
+        rejected["result"]["items"][1]["execution_completed"], false,
+        "{rejected}"
+    );
+    // The failed statements did not poison the session for the statement the
+    // block stopped at.
+    assert_eq!(
+        worker.guarded_statement(&session, "SELECT 3", vec![])?["result"]["rows"],
+        json!([[3]])
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_batch_validation_refuses_the_whole_block_before_any_statement_runs() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    assert_eq!(
+        worker.statement(
+            &session,
+            "CREATE TABLE batch_refused(value INTEGER)",
+            vec![]
+        )?["ok"],
+        true
+    );
+    let invalid_argument = BatchStatement {
+        sql: "INSERT INTO batch_refused VALUES (?)".into(),
+        args: vec![StatementArg::Blob {
+            base64: "not base64".into(),
+        }],
+        named_args: vec![],
+        want_rows: true,
+    };
+    for (name, statements) in [
+        ("empty", vec![]),
+        (
+            "too many",
+            (0..9)
+                .map(|index| batch_statement(&format!("SELECT {index}")))
+                .collect(),
+        ),
+        (
+            "invalid argument",
+            vec![batch_statement("SELECT 1"), invalid_argument],
+        ),
+    ] {
+        let batch = worker.guarded_batch(&session, statements, usize::MAX)?;
+        assert_eq!(batch["ok"], false, "{name}: {batch}");
+        assert_eq!(batch["execution_completed"], false, "{name}: {batch}");
+    }
+    assert_eq!(
+        worker.statement(&session, "SELECT count(*) FROM batch_refused", vec![])?["result"]["rows"],
+        json!([[0]])
+    );
+    Ok(())
+}
+
+#[test]
+fn guarded_batch_returns_the_statement_that_crosses_the_result_budget_and_stops() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    let batch = worker.guarded_batch(
+        &session,
+        vec![
+            batch_statement("SELECT 1"),
+            batch_statement("SELECT 2"),
+            batch_statement("SELECT 3"),
+        ],
+        1,
+    )?;
+    assert_eq!(batch["ok"], true, "{batch}");
+    let items = batch["result"]["items"].as_array().expect("batch items");
+    assert_eq!(batch["result"]["next"], 1);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["status"], "ok");
+    assert_eq!(items[0]["result"]["rows"], json!([[1]]));
+    // The entries the block did not reach were not executed by the block; a
+    // caller can resume at `next` without replaying.
+    let resumed = worker.guarded_batch(
+        &session,
+        vec![batch_statement("SELECT 2"), batch_statement("SELECT 3")],
+        usize::MAX,
+    )?;
+    assert_eq!(resumed["result"]["next"], 2);
+    Ok(())
+}
+
+#[test]
+fn guarded_batch_projects_rows_but_still_reports_counters() -> Result<()> {
+    let worker = Worker::new()?;
+    let session = worker.session()?;
+    assert_eq!(
+        worker.statement(
+            &session,
+            "CREATE TABLE batch_projection(value INTEGER)",
+            vec![]
+        )?["ok"],
+        true
+    );
+    assert_eq!(
+        worker.statement(
+            &session,
+            "INSERT INTO batch_projection VALUES (1), (2)",
+            vec![]
+        )?["ok"],
+        true
+    );
+    let batch = worker.guarded_batch(
+        &session,
+        vec![BatchStatement {
+            sql: "SELECT value FROM batch_projection ORDER BY value".into(),
+            args: vec![],
+            named_args: vec![],
+            want_rows: false,
+        }],
+        usize::MAX,
+    )?;
+    assert_eq!(batch["ok"], true, "{batch}");
+    let result = &batch["result"]["items"][0]["result"];
+    assert_eq!(result["rows"], json!([]), "{batch}");
+    assert!(result["rows_read"].as_u64().unwrap() >= 2, "{batch}");
     Ok(())
 }
