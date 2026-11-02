@@ -73,7 +73,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		return gatewayFailure(403, "forbidden")
 	}
 	// 持久隔离的原因优先于 placement 故障，避免客户端把 Unknown 误当成可重试的路由问题。
-	if err := readOperationState(gateway.config.State, func(state State) error {
+	if err := readOperationState(gateway.config.State, readGatewayAdmission, func(state State) error {
 		if _, isolated := isolatedOperation(state, database, false); isolated {
 			return ErrDatabaseQuarantined
 		}

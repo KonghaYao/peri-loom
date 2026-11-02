@@ -203,7 +203,7 @@ func isolatedOperation(state State, database controller.DatabaseID, includePendi
 		// worker holds the branch, so the next activation runs on a fresh epoch. The
 		// record itself stays quarantined and may_have_committed, so the history is
 		// still visible.
-		if record.Database.Namespace == database.Namespace && (record.State == "quarantined" && record.ReleaseRequestID == "" || record.State == "in_flight" && (includePending || record.Source == "management")) {
+		if record.Database.Namespace == database.Namespace && operationBlockingFor(record, includePending) {
 			if !found || record.OperationID < selected.OperationID {
 				selected, found = record.OperationStatus, true
 			}
@@ -337,11 +337,24 @@ func operationAdmission(view operationAdmissionView, database controller.Databas
 	return nil
 }
 
-func readOperationState(store StateStore, visit func(State) error) error {
+// operationReadScope names the admission answer a reader is about to act on. The settle
+// rule only has to keep edits that can change that answer undecided-free: a gateway admits
+// while gateway operations are pending (they are not what holds a namespace), a management
+// read treats every pending operation as holding it.
+type operationReadScope uint8
+
+const (
+	// readManagementAdmission is the conservative scope: every pending record holds its
+	// namespace. It is the zero value so a reader that forgets to choose waits.
+	readManagementAdmission operationReadScope = iota
+	readGatewayAdmission
+)
+
+func readOperationState(store StateStore, scope operationReadScope, visit func(State) error) error {
 	if narrow, ok := store.(interface {
-		readOperations(func(State) error) error
+		readOperations(operationReadScope, func(State) error) error
 	}); ok {
-		return narrow.readOperations(visit)
+		return narrow.readOperations(scope, visit)
 	}
 	state, err := store.Snapshot()
 	if err != nil {
@@ -358,9 +371,18 @@ func verifyNonCommittingAdmission(store StateStore, database controller.Database
 	if store == nil || database.Validate() != nil {
 		return errors.New("operation registration unavailable")
 	}
-	return readOperationState(store, func(state State) error {
+	return readOperationState(store, admissionReadScope(source), func(state State) error {
 		return operationAdmission(stateAdmissionView{state: state}, database, source, retirementOperation(action, stage))
 	})
+}
+
+// admissionReadScope matches the isolation rule operationAdmission applies: only a
+// management source counts pending operations as holding their namespace.
+func admissionReadScope(source string) operationReadScope {
+	if source == "management" {
+		return readManagementAdmission
+	}
+	return readGatewayAdmission
 }
 
 // settleNonCommittingOperation writes the only durable record of an operation

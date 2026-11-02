@@ -48,14 +48,23 @@ func (index *operationIndex) track(key string, record OperationRecord) {
 	}
 	namespace := namespaceKey(record.Database.Namespace)
 	delete(index.blocking[namespace], key)
-	if record.State == "quarantined" && record.ReleaseRequestID == "" || record.State == "in_flight" {
+	if operationBlockingFor(record, true) {
 		if index.blocking[namespace] == nil {
 			index.blocking[namespace] = map[string]bool{}
 		}
-		index.blocking[namespace][key] = record.State == "in_flight" && record.Source != "management"
+		index.blocking[namespace][key] = !operationBlockingFor(record, false)
 	} else if len(index.blocking[namespace]) == 0 {
 		delete(index.blocking, namespace)
 	}
+}
+
+// operationBlockingFor reports whether a record holds its namespace for one admission
+// mode. A quarantine without a recorded release holds it always: the branch outcome is
+// unknown until an attested release. A pending operation holds it only where the caller
+// asked for pending work to count, and a management operation holds it everywhere — it is
+// the platform's own tooling, and a gateway session report is not what retires it.
+func operationBlockingFor(record OperationRecord, includePending bool) bool {
+	return record.State == "quarantined" && record.ReleaseRequestID == "" || record.State == "in_flight" && (includePending || record.Source == "management")
 }
 
 func (index *operationIndex) release(key string, record OperationRecord) {
@@ -199,6 +208,27 @@ func (edit *operationEdit) revert() {
 	edit.state.OperationEvictions = edit.evictions
 	clear(edit.touched)
 	edit.prior = nil
+}
+
+// reAddsBlockage reports whether reverting this edit could add a record that holds its
+// namespace where the applied view shows none. Only that direction matters to a reader:
+// the applied view is what it sees, so an edit that adds a block and is later reverted
+// only makes the refusal the reader gave too strict. An edit that removes a block is the
+// unsafe direction — the reader would decide on a namespace the durable log still holds —
+// so the read waits for its append. A count change alone is not enough to wait: capacity
+// is enforced by the commit that applies the edit (`validate`), which refuses the edit
+// that would cross the bound, so a read that under-counts by an undecided terminalization
+// can only admit a request whose own durable write is then refused.
+func (edit *operationEdit) reAddsBlockage(includePending bool) bool {
+	for _, touch := range edit.prior {
+		after, exists := edit.index.records[touch.key]
+		beforeBlocks := touch.existed && operationBlockingFor(touch.record, includePending)
+		afterBlocks := exists && operationBlockingFor(after, includePending)
+		if beforeBlocks && !afterBlocks {
+			return true
+		}
+	}
+	return false
 }
 
 func (edit *operationEdit) delta() operationDelta {

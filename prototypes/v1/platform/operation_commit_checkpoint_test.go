@@ -72,7 +72,7 @@ func TestOperationCheckpointRefusalReleasesTheViewLock(test *testing.T) {
 		test.Fatal("the refused checkpoint never returned: the view lock was not released")
 	}
 	view := make(chan error, 1)
-	go func() { view <- store.readOperations(func(State) error { return nil }) }()
+	go func() { view <- store.readOperations(readGatewayAdmission, func(State) error { return nil }) }()
 	select {
 	case err := <-view:
 		if err != nil {

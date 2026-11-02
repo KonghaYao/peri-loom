@@ -88,6 +88,13 @@ func registryParentOperations(journal *operationJournal) func(*State) {
 type operationPendingEdit struct {
 	commit *operationCommit
 	revert func()
+
+	// gatewayBlocking and managementBlocking mark an edit whose reversion would re-add a
+	// record that holds its namespace for that admission mode. Every other pending edit is
+	// safe to observe undecided: see reAddsBlockage for why an added block and a count
+	// change do not require the reader to wait.
+	gatewayBlocking    bool
+	managementBlocking bool
 }
 
 // settleOperations confirms every edit that is applied to the view but not yet durable.
@@ -134,10 +141,14 @@ func (store *stateStore) settleOperations() error {
 }
 
 // readOperations visits the committed operation view without copying the rest of the
-// registry. The callback must not retain or mutate the state. A visitor must not observe a
-// record whose append was never confirmed, so the read settles first and reports the same
-// uncertainty that append had.
-func (store *stateStore) readOperations(visit func(State) error) error {
+// registry. The callback must not retain or mutate the state. A visitor must not decide
+// that a namespace is free while the append that freed it is undecided, so the read
+// settles the pending edits whose reversion could hold that namespace again in the scope
+// it was asked about, and reports the uncertainty such an append had. An edit that only
+// adds a block, or only changes the unresolved count, is visited in place: a reversion
+// cannot make the answer more permissive in the way the reader acts on. Waiting for those
+// would put a barrier in the admission path of every request.
+func (store *stateStore) readOperations(scope operationReadScope, visit func(State) error) error {
 	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return err
@@ -145,10 +156,31 @@ func (store *stateStore) readOperations(visit func(State) error) error {
 	if visit == nil {
 		return errors.New("operation read requires a visitor")
 	}
-	if err := store.settleOperations(); err != nil {
+	if store.pendingAdmissionEdit(scope) {
+		if err := store.settleOperations(); err != nil {
+			return err
+		}
+		return visit(store.state)
+	}
+	if err := visit(store.state); err != nil {
 		return err
 	}
-	return visit(store.state)
+	// A close that lands while the visitor runs can turn an append it relied on into a
+	// refusal; report the refusal instead of a decision taken on a record whose barrier
+	// will never be reported.
+	return store.disk.available()
+}
+
+// pendingAdmissionEdit reports whether any applied edit could still hold a namespace the
+// read is about to call free. Edits that cannot are safe to observe undecided: their
+// reversion leaves the visitor's isolation answer the same.
+func (store *stateStore) pendingAdmissionEdit(scope operationReadScope) bool {
+	for _, entry := range store.unconfirmed {
+		if scope == readGatewayAdmission && entry.gatewayBlocking || scope == readManagementAdmission && entry.managementBlocking {
+			return true
+		}
+	}
+	return false
 }
 
 // updateOperations applies one edit and returns only after its appended delta is durable.
@@ -244,7 +276,12 @@ func (store *stateStore) enqueueOperationsAuditLocked(preparation *durabilityPre
 		edit.revert()
 		return nil, err
 	}
-	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert})
+	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{
+		commit:             commit,
+		revert:             edit.revert,
+		gatewayBlocking:    edit.reAddsBlockage(false),
+		managementBlocking: edit.reAddsBlockage(true),
+	})
 	store.cost.observeCommit()
 	return commit, nil
 }
