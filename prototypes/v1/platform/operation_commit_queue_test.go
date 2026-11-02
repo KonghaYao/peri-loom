@@ -43,6 +43,23 @@ func operationSettled(store *stateStore, database controller.DatabaseID, identif
 	})
 }
 
+// operationInFlight registers an operation whose outcome is not known: unlike a terminal
+// record it changes the unresolved count, so a read must settle it before deciding.
+func operationInFlight(store *stateStore, database controller.DatabaseID, identifier string) error {
+	digest, err := freezeCommandValue(nil)
+	if err != nil {
+		return err
+	}
+	return store.updateOperations(func(edit *operationEdit) error {
+		if edit.has(operationKey(database, identifier)) {
+			return ErrOperationExists
+		}
+		record := seedOperationRecord(edit, database, identifier, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", digest.digest())
+		edit.put(operationKey(database, identifier), record)
+		return nil
+	})
+}
+
 // gatePop holds the committer before it chooses a batch, so every append submitted while it
 // is held belongs to one batch. gateWrite holds it inside a batch, so exactly that batch is
 // in flight and later appends stay queued. Neither gate holds a submitter: the queue keeps
@@ -311,9 +328,10 @@ func TestOperationCommitQueueBoundedRefusal(test *testing.T) {
 	}
 }
 
-// A read that answers with the operations view settles the ordered appends first, so it can
-// never report a record whose barrier has not returned. A read that does not look at
-// operations is not blocked by that barrier: this is the boundary the queue moved.
+// A read that answers with the operations view settles the ordered appends first when an
+// undecided edit could still change an admission answer, so it can never decide on a record
+// whose barrier has not returned. A read that does not look at operations is not blocked by
+// that barrier: this is the boundary the queue moved.
 func TestOperationNarrowReadIsNotBlockedByASlowBarrier(test *testing.T) {
 	store, _ := commitQueueStore(test)
 	defer store.Close()
@@ -321,7 +339,7 @@ func TestOperationNarrowReadIsNotBlockedByASlowBarrier(test *testing.T) {
 	database := securityDatabase()
 
 	committed := make(chan error, 1)
-	go func() { committed <- operationSettled(store, database, "slow_barrier") }()
+	go func() { committed <- operationInFlight(store, database, "slow_barrier") }()
 	waitOrdered(test, store, 1)
 
 	// The unconfirmed edit is in the view, so a narrow read must neither report it nor wait
@@ -367,6 +385,55 @@ func TestOperationNarrowReadIsNotBlockedByASlowBarrier(test *testing.T) {
 	}
 	if store.operations.syncs == 0 {
 		test.Fatal("the observed barrier was never paid")
+	}
+}
+
+// A pending edit whose reversion cannot change an admission answer does not hold a read:
+// the isolation set and the unresolved count are the same either way, so the reader answers
+// from the view while that append is still undecided. This is what keeps an in-lock barrier
+// wait out of the admission path.
+func TestOperationReadAnswersAroundAnUndecidedTerminalEdit(test *testing.T) {
+	store, _ := commitQueueStore(test)
+	defer store.Close()
+	release := gatePop(test, store)
+	database := securityDatabase()
+
+	committed := make(chan error, 1)
+	go func() { committed <- operationSettled(store, database, "undecided_terminal") }()
+	waitOrdered(test, store, 1)
+
+	read := make(chan error, 1)
+	go func() {
+		read <- store.readOperations(func(state State) error {
+			if _, blocked := isolatedOperation(state, database, false); blocked {
+				return errors.New("an undecided terminal record blocked its namespace")
+			}
+			if _, unresolved := operationCounts(state); unresolved != 0 {
+				return fmt.Errorf("an undecided terminal record left %d unresolved", unresolved)
+			}
+			return nil
+		})
+	}()
+	select {
+	case err := <-read:
+		if err != nil {
+			release()
+			test.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		release()
+		test.Fatal("a read waited for an edit it cannot observe")
+	}
+	if len(store.unconfirmed) != 1 {
+		release()
+		test.Fatalf("the read settled an edit it was allowed to leave undecided: %d pending", len(store.unconfirmed))
+	}
+	release()
+	if err := <-committed; err != nil {
+		test.Fatal(err)
+	}
+	if len(store.unconfirmed) != 0 {
+		test.Fatal("the append's own settlement left the edit behind")
 	}
 }
 

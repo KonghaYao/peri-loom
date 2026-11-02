@@ -88,6 +88,11 @@ func registryParentOperations(journal *operationJournal) func(*State) {
 type operationPendingEdit struct {
 	commit *operationCommit
 	revert func()
+
+	// admission marks an edit whose reversion would change an admission answer. Every
+	// other pending edit leaves the isolation set and the unresolved count alone, so a
+	// read may visit the view while it is undecided.
+	admission bool
 }
 
 // settleOperations confirms every edit that is applied to the view but not yet durable.
@@ -134,9 +139,13 @@ func (store *stateStore) settleOperations() error {
 }
 
 // readOperations visits the committed operation view without copying the rest of the
-// registry. The callback must not retain or mutate the state. A visitor must not observe a
-// record whose append was never confirmed, so the read settles first and reports the same
-// uncertainty that append had.
+// registry. The callback must not retain or mutate the state. A visitor must not decide on
+// a record whose append was never confirmed when that decision could differ from the one a
+// reversion would produce, so the read settles the pending edits that can still change an
+// admission answer and reports the uncertainty such an append had. A pending edit that
+// leaves the isolation set and the unresolved count alone is visited in place: both
+// answers are the same either way, and waiting for it would put a barrier in the admission
+// path of every request.
 func (store *stateStore) readOperations(visit func(State) error) error {
 	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
@@ -145,10 +154,31 @@ func (store *stateStore) readOperations(visit func(State) error) error {
 	if visit == nil {
 		return errors.New("operation read requires a visitor")
 	}
-	if err := store.settleOperations(); err != nil {
+	if store.pendingAdmissionEdit() {
+		if err := store.settleOperations(); err != nil {
+			return err
+		}
+		return visit(store.state)
+	}
+	if err := visit(store.state); err != nil {
 		return err
 	}
-	return visit(store.state)
+	// A close that lands while the visitor runs can turn an append it relied on into a
+	// refusal; report the refusal instead of a decision taken on a record whose barrier
+	// will never be reported.
+	return store.disk.available()
+}
+
+// pendingAdmissionEdit reports whether any applied edit could still flip an admission
+// answer. Edits that cannot are safe to observe undecided: their reversion would leave the
+// accessors every visitor uses with the same values.
+func (store *stateStore) pendingAdmissionEdit() bool {
+	for _, entry := range store.unconfirmed {
+		if entry.admission {
+			return true
+		}
+	}
+	return false
 }
 
 // updateOperations applies one edit and returns only after its appended delta is durable.
@@ -244,7 +274,7 @@ func (store *stateStore) enqueueOperationsAuditLocked(preparation *durabilityPre
 		edit.revert()
 		return nil, err
 	}
-	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert})
+	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert, admission: edit.admissionRelevant()})
 	store.cost.observeCommit()
 	return commit, nil
 }

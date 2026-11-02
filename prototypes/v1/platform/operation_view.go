@@ -48,7 +48,7 @@ func (index *operationIndex) track(key string, record OperationRecord) {
 	}
 	namespace := namespaceKey(record.Database.Namespace)
 	delete(index.blocking[namespace], key)
-	if record.State == "quarantined" && record.ReleaseRequestID == "" || record.State == "in_flight" {
+	if operationBlocking(record) {
 		if index.blocking[namespace] == nil {
 			index.blocking[namespace] = map[string]bool{}
 		}
@@ -56,6 +56,12 @@ func (index *operationIndex) track(key string, record OperationRecord) {
 	} else if len(index.blocking[namespace]) == 0 {
 		delete(index.blocking, namespace)
 	}
+}
+
+// operationBlocking reports whether a record holds its namespace: a quarantine with no
+// release recorded, or an operation whose outcome is still in flight.
+func operationBlocking(record OperationRecord) bool {
+	return record.State == "quarantined" && record.ReleaseRequestID == "" || record.State == "in_flight"
 }
 
 func (index *operationIndex) release(key string, record OperationRecord) {
@@ -199,6 +205,29 @@ func (edit *operationEdit) revert() {
 	edit.state.OperationEvictions = edit.evictions
 	clear(edit.touched)
 	edit.prior = nil
+}
+
+// admissionRelevant reports whether an admission read could tell this edit apart if its
+// append failed and the edit were reverted. Admission observes the isolation set and the
+// unresolved count, so an edit that leaves both alone leaves every admission answer the
+// same either way: a reader may visit the view without settling that edit first. Anything
+// that changes a blocking record or the terminal count must be settled, because a decision
+// taken on an unconfirmed record would then rest on an append that may never land.
+func (edit *operationEdit) admissionRelevant() bool {
+	unresolvedBefore, unresolvedAfter := 0, 0
+	for _, touch := range edit.prior {
+		after, exists := edit.index.records[touch.key]
+		if touch.existed && !operationKnownTerminal(touch.record) {
+			unresolvedBefore++
+		}
+		if exists && !operationKnownTerminal(after) {
+			unresolvedAfter++
+		}
+		if touch.existed && operationBlocking(touch.record) || exists && operationBlocking(after) {
+			return true
+		}
+	}
+	return unresolvedBefore != unresolvedAfter
 }
 
 func (edit *operationEdit) delta() operationDelta {
