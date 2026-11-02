@@ -222,6 +222,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R24 | `perf/issue28-r24-worker` / `4b8f82b`（merge `b78189f`） | worker 按库镜像刷新闸门由 2ms `try_lock` 轮询改为 `Condvar` 交接，互斥与 deadline 语义不变 | 每侧全新 v2 卷 A/B 两轮（c64，320 查询/样本，逐轮交替顺序）：run1 全体中位 582.05→667.69 qps（**+14.7%**，逐轮 +11.7/+27.5/+19.4/+11.1%）、p50 99.85→90.39ms；run2 交换顺序 622.54→735.21（**+18.1%**，逐轮 +7.4/+14.2/+21.8/+16.0%）、p50 91.59→83.12ms；两轮 fails=0；机制：探针实测 `begin.refresh.lock` 1.75–1.91ms/请求，sleep 1980 次（均 2.9ms）压在 1553 次 `begin` 上，改交接后消失 | 合入 `main`：`begin`/`open`/`close`/`health` 共用同一按库闸门，闸内工作只有微秒级，2ms 轮询等于把固定睡眠放进请求路径；持闸者 Drop 立即唤醒下一个等待者，超时者把唤醒转交出去 |
 | R25 | `perf/issue28-r25-auth-dedup` / `ad4d141`（merge `f294a44`） | `authorizeQuota` 复用已读授权视图，去掉每请求 2 次重复 `authorizationState`（适配器与 handler 各一次 authorize 仍保留） | 每侧全新 v2 卷 A/B（r20 vs r25a，4 组 × 3 样本/侧，c64，320 查询/样本，逐组交替）：run1 逐组 +17.4/+16.2/+3.6/+9.9%（中位 +13.0%，全体中位 690.83→744.66），run2 逐组 +3.3/+7.2/+3.5/+9.4%（中位 +5.4%，725.76→761.62）；8/8 同向，fails=0；状态锁获取 9.32→6.90 次/请求，lockwait/req 5.83→4.91ms、5.54→4.82ms | 合入 main |
 | R26 | `perf/issue28-r26-credential-atomic` / `e198d33`（merge `0027a50`） | `credentialByDigest` 改读不可变摘要快照（`atomic.Pointer`），`durableFile.closed/poisoned` 改原子，认证窄读不再进状态锁 | 每侧全新 v2 卷 A/B（r25a vs r26a，4 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替，worker 二进制两侧相同）：逐轮 +5.3 / +0.8 / +13.2 / +29.3%，12 样本/侧中位 694.75→779.82 qps（**+12.2%**），均值 697.49→759.12（+8.8%）；p50 中位 88.2→77.6ms；lockwait/req 中位 5.42→4.51ms（−16.8%）；fails=0。探针：锁获取 6.90→**5.49 次/请求**，`credentialByDigest` 调用点消失 | 合入 main |
+| R27 | `perf/issue28-r27-auth-scope` / `8651766`（merge `386feff`） | 请求级 `authorizationScope`：适配器认证后挂到上下文，`open`/`dispatchLocked` 的授权检查复用同一状态快照，跨外部等待（激活/placement/writer profile RPC）后失效重读 | 每侧全新 v2 卷 A/B（r26a vs r27a，6 轮 × 3 样本/侧，c64）：逐轮 +8.3 / +15.6 / −2.9 / −4.6 / +9.2 / +14.8%（4/6 同向），18 样本/侧中位 715.60→752.31 qps（**+5.1%**），均值 717.22→744.43（+3.8%）；探针：`authorizationState` 2.40→**1.40 次/请求**、总获取 5.49→4.50、lockwait/req 4.51→4.10ms；fails=0 | 合入 main（噪声大，见下） |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -984,6 +985,35 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **验证**：`go build ./cmd/peri-platform ./cmd/peri`；`go vet ./...` 干净；`go test ./...`（`PERI_RUST_BINARY` 指向本机 debug worker）失败集与基线一致，仅 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`。
 
 **下一轮提示**：`authorizationState` 仍是 **2.4 次/请求**（R25 只去掉了 quota 路径上的重复读取，Hrana 适配器与内层 handler 各调一次 authorize 仍保留），是当前最大的单一等待来源（约 2.0ms/请求），下一轮应从这里去掉一次；`compactionAcquire` 0.9 次/请求、均持锁 33–37µs 排掉 15%，需要先拆内部 span 再动（R19/R21/R22 已否证其批处理变体）。
+
+#### R27：每请求一次授权状态读取（2026-11-02，合入）
+
+**动机**：R26 的探针把剩余等待第一项指向 `authorizationState`（41–44%，2.40 次/请求）。一次请求读同一份视图 2.4 次：协议适配器认证后读一次，`open` 内读三次（入口、路由后、writer profile 后），`dispatchLocked` 内读两次（入口、路由后）。这些检查之间大多只有内存操作，真正需要重读的只有跨外部等待之后。
+
+**实现**（新增 `gateway_authorization.go`；改 `gateway_routing.go`、`gateway_sessions.go`、`gateway_writer.go`、`hrana_http.go`、`hrana_http_cursor.go`、`hrana_protobuf.go`、`hrana_v3_json_cursor.go`、`gateway_http.go`）：
+- `authorizationScope` 挂在请求上下文，按 `(principal, database)` 命中；命中时只跳过状态读取，`authorizeQuotaFrom` 的判定与拒绝原因逐条不变。
+- 适配器（Hrana pipeline / protobuf / JSON cursor / 原生 API）在认证后挂 scope；WS 连接不挂（长连接里一个快照太粗），仍逐消息读。
+- `open` 在激活等待/placement settle 与 writer profile RPC 之后 `invalidateAuthorizationScope`，下一次检查重新读取状态。
+- `authorizeQuotaFrom` + `authorizationTargetValid` 拆出纯判定；`authorizeQuota` 的校验顺序、错误文案保持原样。
+
+**结果**（每侧独立二进制、每侧全新 v2 卷 + 同导入 + 同配额，c64，320 查询/样本，6 轮 × 3 样本/侧）：
+| 轮次 | 逐样本中位（r26a → r27a） | 幅度 |
+|---|---|---|
+| ab1 c1 | 720.23 → 780.04 | +8.3% |
+| ab1 c2 | 705.99 → 816.38 | +15.6% |
+| ab2 c1 | 749.10 → 727.67 | −2.9% |
+| ab2 c2 | 750.45 → 715.61 | −4.6% |
+| ab3 c1 | 705.00 → 769.77 | +9.2% |
+| ab3 c2 | 683.72 → 784.78 | +14.8% |
+合并 18 样本/侧：中位 **715.60 → 752.31（+5.1%）**、均值 717.22 → 744.43（+3.8%，含一个 445.91 异常样本，剔除后 +6.2%），4/6 轮同向，`fails=0`。**单轮结论不可用**——同一对二进制在不同轮次可以相差 −4.6% 到 +15.6%，这也是本轮先做三轮再做汇总的原因。
+
+**机制核验**（在 R27 之上重放探针，c64）：`authorizationState` **2.40 → 1.40 次/请求（−42%）**，状态锁总获取 5.49 → 4.50，lockwait/req 4.51 → 4.10ms；剩余等待 `gatewayRequestState` 42%、`authorizationState` 36%、`compactionAcquire` 15%、`readOperations` 7%。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri`；`go vet ./...` 干净；`go test ./...`（`PERI_RUST_BINARY` 指向本机 debug worker）失败集与基线一致，仅 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`。
+
+**副作用/风险**：同一请求内的多次检查共用一个快照，撤销只在请求开始（以及上述外部等待之后）被观察到；跨一次 pipeline 的多个步骤也共用，上限是一次 HTTP 请求的生命周期。判定函数本身未改，拒绝原因与顺序不变。
+
+**下一轮提示**：`gatewayRequestState`（1.00 次/请求，只读 Projects+Databases）与 `authorizationState`（1.40 次/请求）是同一次请求里两次形状不同的窄读，合并成一次读是下一轮最直接的方向；`compactionAcquire`（0.9 次/请求、均持锁 25µs、15% 等待）需要先拆内部 span。
 
 ## 代码约定
 
