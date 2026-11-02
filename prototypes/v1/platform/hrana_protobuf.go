@@ -1261,7 +1261,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 	if err != nil || principal.Subject == "" || principal.Project == "" {
 		return false
 	}
-	quota, err := handler.gateway.authorizeQuota(principal, database)
+	quota, err := handler.gateway.authorizeQuotaIn(request.Context(), principal, database)
 	if err != nil {
 		return false
 	}
