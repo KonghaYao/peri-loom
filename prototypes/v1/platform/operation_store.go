@@ -133,20 +133,6 @@ func (store *stateStore) settleOperations() error {
 	return failure
 }
 
-// compactOperationsLocked materializes the view once the log passed its append budget. The
-// caller holds the view lock and has settled every in-flight commit, so the view it passes
-// is the confirmed view and the journal can check that it still owns that revision.
-func (store *stateStore) compactOperationsLocked() error {
-	if len(store.unconfirmed) != 0 || !store.operations.compactionDue() {
-		return nil
-	}
-	if err := store.operations.compactConfirmed(store.state); err != nil {
-		store.operations.poison()
-		return err
-	}
-	return nil
-}
-
 // readOperations visits the committed operation view without copying the rest of the
 // registry. The callback must not retain or mutate the state. A visitor must not observe a
 // record whose append was never confirmed, so the read settles first and reports the same

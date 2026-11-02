@@ -64,7 +64,7 @@ func (store *stateStore) beginOperationCompactionLocked() (*operationCompaction,
 		journal.write.Unlock()
 		return nil, err
 	}
-	if journal.completion != nil || journal.writing || len(journal.commits) != 0 {
+	if journal.writing || len(journal.commits) != 0 {
 		journal.mutex.Unlock()
 		journal.write.Unlock()
 		return nil, nil
@@ -80,7 +80,20 @@ func (store *stateStore) beginOperationCompactionLocked() (*operationCompaction,
 // ownership changes: no queue or state lock is held during encoding or I/O.
 func (store *stateStore) finishOperationCompaction(compaction *operationCompaction) error {
 	journal := store.operations
-	timings, err := journal.persistCompaction(compaction)
+	// The unified log's legacy tail is archived before the snapshot replaces the deltas it
+	// covers. Both steps run outside the view lock; the journal writer stays exclusive so
+	// no append can slip between the capture and the truncation.
+	journal.mutex.Lock()
+	archiveErr := error(nil)
+	if journal.completion != nil {
+		archiveErr = journal.archiveCompletionPrefix()
+	}
+	journal.mutex.Unlock()
+	var timings operationCompactionTimings
+	err := archiveErr
+	if err == nil {
+		timings, err = journal.persistCompaction(compaction)
+	}
 	journal.mutex.Lock()
 	journal.recordCompactionCost(compaction.started, timings, err)
 	if err == nil {
