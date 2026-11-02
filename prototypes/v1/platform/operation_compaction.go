@@ -108,12 +108,12 @@ func (store *stateStore) finishOperationCompaction(compaction *operationCompacti
 	journal.write.Unlock()
 	unlock := store.lockState()
 	if err != nil {
-		store.disk.poisoned = true
+		store.disk.poisoned.Store(true)
 		store.operationCompactionFailure = err
 	}
 	close(store.operationCompacting)
 	store.operationCompacting = nil
-	poisoned := store.disk.poisoned
+	poisoned := store.disk.poisoned.Load()
 	unlock()
 	store.maintenance.Done()
 	if err == nil && poisoned {

@@ -216,7 +216,7 @@ func TestOperationCommitQueueFailureFansOutToBatchWaiters(test *testing.T) {
 			test.Fatalf("waiter %d saw %v, want the batch's own failure", index, failure)
 		}
 	}
-	if !store.disk.poisoned {
+	if !store.disk.poisoned.Load() {
 		test.Fatal("a failed barrier left the store available")
 	}
 	if !maps.Equal(before, operationViewSnapshot(store)) {
@@ -266,7 +266,7 @@ func TestOperationCommitQueueBoundedRefusal(test *testing.T) {
 	if operationUnconfirmedCount(store) > operationJournalQueueMaximum+1 {
 		test.Fatal("the queue kept edits that were never accepted")
 	}
-	if store.disk.poisoned {
+	if store.disk.poisoned.Load() {
 		test.Fatal("a full queue poisoned the store")
 	}
 	release()
@@ -688,7 +688,7 @@ func TestOperationSettleRollsBackOnlyFailedAppends(test *testing.T) {
 	if store.state.OperationSequence == sequence && store.state.OperationEvictions != evictions {
 		test.Fatal("settlement moved the retention counters inconsistently")
 	}
-	if !store.disk.poisoned {
+	if !store.disk.poisoned.Load() {
 		test.Fatal("an uncertain append did not poison the store")
 	}
 	if len(store.unconfirmed) != 0 {

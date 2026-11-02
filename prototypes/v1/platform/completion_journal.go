@@ -159,7 +159,7 @@ func (store *stateStore) enableCompletion(audit *fileAudit) error {
 	err = store.commitLocked(candidate)
 	journal.mutex.Lock()
 	if err != nil {
-		store.disk.poisoned = true
+		store.disk.poisoned.Store(true)
 		return err
 	}
 	journal.completion = &genesis
@@ -250,7 +250,7 @@ func (store *stateStore) beginCompletionMaintenance() (*operationCompaction, err
 		return nil, nil
 	}
 	if err := store.settleOperations(); err != nil {
-		store.disk.poisoned = true
+		store.disk.poisoned.Store(true)
 		return nil, err
 	}
 	return store.beginOperationCompactionLocked()
@@ -259,5 +259,5 @@ func (store *stateStore) beginCompletionMaintenance() (*operationCompaction, err
 // poisonMaintenance records a failed maintenance pass without holding another lock.
 func (store *stateStore) poisonMaintenance() {
 	defer store.lockState()()
-	store.disk.poisoned = true
+	store.disk.poisoned.Store(true)
 }

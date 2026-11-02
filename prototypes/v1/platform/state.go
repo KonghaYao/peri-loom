@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	controller "peri-loom/controller"
 )
@@ -15,7 +16,12 @@ type stateStore struct {
 	operationsIndex *operationIndex
 	cost            stateCost
 	state           State
-	digestIndex     map[string]string
+	// credentials is an immutable digest -> key view published under the state lock.
+	// Authentication is the first lock a request would otherwise queue for, and it only
+	// needs one lookup, so readers load the pointer instead of taking the lock. A stale
+	// view cannot authenticate a revoked key: the authorization step still reads the
+	// locked view and refuses revoked descriptors.
+	credentials atomic.Pointer[map[string]APIKey]
 	// checkpointed freezes the store once the shutdown checkpoint has materialized
 	// the operation view: a write that landed afterwards would leave the payload
 	// claiming a final view it no longer carries. Guarded by the state lock.
@@ -56,7 +62,7 @@ func OpenStateStore(directory string) (StateStore, error) {
 		disk.close()
 		return nil, err
 	}
-	store := &stateStore{disk: disk, state: state, digestIndex: make(map[string]string, len(state.APIKeys))}
+	store := &stateStore{disk: disk, state: state}
 	operations, err := openOperationDisk(directory, disk, &store.state)
 	if err != nil {
 		disk.close()
@@ -65,9 +71,7 @@ func OpenStateStore(directory string) (StateStore, error) {
 	store.operations = operations
 	disk.parentOperations = registryParentOperations(operations)
 	state = store.state
-	for id, key := range state.APIKeys {
-		store.digestIndex[key.Digest] = id
-	}
+	store.publishCredentialsLocked()
 	known, _ := operationCounts(state)
 	if known > operationKnownRetention {
 		if err := updateOperationRecords(store, nil); err != nil {
@@ -165,7 +169,7 @@ func (store *stateStore) checkpointOperations() error {
 		return err
 	}
 	if err := store.operations.checkpointCompletionTail(); err != nil {
-		store.disk.poisoned = true
+		store.disk.poisoned.Store(true)
 		return err
 	}
 	candidate, err := cloneState(store.state)
@@ -188,16 +192,29 @@ func (store *stateStore) checkpointOperations() error {
 	return nil
 }
 
+// publishCredentialsLocked republishes the digest -> key view. Callers hold the state
+// lock, so the snapshot a reader loads is always a whole committed view.
+func (store *stateStore) publishCredentialsLocked() {
+	keys := make(map[string]APIKey, len(store.state.APIKeys))
+	for _, key := range store.state.APIKeys {
+		if key.Digest != "" {
+			keys[key.Digest] = key
+		}
+	}
+	store.credentials.Store(&keys)
+}
+
 func (store *stateStore) credentialByDigest(digest string) (APIKey, bool, error) {
-	defer store.lockState()()
+	// Lock-free by design: the snapshot is immutable once published, and the health
+	// check reads atomics, so no request serializes here behind a commit's fsync.
 	if err := store.disk.available(); err != nil {
 		return APIKey{}, false, err
 	}
-	id, found := store.digestIndex[digest]
-	if !found {
-		return APIKey{}, false, nil
+	keys := store.credentials.Load()
+	if keys == nil {
+		return APIKey{}, false, errors.New("credential view unavailable")
 	}
-	key, found := store.state.APIKeys[id]
+	key, found := (*keys)[digest]
 	return key, found, nil
 }
 
@@ -313,14 +330,8 @@ func (store *stateStore) commitLocked(candidate State) error {
 	// The registry payload already carries the complete operation view, so the
 	// operation log only has to record the deltas that follow this revision; the
 	// next operation mutation binds the new one.
-	if len(committed.APIKeys) != len(store.state.APIKeys) {
-		for id, key := range committed.APIKeys {
-			if _, exists := store.state.APIKeys[id]; !exists {
-				store.digestIndex[key.Digest] = id
-			}
-		}
-	}
 	store.state = committed
+	store.publishCredentialsLocked()
 	// Only Update and opening replace the whole view; only those paths invalidate
 	// the derived index. Operation-only commits retain the same map.
 	store.operationsIndex = nil
