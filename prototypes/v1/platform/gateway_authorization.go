@@ -7,17 +7,32 @@ import (
 	controller "peri-loom/controller"
 )
 
-// authorizationScope is the state snapshot one HTTP request decides authorization
-// against. Authorization is the first lock a request queues for, and one request checks
-// it two to four times — once in the protocol adapter, then again before the worker call
-// and after routing — so the snapshot is read once and reused while the request only does
-// in-process work. Any check that follows an external wait invalidates the scope first, so
-// a revocation that wait could have observed is still honoured.
+// authorizationScope is the state view one HTTP request decides authorization against.
+// Authorization is the first lock a request queues for, and one request checks it several
+// times — once in the protocol adapter, then again before the worker call and after
+// routing — while also reading the same state for its admission checks. The view is
+// therefore read once and reused while the request only does in-process work. Any check
+// that follows an external wait invalidates the scope first, so a revocation that wait
+// could have observed is still honoured.
 type authorizationScope struct {
-	principal Principal
-	database  controller.DatabaseID
-	state     State
-	valid     bool
+	keyID    string
+	project  string
+	database controller.DatabaseID
+	// scoped records that the view was read for database; a project-only view cannot
+	// answer a question about a database.
+	scoped bool
+	state  State
+	valid  bool
+}
+
+// covers reports whether the held view answers this question. A database-scoped view also
+// answers the project-only question, because it carries the project entry that read
+// returns.
+func (scope *authorizationScope) covers(keyID, project string, database *controller.DatabaseID) bool {
+	if !scope.valid || scope.keyID != keyID || scope.project != project {
+		return false
+	}
+	return database == nil || scope.scoped && scope.database == *database
 }
 
 type authorizationScopeKey struct{}
@@ -31,7 +46,7 @@ func authorizationScopeFrom(ctx context.Context) *authorizationScope {
 	return scope
 }
 
-// invalidateAuthorizationScope drops the cached snapshot: the next check reads the state
+// invalidateAuthorizationScope drops the cached view: the next read goes to the state
 // again. Callers place it after a wait that could outlast a revocation.
 func invalidateAuthorizationScope(ctx context.Context) {
 	if scope := authorizationScopeFrom(ctx); scope != nil {
@@ -39,32 +54,39 @@ func invalidateAuthorizationScope(ctx context.Context) {
 	}
 }
 
-// authorizationView returns the snapshot for this (principal, database), reading it only
-// when the scope has none. The scope identity is the whole principal: a request that
-// swapped its project for a session's project must not reuse the earlier view.
-func (gateway *Gateway) authorizationView(ctx context.Context, principal Principal, database controller.DatabaseID) (State, error) {
-	scope := authorizationScopeFrom(ctx)
-	if scope != nil && scope.valid && scope.principal == principal && scope.database == database {
+// requestStateView returns the narrow view for this identity, reading it only when the
+// request holds none that covers it.
+func (gateway *Gateway) requestStateView(ctx context.Context, keyID, projectID string, database *controller.DatabaseID) (State, error) {
+	if scope := authorizationScopeFrom(ctx); scope != nil && scope.covers(keyID, projectID, database) {
 		return scope.state, nil
 	}
-	state, err := readAuthorizationState(gateway.config.State, principal.KeyID, principal.Project, database)
+	state, err := readRequestState(gateway.config.State, keyID, projectID, database)
 	if err != nil {
 		return State{}, err
 	}
-	if scope != nil {
-		scope.principal, scope.database, scope.state, scope.valid = principal, database, state, true
+	if scope := authorizationScopeFrom(ctx); scope != nil {
+		scope.keyID, scope.project, scope.state, scope.valid = keyID, projectID, state, true
+		scope.scoped = database != nil
+		if scope.scoped {
+			scope.database = *database
+		}
 	}
 	return state, nil
 }
 
-// authorizeIn answers the same question as authorize, from the request's snapshot.
+// authorizationView is requestStateView for a question that always names a database.
+func (gateway *Gateway) authorizationView(ctx context.Context, principal Principal, database controller.DatabaseID) (State, error) {
+	return gateway.requestStateView(ctx, principal.KeyID, principal.Project, &database)
+}
+
+// authorizeIn answers the same question as authorize, from the request's view.
 func (gateway *Gateway) authorizeIn(ctx context.Context, principal Principal, database controller.DatabaseID) error {
 	_, err := gateway.authorizeQuotaIn(ctx, principal, database)
 	return err
 }
 
-// authorizeQuotaIn answers the same question as authorizeQuota, from the request's
-// snapshot. Only the state read is skipped; every check and every refusal is unchanged.
+// authorizeQuotaIn answers the same question as authorizeQuota, from the request's view.
+// Only the state read is skipped; every check and every refusal is unchanged.
 func (gateway *Gateway) authorizeQuotaIn(ctx context.Context, principal Principal, database controller.DatabaseID) (Quotas, error) {
 	if err := authorizationTargetValid(principal, database); err != nil {
 		return Quotas{}, err

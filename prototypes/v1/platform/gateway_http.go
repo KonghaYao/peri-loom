@@ -305,7 +305,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 	}
 	leaveState := requestPhaseSpan(ctx, requestPhaseState)
-	state, err := readGatewayRequestState(gateway.config.State, principal.Project, database)
+	state, err := gateway.requestStateView(ctx, principal.KeyID, principal.Project, database)
 	leaveState()
 	if err != nil {
 		result = gatewayFailure(503, "metadata_unavailable")

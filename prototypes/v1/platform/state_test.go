@@ -84,6 +84,10 @@ func (probe *narrowAuthProbe) authorizationState(keyID, projectID string, databa
 	return probe.StateStore.(*stateStore).authorizationState(keyID, projectID, database)
 }
 
+func (probe *narrowAuthProbe) requestState(keyID, projectID string, database *controller.DatabaseID) (State, error) {
+	return probe.StateStore.(*stateStore).requestState(keyID, projectID, database)
+}
+
 func (probe *narrowAuthProbe) gatewayRequestState(projectID string, database *controller.DatabaseID) (State, error) {
 	return probe.StateStore.(*stateStore).gatewayRequestState(projectID, database)
 }
