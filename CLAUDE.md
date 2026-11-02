@@ -223,6 +223,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R25 | `perf/issue28-r25-auth-dedup` / `ad4d141`（merge `f294a44`） | `authorizeQuota` 复用已读授权视图，去掉每请求 2 次重复 `authorizationState`（适配器与 handler 各一次 authorize 仍保留） | 每侧全新 v2 卷 A/B（r20 vs r25a，4 组 × 3 样本/侧，c64，320 查询/样本，逐组交替）：run1 逐组 +17.4/+16.2/+3.6/+9.9%（中位 +13.0%，全体中位 690.83→744.66），run2 逐组 +3.3/+7.2/+3.5/+9.4%（中位 +5.4%，725.76→761.62）；8/8 同向，fails=0；状态锁获取 9.32→6.90 次/请求，lockwait/req 5.83→4.91ms、5.54→4.82ms | 合入 main |
 | R26 | `perf/issue28-r26-credential-atomic` / `e198d33`（merge `0027a50`） | `credentialByDigest` 改读不可变摘要快照（`atomic.Pointer`），`durableFile.closed/poisoned` 改原子，认证窄读不再进状态锁 | 每侧全新 v2 卷 A/B（r25a vs r26a，4 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替，worker 二进制两侧相同）：逐轮 +5.3 / +0.8 / +13.2 / +29.3%，12 样本/侧中位 694.75→779.82 qps（**+12.2%**），均值 697.49→759.12（+8.8%）；p50 中位 88.2→77.6ms；lockwait/req 中位 5.42→4.51ms（−16.8%）；fails=0。探针：锁获取 6.90→**5.49 次/请求**，`credentialByDigest` 调用点消失 | 合入 main |
 | R27 | `perf/issue28-r27-auth-scope` / `8651766`（merge `386feff`） | 请求级 `authorizationScope`：适配器认证后挂到上下文，`open`/`dispatchLocked` 的授权检查复用同一状态快照，跨外部等待（激活/placement/writer profile RPC）后失效重读 | 每侧全新 v2 卷 A/B（r26a vs r27a，6 轮 × 3 样本/侧，c64）：逐轮 +8.3 / +15.6 / −2.9 / −4.6 / +9.2 / +14.8%（4/6 同向），18 样本/侧中位 715.60→752.31 qps（**+5.1%**），均值 717.22→744.43（+3.8%）；探针：`authorizationState` 2.40→**1.40 次/请求**、总获取 5.49→4.50、lockwait/req 4.51→4.10ms；fails=0 | 合入 main（噪声大，见下） |
+| R28 | `perf/issue28-r28-request-state` / `9baa692`+`7cdfd35`（merge `3e9ac39`） | 准入读（Projects+Databases）与授权读（APIKeys+Projects+Databases+Keys）合并为一次 `requestState`，请求级快照按 (keyID, project, database) 命中 | 每侧全新 v2 卷 A/B（r27a vs r28b，6 轮 × 3 样本/侧，c64）：逐轮 −5.8 / +23.9 / +19.1 / −3.2 / +4.1 / −4.2%（3/6 同向），18 样本/侧中位 810.61→829.71 qps（**+2.4%**），均值 800.39→838.61（+4.8%），p50 中位 75.1→72.9ms；探针：`requestState` 2.40→**0.40 次/请求**、总锁获取 4.51→**2.50**、lockwait/req 4.52→3.73ms；fails=0 | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1014,6 +1015,32 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **副作用/风险**：同一请求内的多次检查共用一个快照，撤销只在请求开始（以及上述外部等待之后）被观察到；跨一次 pipeline 的多个步骤也共用，上限是一次 HTTP 请求的生命周期。判定函数本身未改，拒绝原因与顺序不变。
 
 **下一轮提示**：`gatewayRequestState`（1.00 次/请求，只读 Projects+Databases）与 `authorizationState`（1.40 次/请求）是同一次请求里两次形状不同的窄读，合并成一次读是下一轮最直接的方向；`compactionAcquire`（0.9 次/请求、均持锁 25µs、15% 等待）需要先拆内部 span。
+
+#### R28：准入与授权合并为一次窄读（2026-11-02，合入）
+
+**动机**：R27 之后探针显示 `gatewayRequestState`（1.00 次/请求，只读 Projects+Databases）与 `authorizationState`（1.40 次/请求，多带 APIKeys+Keys）是同一把状态锁上的两次窄读。同一次请求为回答两个问题排两次队。
+
+**实现**（`state.go`、`gateway_authorization.go`、`gateway_http.go`、`state_test.go`）：
+- 新增 `stateStore.requestState(keyID, projectID, database *DatabaseID)`：一次持锁返回并集视图，带空的项目/库/凭据/描述符条目，不带 Envelope。`authorizationState` 与 `gatewayRequestState` 改为委托，调用方判据与错误文案不变。
+- `authorizationScope` 改为按 `(keyID, project, database)` 命中，并允许「库视图回答同项目的纯项目问题」（库视图是前者的超集）。
+- **第一次实测暴露的 bug**：`gateway_http.go` 的入口无条件 `withAuthorizationScope(ctx, &authorizationScope{})`，把协议适配器已经挂好的快照覆盖成空对象，于是适配器读到的那次视图传不进 handler。改为仅在没有作用域时挂载（`7cdfd35`），`requestState` 从 2.40 直接掉到 0.40 次/请求。**这是本轮最值得记住的方法教训：机制复核必须在 A/B 之前做**——第一版（未修复）的 6 轮 A/B 中位 +5.4%，而它其实一个读都没省下来，测到的全是噪声。
+
+**结果**（每侧独立二进制、每侧全新 v2 卷 + 同导入 + 同配额，c64，320 查询/样本，6 轮 × 3 样本/侧）：
+| 轮次 | 逐样本中位（r27a → r28b） | 幅度 |
+|---|---|---|
+| b1 c1 | 858.90 → 808.90 | −5.8% |
+| b1 c2 | 749.71 → 928.78 | +23.9% |
+| b2 c1 | 745.52 → 887.78 | +19.1% |
+| b2 c2 | 826.93 → 800.80 | −3.2% |
+| b3 c1 | 786.72 → 818.83 | +4.1% |
+| b3 c2 | 820.90 → 786.78 | −4.2% |
+合并 18 样本/侧：中位 **810.61 → 829.71（+2.4%）**、均值 800.39 → 838.61（+4.8%），p50 中位 75.1 → 72.9ms，3/6 轮同向，`fails=0`；A/B 内 lockwait/req 中位 4.16 → 3.37ms（−19%）。
+
+**机制核验**（在 R28 之上重放探针，c64）：`requestState` **2.40 → 0.40 次/请求（−83%）**，状态锁总获取 **4.51 → 2.50（−45%）**，lockwait/req 4.52 → 3.73ms。剩余等待结构已经变了：`readOperations` 51–53%（1.20 次/请求、均持锁 116µs）、`compactionAcquire` 19–22%（0.89 次/请求、25–30µs）、`requestState` 27%（0.40 次/请求、18–24µs）。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri`；`go vet ./...` 干净；`go test ./...` 失败集与基线一致，仅 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`（新增的 `requestState` 需在 `state_test.go` 的 `narrowAuthProbe` 上转发，否则窄读探针会落到 `Snapshot`）。
+
+**下一轮提示**：`readOperations` 现在是最大等待来源（1.20 次/请求、116µs 持锁、51–53%），主要成本是等 journal 屏障；`gateway_sessions.go:76` 与 idle 路径对它的调用是否可以移出请求路径，需要先确认它保护的 settle 语义。`compactionAcquire`（0.89 次/请求、25–30µs）此前已被 R19/R21/R22 否证其批处理变体，若要动必须先拆内部 span。
 
 ## 代码约定
 
