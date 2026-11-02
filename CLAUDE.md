@@ -220,6 +220,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R22 | `perf/issue28-r22-batch-settle` / `193be6f`（不合入，留证） | 完成日志批内结清改为「批级一次等待 + 一次 settle」，去掉每条一次取锁 | 每侧全新 v2 卷 A/B 两轮（r20 vs r22，4 组 × 3 样本/侧，c64，320 查询/样本）：run1（r20 先）整体中位 592.25→525.68（**−11.2%**）、run2 交换顺序 591.41→562.30（**−4.9%**）；两轮均值 −5.0%/−5.5%；p50 95.6→109.6ms、96.3→102.6ms；机制：取锁次数/动作 9.31→8.55（−8%），sync/动作 0.080→0.084，锁等待/动作 5.07→6.09ms | **失败，不合入**：批内逐条结清本来只在首个等待者持锁时真正等待，其余条目面对的是空未决栈；改成批级一次 settle 后持锁时刻与最年轻提交对齐，等待变成等在更晚的屏障上，收益被抵消 |
 | R23 | 测量轮（无代码变更） | 请求相位 + 会话生命周期分解：定位剩余延迟在 worker 原生执行与会话建立/关闭 | 无观测器干净 A/B（r20 二进制，每侧全新 v2 卷）：c64 connect→查询→close 123.4ms/468.6 qps，同会话复用 52.2ms/**911.3 qps**；c8 48.3→16.4ms（135.8→407.5 qps）；c1 18.0→10.8ms；`SELECT 1` 的 c64 仍 97.1ms；connect+close 无查询 0.1ms（SDK 惰性）。durability 观测：`journal_prepare` encode p50 9µs、`journal_batch` 1.58ms 中 sync 1.56ms、`audit_member_wait` p50 5.55ms（队列 0.93ms） | **结论**：Go 侧审计提交已达 fsync 下限，R21/R22 证明批处理方向已用尽；c64 下 58% 延迟在会话建立/关闭，其余主要是 worker 每查询约 12ms 固定原生时间（与并发无关）。下一步必须改 Rust worker（需 linux/arm64 构建） |
 | R24 | `perf/issue28-r24-worker` / `4b8f82b`（merge `b78189f`） | worker 按库镜像刷新闸门由 2ms `try_lock` 轮询改为 `Condvar` 交接，互斥与 deadline 语义不变 | 每侧全新 v2 卷 A/B 两轮（c64，320 查询/样本，逐轮交替顺序）：run1 全体中位 582.05→667.69 qps（**+14.7%**，逐轮 +11.7/+27.5/+19.4/+11.1%）、p50 99.85→90.39ms；run2 交换顺序 622.54→735.21（**+18.1%**，逐轮 +7.4/+14.2/+21.8/+16.0%）、p50 91.59→83.12ms；两轮 fails=0；机制：探针实测 `begin.refresh.lock` 1.75–1.91ms/请求，sleep 1980 次（均 2.9ms）压在 1553 次 `begin` 上，改交接后消失 | 合入 `main`：`begin`/`open`/`close`/`health` 共用同一按库闸门，闸内工作只有微秒级，2ms 轮询等于把固定睡眠放进请求路径；持闸者 Drop 立即唤醒下一个等待者，超时者把唤醒转交出去 |
+| R25 | `perf/issue28-r25-auth-dedup` / `ad4d141`（merge `f294a44`） | `authorizeQuota` 复用已读授权视图，去掉每请求 2 次重复 `authorizationState`（适配器与 handler 各一次 authorize 仍保留） | 每侧全新 v2 卷 A/B（r20 vs r25a，4 组 × 3 样本/侧，c64，320 查询/样本，逐组交替）：run1 逐组 +17.4/+16.2/+3.6/+9.9%（中位 +13.0%，全体中位 690.83→744.66），run2 逐组 +3.3/+7.2/+3.5/+9.4%（中位 +5.4%，725.76→761.62）；8/8 同向，fails=0；状态锁获取 9.32→6.90 次/请求，lockwait/req 5.83→4.91ms、5.54→4.82ms | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -930,6 +931,32 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **下一轮提示**：探针把 c64 剩余固定成本指到 `cursor.call` 6.0–10.5ms（`dispatch_cursor_first` → `open_cursor_first`）与 `prepare` 剩余约 1.3–1.8ms；`idle` 5–6ms 需先判定是客户端间隔还是 `transport.rs` 的 `IDLE_SLICE` 读超时分片。R23 已明确禁止在拆分数据前改协议，所以 `cursor.call` 只能先加内部 span 再决定动哪一段。
 
 **构建能力（后续轮次前置条件）**：现在可以构建并运行 linux/arm64 Rust worker。`rust:1.98-bookworm` 可直接 pull（宿主机/CI 的 `rustup target add` 与容器内 rustup 下载都极慢，不可用）；容器 `peri-rust-build2` 挂 `/src:ro` + 目标卷 `peri-rust-target` + registry 卷 `peri-v1-cargo-registry`，**必须带 `-e RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu`** 否则 cargo 会触发 rustup 联网同步并卡住；构建 `cargo build --release --locked --offline --bin peri-loom-v1` 首次约 1 分钟、增量约 40s。registry 由宿主 `~/.cargo/registry` 复制并硬链接到 `rsproxy.cn-*`（仓库 `.cargo/config.toml` 把 crates-io 指向 rsproxy）。
+
+#### R25：授权读取复用已持有视图（2026-11-02，合入）
+
+**动机**：R24 之后先做容量归因，确认瓶颈不在 CPU——c64、约 800 qps 时整机仅 **1.03 核**（平台 0.88、worker 0.08，每查询约 1.4ms CPU），而每查询墙钟约 72ms。运行中对平台进程发 SIGQUIT 取 goroutine 栈：21 个 goroutine 停在 `fileAudit.waitObserved`，11 个停在 `stateStore.lockState`。给 `lockState` 加调用点标签后（临时探针，未合入；`sitelock_{waits,wait_ns,hold_ns}.<site>`）测得 9.3 次获取/请求、等待 6.1ms/请求，其中窄读（`credentialByDigest` 1.4、`authorizationState` **4.8**、`gatewayRequestState` 1.0 次/请求）只持锁 4–6µs 却排掉约 86% 的等待——典型 convoy，被 `readOperations`（等待 journal 屏障，均 107µs/次）和 `compactionAcquire` 的长持有拖住。
+
+**假设**：`authorizeQuota` 先读一次 `authorizationState` 做项目/库校验，紧接着 `Identity.Authorize` 用同一 `(keyID, project, database)` 再读一次；Hrana 适配器与内层 handler 各调一次 authorize，于是每个请求在同一把状态锁上读 **4 次相同视图**。把判定改成接受已持有视图即可减半，且不改变任何判定条件。
+
+**实现**（`prototypes/v1/platform/auth.go`、`gateway_routing.go`）：
+- 抽出 `authorizeInState(state, principal, database, action)` 纯判定；`(*identity).Authorize` 仍是「读 + 判定」；
+- `authorizeWithin(identity, state, …)` 供已持视图的调用方使用：只有能接受视图的 sink 走捷径，否则回落到 `identity.Authorize`，注入的 Identity 仍是权威；
+- `authorizeQuota` 改用已读视图。判定条件、错误返回、权限表均未改动。
+
+**结果**（每侧独立二进制、每侧全新 v2 卷 + 同导入 + 同配额，c64，320 查询/样本，逐轮交替顺序）：
+| 轮次 | 全体中位（r20 → r25a） | 逐组中位 | 逐组同向 | lockwait/req 中位 |
+|---|---|---|---|---|
+| run1（4 组 × 3 样本/侧，r20 先测） | 690.83 → 744.66 qps（**+7.8%**） | +17.4 / +16.2 / +3.6 / +9.9%（中位 **+13.0%**） | 4/4 | 5.83 → 4.91ms |
+| run2（交换顺序，r25a 先测） | 725.76 → 761.62 qps（**+4.9%**） | +3.3 / +7.2 / +3.5 / +9.4%（中位 **+5.4%**） | 4/4 | 5.54 → 4.82ms |
+两轮 `fails=0`，逐组 **8/8 同向**（合并逐组中位 +8.3%）。机制核验（探针版）：状态锁获取 9.32 → **6.90 次/请求（−26%）**，`authorizationState` 4.80 → **2.40 次/请求**，与「每请求去掉 2 次重复读取」一致。
+
+**对照实验（先排除客户端瓶颈）**：同一服务器、同一总并发下，1 进程 × c64 = 539 qps，2 进程 × c32 = 544 qps（均 `fail=0`）——总量不变，说明瓶颈在服务端而非 Node 客户端，服务端优化才会体现在 qps 上。c128 单进程会出现 `audit_unavailable`（503）与 502，说明当前审计准入在 128 并发下不足，属独立问题。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri`；`go test ./...`（`PERI_RUST_BINARY` 指向本机 debug worker）失败集与基线一致，均为此前的环境敏感项（`TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`、`TestP6Verify*` 等，在 main 上同样失败）。
+
+**副作用/风险**：`authorizeWithin` 的类型断言让自定义 Identity 自动回落到自身读取，行为不变；单请求内的判定现在基于同一份视图，比原来「两次独立读取」更一致，不会更宽松（两次读取本来就来自同一状态锁保护的状态）。
+
+**下一轮提示**：探针显示改后剩余等待占比 `credentialByDigest` 约 49%、`authorizationState` 23%、`compactionAcquire` 13%、`gatewayRequestState` 12%。`credentialByDigest` 仍是每请求第一把锁，占比最大；下一步是让它不经过状态锁（不可变摘要索引 + 原子健康位），其次是去掉 Hrana 适配器与 handler 之间的重复授权。
 
 ## 代码约定
 
