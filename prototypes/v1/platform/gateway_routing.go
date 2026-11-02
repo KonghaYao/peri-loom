@@ -36,7 +36,7 @@ func (gateway *Gateway) authorizeQuota(principal Principal, database controller.
 	if !found || descriptor.Project != principal.Project || descriptor.ID != database || (descriptor.State != "ready" && descriptor.State != "active") {
 		return Quotas{}, errors.New("database unavailable")
 	}
-	if err := gateway.config.Identity.Authorize(principal, database, "sql"); err != nil {
+	if err := authorizeWithin(gateway.config.Identity, state, principal, database, "sql"); err != nil {
 		return Quotas{}, err
 	}
 	return project.Quotas, nil
