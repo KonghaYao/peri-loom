@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
@@ -47,10 +47,83 @@ pub(super) struct Sessions {
 }
 
 #[derive(Default)]
-struct RefreshLocks(Mutex<BTreeMap<DatabaseId, Weak<Mutex<()>>>>);
+struct RefreshLocks(Mutex<BTreeMap<DatabaseId, Weak<RefreshGate>>>);
+
+/// Serialises the image-refresh section of one database without polling.
+///
+/// The mutex is shared by every stateful command of a database (`open`, `begin`, `close`,
+/// `health`), so a 2ms retry loop put a fixed sleep on the request path whenever two of them
+/// overlapped. The handoff keeps the same mutual exclusion and deadline while waking the next
+/// waiter as soon as the section ends: the guarded work itself is microseconds, so the wake
+/// replaces the poll.
+#[derive(Default)]
+struct RefreshGate {
+    held: Mutex<bool>,
+    released: Condvar,
+}
+
+struct RefreshGuard<'gate>(&'gate RefreshGate);
+
+impl Drop for RefreshGuard<'_> {
+    fn drop(&mut self) {
+        let mut held = self
+            .0
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = false;
+        drop(held);
+        self.0.released.notify_one();
+    }
+}
+
+impl RefreshGate {
+    /// Non-blocking attempt for maintenance sweeps: a held section is skipped, never waited on.
+    fn try_lock(&self) -> Result<Option<RefreshGuard<'_>>> {
+        let mut held = self
+            .held
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        if *held {
+            return Ok(None);
+        }
+        *held = true;
+        Ok(Some(RefreshGuard(self)))
+    }
+
+    fn lock_until(&self, deadline: Instant) -> Result<RefreshGuard<'_>> {
+        let mut held = self
+            .held
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        loop {
+            ensure!(Instant::now() < deadline, AdmissionError::Deadline);
+            if !*held {
+                *held = true;
+                return Ok(RefreshGuard(self));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(AdmissionError::Deadline.into());
+            }
+            let (guard, timeout) = self
+                .released
+                .wait_timeout(held, remaining)
+                .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+            held = guard;
+            if timeout.timed_out() && *held {
+                drop(held);
+                // Hand the wakeup on: the notified waiter may give up on its deadline before
+                // it can take the section, and nobody else would wake the remaining sleepers.
+                self.released.notify_one();
+                return Err(AdmissionError::Deadline.into());
+            }
+        }
+    }
+}
 
 impl RefreshLocks {
-    fn for_database(&self, database: &DatabaseId) -> Result<Arc<Mutex<()>>> {
+    fn for_database(&self, database: &DatabaseId) -> Result<Arc<RefreshGate>> {
         let mut locks = self
             .0
             .lock()
@@ -60,28 +133,9 @@ impl RefreshLocks {
         }
         // An active caller owns the Arc, so a concurrent caller cannot get a new lock.
         locks.retain(|_, lock| lock.strong_count() > 0);
-        let lock = Arc::new(Mutex::new(()));
+        let lock = Arc::new(RefreshGate::default());
         locks.insert(database.clone(), Arc::downgrade(&lock));
         Ok(lock)
-    }
-
-    fn lock_until(lock: &Mutex<()>, deadline: Instant) -> Result<MutexGuard<'_, ()>> {
-        loop {
-            ensure!(Instant::now() < deadline, AdmissionError::Deadline);
-            match lock.try_lock() {
-                Ok(guard) => return Ok(guard),
-                Err(TryLockError::Poisoned(_)) => {
-                    anyhow::bail!("image refresh mutex poisoned")
-                }
-                Err(TryLockError::WouldBlock) => {
-                    std::thread::sleep(
-                        deadline
-                            .saturating_duration_since(Instant::now())
-                            .min(Duration::from_millis(2)),
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -147,7 +201,7 @@ impl Sessions {
         // opens, so a slow S3 or a large WAL outliving this request is not a cancelled load.
         let _waiter_deadline = crate::runtime::WaiterDeadlineScope::until(deadline);
         let refresh = self.image_refresh.for_database(database)?;
-        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
+        let _refresh = refresh.lock_until(deadline)?;
         self.refresh_initial_image(database)?;
         ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         let handle = Arc::new(self.runtime.open_session(database)?);
@@ -219,7 +273,7 @@ impl Sessions {
     pub fn begin(&self, identifier: &str, deadline: Instant) -> Result<SessionCall> {
         let database = self.entry(identifier)?.database.clone();
         let refresh = self.image_refresh.for_database(&database)?;
-        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
+        let _refresh = refresh.lock_until(deadline)?;
         self.refresh_initial_image(&database)?;
         ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         self.entry(identifier)?.begin(identifier)
@@ -301,7 +355,7 @@ impl Sessions {
         }
         let entry = self.entry(identifier)?;
         let refresh = self.image_refresh.for_database(&entry.database)?;
-        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
+        let _refresh = refresh.lock_until(deadline)?;
         let entry = self.entry(identifier).or_else(|_| {
             self.registry
                 .lock()
@@ -363,9 +417,9 @@ impl Sessions {
 
     pub fn clear_database(&self, database: &DatabaseId) -> Result<()> {
         let refresh = self.image_refresh.for_database(database)?;
-        let _refresh = refresh
-            .lock()
-            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        // Administrative teardown has no request deadline; the generous cap only keeps a
+        // wedged peer from parking the caller forever.
+        let _refresh = refresh.lock_until(Instant::now() + Duration::from_secs(60))?;
         self.clear_matching(|entry| entry.database == *database)
     }
 
@@ -424,10 +478,9 @@ impl Sessions {
             .collect();
         for (id, entry) in entries {
             let refresh = self.image_refresh.for_database(&entry.database)?;
-            let _refresh = match refresh.try_lock() {
-                Ok(guard) => guard,
-                Err(TryLockError::WouldBlock) => continue,
-                Err(TryLockError::Poisoned(_)) => anyhow::bail!("image refresh mutex poisoned"),
+            let _refresh = match refresh.try_lock()? {
+                Some(guard) => guard,
+                None => continue,
             };
             let (expired, closing, closed, _, _, _) = entry.lifecycle(self.idle, self.max_age);
             if closed {
@@ -452,7 +505,7 @@ impl Sessions {
         crate::ownership::types::validate_label(owner)?;
         crate::ownership::types::validate_label(request)?;
         let refresh = self.image_refresh.for_database(&binding.database)?;
-        let _refresh = RefreshLocks::lock_until(&refresh, deadline)?;
+        let _refresh = refresh.lock_until(deadline)?;
         let registry = self
             .registry
             .lock()
@@ -718,16 +771,21 @@ mod tests {
         let a_lock = locks.for_database(&a)?;
         let a_second = locks.for_database(&a)?;
         assert!(Arc::ptr_eq(&a_lock, &a_second));
-        let held = a_lock.lock().unwrap();
-        assert!(a_second.try_lock().is_err());
+        let held = a_lock
+            .lock_until(Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        assert!(a_second.try_lock().unwrap().is_none());
         let b_lock = locks.for_database(&b)?;
-        let _b_held = b_lock.try_lock().expect("unrelated database must proceed");
+        let _b_held = b_lock
+            .try_lock()
+            .unwrap()
+            .expect("unrelated database must proceed");
         drop(held);
         drop(a_second);
         drop(a_lock);
         let replacement = locks.for_database(&a)?;
         assert_eq!(locks.0.lock().unwrap().len(), 2);
-        assert!(replacement.try_lock().is_ok());
+        assert!(replacement.try_lock().unwrap().is_some());
         Ok(())
     }
 
@@ -756,17 +814,20 @@ mod tests {
         let b_lock = locks.for_database(&b)?;
         let (ready, started) = mpsc::channel();
         let slow = std::thread::spawn(move || {
-            let _guard = a_lock.lock().unwrap();
+            let _guard = a_lock
+                .lock_until(Instant::now() + Duration::from_secs(5))
+                .unwrap();
             ready.send(()).unwrap();
             std::thread::sleep(Duration::from_millis(500));
         });
         started.recv()?;
         let first = Instant::now();
-        let _healthy = RefreshLocks::lock_until(&b_lock, first + Duration::from_millis(250))?;
+        let _healthy = b_lock.lock_until(first + Duration::from_millis(250))?;
         let waiting_a = locks.for_database(&a)?;
         let failure =
-            RefreshLocks::lock_until(&waiting_a, Instant::now() + Duration::from_millis(30))
-                .unwrap_err();
+            waiting_a.lock_until(Instant::now() + Duration::from_millis(30))
+                .err()
+                .expect("a held section must time out");
         assert!(failure.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline));
         assert!(first.elapsed() < Duration::from_millis(250));
         slow.join().expect("slow refresh thread panicked");
