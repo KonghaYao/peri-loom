@@ -398,7 +398,7 @@ func TestUnifiedCompletionBatchSubmitsUnderOneViewLock(test *testing.T) {
 	}
 	locks := 0
 	store.testOperationLock = func() { locks++ }
-	waits, failures := store.submitOperationsAuditBatch(entries)
+	commits, failures := store.submitOperationsAuditBatch(entries)
 	if locks != 1 {
 		test.Fatalf("batch submissions entered the view lock %d times", locks)
 	}
@@ -407,15 +407,65 @@ func TestUnifiedCompletionBatchSubmitsUnderOneViewLock(test *testing.T) {
 			test.Fatalf("entry %d refused: %v", index, failure)
 		}
 	}
-	for index, wait := range waits {
-		if wait == nil {
+	if err := store.awaitOperationBatch(commits); err != nil {
+		test.Fatalf("batch barrier failed: %v", err)
+	}
+	if locks != 2 {
+		test.Fatalf("a %d-member batch took %d state locks, want one submit and one settle", count, locks)
+	}
+	for index, commit := range commits {
+		if commit == nil {
 			test.Fatalf("entry %d has no barrier", index)
 		}
-		if err := wait(); err != nil {
-			test.Fatalf("entry %d barrier failed: %v", index, err)
+		if commit.err != nil {
+			test.Fatalf("entry %d barrier failed: %v", index, commit.err)
 		}
 	}
 	if store.operations.auditHead.Sequence != count {
 		test.Fatalf("audit head=%d after %d entries", store.operations.auditHead.Sequence, count)
+	}
+}
+
+// A drain forms a batch so its members can share one barrier. Queueing them one at a
+// time wakes the committer on the first member, which writes what it can already see and
+// leaves the rest to a second fsync. The hold keeps the committer off a partial batch.
+func TestUnifiedCompletionJournalHoldsOneDrainBatchTogether(test *testing.T) {
+	store, _, _ := unifiedStore(test)
+	journal := store.operations
+	journal.holdCompletionBatch()
+	held := true
+	defer func() {
+		if held {
+			journal.releaseCompletionBatch()
+		}
+	}()
+	commits := make([]*operationCommit, 0, 4)
+	for index := 0; index < 4; index++ {
+		event := completionAuditEvent(fmt.Sprintf("held%02d", index))
+		commit, err := journal.submitAuditPrepared(store.state, operationDelta{}, &event, true, nil)
+		if err != nil {
+			test.Fatalf("held submit %d failed: %v", index, err)
+		}
+		commits = append(commits, commit)
+	}
+	time.Sleep(50 * time.Millisecond)
+	journal.mutex.Lock()
+	partial := journal.syncs
+	journal.mutex.Unlock()
+	if partial != 0 {
+		test.Fatalf("the committer wrote %d barrier(s) while a drain batch was still being queued", partial)
+	}
+	journal.releaseCompletionBatch()
+	held = false
+	for index, commit := range commits {
+		if err := journal.await(commit); err != nil {
+			test.Fatalf("commit %d failed: %v", index, err)
+		}
+	}
+	journal.mutex.Lock()
+	syncs := journal.syncs
+	journal.mutex.Unlock()
+	if syncs != 1 {
+		test.Fatalf("one drain batch paid %d barriers, want 1", syncs)
 	}
 }

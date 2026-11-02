@@ -140,6 +140,70 @@ func (store *stateStore) settleOperations() error {
 	return failure
 }
 
+// settleReadyOperations confirms the applied edits whose journal barrier has already
+// returned and leaves the rest ordered in the queue. Awaiting a barrier under the view lock
+// makes every caller pay for the newest append of another request: with one lock for the
+// whole view, one undecided append holds every completion behind it until its own batch is
+// written. A caller that only needs its own append confirmed must therefore never wait here.
+//
+// The prefix rule keeps the view order: an edit becomes confirmed only together with every
+// edit submitted before it, so a rollback still runs in the same reverse order a full settle
+// uses. Editing that queue without waiting is only safe because every append has an owner
+// that awaits its own barrier and then settles this prefix; the legacy journal, which has no
+// such owner and drives compaction from that call, keeps the full settle.
+func (store *stateStore) settleReadyOperations() error {
+	pending := store.unconfirmed
+	ready := 0
+	for ready < len(pending) && operationCommitSettled(pending[ready].commit) {
+		ready++
+	}
+	if ready == 0 {
+		return nil
+	}
+	if ready == len(pending) {
+		store.unconfirmed = nil
+	} else {
+		store.unconfirmed = append([]operationPendingEdit(nil), pending[ready:]...)
+	}
+	var failure error
+	for _, entry := range pending[:ready] {
+		if failure == nil && entry.commit.err != nil {
+			failure = entry.commit.err
+		}
+	}
+	if failure == nil {
+		return nil
+	}
+	for index := ready - 1; index >= 0; index-- {
+		entry := pending[index]
+		if entry.commit.err == nil || entry.commit.applied {
+			continue
+		}
+		entry.commit.applied = true
+		entry.revert()
+	}
+	// A shutdown refusal proves the append never happened; only an uncertain append leaves
+	// persistence in doubt and poisons the store.
+	if !errors.Is(failure, ErrStateClosed) {
+		store.disk.poisoned.Store(true)
+	}
+	return failure
+}
+
+// operationCommitSettled reports whether the committer has published this append's result.
+// The channel is closed only after the error is set, so a receive here orders that read.
+func operationCommitSettled(commit *operationCommit) bool {
+	if commit == nil {
+		return false
+	}
+	select {
+	case <-commit.settled:
+		return true
+	default:
+		return false
+	}
+}
+
 // readOperations visits the committed operation view without copying the rest of the
 // registry. The callback must not retain or mutate the state. A visitor must not decide
 // that a namespace is free while the append that freed it is undecided, so the read
@@ -315,15 +379,19 @@ type operationAuditEntry struct {
 // own barrier and its own refusal, so a failed member never hides behind its
 // neighbours; sharing the lock only keeps a drainer batch from resolving the same
 // contention once per member.
-func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntry) ([]func() error, []error) {
-	waits := make([]func() error, len(entries))
+func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntry) ([]*operationCommit, []error) {
+	commits := make([]*operationCommit, len(entries))
 	failures := make([]error, len(entries))
 	if len(entries) == 0 {
-		return waits, failures
+		return commits, failures
 	}
 	preparation := store.observeOperationPreparation()
 	unlock := store.lockOperationMutationStateObserved(preparation)
 	defer unlock()
+	// One drain batch is one barrier: keep the committer from starting on the first
+	// member that becomes visible.
+	store.operations.holdCompletionBatch()
+	defer store.operations.releaseCompletionBatch()
 	for index := range entries {
 		observed := preparation
 		if index > 0 {
@@ -336,13 +404,43 @@ func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntr
 			failures[index] = err
 			continue
 		}
+		commits[index] = commit
+	}
+	return commits, failures
+}
+
+// awaitOperationBatch pays the barriers of one completion batch and settles the view once.
+// The batch's commits are ordered, so the last barrier implies every earlier one; leaving
+// the settlement to each member would put the state lock in the drain's critical path once
+// per record instead of once per batch.
+func (store *stateStore) awaitOperationBatch(commits []*operationCommit) error {
+	var last *operationCommit
+	for _, commit := range commits {
 		if commit == nil {
-			waits[index] = func() error { return nil }
 			continue
 		}
-		waits[index] = func() error { return store.awaitOperationCommit(commit) }
+		store.operations.waitObserved(commit)
+		last = commit
 	}
-	return waits, failures
+	if last == nil {
+		return nil
+	}
+	unlock := store.lockOperationMutationState()
+	settleErr := store.settleReadyOperations()
+	if settleErr == nil && store.operations.completion != nil {
+		store.scheduleCompletionMaintenanceLocked()
+	}
+	poisoned := store.disk.poisoned.Load()
+	unlock()
+	if settleErr != nil {
+		return settleErr
+	}
+	if poisoned {
+		// This delta is durable, but the log is now uncertain for another commit, so the
+		// caller must not treat the registration as usable.
+		return ErrStateUncertain
+	}
+	return nil
 }
 
 // updateOperationsAudit applies one edit and returns only after its appended delta is durable.
@@ -360,8 +458,16 @@ func (store *stateStore) awaitOperationCommit(commit *operationCommit) error {
 	store.operations.waitObserved(commit)
 	unlock := store.lockOperationMutationState()
 	// Another waiter may have settled this commit before us; settling again is what makes
-	// the outcome definite either way.
-	settleErr := store.settleOperations()
+	// the outcome definite either way. The unified journal publishes a completion without
+	// waiting for any other append: its maintenance pass settles the whole queue when it
+	// needs to compact. The legacy journal drives that compaction from this call, so it
+	// still joins the queue first.
+	var settleErr error
+	if store.operations.completion != nil {
+		settleErr = store.settleReadyOperations()
+	} else {
+		settleErr = store.settleOperations()
+	}
 	var compaction *operationCompaction
 	if settleErr == nil {
 		if store.operations.completion != nil {
