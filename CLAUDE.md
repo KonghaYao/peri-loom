@@ -225,6 +225,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R27 | `perf/issue28-r27-auth-scope` / `8651766`（merge `386feff`） | 请求级 `authorizationScope`：适配器认证后挂到上下文，`open`/`dispatchLocked` 的授权检查复用同一状态快照，跨外部等待（激活/placement/writer profile RPC）后失效重读 | 每侧全新 v2 卷 A/B（r26a vs r27a，6 轮 × 3 样本/侧，c64）：逐轮 +8.3 / +15.6 / −2.9 / −4.6 / +9.2 / +14.8%（4/6 同向），18 样本/侧中位 715.60→752.31 qps（**+5.1%**），均值 717.22→744.43（+3.8%）；探针：`authorizationState` 2.40→**1.40 次/请求**、总获取 5.49→4.50、lockwait/req 4.51→4.10ms；fails=0 | 合入 main（噪声大，见下） |
 | R28 | `perf/issue28-r28-request-state` / `9baa692`+`7cdfd35`（merge `3e9ac39`） | 准入读（Projects+Databases）与授权读（APIKeys+Projects+Databases+Keys）合并为一次 `requestState`，请求级快照按 (keyID, project, database) 命中 | 每侧全新 v2 卷 A/B（r27a vs r28b，6 轮 × 3 样本/侧，c64）：逐轮 −5.8 / +23.9 / +19.1 / −3.2 / +4.1 / −4.2%（3/6 同向），18 样本/侧中位 810.61→829.71 qps（**+2.4%**），均值 800.39→838.61（+4.8%），p50 中位 75.1→72.9ms；探针：`requestState` 2.40→**0.40 次/请求**、总锁获取 4.51→**2.50**、lockwait/req 4.52→3.73ms；fails=0 | 合入 main |
 | R29 | `perf/issue28-r29-offlock-settle` / `63ced1a`（不合入，留证） | 把 `readOperations` 的 journal 屏障等待移出状态锁：`settling`+`sync.Cond`，锁外 `awaitOperations`，最多 3 轮后回落 | 每侧全新 v2 卷 A/B（r28b vs r29a，2 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：run1 中位 799.79→623.46（−22.1%）、run2 800.29→609.72（−23.8%），合并 12 样本/侧中位 800.04→595.52 qps（**−25.6%**），均值 781.82→588.42（−24.7%）；p50 中位 75.4→95.8ms（+27%）；lockwait/req 3.5–4.1→**0.25–0.51ms**（等待确实挪走），但 sync/q 0.06→**0.10–0.12**；fails=0 | **失败，不合入**：持锁串行化正是屏障合并的限速器；等待挪到锁外后，屏障窗口内每个到达的请求都去等一份包含自己之后写入的「最年轻」未决栈，等待互相堆叠，且 journal 批次变碎使 sync 次数翻倍（与 R22 同构） |
+| R30 | `perf/issue28-r30-admission-fastpath` / `54e4059`+`02dc958`（merge `83ad91b`） | `readOperations` 的锁内 settle 只对「回滚会重新加回隔离」的未决编辑执行：阻塞判据抽成 `operationBlockingFor` 与 `isolatedOperation` 共用，读操作带 `operationReadScope`（gateway 不把进行中的 gateway 记录算占位，management 算；零值保守）；未决计数不再触发等待，容量留待提交时 `validate` 兜底 | 每侧全新 v2 卷 A/B（r28b vs r30b，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：逐轮 +6.6 / +19.7 / +2.6%（**3/3 同向**），9 样本/侧中位 836.98→912.88 qps（**+9.07%**），均值 828.73→908.99（+9.68%）；p50 中位 73.3→67.2ms；lockwait/req 均值 3.56→**1.08ms**（−70%）；sync/q 0.06→0.05；fails=0。探针：每读平均 2.86 条未决编辑，其中回滚会重新加回阻塞的 **0.0%**、只改未决计数的 3.2% | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1056,6 +1057,22 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **验证**：`go build ./cmd/peri-platform ./cmd/peri` 通过；`go vet ./...` 干净；`go test ./...` 仅剩基线既有 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`；`go test -race`（`TestOperation|TestDurable|TestState|TestSettle|TestGatewayRequest|TestAuth`）72.5s 无 DATA RACE。分支保留为证据，不合入。
 
 **下一轮提示**：不要再动 settle 的顺序性。`readOperations` 仍有 1.20 次/请求，下一步应先查这两次从哪来（`gateway_sessions.go:76` 与 `gateway_idle.go:24`）：若其中一次只是要读「已提交视图」而不需要自己触发 settle，可用 R26 的原子快照发布模式做成无锁读（`pending==0` 时直接读不可变快照，`pending>0` 时走现有锁路径）。`compactionAcquire`（0.89 次/请求）仍需先拆内部 span。
+
+#### R30：只有回滚会重新加回隔离的未决编辑才等屏障（2026-11-02，合入）
+
+**假设**：R29 证明等待不能挪出锁。换一个方向：不是把等待挪走，而是让读**不必等**。`readOperations` 的 settle 保护的是「读者不要在一个可能被回滚的编辑上做决定」；但如果该编辑回滚后准入答案不变，等待就是纯开销。非提交请求（只读语句、describe、游标）每次都写一条**已经终结**的记录，且不改变隔离集合。
+
+**探针（先定方向再实现）**：场景拆分：`session_by_id`（每次查询 open→describe→cursor_start→statement→close）c64 735–817 qps，`probe`（`SELECT 1` 单步）738–858 qps —— 瓶颈在会话生命周期不在执行；`reuse`（复用会话）百万级。相位观测（`--sql-open-observer`）c64 单样本：`cursor_start` p50 23.00ms（native 17.22 / audit 2.01 / intent 1.69）、`open` 9.82ms（audit 5.49 / native 3.63）、`close` 8.76ms（audit 6.69 / native 1.82）。耐久观测（`PERI_DURABILITY_OBSERVER=1`）：`audit_member_wait` p50 1.99ms / p99 22.61ms。上限探针：`readOperations` 直接跳过 settle（不安全，仅测上限）3 轮 × 3 样本 c64，中位 786.98→916.81 qps（+16.4%），lockwait/req 3.3–4.2→0.8–1.7ms。机制成立，值得实现安全版本。
+
+**第一版（`54e4059`，+2.1%，不足以合入）**：入队时计算 `admissionRelevant`：累加编辑前/后未终结的触及记录数，并检查触及记录是否阻塞；任一触发即等待。9 样本/侧 A/B（r28b vs r30safe）中位 876.26→894.33（+2.06%）、均值 +0.99%，`lockwait/req` 3.41→2.83ms。临时探针（`state_cost` 原子计数，未提交）给出原因：每读平均遇到 **2.86 条**未决编辑，但其中「回滚会重新加回阻塞」的 **0.0%**、只改未决计数的 **3.2%** —— 97% 的读已走快路径，剩下的 3.2% 每次持锁等待一批屏障，其余请求全排在它们后面。
+
+**第二版（`02dc958`，合入）**：把等待条件收到「回滚会重新加回一条占住命名空间的记录」。未决计数不再触发等待：加阻塞/加记录都是读者已经看到的更严答案，回滚只会让当时的拒绝显得多余；计数只用于容量，容量由应用编辑的那次提交在 `validate` 里兜底（越过上限的编辑被拒绝），读者少算一条未决终结化，最多放进一个随后自己的持久写会被拒绝的请求——不会让 SQL 在隔离命名空间上执行，因为所有可能提交的路径都在派发前先持久登记（登记失败即拒绝），而失败的追加会毒化存储使后续登记全部失败。阻塞判据按准入模式拆开并与 `isolatedOperation` 共用 `operationBlockingFor`：gateway 准入不把进行中的 gateway 记录算占位（隔离与 management 记录算），management 准入两者都算；`operationReadScope` 的零值是保守的 management 范围，忘记传参不会放松。
+
+**结果**：3 轮 × 3 样本/侧 A/B（r28b vs r30b，c64，320 查询/样本，逐轮交替）：逐轮中位 +6.6 / +19.7 / +2.6%（3/3 同向），合并 9 样本/侧中位 **836.98→912.88 qps（+9.07%）**，均值 828.73→908.99（+9.68%）；p50 中位 73.3→67.2ms；`lockwait/req` 均值 3.56→**1.08ms（−70%）**；sync/q 0.06→0.05；`fails=0`。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri`、`go vet ./...`、`gofmt` 干净；`go test ./...` 仅剩基线既有 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`；`go test -race`（`TestOperation|TestDurable|TestState|TestSettle|TestGatewayRequest|TestAuth`）77.6s 无 DATA RACE。新增/改写用例：`TestOperationGatewayReadSkipsAnUndecidedGatewayTerminalization`（同一未决 close，gateway 读立即返回、management 读必须等）、`TestOperationReadWaitsForAnUndecidedQuarantineRelease`（未决释放的屏障返回前，gateway 读不得判命名空间自由）、`TestOperationReadAnswersAroundAnUndecidedTerminalEdit`（终结记录不阻塞读且读后未决栈不变）、`TestOperationNarrowReadIsNotBlockedByASlowBarrier`（改用 management 记录终结化作为必须等待的编辑）。
+
+**下一轮提示**：`lockwait/req` 已到 1.08ms，剩余锁等待主要来自提交本身（sync/q 0.05、sync_avg 2.2–2.7ms），从读侧继续挤压空间有限。下一轮应转向相位表里占比最大的部分：`cursor_start` 23.00ms（native 17.22ms，worker 侧 `dispatch_cursor_first`）与 `close` 8.76ms（audit 6.69ms，`audit_member_wait` p99 22.61ms），前者需要先加 worker 内部 span 才能定位。c128 下 `audit_unavailable`(503) 仍是独立问题。
 
 ## 代码约定
 
