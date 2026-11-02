@@ -224,6 +224,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R26 | `perf/issue28-r26-credential-atomic` / `e198d33`（merge `0027a50`） | `credentialByDigest` 改读不可变摘要快照（`atomic.Pointer`），`durableFile.closed/poisoned` 改原子，认证窄读不再进状态锁 | 每侧全新 v2 卷 A/B（r25a vs r26a，4 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替，worker 二进制两侧相同）：逐轮 +5.3 / +0.8 / +13.2 / +29.3%，12 样本/侧中位 694.75→779.82 qps（**+12.2%**），均值 697.49→759.12（+8.8%）；p50 中位 88.2→77.6ms；lockwait/req 中位 5.42→4.51ms（−16.8%）；fails=0。探针：锁获取 6.90→**5.49 次/请求**，`credentialByDigest` 调用点消失 | 合入 main |
 | R27 | `perf/issue28-r27-auth-scope` / `8651766`（merge `386feff`） | 请求级 `authorizationScope`：适配器认证后挂到上下文，`open`/`dispatchLocked` 的授权检查复用同一状态快照，跨外部等待（激活/placement/writer profile RPC）后失效重读 | 每侧全新 v2 卷 A/B（r26a vs r27a，6 轮 × 3 样本/侧，c64）：逐轮 +8.3 / +15.6 / −2.9 / −4.6 / +9.2 / +14.8%（4/6 同向），18 样本/侧中位 715.60→752.31 qps（**+5.1%**），均值 717.22→744.43（+3.8%）；探针：`authorizationState` 2.40→**1.40 次/请求**、总获取 5.49→4.50、lockwait/req 4.51→4.10ms；fails=0 | 合入 main（噪声大，见下） |
 | R28 | `perf/issue28-r28-request-state` / `9baa692`+`7cdfd35`（merge `3e9ac39`） | 准入读（Projects+Databases）与授权读（APIKeys+Projects+Databases+Keys）合并为一次 `requestState`，请求级快照按 (keyID, project, database) 命中 | 每侧全新 v2 卷 A/B（r27a vs r28b，6 轮 × 3 样本/侧，c64）：逐轮 −5.8 / +23.9 / +19.1 / −3.2 / +4.1 / −4.2%（3/6 同向），18 样本/侧中位 810.61→829.71 qps（**+2.4%**），均值 800.39→838.61（+4.8%），p50 中位 75.1→72.9ms；探针：`requestState` 2.40→**0.40 次/请求**、总锁获取 4.51→**2.50**、lockwait/req 4.52→3.73ms；fails=0 | 合入 main |
+| R29 | `perf/issue28-r29-offlock-settle` / `63ced1a`（不合入，留证） | 把 `readOperations` 的 journal 屏障等待移出状态锁：`settling`+`sync.Cond`，锁外 `awaitOperations`，最多 3 轮后回落 | 每侧全新 v2 卷 A/B（r28b vs r29a，2 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：run1 中位 799.79→623.46（−22.1%）、run2 800.29→609.72（−23.8%），合并 12 样本/侧中位 800.04→595.52 qps（**−25.6%**），均值 781.82→588.42（−24.7%）；p50 中位 75.4→95.8ms（+27%）；lockwait/req 3.5–4.1→**0.25–0.51ms**（等待确实挪走），但 sync/q 0.06→**0.10–0.12**；fails=0 | **失败，不合入**：持锁串行化正是屏障合并的限速器；等待挪到锁外后，屏障窗口内每个到达的请求都去等一份包含自己之后写入的「最年轻」未决栈，等待互相堆叠，且 journal 批次变碎使 sync 次数翻倍（与 R22 同构） |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1041,6 +1042,20 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **验证**：`go build ./cmd/peri-platform ./cmd/peri`；`go vet ./...` 干净；`go test ./...` 失败集与基线一致，仅 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`（新增的 `requestState` 需在 `state_test.go` 的 `narrowAuthProbe` 上转发，否则窄读探针会落到 `Snapshot`）。
 
 **下一轮提示**：`readOperations` 现在是最大等待来源（1.20 次/请求、116µs 持锁、51–53%），主要成本是等 journal 屏障；`gateway_sessions.go:76` 与 idle 路径对它的调用是否可以移出请求路径，需要先确认它保护的 settle 语义。`compactionAcquire`（0.89 次/请求、25–30µs）此前已被 R19/R21/R22 否证其批处理变体，若要动必须先拆内部 span。
+
+#### R29：把操作视图的屏障等待移出状态锁（2026-11-02，失败，不合入）
+
+**假设**：R28 探针把 `readOperations` 的持锁时间拆开了：settle（等 journal 屏障）0.13–0.14ms/请求约占 91%，`visit` 只有 0.02ms。只要把这 91% 挪到锁外，屏障期间其他请求就能继续读写状态视图，吞吐应当上升。
+
+**做法**：`stateStore` 加 `settling int` + `settleDone *sync.Cond`（绑 `disk.mutex`）；`readOperations` 改成循环——锁内查 `available()`；`settling>0` 时 `Wait()` 主动释放状态锁；`unconfirmed` 为空则 `visit` 返回；否则摘出 pending、`settling++`、解锁、`awaitOperations(pending)`、重锁、`settling--`、`Broadcast()`，失败则 `rollbackOperations`。最多 `operationReadSettleAttempts = 3` 轮，之后回落到原来的锁内 settle（保持有界）。`settleOperations` 拆成锁外可调的 `awaitOperations` 与调用方持锁的 `rollbackOperations`。
+
+**结果**：2 轮 × 3 样本/侧 A/B（r28b vs r29a，c64，320 查询/样本，逐轮交替）：run1 中位 799.79→623.46（−22.1%），run2 800.29→609.72（−23.8%）；合并 12 样本/侧中位 **800.04→595.52 qps（−25.6%）**，均值 781.82→588.42（−24.7%）；p50 中位 75.4→95.8ms（+27%）；`fails=0`。机制侧：lockwait/req 3.5–4.1→**0.25–0.51ms**（等待确实被挪出锁），但 sync/q 0.06→**0.10–0.12**（journal 屏障次数近乎翻倍）。
+
+**结论与原因**：持锁串行化恰好是屏障合并的限速器。锁内结清时，一个等待者付完屏障，后来者在锁内看到的未决栈已空，直接拿已提交视图；等待挪到锁外后，屏障窗口内每个到达 `readOperations` 的请求都会去 `awaitOperations`，等的还是**包含自己之后入队写入**的未决栈（更年轻的屏障），于是等待互相堆叠——排队放大到 +20ms p50，远超省下的锁等待。同时结清者不再被锁排序，journal 取到的批次更碎，sync 次数翻倍。这与 R22（批级一次 settle）同构：**一次有序等待必须保持串行**，拆成多个跨屏障往返必然退化。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri` 通过；`go vet ./...` 干净；`go test ./...` 仅剩基线既有 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`；`go test -race`（`TestOperation|TestDurable|TestState|TestSettle|TestGatewayRequest|TestAuth`）72.5s 无 DATA RACE。分支保留为证据，不合入。
+
+**下一轮提示**：不要再动 settle 的顺序性。`readOperations` 仍有 1.20 次/请求，下一步应先查这两次从哪来（`gateway_sessions.go:76` 与 `gateway_idle.go:24`）：若其中一次只是要读「已提交视图」而不需要自己触发 settle，可用 R26 的原子快照发布模式做成无锁读（`pending==0` 时直接读不可变快照，`pending>0` 时走现有锁路径）。`compactionAcquire`（0.89 次/请求）仍需先拆内部 span。
 
 ## 代码约定
 
