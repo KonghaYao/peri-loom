@@ -29,6 +29,9 @@ type stateStore struct {
 	// The state lock owns the v1 compaction gate and its shutdown error latch.
 	operationCompacting        chan struct{}
 	operationCompactionFailure error
+	// testOperationLock observes each operation state lock acquisition. Tests use
+	// it to pin how many times a path may enter the shared view lock.
+	testOperationLock func()
 }
 
 func OpenStateStore(directory string) (StateStore, error) {

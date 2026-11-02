@@ -18,6 +18,9 @@ func (store *stateStore) lockOperationMutationState() func() {
 }
 
 func (store *stateStore) lockOperationMutationStateObserved(preparation *durabilityPreparation) func() {
+	if store.testOperationLock != nil {
+		store.testOperationLock()
+	}
 	for {
 		var started time.Time
 		if preparation != nil {

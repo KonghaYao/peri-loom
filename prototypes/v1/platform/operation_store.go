@@ -167,30 +167,34 @@ func (store *stateStore) updateOperations(change func(*operationEdit) error) err
 func (store *stateStore) enqueueOperationsAudit(change func(*operationEdit) error, event *AuditEvent, reserved bool, out **operationCommit) error {
 	preparation := store.observeOperationPreparation()
 	unlock := store.lockOperationMutationStateObserved(preparation)
+	commit, err := store.enqueueOperationsAuditLocked(preparation, change, event, reserved)
+	unlock()
+	*out = commit
+	return err
+}
+
+// enqueueOperationsAuditLocked assumes the operation state lock is held. A batch of
+// audit completions enters it once and still resolves every entry into its own commit.
+func (store *stateStore) enqueueOperationsAuditLocked(preparation *durabilityPreparation, change func(*operationEdit) error, event *AuditEvent, reserved bool) (*operationCommit, error) {
 	preparation.mark("state_gate")
 	if err := store.disk.available(); err != nil {
-		unlock()
-		return err
+		return nil, err
 	}
 	if store.maintenanceClosing {
-		unlock()
-		return ErrStateClosed
+		return nil, ErrStateClosed
 	}
 	// The shutdown checkpoint names the revision that materialized the operation
 	// view; an operation committed afterwards would make that name a lie, so the
 	// write is refused loudly instead of silently invalidating the payload a
 	// launcher reads.
 	if store.checkpointed {
-		unlock()
-		return ErrStateFrozen
+		return nil, ErrStateFrozen
 	}
 	if change == nil && event == nil {
-		unlock()
-		return errors.New("operation mutation required")
+		return nil, errors.New("operation mutation required")
 	}
 	if store.state.OperationStorageVersion != 1 && store.state.OperationStorageVersion != completionJournalVersion {
-		unlock()
-		return errors.New("operation storage identity unavailable")
+		return nil, errors.New("operation storage identity unavailable")
 	}
 	// The edit is built on the view as it stands, including edits whose barrier is still
 	// outstanding. That is safe because the queue keeps them in submit order and a failure
@@ -206,29 +210,25 @@ func (store *stateStore) enqueueOperationsAudit(change func(*operationEdit) erro
 	if change != nil {
 		if err := change(edit); err != nil {
 			edit.revert()
-			unlock()
-			return err
+			return nil, err
 		}
 	}
 	preparation.mark("edit")
 	if err := edit.settleRetention(); err != nil {
 		edit.revert()
-		unlock()
-		return err
+		return nil, err
 	}
 	preparation.mark("retention")
 	if err := edit.validate(); err != nil {
 		edit.revert()
-		unlock()
-		return err
+		return nil, err
 	}
 	preparation.mark("validate")
 	delta := edit.delta()
 	preparation.mark("delta")
 	if event == nil && delta.empty() && store.state.OperationSequence == edit.priorSequence && store.state.OperationEvictions == edit.evictions {
 		// A mutation that changed nothing needs no barrier at all.
-		unlock()
-		return nil
+		return nil, nil
 	}
 	if preparation != nil {
 		preparation.caller = edit.caller
@@ -242,14 +242,11 @@ func (store *stateStore) enqueueOperationsAudit(change func(*operationEdit) erro
 			store.disk.poisoned = true
 		}
 		edit.revert()
-		unlock()
-		return err
+		return nil, err
 	}
 	store.unconfirmed = append(store.unconfirmed, operationPendingEdit{commit: commit, revert: edit.revert})
 	store.cost.observeCommit()
-	*out = commit
-	unlock()
-	return nil
+	return commit, nil
 }
 
 // submitOperationsAudit queues one edit and hands back the wait function that makes it
@@ -267,6 +264,48 @@ func (store *stateStore) submitOperationsAudit(change func(*operationEdit) error
 
 func (store *stateStore) submitOperations(change func(*operationEdit) error) (func() error, error) {
 	return store.submitOperationsAudit(change, nil, false)
+}
+
+// operationAuditEntry is one audit-linked edit of a completion batch.
+type operationAuditEntry struct {
+	change   func(*operationEdit) error
+	event    *AuditEvent
+	reserved bool
+}
+
+// submitOperationsAuditBatch queues a batch of independent edits under one
+// operation state lock. Every entry still becomes its own journal commit with its
+// own barrier and its own refusal, so a failed member never hides behind its
+// neighbours; sharing the lock only keeps a drainer batch from resolving the same
+// contention once per member.
+func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntry) ([]func() error, []error) {
+	waits := make([]func() error, len(entries))
+	failures := make([]error, len(entries))
+	if len(entries) == 0 {
+		return waits, failures
+	}
+	preparation := store.observeOperationPreparation()
+	unlock := store.lockOperationMutationStateObserved(preparation)
+	defer unlock()
+	for index := range entries {
+		observed := preparation
+		if index > 0 {
+			// One shared entry covers the lock acquisition; later members still keep
+			// their own caller so a slow member stays attributable.
+			observed = store.observeOperationPreparation()
+		}
+		commit, err := store.enqueueOperationsAuditLocked(observed, entries[index].change, entries[index].event, entries[index].reserved)
+		if err != nil {
+			failures[index] = err
+			continue
+		}
+		if commit == nil {
+			waits[index] = func() error { return nil }
+			continue
+		}
+		waits[index] = func() error { return store.awaitOperationCommit(commit) }
+	}
+	return waits, failures
 }
 
 // updateOperationsAudit applies one edit and returns only after its appended delta is durable.
