@@ -877,12 +877,12 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) (failure error) {
 		rotation := auditRotation{Version: 1, Start: audit.start, Sequence: audit.state.Sequence, Hash: audit.state.Hash}
 		intent, _ := json.Marshal(rotation)
 		if err := atomicPrivate(audit.file.Name()+".rotate", intent); err != nil {
-			audit.head.poisoned = true
+			audit.head.poisoned.Store(true)
 			return ErrStateUncertain
 		}
 		fresh, err := finishAuditRotation(audit.file.Name(), audit.start, audit.file)
 		if err != nil {
-			audit.head.poisoned = true
+			audit.head.poisoned.Store(true)
 			return ErrStateUncertain
 		}
 		audit.file.Close()
@@ -890,7 +890,7 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) (failure error) {
 		audit.size = 0
 		audit.start = audit.state.Sequence + 1
 		if err := clearAuditRotation(audit.file.Name()); err != nil {
-			audit.head.poisoned = true
+			audit.head.poisoned.Store(true)
 			return ErrStateUncertain
 		}
 		if observation != nil {
@@ -925,7 +925,7 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) (failure error) {
 		observation.event.Timings.WriteNS = uint64(time.Since(writeStarted))
 	}
 	if err != nil || written != len(line) {
-		audit.head.poisoned = true
+		audit.head.poisoned.Store(true)
 		return ErrStateUncertain
 	}
 	if gate := audit.testSyncGate; gate != nil {
@@ -937,7 +937,7 @@ func (audit *fileAudit) recordBatch(batch []*auditRequest) (failure error) {
 		observation.event.Timings.SyncNS = uint64(time.Since(syncStarted))
 	}
 	if err != nil {
-		audit.head.poisoned = true
+		audit.head.poisoned.Store(true)
 		return ErrStateUncertain
 	}
 	audit.recordSyncDuration(time.Since(syncStarted))

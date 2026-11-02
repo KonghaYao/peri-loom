@@ -276,7 +276,7 @@ func TestOperationEditRollback(test *testing.T) {
 	if !errors.Is(err, failure) || !reflect.DeepEqual(before, store.state.Operations) || !reflect.DeepEqual(beforeIndex, store.operationsIndex) || sequence != store.state.OperationSequence || evictions != store.state.OperationEvictions {
 		test.Fatal("callback failure did not restore records, counters and index")
 	}
-	if journalBytes(test, store) != bytes || store.disk.poisoned || len(attempted.prior) != 0 || len(attempted.touched) != 0 || !attempted.delta().empty() {
+	if journalBytes(test, store) != bytes || store.disk.poisoned.Load() || len(attempted.prior) != 0 || len(attempted.touched) != 0 || !attempted.delta().empty() {
 		test.Fatal("callback failure wrote the journal or retained touches")
 	}
 	if reflect.ValueOf(store.state.Operations).Pointer() != identity {
@@ -352,7 +352,7 @@ func TestOperationEditValidationAndAppendRollback(test *testing.T) {
 			if err == nil || !reflect.DeepEqual(previous, store.state.Operations) || !reflect.DeepEqual(beforeIndex, store.operationsIndex) || sequence != store.state.OperationSequence || evictions != store.state.OperationEvictions {
 				test.Fatal("failed commit did not restore records, counters and index")
 			}
-			if store.disk.poisoned != (failure == "append") || journalBytes(test, store) != bytes {
+			if store.disk.poisoned.Load() != (failure == "append") || journalBytes(test, store) != bytes {
 				test.Fatal("wrong poison or journal behavior on commit failure")
 			}
 			assertOperationIndex(test, store.state, store.operationsIndex)

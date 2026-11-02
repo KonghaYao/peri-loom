@@ -282,7 +282,7 @@ func TestOperationCheckpointFailureLeavesNoFinalView(test *testing.T) {
 	if !ok {
 		test.Fatalf("fixture did not use the durable store: %T", store)
 	}
-	durable.disk.poisoned = true
+	durable.disk.poisoned.Store(true)
 	err := runServiceTeardown(newShutdownBudget(time.Second), []stopStep{
 		{name: "operation checkpoint", run: func(context.Context) error { return CheckpointOperations(store) }},
 	})

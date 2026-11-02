@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -29,8 +30,8 @@ type durableFile struct {
 	payload   json.RawMessage
 	revision  uint64
 	fresh     bool
-	closed    bool
-	poisoned  bool
+	closed    atomic.Bool
+	poisoned  atomic.Bool
 	prototype any
 	// parentOperations rebuilds the durable operation view that recovery merges
 	// into the persisted parent. An operation sidecar commits without rewriting
@@ -230,7 +231,7 @@ func (disk *durableFile) commit(revision uint64, value any) error {
 		return errors.New("private revision must increment exactly")
 	}
 	if err := disk.persist(revision, value); err != nil {
-		disk.poisoned = true
+		disk.poisoned.Store(true)
 		return ErrStateUncertain
 	}
 	return nil
@@ -244,17 +245,19 @@ func (disk *durableFile) commitAuditBatch(revision uint64, value auditHead) erro
 		return errors.New("invalid audit batch revision")
 	}
 	if err := disk.persist(revision, value); err != nil {
-		disk.poisoned = true
+		disk.poisoned.Store(true)
 		return ErrStateUncertain
 	}
 	return nil
 }
 
 func (disk *durableFile) available() error {
-	if disk.closed {
+	// Atomics, not the file lock: narrow reads call this on every request and must not
+	// queue behind a commit.
+	if disk.closed.Load() {
 		return ErrStateClosed
 	}
-	if disk.poisoned {
+	if disk.poisoned.Load() {
 		return ErrStateUncertain
 	}
 	return nil
@@ -263,10 +266,10 @@ func (disk *durableFile) available() error {
 func (disk *durableFile) close() error {
 	disk.mutex.Lock()
 	defer disk.mutex.Unlock()
-	if disk.closed {
+	if disk.closed.Load() {
 		return nil
 	}
-	disk.closed = true
+	disk.closed.Store(true)
 	return errors.Join(syscall.Flock(int(disk.lock.Fd()), syscall.LOCK_UN), disk.lock.Close())
 }
 

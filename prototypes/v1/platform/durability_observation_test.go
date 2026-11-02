@@ -506,7 +506,7 @@ func TestDurabilityObservationFailedSinkDoesNotFailJournal(test *testing.T) {
 	if sink.stop() {
 		test.Fatal("failed sink not marked incomplete")
 	}
-	if store.operations.revision != 8 || store.disk.poisoned {
+	if store.operations.revision != 8 || store.disk.poisoned.Load() {
 		test.Fatal("sink failure changed durable state")
 	}
 }

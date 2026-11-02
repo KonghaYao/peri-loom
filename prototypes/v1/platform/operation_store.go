@@ -128,7 +128,7 @@ func (store *stateStore) settleOperations() error {
 	// A shutdown refusal proves the append never happened; only an uncertain append leaves
 	// persistence in doubt and poisons the store.
 	if !errors.Is(failure, ErrStateClosed) {
-		store.disk.poisoned = true
+		store.disk.poisoned.Store(true)
 	}
 	return failure
 }
@@ -239,7 +239,7 @@ func (store *stateStore) enqueueOperationsAuditLocked(preparation *durabilityPre
 		// nothing; every other registration refusal keeps the base behaviour of failing the
 		// store closed.
 		if !errors.Is(err, ErrOperationQueueFull) {
-			store.disk.poisoned = true
+			store.disk.poisoned.Store(true)
 		}
 		edit.revert()
 		return nil, err
@@ -333,7 +333,7 @@ func (store *stateStore) awaitOperationCommit(commit *operationCommit) error {
 			compaction, settleErr = store.beginOperationCompactionLocked()
 		}
 	}
-	poisoned := store.disk.poisoned
+	poisoned := store.disk.poisoned.Load()
 	unlock()
 	if compaction != nil {
 		settleErr = store.finishOperationCompaction(compaction)

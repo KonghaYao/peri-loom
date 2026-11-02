@@ -354,7 +354,7 @@ func TestAuditBatchRejectsOverflowAndOversizedRevision(test *testing.T) {
 	audit := service.(*fileAudit)
 	defer audit.Close()
 	_, _, head := auditBatchFixture(auditBatchMaximum + 1)
-	if err := audit.head.commitAuditBatch(head.Sequence, head); err == nil || audit.head.poisoned {
+	if err := audit.head.commitAuditBatch(head.Sequence, head); err == nil || audit.head.poisoned.Load() {
 		test.Fatal("oversized revision must refuse without writing")
 	}
 	audit.state.Sequence = ^uint64(0) - 1
