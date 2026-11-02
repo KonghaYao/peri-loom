@@ -29,7 +29,7 @@ func (store *narrowStateStore) Update(update func(*State) error) error {
 
 func (*narrowStateStore) Close() error { return nil }
 
-func (store *narrowStateStore) readOperations(visit func(State) error) error {
+func (store *narrowStateStore) readOperations(_ operationReadScope, visit func(State) error) error {
 	store.narrowReads++
 	state, err := store.inner.Snapshot()
 	if err != nil {

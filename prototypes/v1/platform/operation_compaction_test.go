@@ -70,7 +70,7 @@ func TestOperationCompactionDoesNotHoldRegistryReaders(test *testing.T) {
 			read <- err
 			return
 		}
-		if err := store.readOperations(func(state State) error {
+		if err := store.readOperations(readGatewayAdmission, func(state State) error {
 			record, found := state.Operations[operationKey(database, "compacting")]
 			if !found || record.State != "terminal" {
 				return errors.New("reader lost the already durable operation")

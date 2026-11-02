@@ -21,7 +21,7 @@ var errSessionProjectUnavailable = errors.New("session project unavailable")
 // release.
 func sessionCleanupQuota(store StateStore, session *gatewaySession) (Quotas, error) {
 	var quota Quotas
-	err := readOperationState(store, func(state State) error {
+	err := readOperationState(store, readManagementAdmission, func(state State) error {
 		project, exists := state.Projects[session.project]
 		if !exists {
 			return errSessionProjectUnavailable

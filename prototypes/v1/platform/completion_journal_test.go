@@ -362,7 +362,7 @@ func TestUnifiedCompletionMaintenanceDoesNotHoldTheViewLock(test *testing.T) {
 	operationAwait(test, entered)
 	read := make(chan error, 1)
 	go func() {
-		read <- store.readOperations(func(state State) error {
+		read <- store.readOperations(readGatewayAdmission, func(state State) error {
 			if _, found := state.Operations[operationKey(database, "maintaining")]; !found {
 				return errors.New("reader lost the already durable operation")
 			}

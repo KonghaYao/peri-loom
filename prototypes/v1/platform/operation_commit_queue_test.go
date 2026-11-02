@@ -43,9 +43,14 @@ func operationSettled(store *stateStore, database controller.DatabaseID, identif
 	})
 }
 
-// operationInFlight registers an operation whose outcome is not known: unlike a terminal
-// record it changes the unresolved count, so a read must settle it before deciding.
+// operationInFlight registers a gateway operation whose outcome is not known. It holds no
+// namespace for a gateway admission read — only a management operation or a quarantine does —
+// so reads may observe it while its append is undecided.
 func operationInFlight(store *stateStore, database controller.DatabaseID, identifier string) error {
+	return operationInFlightFrom(store, database, identifier, "gateway", "execute")
+}
+
+func operationInFlightFrom(store *stateStore, database controller.DatabaseID, identifier, source, action string) error {
 	digest, err := freezeCommandValue(nil)
 	if err != nil {
 		return err
@@ -54,8 +59,55 @@ func operationInFlight(store *stateStore, database controller.DatabaseID, identi
 		if edit.has(operationKey(database, identifier)) {
 			return ErrOperationExists
 		}
-		record := seedOperationRecord(edit, database, identifier, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", digest.digest())
+		record := seedOperationRecord(edit, database, identifier, identifier, source, action, "tool_rpc", "worker-a", "", digest.digest())
 		edit.put(operationKey(database, identifier), record)
+		return nil
+	})
+}
+
+// operationQuarantined leaves a quarantine behind, with the operator decision and retired
+// local resources the release rule demands before it may be freed.
+func operationQuarantined(store *stateStore, database controller.DatabaseID, identifier string) error {
+	digest, err := freezeCommandValue(nil)
+	if err != nil {
+		return err
+	}
+	return store.updateOperations(func(edit *operationEdit) error {
+		record := seedOperationRecord(edit, database, identifier, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", digest.digest())
+		record.State, record.BusinessOutcome, record.MayHaveCommitted = "quarantined", "unknown", true
+		record.Decision, record.DecisionRequestID, record.RetirementRequestID = "retain_isolation_new_database_required", "decision", "retire"
+		record.LocalResourcesRetired = true
+		edit.put(operationKey(database, identifier), record)
+		return nil
+	})
+}
+
+// operationReleaseQuarantine records the attested release of that quarantine.
+func operationReleaseQuarantine(store *stateStore, database controller.DatabaseID, identifier string) error {
+	return store.updateOperations(func(edit *operationEdit) error {
+		key := operationKey(database, identifier)
+		record, exists := edit.record(key)
+		if !exists {
+			return errors.New("operation missing")
+		}
+		record.ReleaseRequestID, record.ReleaseAuthorityMode = "release_proven", "detached"
+		edit.put(key, record)
+		return nil
+	})
+}
+
+// operationTerminalize finishes a registered operation. Applied to a management record it
+// frees a namespace that only a management admission read treats as held, so the reversion
+// this edit would suffer is exactly the case a read must not outrun.
+func operationTerminalize(store *stateStore, database controller.DatabaseID, identifier string) error {
+	return store.updateOperations(func(edit *operationEdit) error {
+		key := operationKey(database, identifier)
+		record, exists := edit.record(key)
+		if !exists {
+			return errors.New("operation missing")
+		}
+		record.State, record.BusinessOutcome, record.ExecutionProven, record.CleanupOutcome = "terminal", "completed", true, "not_applicable"
+		edit.put(key, record)
 		return nil
 	})
 }
@@ -328,19 +380,24 @@ func TestOperationCommitQueueBoundedRefusal(test *testing.T) {
 	}
 }
 
-// A read that answers with the operations view settles the ordered appends first when an
-// undecided edit could still change an admission answer, so it can never decide on a record
-// whose barrier has not returned. A read that does not look at operations is not blocked by
-// that barrier: this is the boundary the queue moved.
+// A read that answers with the operations view settles the ordered appends whose reversion
+// could hold a namespace again before it answers, so it can never free a namespace the
+// durable log still holds. A read that does not look at operations is not blocked by that
+// barrier: this is the boundary the queue moved.
 func TestOperationNarrowReadIsNotBlockedByASlowBarrier(test *testing.T) {
 	store, _ := commitQueueStore(test)
 	defer store.Close()
-	release := gatePop(test, store)
 	database := securityDatabase()
 
+	// A management operation is in flight: both admission scopes treat it as holding its
+	// namespace, so terminating it is the edit whose reversion a read must not outrun.
+	if err := operationInFlightFrom(store, database, "slow_barrier", "management", "schema"); err != nil {
+		test.Fatal(err)
+	}
+	release := gatePop(test, store)
 	committed := make(chan error, 1)
-	go func() { committed <- operationInFlight(store, database, "slow_barrier") }()
-	waitOrdered(test, store, 1)
+	go func() { committed <- operationTerminalize(store, database, "slow_barrier") }()
+	waitOrdered(test, store, 2)
 
 	// The unconfirmed edit is in the view, so a narrow read must neither report it nor wait
 	// for the barrier.
@@ -364,9 +421,9 @@ func TestOperationNarrowReadIsNotBlockedByASlowBarrier(test *testing.T) {
 	// A read that answers with operations must not return while the barrier is outstanding.
 	settled := make(chan error, 1)
 	go func() {
-		settled <- store.readOperations(func(state State) error {
-			if _, found := state.Operations[operationKey(database, "slow_barrier")]; !found {
-				return errors.New("settled read lost the committed append")
+		settled <- store.readOperations(readGatewayAdmission, func(state State) error {
+			if _, blocked := isolatedOperation(state, database, false); blocked {
+				return errors.New("an undecided terminalization still held its namespace")
 			}
 			return nil
 		})
@@ -388,10 +445,10 @@ func TestOperationNarrowReadIsNotBlockedByASlowBarrier(test *testing.T) {
 	}
 }
 
-// A pending edit whose reversion cannot change an admission answer does not hold a read:
-// the isolation set and the unresolved count are the same either way, so the reader answers
-// from the view while that append is still undecided. This is what keeps an in-lock barrier
-// wait out of the admission path.
+// A pending edit whose reversion cannot hold a namespace again does not hold a read: a
+// settled record never blocked admission, so the reader answers from the view while that
+// append is still undecided. This is what keeps an in-lock barrier wait out of the
+// admission path.
 func TestOperationReadAnswersAroundAnUndecidedTerminalEdit(test *testing.T) {
 	store, _ := commitQueueStore(test)
 	defer store.Close()
@@ -404,7 +461,7 @@ func TestOperationReadAnswersAroundAnUndecidedTerminalEdit(test *testing.T) {
 
 	read := make(chan error, 1)
 	go func() {
-		read <- store.readOperations(func(state State) error {
+		read <- store.readOperations(readGatewayAdmission, func(state State) error {
 			if _, blocked := isolatedOperation(state, database, false); blocked {
 				return errors.New("an undecided terminal record blocked its namespace")
 			}
@@ -434,6 +491,104 @@ func TestOperationReadAnswersAroundAnUndecidedTerminalEdit(test *testing.T) {
 	}
 	if len(store.unconfirmed) != 0 {
 		test.Fatal("the append's own settlement left the edit behind")
+	}
+}
+
+// A pending gateway terminalization holds its namespace only for a management read: gateway
+// admission never treated the pending record as holding it, so its reversion cannot change
+// what a gateway read decides. Waiting for it would put a barrier in the admission path of
+// every request, and a close finishes one of those records per session. A management read
+// answers the other way, so the same append still holds it.
+func TestOperationGatewayReadSkipsAnUndecidedGatewayTerminalization(test *testing.T) {
+	store, _ := commitQueueStore(test)
+	defer store.Close()
+	database := securityDatabase()
+
+	if err := operationInFlight(store, database, "pending_close"); err != nil {
+		test.Fatal(err)
+	}
+	release := gatePop(test, store)
+	committed := make(chan error, 1)
+	go func() { committed <- operationTerminalize(store, database, "pending_close") }()
+	waitOrdered(test, store, 2)
+
+	gateway := make(chan error, 1)
+	go func() {
+		gateway <- store.readOperations(readGatewayAdmission, func(state State) error {
+			if _, blocked := isolatedOperation(state, database, false); blocked {
+				return errors.New("a pending gateway record held its namespace for a gateway read")
+			}
+			return nil
+		})
+	}()
+	select {
+	case err := <-gateway:
+		if err != nil {
+			release()
+			test.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		release()
+		test.Fatal("a gateway read waited for an edit its own admission cannot observe")
+	}
+	if len(store.unconfirmed) != 1 {
+		release()
+		test.Fatalf("the gateway read settled the edit: %d pending", len(store.unconfirmed))
+	}
+
+	management := make(chan error, 1)
+	go func() {
+		management <- store.readOperations(readManagementAdmission, func(State) error { return nil })
+	}()
+	select {
+	case err := <-management:
+		test.Fatalf("a management read returned before the barrier: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-committed; err != nil {
+		test.Fatal(err)
+	}
+	if err := <-management; err != nil {
+		test.Fatal(err)
+	}
+}
+
+// A release is the one edit that frees a namespace no admission scope may treat as free
+// until its append lands: a reversion puts the quarantine back. A read must wait for it.
+func TestOperationReadWaitsForAnUndecidedQuarantineRelease(test *testing.T) {
+	store, _ := commitQueueStore(test)
+	defer store.Close()
+	database := securityDatabase()
+
+	if err := operationQuarantined(store, database, "releasing"); err != nil {
+		test.Fatal(err)
+	}
+	release := gatePop(test, store)
+	committed := make(chan error, 1)
+	go func() { committed <- operationReleaseQuarantine(store, database, "releasing") }()
+	waitOrdered(test, store, 2)
+
+	read := make(chan error, 1)
+	go func() {
+		read <- store.readOperations(readGatewayAdmission, func(state State) error {
+			if _, blocked := isolatedOperation(state, database, false); blocked {
+				return errors.New("an undecided release held its namespace")
+			}
+			return nil
+		})
+	}()
+	select {
+	case err := <-read:
+		test.Fatalf("a gateway read freed a quarantine before the release barrier: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-committed; err != nil {
+		test.Fatal(err)
+	}
+	if err := <-read; err != nil {
+		test.Fatal(err)
 	}
 }
 
