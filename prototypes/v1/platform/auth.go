@@ -88,6 +88,13 @@ func (identity *identity) Authorize(principal Principal, database controller.Dat
 	if err != nil {
 		return errors.New("identity unavailable")
 	}
+	return authorizeInState(state, principal, database, action)
+}
+
+// authorizeInState decides from a view the caller already read. A caller that needs the
+// same view for its own checks would otherwise queue for the state lock twice per request,
+// and that lock is where the request path serializes.
+func authorizeInState(state State, principal Principal, database controller.DatabaseID, action string) error {
 	key, ok := state.APIKeys[principal.KeyID]
 	globalSQL := key.Project == "*" && key.Role == "admin" && principal.Role == "admin" && principal.Database == nil && action == "sql"
 	if !ok || key.Revoked || key.Subject != principal.Subject || key.Project != principal.Project && !globalSQL {
@@ -142,6 +149,22 @@ func (identity *identity) Authorize(principal Principal, database controller.Dat
 		return errManagementForbidden
 	}
 	return nil
+}
+
+// authorizeWithin answers the authorization question from a view the caller already holds.
+// It keeps an injected Identity authoritative: only a sink that can decide from the view
+// takes the shortcut, everything else keeps its own read.
+func authorizeWithin(identity Identity, state State, principal Principal, database controller.DatabaseID, action string) error {
+	if narrow, ok := identity.(interface {
+		authorizeWithin(State, Principal, controller.DatabaseID, string) error
+	}); ok {
+		return narrow.authorizeWithin(state, principal, database, action)
+	}
+	return identity.Authorize(principal, database, action)
+}
+
+func (identity *identity) authorizeWithin(state State, principal Principal, database controller.DatabaseID, action string) error {
+	return authorizeInState(state, principal, database, action)
 }
 
 func (identity *identity) IssueToken(principal Principal, database controller.DatabaseID, role string, expiresMS int64) (string, error) {
