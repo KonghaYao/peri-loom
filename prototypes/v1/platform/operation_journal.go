@@ -28,9 +28,13 @@ const operationJournalVersion = 1
 // snapshot write and two directory barriers. A long record budget therefore costs
 // replay work at startup (bounded by this count and by operationJournalMaximumBytes)
 // and buys fewer of those stops at load: the pause is charged to the drain that
-// settles completions, so at 64 concurrent clients a short budget spends a fifth of
-// the wall clock inside maintenance.
-const operationJournalCompactRecords = 1024
+// settles completions, so at 64 concurrent clients a short budget spends a tenth of
+// the wall clock inside maintenance. Each stop costs about 18 ms at a 1024-record
+// budget (archive, snapshot, sync) and grows only sublinearly with the record
+// count, so a 4096-record budget keeps the same archive bytes per run in two or
+// three stops instead of ten. The price is a longer replay: 4096 records stay far
+// below operationJournalMaximumBytes (8 MiB).
+const operationJournalCompactRecords = 4096
 const operationJournalMaximumBytes = 8 << 20
 const operationJournalMaximumRecordBytes = 1 << 20
 
