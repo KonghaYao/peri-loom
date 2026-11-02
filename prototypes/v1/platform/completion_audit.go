@@ -55,25 +55,30 @@ func (journal *operationJournal) completionStatus() map[string]any {
 // These are already admitted requests. Each may enqueue one bounded operation
 // delta. Records are submitted in audit order and awaited together: submission
 // order is the only ordering the view and the audit chain need, and waiting
-// afterwards lets the whole batch share one barrier.
+// afterwards lets the whole batch share one barrier. The submit loop enters the
+// operation state lock once for the batch instead of once per record.
 func (audit *fileAudit) recordUnifiedBatch(batch []*auditRequest) error {
 	if len(batch) == 0 || len(batch) > auditBatchMaximum {
 		return errors.New("invalid completion batch")
 	}
-	waits := make([]func() error, 0, len(batch))
+	entries := make([]operationAuditEntry, len(batch))
+	for index, request := range batch {
+		entries[index] = operationAuditEntry{change: request.operationChange, event: &request.event, reserved: request.class == AuditClassCompletion}
+	}
+	waits, failures := audit.completionStore.submitOperationsAuditBatch(entries)
 	waiting := make([]*auditRequest, 0, len(batch))
-	for _, request := range batch {
-		wait, err := audit.completionStore.submitOperationsAudit(request.operationChange, &request.event, request.class == AuditClassCompletion)
-		if err != nil {
-			request.failure = err
+	barriers := make([]func() error, 0, len(batch))
+	for index, request := range batch {
+		if failures[index] != nil {
+			request.failure = failures[index]
 			continue
 		}
-		waits = append(waits, wait)
 		waiting = append(waiting, request)
+		barriers = append(barriers, waits[index])
 	}
 	var group sync.WaitGroup
-	group.Add(len(waits))
-	for index, wait := range waits {
+	group.Add(len(barriers))
+	for index, wait := range barriers {
 		go func(index int, wait func() error) {
 			defer group.Done()
 			waiting[index].failure = wait()

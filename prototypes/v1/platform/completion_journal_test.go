@@ -384,3 +384,38 @@ func TestUnifiedCompletionMaintenanceDoesNotHoldTheViewLock(test *testing.T) {
 		test.Fatalf("append behind the maintenance pass failed: %v", err)
 	}
 }
+
+// The drainer submits every member of a batch before waiting for its barrier, so
+// the members share one view lock. Resolving that lock once per record made the
+// audit side queue behind request traffic for the length of a whole batch.
+func TestUnifiedCompletionBatchSubmitsUnderOneViewLock(test *testing.T) {
+	store, _, _ := unifiedStore(test)
+	const count = 8
+	entries := make([]operationAuditEntry, count)
+	for index := range entries {
+		event := completionAuditEvent(fmt.Sprintf("batch%02d", index))
+		entries[index] = operationAuditEntry{event: &event, reserved: true}
+	}
+	locks := 0
+	store.testOperationLock = func() { locks++ }
+	waits, failures := store.submitOperationsAuditBatch(entries)
+	if locks != 1 {
+		test.Fatalf("batch submissions entered the view lock %d times", locks)
+	}
+	for index, failure := range failures {
+		if failure != nil {
+			test.Fatalf("entry %d refused: %v", index, failure)
+		}
+	}
+	for index, wait := range waits {
+		if wait == nil {
+			test.Fatalf("entry %d has no barrier", index)
+		}
+		if err := wait(); err != nil {
+			test.Fatalf("entry %d barrier failed: %v", index, err)
+		}
+	}
+	if store.operations.auditHead.Sequence != count {
+		test.Fatalf("audit head=%d after %d entries", store.operations.auditHead.Sequence, count)
+	}
+}
