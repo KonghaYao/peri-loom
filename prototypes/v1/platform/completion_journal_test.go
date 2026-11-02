@@ -226,7 +226,9 @@ func TestUnifiedCompletionMixedAuditChain(test *testing.T) {
 
 func TestUnifiedCompletionArchiveTamperRefused(test *testing.T) {
 	store, audit, directory := unifiedStore(test)
-	for index := 0; index < 270; index++ {
+	// Cross the production compaction period so the archive exists; the intent is
+	// the tamper check, not the exact period.
+	for index := 0; index < operationJournalCompactRecords+16; index++ {
 		if err := audit.Record(completionAuditEvent(fmt.Sprintf("archive%04d", index))); err != nil {
 			test.Fatal(err)
 		}
