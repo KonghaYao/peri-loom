@@ -219,6 +219,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R21 | `perf/issue28-r21-audit-pipeline` / `92faad4`（不合入，留证） | 完成日志 drainer 双批次流水：先提交下一批，再结清上一批屏障 | 每侧全新 v2 卷 A/B（r20 vs r21，4 组 × 3 样本/侧，c64，320 查询/样本）：逐组中位 −25.5%/−24.3%/−20.3%/−22.1%，配对中位 −24.9%，全体 12 样本中位 569.04→431.63 qps（**−24.2%**）；p50 100.6→134.1ms；屏障/动作 0.077→0.132（+71%，每次屏障覆盖提交 10.4→6.1），appends 15408 不变；锁等待/动作 5.59→10.50ms（+88%，获取次数 9.31→9.34 不变）；journal 等待/动作 0.161→0.264ms | **失败，已 reset 出 main**：双批次在途让 `settleOperations()` 在持锁状态下遍历的未决栈翻倍，一次等待连带付下一批的屏障；且 drainer 不再被屏障限速，取到的批次更碎，屏障合并反而变差（与 R14/R16 同构） |
 | R22 | `perf/issue28-r22-batch-settle` / `193be6f`（不合入，留证） | 完成日志批内结清改为「批级一次等待 + 一次 settle」，去掉每条一次取锁 | 每侧全新 v2 卷 A/B 两轮（r20 vs r22，4 组 × 3 样本/侧，c64，320 查询/样本）：run1（r20 先）整体中位 592.25→525.68（**−11.2%**）、run2 交换顺序 591.41→562.30（**−4.9%**）；两轮均值 −5.0%/−5.5%；p50 95.6→109.6ms、96.3→102.6ms；机制：取锁次数/动作 9.31→8.55（−8%），sync/动作 0.080→0.084，锁等待/动作 5.07→6.09ms | **失败，不合入**：批内逐条结清本来只在首个等待者持锁时真正等待，其余条目面对的是空未决栈；改成批级一次 settle 后持锁时刻与最年轻提交对齐，等待变成等在更晚的屏障上，收益被抵消 |
 | R23 | 测量轮（无代码变更） | 请求相位 + 会话生命周期分解：定位剩余延迟在 worker 原生执行与会话建立/关闭 | 无观测器干净 A/B（r20 二进制，每侧全新 v2 卷）：c64 connect→查询→close 123.4ms/468.6 qps，同会话复用 52.2ms/**911.3 qps**；c8 48.3→16.4ms（135.8→407.5 qps）；c1 18.0→10.8ms；`SELECT 1` 的 c64 仍 97.1ms；connect+close 无查询 0.1ms（SDK 惰性）。durability 观测：`journal_prepare` encode p50 9µs、`journal_batch` 1.58ms 中 sync 1.56ms、`audit_member_wait` p50 5.55ms（队列 0.93ms） | **结论**：Go 侧审计提交已达 fsync 下限，R21/R22 证明批处理方向已用尽；c64 下 58% 延迟在会话建立/关闭，其余主要是 worker 每查询约 12ms 固定原生时间（与并发无关）。下一步必须改 Rust worker（需 linux/arm64 构建） |
+| R24 | `perf/issue28-r24-worker` / `4b8f82b`（merge `b78189f`） | worker 按库镜像刷新闸门由 2ms `try_lock` 轮询改为 `Condvar` 交接，互斥与 deadline 语义不变 | 每侧全新 v2 卷 A/B 两轮（c64，320 查询/样本，逐轮交替顺序）：run1 全体中位 582.05→667.69 qps（**+14.7%**，逐轮 +11.7/+27.5/+19.4/+11.1%）、p50 99.85→90.39ms；run2 交换顺序 622.54→735.21（**+18.1%**，逐轮 +7.4/+14.2/+21.8/+16.0%）、p50 91.59→83.12ms；两轮 fails=0；机制：探针实测 `begin.refresh.lock` 1.75–1.91ms/请求，sleep 1980 次（均 2.9ms）压在 1553 次 `begin` 上，改交接后消失 | 合入 `main`：`begin`/`open`/`close`/`health` 共用同一按库闸门，闸内工作只有微秒级，2ms 轮询等于把固定睡眠放进请求路径；持闸者 Drop 立即唤醒下一个等待者，超时者把唤醒转交出去 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -903,6 +904,32 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 - 会话生命周期占主导：c64 下 connect→查询→close 比同会话复用多 71ms（58%），c8 下多 32ms（66%）；即使 SQL 换成 `SELECT 1`，c64 仍要 97.1ms，而纯 connect+close 是 0.1ms（SDK 惰性，成本全在服务端）。
 
 **结论与下一步**：Go 侧审计批处理方向（R18/R20 成功、R21/R22 失败）已用尽；c64 剩余延迟里约 58% 是会话建立/关闭（每个会话两次耐久屏障 + worker 会话工作），其余主要是 worker 每查询约 12ms 的固定原生时间。两者都不在 Go 可改范围：下一步必须能构建并运行 linux/arm64 的 Rust worker（仓库根 `rust-toolchain.toml` 钉 1.98.1，容器内需镜像源安装），否则只能接受当前平台侧水位。
+
+#### R24：worker 镜像刷新闸门改为条件变量交接（2026-11-02，合入）
+
+**动机**：R23 把剩余延迟指到 Rust worker 后，先用一次性探针取得请求相位（c64，每请求均值）：`idle`（等请求体）5.1–6.2ms、`prepare` 1.33–1.75ms、`dispatch` 3.3–4.4ms、`dispatch` 内 `cursor.call` 6.0–10.5ms、`reply` 0.04ms。其中 `Sessions::begin` 一段 **1.75–2.05ms** 与 `cursor.call` 同级，明显是固定等待而非排队：`begin.entry`/`begin.image`/`begin.call` 合计仅 0.005ms，成本全在 `refresh.lock`，其中 `refresh.sleep` 在 1553 次 `begin` 上触发 1980 次、均值 2.9ms。
+
+**假设**：`RefreshLocks` 是「按库串行化初始镜像刷新」，被 `open`/`begin`/`close`/`health` 共用；实现是 2ms `try_lock` + `thread::sleep` 轮询。闸门内真正的工作（`initial_image_replaced` 在 generation≠0 时直接返回）只有微秒级，所以每次重叠都要在请求路径上付一整个 2ms 睡眠。改成条件变量交接应当直接消掉这一段。
+
+**实现**（`src/worker_rpc/sessions.rs`）：
+- `RefreshLocks` 的 `Weak<Mutex<()>>` 换成 `Weak<RefreshGate>`；`RefreshGate { held: Mutex<bool>, released: Condvar }`，Drop 守卫置 `held=false` 并 `notify_one`；
+- `lock_until(deadline)` 用 `wait_timeout(remaining)` 取代轮询：拿到守卫即返回，超时且仍持闸时**把唤醒转交给下一个等待者**（否则被唤醒者若因自己的 deadline 先放弃，其余睡眠者会空转到 deadline）；
+- 健康巡检保持非阻塞语义（`try_lock` 返回 `Option`，持闸即 `continue`）；`clear_database` 无请求 deadline，用 60s 上限而非无限等待；互斥与 deadline 语义、fail-closed 行为都不变。
+
+**结果**（每侧独立 platform+worker 二进制、每侧全新 v2 卷 + 同导入 + 同配额，c64，320 查询/样本，逐轮交替顺序；`/tmp/r24ab.sh`）：
+| 轮次 | 全体中位（base → r24） | 逐组中位 | p50 |
+|---|---|---|---|
+| run1（4 组 × 3 样本/侧） | 582.05 → 667.69 qps（**+14.7%**） | +11.7 / +27.5 / +19.4 / +11.1% | 99.85 → 90.39ms |
+| run2（交换顺序，r24 先测） | 622.54 → 735.21 qps（**+18.1%**） | +7.4 / +14.2 / +21.8 / +16.0% | 91.59 → 83.12ms |
+两轮 `fails=0`；`sync/q` 0.07–0.08 → 0.06–0.07。逐组 8/8 同向，交换顺序无回归 → 判定为真实提升而非顺序偏差。
+
+**验证**：`cargo test --release --lib` 674 passed / 0 failed / 10 ignored；`worker_rpc::sessions` 7 passed；全量 `--no-fail-fast` 的失败目标（`import_control_cli`、`import_image`、`remote_database`、`stage_image_cli`）在基线上同样失败，`p4_authority::maintenance::gc_safety_window_starts_at_each_tombstone_not_namespace_boot` 单跑失败、no-fail-fast 下通过（既有 flaky），非本轮引入。
+
+**副作用**：探针值来自观测器开启时的运行，观测器会压低吞吐并把请求计数放大 1.9–2.8 倍，相位绝对值不可对外汇报，只用于定位。
+
+**下一轮提示**：探针把 c64 剩余固定成本指到 `cursor.call` 6.0–10.5ms（`dispatch_cursor_first` → `open_cursor_first`）与 `prepare` 剩余约 1.3–1.8ms；`idle` 5–6ms 需先判定是客户端间隔还是 `transport.rs` 的 `IDLE_SLICE` 读超时分片。R23 已明确禁止在拆分数据前改协议，所以 `cursor.call` 只能先加内部 span 再决定动哪一段。
+
+**构建能力（后续轮次前置条件）**：现在可以构建并运行 linux/arm64 Rust worker。`rust:1.98-bookworm` 可直接 pull（宿主机/CI 的 `rustup target add` 与容器内 rustup 下载都极慢，不可用）；容器 `peri-rust-build2` 挂 `/src:ro` + 目标卷 `peri-rust-target` + registry 卷 `peri-v1-cargo-registry`，**必须带 `-e RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu`** 否则 cargo 会触发 rustup 联网同步并卡住；构建 `cargo build --release --locked --offline --bin peri-loom-v1` 首次约 1 分钟、增量约 40s。registry 由宿主 `~/.cargo/registry` 复制并硬链接到 `rsproxy.cn-*`（仓库 `.cargo/config.toml` 把 crates-io 指向 rsproxy）。
 
 ## 代码约定
 
