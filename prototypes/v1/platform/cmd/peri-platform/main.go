@@ -12,6 +12,7 @@ import (
 )
 
 func main() {
+	tuneCollector()
 	configuration := flag.String("config", "", "private platform service configuration")
 	flag.Parse()
 	config, err := platform.ReadServiceConfig(*configuration)
