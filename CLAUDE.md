@@ -231,6 +231,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R33 | `perf/issue28-r33-upstream-idle-pool` / `86865d1`（不合入，留证） | 平台到 worker 的空闲连接上限按并发宽度放宽：`MaxIdleConnsPerHost` 16→64、`MaxIdleConns` 64→128 | c64 窗口内 `/proc/net/tcp` 采样（300 样本，10ms）：worker 侧端口累计 **2,036 个 TIME_WAIT**、约 1,000 次重连/秒，ESTABLISHED 16–43；改后同一采样 **10 个 TIME_WAIT**、ESTABLISHED 稳定 63。吞吐未动：配对 A/B（r32 vs r33，3 轮 × 3 样本/侧，c64）：逐轮 −5.61 / +4.14 / +3.51%（2/3 同向），9 样本中位 1131.78→1167.86（+3.19%）、均值 1138.41→1128.73（**−0.85%**）；p99 中位 80.19→74.19ms；fails=0 | **中性，不合入**：重连确实被消除，但每次重连只落在约 16% 的调用上、单次代价远小于 2.9ms 的原生等待，吞吐落在噪声内 |
 | R34 | `perf/issue28-r34-compaction-4096` / `1da88f0`（merge `4c3ce8e`） | 维护压缩周期从每 1024 次追加放宽到 4096 次（同一手段的第二个台阶；重放仍由周期与 8 MiB 日志上限双重约束） | 分段探针（c64 窗口 1.690s，1514 qps）：审计 drainer **98.3% 忙**、fsync 链只 71% 忙；单批 2.90ms = 屏障 2.18ms + 提交 0.45ms + 状态锁 0.26ms，settle 与 maintenance ≈0；窗口内 10 次 `journal_compaction` 每次 18.4ms，合计 184ms = **10.9% 墙钟**。改 4096 后压缩 10→2 次、停顿 184→82ms（**10.9%→4.9%**），单次 18.4→41.0ms（亚线性）。配对 A/B（r32 vs r34，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替，候选二进制 `5efb05b2…`）：逐轮中位 −2.40 / +17.13 / +12.36%（2/3 同向），9 样本/侧中位 **1098.74→1204.33 qps（+9.61%）**、均值 1102.80→1200.91（+8.90%）；p50 中位 51.77→46.51ms（−10.2%）、p99 84.12→81.62ms（−3.0%）；fails=0。回归门 c8（1 轮 × 3 样本/侧）：中位 287.38→286.58（−0.28%），fails=0 | 合入 main |
 | R35 | `perf/issue28-r35-collector-target` / `f215bbf`（merge `799d7d2`） | 平台进程启动时把 GC 目标放宽到 400%，`SetMemoryLimit` 取 cgroup 内存上限的 70%；`GOGC`/`GOMEMLIMIT` 显式设置时不介入，cgroup 无上限时不设上限 | 分配画像（c64 负载窗 6,400 查询）：每查询分配 **573 KB**（累计 3.67 GB），in-use 堆只有 **7.3 MB**；默认 GOGC=100 下堆目标≈14 MB，收集器每秒运行数十次只为回收几 MB，assist 时间摊在分配路径。分配前三：Hrana JSON 编解码（`jsontext.fetch`/`ReformatString`/`UnmarshalJSON`）、`bytes.Clone`、`io.ReadAll`，cursor 路径占 52%。诊断臂（同一探针二进制，仅差 `SetGCPercent(400)`，2 轮 × 3 样本/侧）：p50 −14.3 / −9.9%、mean −6.5 / −15.6%、qps +5.8 / +17.0%。配对 A/B（r34 vs r35，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替，候选二进制 `d2dec5f1…`）：逐轮中位 +16.34 / +14.05 / +10.12%（**3/3 同向**），9 样本/侧中位 **1270.06→1444.73 qps（+13.75%）**、均值 1231.68→1372.10（+11.40%）；p50 中位 46.14→41.38ms（−10.3%）、p95 69.68→65.29ms（−6.3%）、p99 72.78→66.85ms（−8.2%）；两侧各 `verify messages: 8625`、`fails=0`。回归门 c8（3 轮 × 3 样本/侧交替）：中位 318.67→363.33（+14.0%）、均值 320.12→356.61（+11.4%），2/3 轮同向；该档由 fsync 抖动主导（`sync_avg` 1.73–2.72ms），按无退化处理 | 合入 main |
+| R36 | 测量轮（无代码变更，探针 `d2877e4`、pprof 探针 `a3b6655`，均不合入） | 定位 R35 之后每查询 34.1ms 的归属：worker 调用 15.0ms、平台侧审计屏障 ~10ms、其余 ~9ms | 无插桩分层（r35 二进制，c64）：每次查询 4 条审计追加、0.27 次 sync（c1 是 4.1 次），sync 链 70% 忙。httptrace 传输分层（每命令一组）：连接复用 **94%**，`wait` 0.03ms、`write` 0.02ms、`tail` 0.02ms，**全部成本在 worker 的 server 时间**——describe 2.03ms、statement 1.22ms、cursor 5.91ms、open_session 4.34ms、close_session 1.47ms。把 SQL 换成 `SELECT 1` 后各命令 server 时间不变（1.59/0.97/7.09/4.11/1.16ms），说明这是**与 SQL 无关的每请求固定开销 + 排队**，不是查询执行；worker 自报 `query` 0.48ms/次。CPU 实测（1,538 qps）：platform 0.30 core、worker **0.10 core**，两者都远未饱和 → 仍是等待。c8→c64 同一命令从 ~0.3ms 涨到 2–7ms（8 倍并发换 6.7 倍膨胀），指向 worker 侧按库串行（`RefreshGate` 覆盖 `open`/`begin`/`close`/`health`，注释称守卫区内工作为微秒级） | 留证，未改代码 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1160,6 +1161,20 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **代价**：同一容器同一负载下平台进程 RSS（`/proc/<pid>/status` 采样）r34 p50 33.7MB / 峰值 60.3MB，r35 p50 55.1MB / 峰值 93.0MB——峰值 +33MB（+55%），绝对值仍不到 100MB，符合「堆目标 5× 存活集、再受 cgroup 上限约束」的预期。
 
 **下一轮提示**：分配结构才是剩余的结构性杠杆——cursor 路径占分配 52%，`callVersionInto` 0.45GB（12.4%）。减少每次查询的分配量（例如 rows 先解码再重编码的往返）会同时降低 GC 频率与 assist，本轮只是把代价摊薄、没有消除。另：`state_lock_wait_ns_total` 每样本仍有 0.3–0.6ms/请求，远超 drainer 持有状态锁的时间，值得单独定位。
+
+#### R36：延迟归属测量——worker 每请求固定开销 + 排队（2026-10-30，留证，不改代码）
+
+**问题**：R35 之后 c64 每查询 34.1ms（p50 38.7ms），按动作：open 9.61 / describe 3.66 / statement 6.31 / cursor_start 8.14 / close 6.35ms。哪一段还能动？
+
+**平台侧先被排除**：干净 A/B 快照显示每查询 1,284 次追加里只有 0.27 次 sync（c1 是 4.1 次），fsync 链 70% 忙——R34/R35 已把这条链上的收益吃掉；`operation_journal_encode_ns_total` 只占墙钟 3.6–5.8%，提交侧微秒级优化低于轮间噪声。
+
+**传输探针（`d2877e4`，仅诊断）**：在 `sqlHTTPUpstream` 的请求上挂 `httptrace`，按命令分组累计 `GotConn`/`WroteRequest`/`GotFirstResponseByte` 与读完响应的时间。c64 预热后每命令 500–1,000 次调用的均值：连接复用 **94%**，`wait`（取连接）0.03ms、`write` 0.02ms、`tail`（读响应）0.02ms，**全部时间在 server**——describe 2.03ms、statement 1.22ms、cursor 5.91ms、open_session 4.34ms、close_session 1.47ms。把查询换成 `SELECT 1` 后各命令 server 时间几乎不变（1.59 / 0.97 / 7.09 / 4.11 / 1.16ms），而 worker 自报 `query` 只有 0.48ms/次：**这是与 SQL 无关的每请求固定开销加排队，不是执行**。同一命令在 c8 约 0.3ms、c64 涨到 2–7ms（8 倍并发换 6.7 倍膨胀）。
+
+**CPU 复核（1,538 qps 窗口，8.1s）**：platform 2.40 core-s（0.30 core）、worker 0.81 core-s（**0.10 core**）。两者都远未饱和，进一步确认瓶颈是等待而不是算力，也排除了「worker 是 debug 构建所以算得慢」的解释。
+
+**指向**：worker 的 `RefreshGate` 按数据库串行 `open`/`begin`/`close`/`health`（`src/worker_rpc/sessions.rs`），注释称守卫区内工作是微秒级；若守卫区实际包含镜像刷新或健康探测，40 个在途请求就会排出 4ms 量级的队列，与 open_session 4.34ms 吻合。cursor 6–7ms 需要 worker 侧分段计时才能定性。`rpc_lanes` 与 owner 授权计数在采样时刻全为 0，可先排除车道准入。
+
+**结论**：平台侧剩余空间只剩「每动作约 1.8ms 的请求/JSON 开销」与「4 次审计屏障等待（下限是该机器 1.5ms 裸 fsync，实测批 2.3–3.1ms）」，都不足以支撑一轮 ≥5% 的改动。下一轮若要再拿双位数，必须在 worker 侧做分段计时（`RefreshGate` 守卫区、cursor 执行到首字节之间），那就需要可复现的 Rust 构建路径；本轮先留下这组可复用的探针与数字。
 
 ## 代码约定
 
