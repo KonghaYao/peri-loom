@@ -221,6 +221,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R23 | 测量轮（无代码变更） | 请求相位 + 会话生命周期分解：定位剩余延迟在 worker 原生执行与会话建立/关闭 | 无观测器干净 A/B（r20 二进制，每侧全新 v2 卷）：c64 connect→查询→close 123.4ms/468.6 qps，同会话复用 52.2ms/**911.3 qps**；c8 48.3→16.4ms（135.8→407.5 qps）；c1 18.0→10.8ms；`SELECT 1` 的 c64 仍 97.1ms；connect+close 无查询 0.1ms（SDK 惰性）。durability 观测：`journal_prepare` encode p50 9µs、`journal_batch` 1.58ms 中 sync 1.56ms、`audit_member_wait` p50 5.55ms（队列 0.93ms） | **结论**：Go 侧审计提交已达 fsync 下限，R21/R22 证明批处理方向已用尽；c64 下 58% 延迟在会话建立/关闭，其余主要是 worker 每查询约 12ms 固定原生时间（与并发无关）。下一步必须改 Rust worker（需 linux/arm64 构建） |
 | R24 | `perf/issue28-r24-worker` / `4b8f82b`（merge `b78189f`） | worker 按库镜像刷新闸门由 2ms `try_lock` 轮询改为 `Condvar` 交接，互斥与 deadline 语义不变 | 每侧全新 v2 卷 A/B 两轮（c64，320 查询/样本，逐轮交替顺序）：run1 全体中位 582.05→667.69 qps（**+14.7%**，逐轮 +11.7/+27.5/+19.4/+11.1%）、p50 99.85→90.39ms；run2 交换顺序 622.54→735.21（**+18.1%**，逐轮 +7.4/+14.2/+21.8/+16.0%）、p50 91.59→83.12ms；两轮 fails=0；机制：探针实测 `begin.refresh.lock` 1.75–1.91ms/请求，sleep 1980 次（均 2.9ms）压在 1553 次 `begin` 上，改交接后消失 | 合入 `main`：`begin`/`open`/`close`/`health` 共用同一按库闸门，闸内工作只有微秒级，2ms 轮询等于把固定睡眠放进请求路径；持闸者 Drop 立即唤醒下一个等待者，超时者把唤醒转交出去 |
 | R25 | `perf/issue28-r25-auth-dedup` / `ad4d141`（merge `f294a44`） | `authorizeQuota` 复用已读授权视图，去掉每请求 2 次重复 `authorizationState`（适配器与 handler 各一次 authorize 仍保留） | 每侧全新 v2 卷 A/B（r20 vs r25a，4 组 × 3 样本/侧，c64，320 查询/样本，逐组交替）：run1 逐组 +17.4/+16.2/+3.6/+9.9%（中位 +13.0%，全体中位 690.83→744.66），run2 逐组 +3.3/+7.2/+3.5/+9.4%（中位 +5.4%，725.76→761.62）；8/8 同向，fails=0；状态锁获取 9.32→6.90 次/请求，lockwait/req 5.83→4.91ms、5.54→4.82ms | 合入 main |
+| R26 | `perf/issue28-r26-credential-atomic` / `e198d33`（merge `0027a50`） | `credentialByDigest` 改读不可变摘要快照（`atomic.Pointer`），`durableFile.closed/poisoned` 改原子，认证窄读不再进状态锁 | 每侧全新 v2 卷 A/B（r25a vs r26a，4 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替，worker 二进制两侧相同）：逐轮 +5.3 / +0.8 / +13.2 / +29.3%，12 样本/侧中位 694.75→779.82 qps（**+12.2%**），均值 697.49→759.12（+8.8%）；p50 中位 88.2→77.6ms；lockwait/req 中位 5.42→4.51ms（−16.8%）；fails=0。探针：锁获取 6.90→**5.49 次/请求**，`credentialByDigest` 调用点消失 | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -957,6 +958,32 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **副作用/风险**：`authorizeWithin` 的类型断言让自定义 Identity 自动回落到自身读取，行为不变；单请求内的判定现在基于同一份视图，比原来「两次独立读取」更一致，不会更宽松（两次读取本来就来自同一状态锁保护的状态）。
 
 **下一轮提示**：探针显示改后剩余等待占比 `credentialByDigest` 约 49%、`authorizationState` 23%、`compactionAcquire` 13%、`gatewayRequestState` 12%。`credentialByDigest` 仍是每请求第一把锁，占比最大；下一步是让它不经过状态锁（不可变摘要索引 + 原子健康位），其次是去掉 Hrana 适配器与 handler 之间的重复授权。
+
+#### R26：凭证视图原子发布，认证窄读不再排队（2026-11-02，合入）
+
+**动机**：R25 的调用点探针把剩余等待排了序：`credentialByDigest` 占 **49%**（23.76s/48.70s），但每次持锁只有 4.4µs。它的代价不在临界区，而在于它是每个请求排进状态锁的**第一站**：一旦被 `readOperations`（等 journal 屏障，均 107µs/次）或 `compactionAcquire`（31µs）的长持有顶住，后面所有窄读都跟着排队。
+
+**假设**：认证只需要一次 digest→key 查找，且 key 表是低频变更（发/撤 key 均为控制面操作）。把它换成「持锁重建的不可变快照 + 原子指针发布」，这一站就从锁队列里消失；陈旧快照不会放行已撤销的 key，因为授权步骤仍读加锁视图并拒绝 revoked descriptor。
+
+**实现**（`prototypes/v1/platform/state.go`、`state_disk.go`）：
+- `stateStore.credentials atomic.Pointer[map[string]APIKey]` 取代 `digestIndex`；`commitLocked`/`OpenStateStore` 持锁重建整张表后 `Store` 指针，`Update` 尾部不再增量维护索引（`Update` 只服务控制面，不在 SQL 请求路径上）。
+- `credentialByDigest` 只做 `available()` + 原子读；`durableFile.closed/poisoned` 由 `bool` 改为 `atomic.Bool`，`available()` 完全无锁。此前这两个字段在锁外读、锁内写，是真实的数据竞争，顺带修掉。
+- 判定条件、错误语义（`ErrStateClosed`/`ErrStateUncertain`）、撤销行为均未改动。
+
+**结果**（每侧独立二进制、每侧全新 v2 卷 + 同导入 + 同配额，c64，320 查询/样本，4 轮 × 3 样本/侧）：
+| 轮次 | 逐样本中位（r25a → r26a） | 逐轮幅度 | lockwait/req |
+|---|---|---|---|
+| ab1 c1（r25a 先测） | 728.53 → 767.27 | +5.3% | 4.93 → 5.03（含一个 545 样本） |
+| ab1 c2（r26a 先测） | 741.13 → 746.86 | +0.8% | 5.28 → 4.62 |
+| ab2 c1（r25a 先测） | 694.21 → 785.91 | +13.2% | 5.48 → 4.38 |
+| ab2 c2（r26a 先测） | 611.89 → 791.34 | +29.3% | 6.30 → 4.51 |
+合并 12 样本/侧：qps 中位 **694.75 → 779.82（+12.2%）**、均值 697.49 → 759.12（+8.8%），4/4 轮同向；p50 中位 88.2 → 77.6ms；`fails=0`。
+
+**机制核验**（在 R26 之上重放探针，c64）：状态锁获取 6.90 → **5.49 次/请求（−20%）**，`credentialByDigest` 调用点整体消失；剩余等待占比 `authorizationState` 41–44%、`gatewayRequestState` 36–37%、`compactionAcquire` 15–16%、`readOperations` 4–6%。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri`；`go vet ./...` 干净；`go test ./...`（`PERI_RUST_BINARY` 指向本机 debug worker）失败集与基线一致，仅 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`。
+
+**下一轮提示**：`authorizationState` 仍是 **2.4 次/请求**（R25 只去掉了 quota 路径上的重复读取，Hrana 适配器与内层 handler 各调一次 authorize 仍保留），是当前最大的单一等待来源（约 2.0ms/请求），下一轮应从这里去掉一次；`compactionAcquire` 0.9 次/请求、均持锁 33–37µs 排掉 15%，需要先拆内部 span 再动（R19/R21/R22 已否证其批处理变体）。
 
 ## 代码约定
 
