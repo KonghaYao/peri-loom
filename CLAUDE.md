@@ -227,6 +227,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R29 | `perf/issue28-r29-offlock-settle` / `63ced1a`（不合入，留证） | 把 `readOperations` 的 journal 屏障等待移出状态锁：`settling`+`sync.Cond`，锁外 `awaitOperations`，最多 3 轮后回落 | 每侧全新 v2 卷 A/B（r28b vs r29a，2 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：run1 中位 799.79→623.46（−22.1%）、run2 800.29→609.72（−23.8%），合并 12 样本/侧中位 800.04→595.52 qps（**−25.6%**），均值 781.82→588.42（−24.7%）；p50 中位 75.4→95.8ms（+27%）；lockwait/req 3.5–4.1→**0.25–0.51ms**（等待确实挪走），但 sync/q 0.06→**0.10–0.12**；fails=0 | **失败，不合入**：持锁串行化正是屏障合并的限速器；等待挪到锁外后，屏障窗口内每个到达的请求都去等一份包含自己之后写入的「最年轻」未决栈，等待互相堆叠，且 journal 批次变碎使 sync 次数翻倍（与 R22 同构） |
 | R30 | `perf/issue28-r30-admission-fastpath` / `54e4059`+`02dc958`（merge `83ad91b`） | `readOperations` 的锁内 settle 只对「回滚会重新加回隔离」的未决编辑执行：阻塞判据抽成 `operationBlockingFor` 与 `isolatedOperation` 共用，读操作带 `operationReadScope`（gateway 不把进行中的 gateway 记录算占位，management 算；零值保守）；未决计数不再触发等待，容量留待提交时 `validate` 兜底 | 每侧全新 v2 卷 A/B（r28b vs r30b，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：逐轮 +6.6 / +19.7 / +2.6%（**3/3 同向**），9 样本/侧中位 836.98→912.88 qps（**+9.07%**），均值 828.73→908.99（+9.68%）；p50 中位 73.3→67.2ms；lockwait/req 均值 3.56→**1.08ms**（−70%）；sync/q 0.06→0.05；fails=0。探针：每读平均 2.86 条未决编辑，其中回滚会重新加回阻塞的 **0.0%**、只改未决计数的 3.2%。回归门 c8（1 轮 × 3 样本/侧）：中位 205.07→317.97 qps（**+55.1%**），p50 中位 35.7→22.8ms，lockwait/req 1.23→**0.09ms**，sync/q 0.34→0.25，fails=0 | 合入 main |
 | R31 | `perf/issue28-r31-ready-settle` / `f1a2383`+`f377ecc`+`04fb53d`（merge `96c64fe`） | 完成提交只在状态锁内确认「屏障已返回」的前缀（`settleReadyOperations`，旧版日志仍走完整 settle）；drain 入队整批期间 `holdCompletionBatch` 挡住 committer，一个审计批只付一次 fsync；`awaitOperationBatch` 先等最后一个成员的屏障、再整批结算一次视图 | 相位窗口（单样本，c64，`--sql-open-observer`）：r30 1155 qps / `audit_batch` p50 3.41ms / duty 99% / journal:audit=649:486（1.33:1）；逐步 r31a 1179 qps、3.24ms → r31b 1232 qps、2.82ms、527:527 → r31c 1271 qps、2.72ms、523:523。配对 A/B（r30 vs r31c，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：逐轮中位 +7.65 / +11.25 / +6.25%（**3/3 同向**），9 样本/侧中位 **953.39→1019.59 qps（+6.94%）**，均值 953.28→1029.13（+7.96%）；p50 中位 63.15→59.43ms；`lockwait/req` 均值 0.99→0.67ms；sync/q 0.06→0.05；fails=0。回归门 c8（1 轮 × 3 样本/侧）：中位 288.66→280.33（−2.9%）、均值 277.59→283.55（+2.1%），lockwait 0.11→0.09ms，sync/q 0.26 不变 | 合入 main |
+| R32 | `perf/issue28-r32-compaction-period` / `4158f1f`（merge `71c3f3d`） | 维护压缩周期从每 256 次追加放宽到 1024 次（重放仍由周期与 8 MiB 日志上限双重约束） | 相位窗口（c64，`--sql-open-observer`）：R31c 下审计批 2.98ms 中屏障 1.97ms、提交 0.33ms、**压缩 gate 0.56ms**；窗口内 36 次维护压缩每次 11.4ms（归档 5.8 / 快照 3.3 / 同步 1.3），合计 410ms ≈ **21% 墙钟**。改 1024 后压缩 36→10 次、停顿 410→187ms，单跑 qps 1330→1473（+10.7%）。配对 A/B（r31c vs r32，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：逐轮中位 +11.8 / +23.4 / +13.1%（**3/3 同向**），9 样本/侧中位 **979.47→1169.42 qps（+19.39%）**、均值 986.05→1150.99（+16.73%）；p50 中位 62.57→49.96ms、p99 90.77→75.44ms；fails=0。回归门 c8（1 轮 × 3 样本/侧）：中位 379.34→410.60（**+8.2%**），无退化 | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1094,6 +1095,20 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 **验证**：`go build ./cmd/peri-platform ./cmd/peri`、`go vet ./...`、`gofmt` 干净；`go test ./...` 仅剩基线既有 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`；`go test -race`（`TestOperation|TestUnified|TestCompletion|TestAudit|TestDurable|TestState|TestGatewayRequest`）131.3s 无 DATA RACE。新增用例：`TestOperationCompletionDoesNotWaitForALaterAppend`（前一批屏障被 gate 住时完成提交立即返回，队列里只剩后一批；已验证旧实现会让该测试挂起）、`TestOperationReadySettleRollsBackOnlyItsFailedPrefix`（就绪前缀只回滚其中失败的编辑）、`TestUnifiedCompletionJournalHoldsOneDrainBatchTogether`（持有期间断言 committer 一个屏障都没写、释放后恰好一个；已验证去掉 hold 时失败）、`TestUnifiedCompletionBatchSubmitsUnderOneViewLock` 增加断言「N 成员批 submit+settle 总共只进两次状态锁」。
 
 **下一轮提示**：drain 仍占 98% 窗口时间，`audit_batch` 2.72ms 里 fsync 已占约 2.2ms（`journal_batch` duty 62%），本架构下再压缩的空间约 20%。继续提升需要减少每个动作的 fsync 次数或降低单次 fsync 成本（R13 的 `fdatasync` 已证无效，不要重复）；另一条线是 worker 的 native 路径（`cursor_start` native p50 14.29ms 在 c1 呈双峰，p10 2.25ms）与 c128 的 `audit_unavailable`(503)，后者是审计准入容量问题，与本次屏障合并无关。
+
+#### R32：维护压缩周期从每 256 次追加放宽到 1024 次（2026-10-30，合入）
+
+**假设**：R31 之后 c64 的审计批平均 2.98ms（p50 2.28ms），相位探针拆出提交 0.33ms、屏障 1.97ms、**压缩 gate 0.56ms**、锁内结算 ~0；同时段 36 次 `journal_compaction` 每次 11.4ms（归档 5.8 / 快照 3.3 / 编码 0.9 / 同步 1.3），合计 410ms，占 1.93s 窗口的 **21%**。压缩期间 `operationCompacting` 冻结日志 gate，正在结算的审计批只能等它结束；`settle` 的 10–20ms 尾延迟与压缩事件一一对齐（每 ~18 批一次）。
+
+**改动（`4158f1f`）**：`operationJournalCompactRecords` 256→1024。归档与快照的两次 `atomicPrivate`（各含文件 fsync 与目录 fsync）是每次压缩的固定成本，周期放宽后由 4 倍记录摊薄；归档写入按记录数线性增长，快照大小不变。崩溃重放仍由 1024 条记录与 `operationJournalMaximumBytes`（8 MiB）双重约束，审计内容与顺序、屏障次数、fail-closed 语义均未改动。`TestUnifiedCompletionArchiveTamperRefused` 改为跨过生产阈值（`operationJournalCompactRecords+16`）而不是写死 270，测试意图仍是篡改归档必须拒绝。
+
+**结果**：相位窗口压缩 36→10 次、停顿 410→187ms，归档每次 5.8→11.3ms，gate 每批 0.56→0.31ms，单跑 qps 1330→1473（+10.7%）。配对 A/B（r31c vs r32，3 轮 × 3 样本/侧，c64，320 查询/样本，逐轮交替）：逐轮中位 +11.8 / +23.4 / +13.1%（**3/3 同向**），9 样本/侧中位 **979.47→1169.42 qps（+19.39%）**，均值 986.05→1150.99（+16.73%）；p50 中位 62.57→49.96ms（−20.2%）、p99 90.77→75.44ms（−16.9%）；两侧各 `verify messages: 8625`、`fails=0`。
+
+**回归门（c8）**：1 轮 × 3 样本/侧（r31c vs r32）：中位 379.34→410.60（**+8.2%**）、均值 345.84→380.86（+10.1%）；样本跨度 271–387 / 301–431 qps，无退化。
+
+**验证**：`go build ./cmd/peri-platform ./cmd/peri`、`go vet ./...`、`gofmt` 干净；`go test ./...`（152.9s）仅剩基线既有 `TestHranaGatewayResponseMatchesEnvelope/html_and_unicode`；`go test -race . -run 'TestOperation|TestUnified|TestCompletion|TestAudit|TestDurable|TestState|TestGatewayRequest'` 136.6s 无 DATA RACE。
+
+**下一轮提示**：c64 审计批仍 ~3.1ms，其中屏障 2.35ms 是大头，压缩停顿已降到窗口的 10.8%。继续压维护成本只剩两条路：把归档与快照的两次目录 fsync 合并，或让归档复用日志已耐久的字节（压缩时把日志文件轮转为归档，而不是重写一遍）。屏障侧若要再降，需要减少每查询的审计记录数（当前每查询约 4 条，来自 session open/execute/close 的完整生命周期）或降低单次 fsync 成本。
 
 ## 代码约定
 
