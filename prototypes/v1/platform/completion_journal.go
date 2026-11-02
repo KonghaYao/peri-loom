@@ -207,25 +207,57 @@ func (journal *operationJournal) checkpointCompletionTail() error {
 // execution. At the hard byte ceiling submit refuses new intents.
 func (store *stateStore) scheduleCompletionMaintenanceLocked() {
 	journal := store.operations
-	if store.maintenanceClosing || journal.maintenancePending || !journal.compactionDue() {
+	if store.maintenanceClosing || !journal.compactionDue() {
 		return
 	}
+	// The maintenance goroutine clears this flag after it has left both the
+	// view lock and the compaction path, so the journal mutex guards the flag
+	// instead of the state lock that only covers the scheduling decision.
+	journal.mutex.Lock()
+	pending := journal.maintenancePending
 	journal.maintenancePending = true
+	journal.mutex.Unlock()
+	if pending {
+		return
+	}
 	store.maintenance.Add(1)
 	go func() {
 		defer store.maintenance.Done()
-		unlock := store.lockState()
-		defer unlock()
-		defer func() { journal.maintenancePending = false }()
-		if store.maintenanceClosing || store.checkpointed {
+		defer func() {
+			journal.mutex.Lock()
+			journal.maintenancePending = false
+			journal.mutex.Unlock()
+		}()
+		compaction, err := store.beginCompletionMaintenance()
+		if err != nil {
+			store.poisonMaintenance()
 			return
 		}
-		if err := store.settleOperations(); err != nil {
-			store.disk.poisoned = true
+		if compaction == nil {
 			return
 		}
-		if err := store.compactOperationsLocked(); err != nil {
-			store.disk.poisoned = true
-		}
+		_ = store.finishOperationCompaction(compaction)
 	}()
+}
+
+// beginCompletionMaintenance settles the view and takes the compaction task while the view
+// lock is held. Encoding, snapshot I/O and the journal truncation then run in
+// finishOperationCompaction without that lock, so a five-figure-microsecond maintenance pass
+// no longer queues every request behind it.
+func (store *stateStore) beginCompletionMaintenance() (*operationCompaction, error) {
+	defer store.lockState()()
+	if store.maintenanceClosing || store.checkpointed {
+		return nil, nil
+	}
+	if err := store.settleOperations(); err != nil {
+		store.disk.poisoned = true
+		return nil, err
+	}
+	return store.beginOperationCompactionLocked()
+}
+
+// poisonMaintenance records a failed maintenance pass without holding another lock.
+func (store *stateStore) poisonMaintenance() {
+	defer store.lockState()()
+	store.disk.poisoned = true
 }

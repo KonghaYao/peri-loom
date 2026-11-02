@@ -340,3 +340,47 @@ func TestUnifiedCompletionRecordEnvelopeBoundary(test *testing.T) {
 		test.Fatal("oversized payload accepted because its envelope still fits")
 	}
 }
+
+// The unified log's maintenance pass archives, snapshots and truncates outside the view
+// lock, so a reader never queues behind those barriers. Before this split the whole pass ran
+// under the lock and a single reader could wait for a five-figure-microsecond file barrier.
+func TestUnifiedCompletionMaintenanceDoesNotHoldTheViewLock(test *testing.T) {
+	store, _, _ := unifiedStore(test)
+	database := securityDatabase()
+	if err := store.Update(func(state *State) error {
+		state.Organizations["org"] = Organization{ID: "org", Name: "test"}
+		state.Projects["alpha"] = Project{ID: "alpha", Organization: "org", Tenant: "tenant_a"}
+		state.Databases[database.Key()] = Database{ID: database, Project: "alpha", State: "active"}
+		return nil
+	}); err != nil {
+		test.Fatal(err)
+	}
+	primeOperationCompaction(store)
+	entered, release := holdOperationCompaction(test, store, "after_snapshot", nil)
+	settled := make(chan error, 1)
+	go func() { settled <- operationSettled(store, database, "maintaining") }()
+	operationAwait(test, entered)
+	read := make(chan error, 1)
+	go func() {
+		read <- store.readOperations(func(state State) error {
+			if _, found := state.Operations[operationKey(database, "maintaining")]; !found {
+				return errors.New("reader lost the already durable operation")
+			}
+			return nil
+		})
+	}()
+	select {
+	case err := <-read:
+		if err != nil {
+			release()
+			test.Fatalf("reader failed during maintenance: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		release()
+		test.Fatal("a reader waited for the maintenance pass to finish its snapshot")
+	}
+	release()
+	if err := <-settled; err != nil {
+		test.Fatalf("append behind the maintenance pass failed: %v", err)
+	}
+}
