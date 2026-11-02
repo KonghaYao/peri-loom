@@ -140,6 +140,70 @@ func (store *stateStore) settleOperations() error {
 	return failure
 }
 
+// settleReadyOperations confirms the applied edits whose journal barrier has already
+// returned and leaves the rest ordered in the queue. Awaiting a barrier under the view lock
+// makes every caller pay for the newest append of another request: with one lock for the
+// whole view, one undecided append holds every completion behind it until its own batch is
+// written. A caller that only needs its own append confirmed must therefore never wait here.
+//
+// The prefix rule keeps the view order: an edit becomes confirmed only together with every
+// edit submitted before it, so a rollback still runs in the same reverse order a full settle
+// uses. Editing that queue without waiting is only safe because every append has an owner
+// that awaits its own barrier and then settles this prefix; the legacy journal, which has no
+// such owner and drives compaction from that call, keeps the full settle.
+func (store *stateStore) settleReadyOperations() error {
+	pending := store.unconfirmed
+	ready := 0
+	for ready < len(pending) && operationCommitSettled(pending[ready].commit) {
+		ready++
+	}
+	if ready == 0 {
+		return nil
+	}
+	if ready == len(pending) {
+		store.unconfirmed = nil
+	} else {
+		store.unconfirmed = append([]operationPendingEdit(nil), pending[ready:]...)
+	}
+	var failure error
+	for _, entry := range pending[:ready] {
+		if failure == nil && entry.commit.err != nil {
+			failure = entry.commit.err
+		}
+	}
+	if failure == nil {
+		return nil
+	}
+	for index := ready - 1; index >= 0; index-- {
+		entry := pending[index]
+		if entry.commit.err == nil || entry.commit.applied {
+			continue
+		}
+		entry.commit.applied = true
+		entry.revert()
+	}
+	// A shutdown refusal proves the append never happened; only an uncertain append leaves
+	// persistence in doubt and poisons the store.
+	if !errors.Is(failure, ErrStateClosed) {
+		store.disk.poisoned.Store(true)
+	}
+	return failure
+}
+
+// operationCommitSettled reports whether the committer has published this append's result.
+// The channel is closed only after the error is set, so a receive here orders that read.
+func operationCommitSettled(commit *operationCommit) bool {
+	if commit == nil {
+		return false
+	}
+	select {
+	case <-commit.settled:
+		return true
+	default:
+		return false
+	}
+}
+
 // readOperations visits the committed operation view without copying the rest of the
 // registry. The callback must not retain or mutate the state. A visitor must not decide
 // that a namespace is free while the append that freed it is undecided, so the read
@@ -360,8 +424,16 @@ func (store *stateStore) awaitOperationCommit(commit *operationCommit) error {
 	store.operations.waitObserved(commit)
 	unlock := store.lockOperationMutationState()
 	// Another waiter may have settled this commit before us; settling again is what makes
-	// the outcome definite either way.
-	settleErr := store.settleOperations()
+	// the outcome definite either way. The unified journal publishes a completion without
+	// waiting for any other append: its maintenance pass settles the whole queue when it
+	// needs to compact. The legacy journal drives that compaction from this call, so it
+	// still joins the queue first.
+	var settleErr error
+	if store.operations.completion != nil {
+		settleErr = store.settleReadyOperations()
+	} else {
+		settleErr = store.settleOperations()
+	}
 	var compaction *operationCompaction
 	if settleErr == nil {
 		if store.operations.completion != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -917,6 +918,133 @@ func TestOperationSettleRollsBackOnlyFailedAppends(test *testing.T) {
 		test.Fatal("settlement left unconfirmed edits behind")
 	}
 	unlock()
+}
+
+// A completion confirms its own append as soon as its barrier returns. Waiting for the
+// append queued behind it under the view lock is what serialises every completion behind
+// the newest batch, so a confirmed append must not block on one that is still unordered.
+func TestOperationCompletionDoesNotWaitForALaterAppend(test *testing.T) {
+	store, _, _ := unifiedStore(test)
+	database := securityDatabase()
+	if err := store.Update(func(state *State) error {
+		state.Organizations["org"] = Organization{ID: "org", Name: "test"}
+		state.Projects["alpha"] = Project{ID: "alpha", Organization: "org", Tenant: "tenant_a"}
+		state.Databases[database.Key()] = Database{ID: database, Project: "alpha", State: "active"}
+		return nil
+	}); err != nil {
+		test.Fatal(err)
+	}
+	popEntered := make(chan struct{})
+	releasePop := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePop) }) }
+	defer release()
+	var pops atomic.Int32
+	store.operations.testPopGate = func() {
+		if pops.Add(1) == 2 {
+			close(popEntered)
+			<-releasePop
+		}
+	}
+	test.Cleanup(func() { store.operations.testPopGate = nil })
+	releaseWrite := gateWrite(test, store)
+	digest, err := freezeCommandValue(nil)
+	if err != nil {
+		test.Fatal(err)
+	}
+	appendOperation := func(identifier string) (func() error, error) {
+		return store.submitOperations(func(edit *operationEdit) error {
+			record := seedOperationRecord(edit, database, identifier, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", digest.digest())
+			record.State, record.BusinessOutcome, record.ExecutionProven, record.CleanupOutcome = "terminal", "completed", true, "not_applicable"
+			edit.put(operationKey(database, identifier), record)
+			return nil
+		})
+	}
+	first, err := appendOperation("first")
+	if err != nil {
+		test.Fatal(err)
+	}
+	releaseWrite()
+	second, err := appendOperation("second")
+	if err != nil {
+		test.Fatal(err)
+	}
+	select {
+	case <-popEntered:
+	case <-time.After(5 * time.Second):
+		test.Fatal("the committer never queued the second append behind the first batch")
+	}
+	done := make(chan error, 1)
+	go func() { done <- first() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			test.Fatalf("confirmed append failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		test.Fatal("a confirmed append waited for a later barrier")
+	}
+	if count := operationUnconfirmedCount(store); count != 1 {
+		test.Fatalf("unconfirmed=%d, want only the append whose barrier is still outstanding", count)
+	}
+	release()
+	if err := second(); err != nil {
+		test.Fatalf("second append failed: %v", err)
+	}
+	if count := operationUnconfirmedCount(store); count != 0 {
+		test.Fatalf("unconfirmed=%d after both barriers", count)
+	}
+}
+
+// A ready prefix rolls back exactly the appends it confirmed that failed, in reverse order,
+// and leaves every edit whose barrier has not returned untouched: that edit is undecided,
+// not refused, and a reader still has to treat it as pending.
+func TestOperationReadySettleRollsBackOnlyItsFailedPrefix(test *testing.T) {
+	store, _ := commitQueueStore(test)
+	defer store.Close()
+	database := securityDatabase()
+	confirmedKey := operationKey(database, "ready_confirmed")
+	failedKey := operationKey(database, "ready_failed")
+	queuedKey := operationKey(database, "ready_queued")
+	settled := make(chan struct{})
+	close(settled)
+	outstanding := make(chan struct{})
+	unlock := store.lockState()
+	store.operationsIndex = newOperationIndex(store.state.Operations)
+	appendEdit := func(identifier string, barrier chan struct{}, failure error) {
+		edit := newOperationEdit(&store.state, store.operationsIndex)
+		record := seedOperationRecord(edit, database, identifier, identifier, "gateway", "execute", "tool_rpc", "worker-a", "", "")
+		record.State, record.BusinessOutcome, record.ExecutionProven, record.CleanupOutcome = "terminal", "completed", true, "not_applicable"
+		edit.put(operationKey(database, identifier), record)
+		store.unconfirmed = append(store.unconfirmed, operationPendingEdit{
+			commit: &operationCommit{settled: barrier, err: failure},
+			revert: edit.revert,
+		})
+	}
+	appendEdit("ready_confirmed", settled, nil)
+	appendEdit("ready_failed", settled, ErrStateUncertain)
+	appendEdit("ready_queued", outstanding, nil)
+	failure := store.settleReadyOperations()
+	if !errors.Is(failure, ErrStateUncertain) {
+		test.Fatalf("settling reported %v", failure)
+	}
+	if _, found := store.state.Operations[confirmedKey]; !found {
+		test.Fatal("a confirmed append was rolled back out of the view")
+	}
+	if _, found := store.state.Operations[failedKey]; found {
+		test.Fatal("a failed append stayed in the view")
+	}
+	if _, found := store.state.Operations[queuedKey]; !found {
+		test.Fatal("an append whose barrier is still outstanding was rolled back")
+	}
+	if len(store.unconfirmed) != 1 {
+		test.Fatalf("settlement left %d unconfirmed edits, want the one still unordered", len(store.unconfirmed))
+	}
+	if !store.disk.poisoned.Load() {
+		test.Fatal("an uncertain append did not poison the store")
+	}
+	unlock()
+	close(outstanding)
 }
 
 // The batch bound is enforced, not just declared: a burst larger than one batch is split, all
