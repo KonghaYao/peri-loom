@@ -22,7 +22,15 @@ const operationJournalVersion = 1
 // snapshot replaces "rewrite the whole bounded set twice per commit" with "append
 // the delta, materialize the set once every operationJournalCompactRecords", which
 // keeps the serial commit cost independent of the retained set.
-const operationJournalCompactRecords = 256
+//
+// Materialization holds the journal writer and the maintenance gate, so every
+// append and settlement that arrives while it runs waits for its archive write,
+// snapshot write and two directory barriers. A long record budget therefore costs
+// replay work at startup (bounded by this count and by operationJournalMaximumBytes)
+// and buys fewer of those stops at load: the pause is charged to the drain that
+// settles completions, so at 64 concurrent clients a short budget spends a fifth of
+// the wall clock inside maintenance.
+const operationJournalCompactRecords = 1024
 const operationJournalMaximumBytes = 8 << 20
 const operationJournalMaximumRecordBytes = 1 << 20
 
