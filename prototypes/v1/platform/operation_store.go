@@ -379,11 +379,11 @@ type operationAuditEntry struct {
 // own barrier and its own refusal, so a failed member never hides behind its
 // neighbours; sharing the lock only keeps a drainer batch from resolving the same
 // contention once per member.
-func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntry) ([]func() error, []error) {
-	waits := make([]func() error, len(entries))
+func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntry) ([]*operationCommit, []error) {
+	commits := make([]*operationCommit, len(entries))
 	failures := make([]error, len(entries))
 	if len(entries) == 0 {
-		return waits, failures
+		return commits, failures
 	}
 	preparation := store.observeOperationPreparation()
 	unlock := store.lockOperationMutationStateObserved(preparation)
@@ -404,13 +404,43 @@ func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntr
 			failures[index] = err
 			continue
 		}
+		commits[index] = commit
+	}
+	return commits, failures
+}
+
+// awaitOperationBatch pays the barriers of one completion batch and settles the view once.
+// The batch's commits are ordered, so the last barrier implies every earlier one; leaving
+// the settlement to each member would put the state lock in the drain's critical path once
+// per record instead of once per batch.
+func (store *stateStore) awaitOperationBatch(commits []*operationCommit) error {
+	var last *operationCommit
+	for _, commit := range commits {
 		if commit == nil {
-			waits[index] = func() error { return nil }
 			continue
 		}
-		waits[index] = func() error { return store.awaitOperationCommit(commit) }
+		store.operations.waitObserved(commit)
+		last = commit
 	}
-	return waits, failures
+	if last == nil {
+		return nil
+	}
+	unlock := store.lockOperationMutationState()
+	settleErr := store.settleReadyOperations()
+	if settleErr == nil && store.operations.completion != nil {
+		store.scheduleCompletionMaintenanceLocked()
+	}
+	poisoned := store.disk.poisoned.Load()
+	unlock()
+	if settleErr != nil {
+		return settleErr
+	}
+	if poisoned {
+		// This delta is durable, but the log is now uncertain for another commit, so the
+		// caller must not treat the registration as usable.
+		return ErrStateUncertain
+	}
+	return nil
 }
 
 // updateOperationsAudit applies one edit and returns only after its appended delta is durable.

@@ -398,7 +398,7 @@ func TestUnifiedCompletionBatchSubmitsUnderOneViewLock(test *testing.T) {
 	}
 	locks := 0
 	store.testOperationLock = func() { locks++ }
-	waits, failures := store.submitOperationsAuditBatch(entries)
+	commits, failures := store.submitOperationsAuditBatch(entries)
 	if locks != 1 {
 		test.Fatalf("batch submissions entered the view lock %d times", locks)
 	}
@@ -407,12 +407,18 @@ func TestUnifiedCompletionBatchSubmitsUnderOneViewLock(test *testing.T) {
 			test.Fatalf("entry %d refused: %v", index, failure)
 		}
 	}
-	for index, wait := range waits {
-		if wait == nil {
+	if err := store.awaitOperationBatch(commits); err != nil {
+		test.Fatalf("batch barrier failed: %v", err)
+	}
+	if locks != 2 {
+		test.Fatalf("a %d-member batch took %d state locks, want one submit and one settle", count, locks)
+	}
+	for index, commit := range commits {
+		if commit == nil {
 			test.Fatalf("entry %d has no barrier", index)
 		}
-		if err := wait(); err != nil {
-			test.Fatalf("entry %d barrier failed: %v", index, err)
+		if commit.err != nil {
+			test.Fatalf("entry %d barrier failed: %v", index, commit.err)
 		}
 	}
 	if store.operations.auditHead.Sequence != count {

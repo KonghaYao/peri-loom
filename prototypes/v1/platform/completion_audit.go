@@ -1,9 +1,6 @@
 package platform
 
-import (
-	"errors"
-	"sync"
-)
+import "errors"
 
 func unifiedCompletionReservation(reservation AuditReservation) bool {
 	held, ok := reservation.(*auditReservation)
@@ -65,25 +62,19 @@ func (audit *fileAudit) recordUnifiedBatch(batch []*auditRequest) error {
 	for index, request := range batch {
 		entries[index] = operationAuditEntry{change: request.operationChange, event: &request.event, reserved: request.class == AuditClassCompletion}
 	}
-	waits, failures := audit.completionStore.submitOperationsAuditBatch(entries)
-	waiting := make([]*auditRequest, 0, len(batch))
-	barriers := make([]func() error, 0, len(batch))
+	commits, failures := audit.completionStore.submitOperationsAuditBatch(entries)
+	batchErr := audit.completionStore.awaitOperationBatch(commits)
 	for index, request := range batch {
-		if failures[index] != nil {
-			request.failure = failures[index]
-			continue
-		}
-		waiting = append(waiting, request)
-		barriers = append(barriers, waits[index])
+		request.failure = errors.Join(failures[index], batchErr, operationCommitFailure(commits[index]))
 	}
-	var group sync.WaitGroup
-	group.Add(len(barriers))
-	for index, wait := range barriers {
-		go func(index int, wait func() error) {
-			defer group.Done()
-			waiting[index].failure = wait()
-		}(index, wait)
-	}
-	group.Wait()
 	return nil
+}
+
+// operationCommitFailure reports the barrier outcome of one batch member. A member without a
+// commit changed nothing that needed durability, so it has nothing to report.
+func operationCommitFailure(commit *operationCommit) error {
+	if commit == nil {
+		return nil
+	}
+	return commit.err
 }
