@@ -13,21 +13,37 @@ func (gateway *Gateway) authorize(principal Principal, database controller.Datab
 }
 
 func (gateway *Gateway) authorizeQuota(principal Principal, database controller.DatabaseID) (Quotas, error) {
-	if database.Validate() != nil {
-		return Quotas{}, errors.New("invalid database")
-	}
-	switch principal.Role {
-	case "admin", "developer", "sql", "writer", "read_only":
-	default:
-		return Quotas{}, errors.New("SQL role required")
-	}
-	if principal.Database != nil && *principal.Database != database {
-		return Quotas{}, errors.New("database scope mismatch")
+	if err := authorizationTargetValid(principal, database); err != nil {
+		return Quotas{}, err
 	}
 	state, err := readAuthorizationState(gateway.config.State, principal.KeyID, principal.Project, database)
 	if err != nil {
 		return Quotas{}, errors.New("state unavailable")
 	}
+	return gateway.authorizeQuotaFrom(state, principal, database)
+}
+
+// authorizationTargetValid rejects what no view could authorize, so a request that can
+// never pass still refuses with its own reason and never spends a state read.
+func authorizationTargetValid(principal Principal, database controller.DatabaseID) error {
+	if database.Validate() != nil {
+		return errors.New("invalid database")
+	}
+	switch principal.Role {
+	case "admin", "developer", "sql", "writer", "read_only":
+	default:
+		return errors.New("SQL role required")
+	}
+	if principal.Database != nil && *principal.Database != database {
+		return errors.New("database scope mismatch")
+	}
+	return nil
+}
+
+// authorizeQuotaFrom decides from a view the caller already read: the adapter authorizes
+// a request before dispatch, and the handler checks again before the worker call, so both
+// must be able to share one snapshot instead of queueing for the state lock twice.
+func (gateway *Gateway) authorizeQuotaFrom(state State, principal Principal, database controller.DatabaseID) (Quotas, error) {
 	project, found := state.Projects[principal.Project]
 	if !found || project.Tenant != database.Namespace.Tenant {
 		return Quotas{}, errors.New("project tenant mismatch")

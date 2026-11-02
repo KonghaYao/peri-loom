@@ -106,6 +106,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	defer cancel()
 	// Off by default: with no observer bound this is a nil check and the trace stays nil.
 	ctx, phases := beginRequestPhases(ctx, gateway.config.OpenObserver.requestPhases(), identifier, action, started)
+	ctx = withAuthorizationScope(ctx, &authorizationScope{})
 	_ = http.NewResponseController(writer).SetReadDeadline(time.Now().Add(10 * time.Second))
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal

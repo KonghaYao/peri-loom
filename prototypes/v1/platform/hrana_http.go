@@ -112,6 +112,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	if serveHranaWS(writer, request, handler) {
 		return
 	}
+	request = request.WithContext(withAuthorizationScope(request.Context(), &authorizationScope{}))
 	if serveHranaV3(writer, request, handler) {
 		return
 	}
@@ -139,7 +140,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		http.Error(writer, "forbidden", 403)
 		return
 	}
-	quota, err := handler.gateway.authorizeQuota(principal, database)
+	quota, err := handler.gateway.authorizeQuotaIn(request.Context(), principal, database)
 	if err != nil {
 		http.Error(writer, "forbidden", 403)
 		return

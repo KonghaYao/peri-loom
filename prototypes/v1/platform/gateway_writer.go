@@ -17,8 +17,8 @@ func (session *gatewaySession) acceptWriterState(state *SessionWriterState, bind
 	return true
 }
 
-func (gateway *Gateway) writerDispatchGuard(principal Principal, session *gatewaySession, action string) gatewayResult {
-	if gateway.authorize(principal, session.database) != nil {
+func (gateway *Gateway) writerDispatchGuard(ctx context.Context, principal Principal, session *gatewaySession, action string) gatewayResult {
+	if gateway.authorizeIn(ctx, principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
 	if session.closed {

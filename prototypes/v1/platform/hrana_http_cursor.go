@@ -66,7 +66,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 	}
 	credential := strings.TrimPrefix(values[0], "Bearer ")
 	principal, err := handler.gateway.config.Identity.Authenticate(credential)
-	if err != nil || principal.Subject == "" || principal.Project == "" || principal.ExpiresMS > 0 && principal.ExpiresMS <= time.Now().UnixMilli() || handler.gateway.authorize(principal, database) != nil {
+	if err != nil || principal.Subject == "" || principal.Project == "" || principal.ExpiresMS > 0 && principal.ExpiresMS <= time.Now().UnixMilli() || handler.gateway.authorizeIn(request.Context(), principal, database) != nil {
 		http.Error(writer, "forbidden", 403)
 		return true
 	}

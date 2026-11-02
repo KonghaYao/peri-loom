@@ -69,7 +69,7 @@ func (gateway *Gateway) beginSessionOpen(database controller.DatabaseID, request
 }
 
 func (gateway *Gateway) open(ctx context.Context, principal Principal, database controller.DatabaseID, requestID string, permit *admissionPermit, quota Quotas) (result gatewayResult) {
-	if gateway.authorize(principal, database) != nil {
+	if gateway.authorizeIn(ctx, principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
 	// 持久隔离的原因优先于 placement 故障，避免客户端把 Unknown 误当成可重试的路由问题。
@@ -89,6 +89,8 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		if waiting := gateway.awaitActivation(ctx, database); waiting != nil {
 			return *waiting
 		}
+		// The wait may have outlasted a revocation, so the check below reads state again.
+		invalidateAuthorizationScope(ctx)
 		worker, binding, err = gateway.settlePlacement(ctx, database)
 	}
 	if err != nil {
@@ -100,7 +102,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if principal.Role == "read_only" && binding.Role != "read_only" {
 		return gatewayFailure(403, "readonly_placement_required")
 	}
-	if gateway.authorize(principal, database) != nil {
+	if gateway.authorizeIn(ctx, principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
 	openCommand, err := freezeCommand(map[string]any{"command": "open_session", "database": database})
@@ -145,7 +147,9 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 			// against the binding the platform now routes.
 			return gatewayRetryablePlacementFailure()
 		}
-		if !principalBindingValid(principal, currentBinding) || gateway.authorize(principal, database) != nil {
+		// The profile call is an upstream RPC, so it can outlast a revocation.
+		invalidateAuthorizationScope(ctx)
+		if !principalBindingValid(principal, currentBinding) || gateway.authorizeIn(ctx, principal, database) != nil {
 			return gatewayFailure(403, "forbidden")
 		}
 		binding = currentBinding
@@ -202,7 +206,7 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 		return gatewayFailure(409, "session_busy")
 	}
 	if permit == nil {
-		if failure := gateway.writerDispatchGuard(principal, session, action); failure.code != "" {
+		if failure := gateway.writerDispatchGuard(ctx, principal, session, action); failure.code != "" {
 			session.mu.Unlock()
 			return failure
 		}
@@ -230,7 +234,7 @@ func (gateway *Gateway) dispatch(ctx context.Context, principal Principal, reque
 func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal, request gatewayRequest, requestID, action string, quota Quotas, permit *admissionPermit, ndjson bool, session *gatewaySession) (result gatewayResult) {
 	currentBinding := session.binding
 	// Authorization is verified again after routing, before the worker call.
-	if gateway.authorize(principal, session.database) != nil {
+	if gateway.authorizeIn(ctx, principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
 	if session.closed {
@@ -280,7 +284,7 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			return gatewayFailure(403, "readonly_placement_required")
 		}
 	}
-	if gateway.authorize(principal, session.database) != nil {
+	if gateway.authorizeIn(ctx, principal, session.database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
 	// The worker command of this dispatch is assembled here, completely, before
