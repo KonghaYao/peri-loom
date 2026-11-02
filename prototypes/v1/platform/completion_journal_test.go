@@ -419,3 +419,47 @@ func TestUnifiedCompletionBatchSubmitsUnderOneViewLock(test *testing.T) {
 		test.Fatalf("audit head=%d after %d entries", store.operations.auditHead.Sequence, count)
 	}
 }
+
+// A drain forms a batch so its members can share one barrier. Queueing them one at a
+// time wakes the committer on the first member, which writes what it can already see and
+// leaves the rest to a second fsync. The hold keeps the committer off a partial batch.
+func TestUnifiedCompletionJournalHoldsOneDrainBatchTogether(test *testing.T) {
+	store, _, _ := unifiedStore(test)
+	journal := store.operations
+	journal.holdCompletionBatch()
+	held := true
+	defer func() {
+		if held {
+			journal.releaseCompletionBatch()
+		}
+	}()
+	commits := make([]*operationCommit, 0, 4)
+	for index := 0; index < 4; index++ {
+		event := completionAuditEvent(fmt.Sprintf("held%02d", index))
+		commit, err := journal.submitAuditPrepared(store.state, operationDelta{}, &event, true, nil)
+		if err != nil {
+			test.Fatalf("held submit %d failed: %v", index, err)
+		}
+		commits = append(commits, commit)
+	}
+	time.Sleep(50 * time.Millisecond)
+	journal.mutex.Lock()
+	partial := journal.syncs
+	journal.mutex.Unlock()
+	if partial != 0 {
+		test.Fatalf("the committer wrote %d barrier(s) while a drain batch was still being queued", partial)
+	}
+	journal.releaseCompletionBatch()
+	held = false
+	for index, commit := range commits {
+		if err := journal.await(commit); err != nil {
+			test.Fatalf("commit %d failed: %v", index, err)
+		}
+	}
+	journal.mutex.Lock()
+	syncs := journal.syncs
+	journal.mutex.Unlock()
+	if syncs != 1 {
+		test.Fatalf("one drain batch paid %d barriers, want 1", syncs)
+	}
+}

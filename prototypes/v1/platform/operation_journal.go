@@ -249,6 +249,10 @@ type operationJournal struct {
 	writing        bool
 	write          sync.Mutex
 	committerGroup sync.WaitGroup
+	// batchHold keeps the committer from choosing a batch while a drain enqueues one
+	// completion batch member by member; batchWait wakes it when the last one is queued.
+	batchHold int
+	batchWait *sync.Cond
 	// Observed maxima, not the configured limits: a reader compares them with
 	// operation_journal_queue_limit and operation_journal_batch_limit.
 	queueMaximum int

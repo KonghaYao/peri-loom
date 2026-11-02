@@ -388,6 +388,10 @@ func (store *stateStore) submitOperationsAuditBatch(entries []operationAuditEntr
 	preparation := store.observeOperationPreparation()
 	unlock := store.lockOperationMutationStateObserved(preparation)
 	defer unlock()
+	// One drain batch is one barrier: keep the committer from starting on the first
+	// member that becomes visible.
+	store.operations.holdCompletionBatch()
+	defer store.operations.releaseCompletionBatch()
 	for index := range entries {
 		observed := preparation
 		if index > 0 {

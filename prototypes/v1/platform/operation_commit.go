@@ -3,6 +3,7 @@ package platform
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -177,6 +178,26 @@ func (journal *operationJournal) observeWait(elapsed time.Duration) {
 	}
 }
 
+// holdCompletionBatch stops the committer from choosing a batch until the matching release.
+// The audit drain queues its members one submit at a time; without the hold the first member
+// wakes the committer, which writes the few commits visible at that instant and leaves the
+// rest for a second barrier, so one drain batch pays two fsyncs instead of one. The pair is
+// held only across that bounded enqueue, never across a wait.
+func (journal *operationJournal) holdCompletionBatch() {
+	journal.mutex.Lock()
+	journal.batchHold++
+	journal.mutex.Unlock()
+}
+
+func (journal *operationJournal) releaseCompletionBatch() {
+	journal.mutex.Lock()
+	journal.batchHold--
+	if journal.batchHold == 0 && journal.batchWait != nil {
+		journal.batchWait.Broadcast()
+	}
+	journal.mutex.Unlock()
+}
+
 // flush writes queued appends in order and pays one barrier per batch. It never takes the
 // state lock: a reader waiting for a commit's result holds that lock, and the committer must
 // not need it to finish. A failed batch poisons the log and is reported to every waiter in
@@ -185,6 +206,16 @@ func (journal *operationJournal) flush() {
 	defer journal.committerGroup.Done()
 	for {
 		journal.mutex.Lock()
+		for journal.batchHold > 0 {
+			// A drain is queueing a whole completion batch. Taking what is visible now
+			// would split that batch across two barriers: the first member pays one
+			// fsync and the rest wait for the next. The hold never covers a wait, only
+			// the bounded enqueue of one batch.
+			if journal.batchWait == nil {
+				journal.batchWait = sync.NewCond(&journal.mutex)
+			}
+			journal.batchWait.Wait()
+		}
 		if len(journal.commits) == 0 {
 			journal.committer = false
 			journal.mutex.Unlock()
