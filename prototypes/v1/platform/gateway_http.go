@@ -106,7 +106,11 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	defer cancel()
 	// Off by default: with no observer bound this is a nil check and the trace stays nil.
 	ctx, phases := beginRequestPhases(ctx, gateway.config.OpenObserver.requestPhases(), identifier, action, started)
-	ctx = withAuthorizationScope(ctx, &authorizationScope{})
+	// A protocol adapter that already authorized this request carries its view in; keep
+	// it so the handler's checks do not queue for the same state again.
+	if authorizationScopeFrom(ctx) == nil {
+		ctx = withAuthorizationScope(ctx, &authorizationScope{})
+	}
 	_ = http.NewResponseController(writer).SetReadDeadline(time.Now().Add(10 * time.Second))
 	_ = http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(timeout))
 	var principal Principal
@@ -305,7 +309,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 	}
 	leaveState := requestPhaseSpan(ctx, requestPhaseState)
-	state, err := readGatewayRequestState(gateway.config.State, principal.Project, database)
+	state, err := gateway.requestStateView(ctx, principal.KeyID, principal.Project, database)
 	leaveState()
 	if err != nil {
 		result = gatewayFailure(503, "metadata_unavailable")

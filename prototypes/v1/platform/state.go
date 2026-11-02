@@ -219,6 +219,14 @@ func (store *stateStore) credentialByDigest(digest string) (APIKey, bool, error)
 }
 
 func (store *stateStore) authorizationState(keyID, projectID string, database controller.DatabaseID) (State, error) {
+	return store.requestState(keyID, projectID, &database)
+}
+
+// requestState is the one narrow read a gateway request needs: the project quotas and the
+// database descriptor its admission checks look at, plus the credential and descriptor
+// authorization decides from. Reading those separately queued the same request for the
+// same state lock twice, and the lock is where the request path serializes.
+func (store *stateStore) requestState(keyID, projectID string, database *controller.DatabaseID) (State, error) {
 	defer store.lockState()()
 	if err := store.disk.available(); err != nil {
 		return State{}, err
@@ -230,20 +238,31 @@ func (store *stateStore) authorizationState(keyID, projectID string, database co
 	if key, found := store.state.APIKeys[keyID]; found {
 		view.APIKeys[keyID] = key
 	}
+	if database != nil {
+		if record, found := store.state.Databases[database.Key()]; found {
+			view.Databases[database.Key()] = record
+			if project, found := store.state.Projects[record.Project]; found {
+				view.Projects[record.Project] = project
+			}
+		}
+		if descriptor, found := store.state.Keys[namespaceKey(database.Namespace)]; found {
+			descriptor.Envelope = nil
+			view.Keys[namespaceKey(database.Namespace)] = descriptor
+		}
+	}
 	if project, found := store.state.Projects[projectID]; found {
 		view.Projects[projectID] = project
 	}
-	if record, found := store.state.Databases[database.Key()]; found {
-		view.Databases[database.Key()] = record
-		if project, found := store.state.Projects[record.Project]; found {
-			view.Projects[record.Project] = project
-		}
-	}
-	if descriptor, found := store.state.Keys[namespaceKey(database.Namespace)]; found {
-		descriptor.Envelope = nil
-		view.Keys[namespaceKey(database.Namespace)] = descriptor
-	}
 	return view, nil
+}
+
+func readRequestState(store StateStore, keyID, projectID string, database *controller.DatabaseID) (State, error) {
+	if narrow, ok := store.(interface {
+		requestState(string, string, *controller.DatabaseID) (State, error)
+	}); ok {
+		return narrow.requestState(keyID, projectID, database)
+	}
+	return store.Snapshot()
 }
 
 func readAuthorizationState(store StateStore, keyID, projectID string, database controller.DatabaseID) (State, error) {
@@ -256,21 +275,7 @@ func readAuthorizationState(store StateStore, keyID, projectID string, database 
 }
 
 func (store *stateStore) gatewayRequestState(projectID string, database *controller.DatabaseID) (State, error) {
-	defer store.lockState()()
-	if err := store.disk.available(); err != nil {
-		return State{}, err
-	}
-	view := State{Projects: map[string]Project{}, Databases: map[string]Database{}}
-	if database != nil {
-		if record, found := store.state.Databases[database.Key()]; found {
-			view.Databases[database.Key()] = record
-			projectID = record.Project
-		}
-	}
-	if project, found := store.state.Projects[projectID]; found {
-		view.Projects[projectID] = project
-	}
-	return view, nil
+	return store.requestState("", projectID, database)
 }
 
 func readGatewayRequestState(store StateStore, projectID string, database *controller.DatabaseID) (State, error) {
