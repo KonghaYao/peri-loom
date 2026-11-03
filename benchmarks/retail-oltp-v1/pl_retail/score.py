@@ -1199,7 +1199,7 @@ def emit_scorecards(
     """
     from .evidence import EvidenceWriter
 
-    writer = EvidenceWriter(root)
+    writer = EvidenceWriter(root, reuse_manifest=True)
     written: list[str] = []
     rounds = details.get("rounds") or {}
     for round_id in sorted(rounds):

@@ -54,13 +54,43 @@ class RecordedFile:
 
 
 class EvidenceWriter:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, reuse_manifest: bool = False):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._files: dict[str, RecordedFile] = {}
         self._handles: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._closed = False
+        if reuse_manifest:
+            self._load_existing_manifest()
+
+    def _load_existing_manifest(self) -> None:
+        """Seed the writer with what a previous finalize already recorded.
+
+        Re-finalizing an existing bundle (``score`` writes scorecards into it)
+        must not drop the round files from the manifest.  Recorded digests are
+        trusted as-is: if the bytes changed, the scorer's digest check is what
+        notices, not this writer.
+        """
+        path = self.root / "evidence-manifest.json"
+        if not path.is_file():
+            return
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        for item in document.get("files") or []:
+            relative = item.get("path")
+            if not relative:
+                continue
+            self._files[relative] = RecordedFile(
+                relative_path=relative,
+                kind=str(item.get("kind") or "json"),
+                bytes=int(item.get("bytes") or 0),
+                records=int(item.get("records") or 0),
+                sha256=str(item.get("sha256") or ""),
+                complete=bool(item.get("complete", True)),
+            )
 
     # -- paths -------------------------------------------------------------
 

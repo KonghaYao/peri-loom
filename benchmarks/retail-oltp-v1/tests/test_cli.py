@@ -40,7 +40,20 @@ class CommandLineTests(unittest.TestCase):
         paths = {entry["path"] for entry in manifest["files"]}
         self.assertIn("scorecard.json", paths)
         self.assertIn("rounds/r01-U1/scorecard.json", paths)
+        # Re-finalizing must not drop the evidence the scorecards were computed
+        # from; otherwise a second score run sees an uncovered bundle.
+        self.assertIn("rounds/r01-U1/attempts.jsonl", paths)
+        self.assertIn("run.json", paths)
         self.assertNotIn("evidence-manifest.json", paths)
+
+    def test_scoring_twice_is_idempotent(self) -> None:
+        root = Path(tempfile.mkdtemp()) / "bundle"
+        support.build_bundle(root)
+        self.assertEqual(_quiet(["score", "--evidence", str(root)]), EXIT_CODES[Status.PASS])
+        self.assertEqual(_quiet(["score", "--evidence", str(root)]), EXIT_CODES[Status.PASS])
+        manifest = json.loads((root / "evidence-manifest.json").read_text(encoding="utf-8"))
+        paths = {entry["path"] for entry in manifest["files"]}
+        self.assertIn("rounds/r01-U1/attempts.jsonl", paths)
 
     def test_score_exit_code_follows_status(self) -> None:
         root = Path(tempfile.mkdtemp()) / "bundle"
