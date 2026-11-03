@@ -96,6 +96,15 @@ pub trait ObjectStore: Send + Sync {
         Ok(())
     }
 
+    /// Local half of `validate_session`: every check that needs no authority round
+    /// trip. Session creation and the engine readonly probe use it because those
+    /// requests perform no store I/O; the authority re-checks the binding on the
+    /// operation that actually reads or writes, and the next request validates
+    /// again. Stores without an authority keep the full validation.
+    fn validate_session_local(&self) -> Result<()> {
+        self.validate_session()
+    }
+
     fn validate_local(&self) -> Result<()> {
         self.validate_session()
     }
@@ -106,6 +115,12 @@ pub trait ObjectStore: Send + Sync {
 
     fn validate_transaction(&self, _in_transaction: bool) -> Result<()> {
         self.validate_session()
+    }
+
+    /// Local half of `validate_transaction`, with the same transaction-state rule
+    /// (a draining database still rejects new transactions) and no authority call.
+    fn validate_transaction_local(&self, in_transaction: bool) -> Result<()> {
+        self.validate_transaction(in_transaction)
     }
 
     fn checked_get(&self, key: &str) -> Result<Option<StoredObject>> {

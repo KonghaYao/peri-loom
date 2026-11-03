@@ -116,10 +116,20 @@ impl ObjectStore for ContextStore {
         self.generation()
     }
 
+    fn validate_session_local(&self) -> Result<()> {
+        self.validate_local()
+    }
+
     fn validate_transaction(&self, in_transaction: bool) -> Result<()> {
         self.generation()?;
         self.context.check(Some(in_transaction))?;
         self.inner.validate_transaction(in_transaction)?;
+        self.context.check(Some(in_transaction))?;
+        self.generation()
+    }
+
+    fn validate_transaction_local(&self, in_transaction: bool) -> Result<()> {
+        self.generation()?;
         self.context.check(Some(in_transaction))?;
         self.generation()
     }

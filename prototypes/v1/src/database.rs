@@ -469,7 +469,11 @@ impl RemoteDatabase {
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
         let _operation = self.operation_until(&deadline, false)?;
         self.admission.healthy()?;
-        self.storage().store().validate_transaction(false)?;
+        // Opening a session touches no stored object, so the authority round trip
+        // would only repeat a check the first real access performs anyway. The
+        // local ownership checks, including the draining rule of
+        // `validate_transaction(false)`, still run.
+        self.storage().store().validate_transaction_local(false)?;
         let engine = self
             .engine
             .lock()
@@ -479,7 +483,7 @@ impl RemoteDatabase {
             .ok_or(AdmissionError::Quarantine)?;
         let connection = Self::connect(&engine, self.key.as_ref())
             .context("connect independent remote session")?;
-        self.storage().store().validate_transaction(false)?;
+        self.storage().store().validate_transaction_local(false)?;
         configure(&connection);
         deadline.check()?;
         self.admission.healthy()?;
@@ -491,7 +495,7 @@ impl RemoteDatabase {
     }
 
     pub fn is_readonly(&self) -> Result<bool> {
-        self.storage().store().validate_session()?;
+        self.storage().store().validate_session_local()?;
         self.lane.is_readonly(self)
     }
 

@@ -57,6 +57,14 @@ impl ObjectStore for MetricsObjectStore {
         self.inner.validate_local()
     }
 
+    fn validate_session_local(&self) -> Result<()> {
+        self.inner.validate_session_local()
+    }
+
+    fn validate_transaction_local(&self, in_transaction: bool) -> Result<()> {
+        self.inner.validate_transaction_local(in_transaction)
+    }
+
     fn access_role(&self) -> AccessRole {
         self.inner.access_role()
     }

@@ -733,7 +733,9 @@ impl SessionLane {
     pub fn is_readonly(&self, database: &RemoteDatabase) -> Result<bool> {
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
         self.check(database)?;
-        database.storage().store().validate_session()?;
+        // The readonly flag is engine-local; the authority re-checks the binding on
+        // the operations that follow. Session open calls this before any store I/O.
+        database.storage().store().validate_session_local()?;
         Ok(self
             .lock(database, &deadline, false)?
             .as_ref()
