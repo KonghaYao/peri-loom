@@ -407,12 +407,15 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	// Reserve the completion row before any dispatch. Capacity is the only audit
 	// failure knowable at this point; an unavailable sink keeps the previous
 	// post-dispatch answer, which carries the execution proof instead of
-	// pretending nothing ran.
+	// pretending nothing ran. A close is the exception: it is the only request
+	// that gives a session back, so refusing it at admission would leak the
+	// worker session and its seat; it proceeds without a reserved row and records
+	// what the remaining budgets allow.
 	if admission, ok := gateway.config.Audit.(AuditAdmission); ok {
 		reservation, reserveErr := gateway.reserveCompletionFor(ctx, action, admission)
 		if reserveErr == nil {
 			completion = reservation
-		} else if errors.Is(reserveErr, ErrAuditOverloaded) {
+		} else if errors.Is(reserveErr, ErrAuditOverloaded) && action != "close" {
 			result = gatewayRefusal(503, "audit_unavailable", rejectionAuditCapacity)
 			return
 		}

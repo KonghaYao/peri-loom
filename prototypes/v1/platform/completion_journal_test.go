@@ -154,6 +154,9 @@ func TestUnifiedCompletionDropsNamespaceFenceBeforeBarrier(test *testing.T) {
 	for index := range sessions {
 		sessions[index] = unifiedOpenSession(test, gateway, credential)
 	}
+	// The opens cannot commit, so their records may still be in flight; the gate
+	// below is read by the committer and must be installed on an idle journal.
+	gateway.deferred.wait()
 	ordered := operationOrderedTotal(store)
 	release := gatePop(test, store)
 	var once sync.Once
@@ -171,18 +174,20 @@ func TestUnifiedCompletionDropsNamespaceFenceBeforeBarrier(test *testing.T) {
 		}(index)
 	}
 	// The first close is parked inside its barrier; the second one is only able
-	// to admit itself if the fence was dropped before that barrier.
+	// to reach the queue if the fence was dropped before that barrier. The
+	// admission charge no longer marks it (a completion record releases that when
+	// the queue accepts it), so the queue depth and the ordered appends do.
 	waitOrdered(test, store, ordered+1)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		audit.queueMutex.Lock()
-		admitted := audit.admitted[AuditClassCompletion]
+		queued := len(audit.pending)
 		audit.queueMutex.Unlock()
-		if admitted >= closes {
+		if queued >= 1 || operationOrderedTotal(store) >= ordered+2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			test.Fatalf("only %d of %d closes were admitted while one barrier was held", admitted, closes)
+			test.Fatal("the second close did not reach the queue while one barrier was held")
 		}
 		time.Sleep(time.Millisecond)
 	}

@@ -37,6 +37,41 @@ func auditClassStatus(status map[string]any, group, class string) int {
 	return values[class]
 }
 
+// auditQueuedClass counts the records of one class the writer already owns,
+// either still pending or in the batch being written. A completion record
+// releases its admission charge when the queue accepts it, so its charge is not
+// the observable that proves it was accepted.
+func auditQueuedClass(audit *fileAudit, class AuditClass) int {
+	audit.queueMutex.Lock()
+	defer audit.queueMutex.Unlock()
+	count := 0
+	for _, request := range audit.pending {
+		if request.class == class {
+			count++
+		}
+	}
+	for _, request := range audit.writing {
+		if request.class == class {
+			count++
+		}
+	}
+	return count
+}
+
+func waitAuditQueued(test *testing.T, audit *fileAudit, description string, class AuditClass, count int) {
+	test.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if auditQueuedClass(audit, class) >= count {
+			return
+		}
+		if time.Now().After(deadline) {
+			test.Fatalf("audit %s did not reach %d queued records: %+v", description, count, audit.AuditStatus())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func auditDroppedStatus(status map[string]any, class string) uint64 {
 	values, _ := status["dropped_by_class"].(map[string]uint64)
 	return values[class]
@@ -147,9 +182,9 @@ func TestAuditRejectionBudgetIsolatedFromCompletion(test *testing.T) {
 	go func() { completion <- reservation.Record(auditFixtureEvent()) }()
 	request := make(chan error, 1)
 	go func() { request <- audit.Record(auditFixtureEvent()) }()
-	waitAuditStatus(test, audit, "admitted completion and request records", func(status map[string]any) bool {
-		return auditClassStatus(status, "admitted_by_class", "completion") == 1 &&
-			auditClassStatus(status, "admitted_by_class", "request") == 1
+	waitAuditQueued(test, audit, "accepted completion", AuditClassCompletion, 1)
+	waitAuditStatus(test, audit, "an admitted request record", func(status map[string]any) bool {
+		return auditClassStatus(status, "admitted_by_class", "request") == 1
 	})
 	release()
 	admitted, refused := 0, 0
@@ -230,9 +265,7 @@ func TestAuditCompletionReservationDrainsOnClose(test *testing.T) {
 	}()
 	result := make(chan error, 1)
 	go func() { result <- reservation.Record(auditFixtureEvent()) }()
-	waitAuditStatus(test, audit, "an accepted completion record", func(status map[string]any) bool {
-		return auditClassStatus(status, "admitted_by_class", "completion") == 1
-	})
+	waitAuditQueued(test, audit, "an accepted completion record", AuditClassCompletion, 1)
 	closed := make(chan error, 1)
 	go func() { closed <- audit.Close() }()
 	deadline := time.Now().Add(5 * time.Second)

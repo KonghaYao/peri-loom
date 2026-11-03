@@ -80,6 +80,10 @@ type auditRequest struct {
 	done            chan error
 	operationChange func(*operationEdit) error
 	failure         error
+	// charged marks the admission charge this request still owns. A completion
+	// record releases it when the queue accepts the record, not when its barrier
+	// returns: the reply no longer waits for that barrier.
+	charged bool
 }
 
 // auditReservation moves one completion slot from the reserve into the queue.
@@ -237,11 +241,32 @@ func (audit *fileAudit) enqueueLocked(request *auditRequest) {
 		request.observation.member.Phase = "audit"
 	}
 	audit.pending = append(audit.pending, request)
+	// A completion slot bounds admission into the queue, not durability. A
+	// non-committing reply is written before its barrier, so a slot held until
+	// the barrier would let one connection own a second slot for its next request
+	// and turn ordinary concurrency into admission refusals. The pending record
+	// stays bounded by the deferred account and by the requests waiting inline.
+	if request.class == AuditClassCompletion {
+		audit.releaseChargeLocked(request)
+	}
 	if !audit.running {
 		audit.running = true
 		audit.writers.Add(1)
 		go audit.drain()
 	}
+}
+
+// releaseChargeLocked returns the admission charge a request still owns. A
+// completion record gave it back when the queue accepted it; a request or
+// rejection record keeps it until its barrier returns, and a prepared record
+// that is never submitted gives it back on discard.
+func (audit *fileAudit) releaseChargeLocked(request *auditRequest) {
+	if !request.charged {
+		return
+	}
+	request.charged = false
+	audit.admitted[request.class]--
+	audit.admittedBytes[request.class] -= request.bytes
 }
 
 func (audit *fileAudit) releaseReservationLocked(reservation *auditReservation) {
@@ -284,8 +309,10 @@ func (reservation *auditReservation) RecordDeferred(event AuditEvent) (func() er
 }
 
 // ReserveCompletion takes one completion slot and its fixed byte charge. The
-// slot is held from before dispatch until the record is durable, so queued
-// traffic that arrived later can never take it away.
+// slot is held from before dispatch until the queue accepts the record, so
+// queued traffic that arrived later can never refuse it. Durability is bounded
+// separately: by the deferred account for records paid after their reply, and by
+// the requests that wait inline when that account is full.
 func (audit *fileAudit) ReserveCompletion() (AuditReservation, error) {
 	audit.queueMutex.Lock()
 	defer audit.queueMutex.Unlock()
@@ -335,7 +362,7 @@ func (audit *fileAudit) prepareCompletionOperation(event AuditEvent, reservation
 		return nil, err
 	}
 	bytes := min(auditEventBytes(event), reservation.charged)
-	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, done: make(chan error, 1), operationChange: change}
+	request := &auditRequest{event: event, class: AuditClassCompletion, bytes: bytes, done: make(chan error, 1), operationChange: change, charged: true}
 	audit.queueMutex.Lock()
 	defer audit.queueMutex.Unlock()
 	if !reservation.active {
@@ -360,8 +387,7 @@ func (audit *fileAudit) enqueueCompletion(request *auditRequest) (func() error, 
 	if audit.closing {
 		// The shutdown will never drain this record, so its admission charge goes
 		// back here, exactly like a rejected batch.
-		audit.admitted[request.class]--
-		audit.admittedBytes[request.class] -= request.bytes
+		audit.releaseChargeLocked(request)
 		audit.queueMutex.Unlock()
 		return nil, ErrStateClosed
 	}
@@ -395,8 +421,7 @@ func (audit *fileAudit) enqueueCompletionBatch(requests []*auditRequest) (func()
 		// The shutdown that started between preparation and submission will never
 		// drain these records, so their admission charge goes back here.
 		for _, request := range requests {
-			audit.admitted[request.class]--
-			audit.admittedBytes[request.class] -= request.bytes
+			audit.releaseChargeLocked(request)
 		}
 		audit.queueMutex.Unlock()
 		return nil, ErrStateClosed
@@ -419,8 +444,7 @@ func (audit *fileAudit) enqueueCompletionBatch(requests []*auditRequest) (func()
 // never be submitted. Nothing was written, so no sequence is consumed.
 func (audit *fileAudit) discardPrepared(request *auditRequest) {
 	audit.queueMutex.Lock()
-	audit.admitted[request.class]--
-	audit.admittedBytes[request.class] -= request.bytes
+	audit.releaseChargeLocked(request)
 	audit.queueMutex.Unlock()
 }
 
@@ -676,6 +700,7 @@ func (audit *fileAudit) RecordClass(event AuditEvent, class AuditClass) error {
 		audit.queueMutex.Unlock()
 		return ErrAuditOverloaded
 	}
+	request.charged = true
 	audit.enqueueLocked(request)
 	audit.queueMutex.Unlock()
 	return audit.waitObserved(request)
@@ -707,11 +732,11 @@ func (audit *fileAudit) drain() {
 		audit.queueMutex.Unlock()
 		err := audit.recordBatch(batch)
 		// The batch keeps its admission charge until the barrier returns, so a
-		// stalled device cannot be outrun by records admitted while it waits.
+		// stalled device cannot be outrun by records admitted while it waits. A
+		// completion record was released when the queue accepted it instead.
 		audit.queueMutex.Lock()
 		for _, request := range batch {
-			audit.admitted[request.class]--
-			audit.admittedBytes[request.class] -= request.bytes
+			audit.releaseChargeLocked(request)
 		}
 		audit.writing = nil
 		audit.queueMutex.Unlock()

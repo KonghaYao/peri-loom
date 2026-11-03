@@ -178,7 +178,7 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 	}
 	ledger := &cleanupLedger{}
 	ledger.observe(isolated, time.Now())
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, deferred: &deferredDurability{}, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, deferred: newDeferredDurability(), counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {
@@ -251,6 +251,9 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 		}
 		gateway.mu.Unlock()
 		if len(sessions) == 0 && active == 0 {
+			// Every deferred record was queued before its reply; a clean shutdown
+			// pays what is left before the audit and state stores close.
+			gateway.deferred.stop()
 			return nil
 		}
 		for _, session := range sessions {
