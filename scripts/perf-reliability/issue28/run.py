@@ -93,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         warmup=arguments.warmup,
         samples=arguments.samples,
         metrics=metrics,
+        concurrency_requests=arguments.concurrency_requests,
     )
     stats_before = _docker_stats(arguments.container)
     started = datetime.datetime.now(datetime.timezone.utc)
@@ -109,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     metadata["rounds"] = arguments.rounds
     metadata["warmup"] = arguments.warmup
     metadata["samples"] = arguments.samples
+    metadata["concurrency_requests"] = arguments.concurrency_requests
     metadata["resource_before"] = stats_before or {}
     metadata["resource_after"] = stats_after or {}
     metadata["resource_after_idle"] = stats_idle or {}
@@ -133,12 +135,23 @@ def main(argv: list[str] | None = None) -> int:
     print(markdown if arguments.print_table else "wrote %s and %s" % (
         output / "summary.md", output / "summary.json"), file=sys.stderr)
 
-    failed = [row for row in rows if row.verdict == "FAIL"]
-    if result.fatal:
+    return resolve_exit_code(
+        rows=rows,
+        concurrency=concurrency,
+        fatal=result.fatal,
+        fixture_complete=fixture.complete,
+        allow_misses=arguments.allow_misses,
+    )
+
+
+def resolve_exit_code(rows, concurrency: list[dict], fatal: str,
+                      fixture_complete: bool, allow_misses: bool) -> int:
+    """Fatal or incomplete evidence is 2; concurrency failures are never waived."""
+    if fatal or not fixture_complete:
         return 2
-    if not fixture.complete:
-        return 2
-    if failed and not arguments.allow_misses:
+    if any(item.get("verdict") == "FAIL" for item in concurrency):
+        return 1
+    if not allow_misses and any(row.verdict == "FAIL" for row in rows):
         return 1
     return 0
 
@@ -151,6 +164,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--concurrency-requests", type=int, default=100,
+                        help="requests per concurrency level (default 100)")
     parser.add_argument("--scenario", action="append",
                         help="scenario key or prefix such as F1 or H1")
     parser.add_argument("--protocol", action="append",
@@ -160,12 +175,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-table", action="store_true")
     parser.add_argument("--allow-misses", action="store_true",
-                        help="return 0 even when acceptance targets are missed")
+                        help="return 0 for ordinary scenario target misses; "
+                             "concurrency correctness failures still return 1")
     arguments = parser.parse_args(argv)
     if arguments.rounds < 1 or arguments.warmup < 0 or arguments.samples < 1:
         parser.error("rounds >= 1, warmup >= 0 and samples >= 1 are required")
     if arguments.post_idle_seconds < 0:
         parser.error("post-idle-seconds must not be negative")
+    if arguments.concurrency_requests < 1:
+        parser.error("concurrency-requests must be at least 1")
     return arguments
 
 
@@ -284,6 +302,7 @@ def _write_raw(result, path: pathlib.Path) -> None:
                 "drained": metrics.drained,
                 "drain_ms": metrics.drain_ms,
                 "requests": metrics.requests,
+                "planned": metrics.planned,
                 "status_counts": metrics.status_counts,
                 "error_codes": metrics.error_codes,
             }, ensure_ascii=False) + "\n")

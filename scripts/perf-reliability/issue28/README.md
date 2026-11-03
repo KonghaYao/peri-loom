@@ -19,8 +19,11 @@ not use the Peri client, a TypeScript SDK, or local SQLite.
   outcome once the result budget is crossed.
 - `B1`: 20 `SELECT 1` executes in one pipeline; `C1`: 10 executes on one baton.
 - `W1`: create/insert/delete/drop table through both pipeline codecs.
-- `X1`: 100 requests at concurrency 1/4/8/16. It requires
-  `max_concurrent >= 16`; the report fails the level on 429s or non-zero
+- `X1`: 100 requests by default at concurrency 1/4/8/16 (`--concurrency-requests`
+  changes the per-level count). It requires `max_concurrent >= 16`; the report
+  fails the level on any non-200 status or unsuccessful outcome (including HTTP
+  500, SQL/driver errors, and transport errors), a ledger that does not match the
+  planned request count, 429s, or non-zero
   `active_permits`/`unknown_held_permits`/`session_seats`.
 
 Every request carries a unique `X-Request-ID`. The harness never retries SQL.
@@ -53,7 +56,15 @@ python3 scripts/perf-reliability/issue28/run.py \
 python3 scripts/perf-reliability/issue28/run.py \
   --connection-file /private/path/connection.json \
   --scenario H1 --protocol json-cursor
+
+# Change the request count per concurrency level (default 100).
+python3 scripts/perf-reliability/issue28/run.py \
+  --connection-file /private/path/connection.json \
+  --scenario X1 --concurrency-requests 200
 ```
+
+`--allow-misses` only waives ordinary scenario target misses. A concurrency
+correctness failure always exits 1; fatal or incomplete evidence exits 2.
 
 The harness expects the Issue 28 fixed snapshot. It verifies 201 threads,
 8,625 messages, 20,177,069 message characters, and 8,625 focus-thread messages.

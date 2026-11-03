@@ -128,9 +128,11 @@ def concurrency_summary(result: RunResult) -> list[dict]:
         items = [item for item in result.timed if item.concurrency == level]
         durations = [item.duration_ms for item in items]
         metrics = next((item for item in result.concurrency if item.level == level), None)
+        planned = metrics.planned if metrics is not None and metrics.planned else len(items)
         output.append({
             "level": level,
             "requests": len(items),
+            "planned": planned,
             "median_ms": _median(durations),
             "p95_ms": _percentile(durations, 95),
             "p99_ms": _percentile(durations, 99),
@@ -147,13 +149,27 @@ def concurrency_summary(result: RunResult) -> list[dict]:
                 if metrics else None),
             "rejection_reasons": metrics.drained.get("rejection_reasons_total") if metrics else None,
             "drain_ms": metrics.drain_ms if metrics else None,
-            "verdict": _concurrency_verdict(items, metrics),
+            "verdict": _concurrency_verdict(items, metrics, planned),
         })
     return output
 
 
-def _concurrency_verdict(items: list[Measurement], metrics: ConcurrencyMetrics | None) -> str:
+def _concurrency_verdict(items: list[Measurement], metrics: ConcurrencyMetrics | None,
+                         planned: int | None = None) -> str:
+    if planned is None:
+        planned = metrics.planned if metrics is not None and metrics.planned else len(items)
+    if len(items) != planned:
+        return "FAIL"
+    if metrics is not None and metrics.requests != planned:
+        return "FAIL"
     if any(item.status == 429 for item in items):
+        return "FAIL"
+    if any(item.status != 200 for item in items):
+        return "FAIL"
+    allowed = {"ok"}
+    if metrics is not None and metrics.allow_expected_limit:
+        allowed.add("expected_limit")
+    if any(item.outcome not in allowed for item in items):
         return "FAIL"
     if metrics is not None:
         if metrics.drained.get("active_permits") not in (0, None):
@@ -240,7 +256,8 @@ def render_markdown(rows: list[SummaryRow], concurrency: list[dict], fixture: Fi
     lines.append("- 单流场景：%s 轮 × 每轮 %s 次 warmup + %s 次计时；表中统计各场景实际计时样本数。" % (
         metadata.get("rounds", "—"), metadata.get("warmup", "—"),
         metadata.get("samples", "—")))
-    lines.append("- 并发场景每个并发级别 100 次，一次运行；warmup 不计入。")
+    lines.append("- 并发场景每个并发级别 %s 次，一次运行；warmup 不计入。" % (
+        metadata.get("concurrency_requests", 100)))
     lines.append("- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。")
     lines.append("- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。")
     lines.append("- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。")
@@ -248,6 +265,12 @@ def render_markdown(rows: list[SummaryRow], concurrency: list[dict], fixture: Fi
         lines.append("- X1 要求 `max_concurrent >= 16`；当前配额更低，8/16 并发的 429 不能用于验收。")
     else:
         lines.append("- X1 运行配额：`max_concurrent=%s`。" % fixture.quotas.get("max_concurrent"))
+    for row in concurrency:
+        if row.get("planned") and row["requests"] != row["planned"]:
+            lines.append("- **并发 %d 账本不完整：记录 %d/%d 次请求。**" % (
+                row["level"], row["requests"], row["planned"]))
+    if any(row["verdict"] == "FAIL" for row in concurrency):
+        lines.append("- **并发验收 FAIL；本次运行不计为 PASS。**")
     if not fixture.complete:
         lines.append("- **fixture 与固定快照不一致，本表仅作探索性证据，不参与版本回归判定。**")
     if fixture.projection_non_null <= 1:

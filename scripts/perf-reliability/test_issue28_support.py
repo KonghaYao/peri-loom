@@ -8,14 +8,17 @@ import pathlib
 import struct
 import sys
 import unittest
+from types import SimpleNamespace
 
 PERF_ROOT = pathlib.Path(__file__).resolve().parent
 if str(PERF_ROOT) not in sys.path:
     sys.path.insert(0, str(PERF_ROOT))
 
 from issue28 import contract, hrana, report, runner  # noqa: E402
+from issue28 import run as issue28_run  # noqa: E402
 from issue28.fixture import DatasetCheck, Fixture  # noqa: E402
-from issue28.runner import Measurement, RunResult  # noqa: E402
+from issue28.hrana import FatalTransportError, Target  # noqa: E402
+from issue28.runner import ConcurrencyMetrics, Measurement, RunResult  # noqa: E402
 
 
 def pb_bytes(number, value):
@@ -262,6 +265,194 @@ class ReportTests(unittest.TestCase):
         self.assertIn("HEAD abc / rust test", markdown)
         self.assertIn("projection", markdown)
         self.assertIn("max_concurrent=16", markdown)
+
+
+class ConcurrencyVerdictTests(unittest.TestCase):
+    def _measurement(self, index, status=200, outcome="ok", concurrency=16):
+        return Measurement(
+            scenario="X1.concurrency", protocol="json-pipeline", kind="concurrency",
+            phase="timed", round_index=1, sample_index=index, status=status,
+            duration_ms=1.0, ttfb_ms=0.5, request_bytes=1, response_bytes=1,
+            rows=1, rows_read=0, rows_written=0, affected_row_count=0,
+            query_ms=0.1, outcome=outcome, concurrency=concurrency)
+
+    def _items(self, count=100):
+        return [self._measurement(index) for index in range(1, count + 1)]
+
+    def _metrics(self, planned=100, **drained):
+        values = {"active_permits": 0, "unknown_held_permits": 0, "session_seats": 0}
+        values.update(drained)
+        return ConcurrencyMetrics(
+            level=16, before={}, after={}, drained=values, drain_ms=1.0,
+            requests=planned, status_counts={}, error_codes={}, planned=planned)
+
+    def test_complete_success_passes(self):
+        self.assertEqual(report._concurrency_verdict(self._items(), self._metrics()), "PASS")
+
+    def test_http_500_fails(self):
+        items = self._items()
+        items[42] = self._measurement(43, status=500, outcome="http_error")
+        self.assertEqual(report._concurrency_verdict(items, self._metrics()), "FAIL")
+
+    def test_driver_error_outcome_fails(self):
+        items = self._items()
+        items[7] = self._measurement(8, outcome="driver_error")
+        self.assertEqual(report._concurrency_verdict(items, self._metrics()), "FAIL")
+
+    def test_missing_ledger_entry_fails(self):
+        items = self._items(99)
+        self.assertEqual(report._concurrency_verdict(items, self._metrics()), "FAIL")
+
+    def test_429_fails(self):
+        items = self._items()
+        items[0] = self._measurement(1, status=429, outcome="http_error")
+        self.assertEqual(report._concurrency_verdict(items, self._metrics()), "FAIL")
+
+    def test_undrained_resources_fail(self):
+        for drained in ({"active_permits": 1},
+                        {"unknown_held_permits": 1},
+                        {"session_seats": 1}):
+            with self.subTest(drained=drained):
+                self.assertEqual(
+                    report._concurrency_verdict(self._items(), self._metrics(**drained)),
+                    "FAIL")
+
+    def test_rejected_requests_fail(self):
+        metrics = self._metrics()
+        metrics.before = {"rejected_requests_total": 3}
+        metrics.after = {"rejected_requests_total": 4}
+        self.assertEqual(report._concurrency_verdict(self._items(), metrics), "FAIL")
+
+    def test_expected_limit_needs_explicit_permission(self):
+        items = self._items()
+        items[0] = self._measurement(1, outcome="expected_limit")
+        metrics = self._metrics()
+        self.assertEqual(report._concurrency_verdict(items, metrics), "FAIL")
+        metrics.allow_expected_limit = True
+        self.assertEqual(report._concurrency_verdict(items, metrics), "PASS")
+
+
+class _FakeMetrics:
+    def snapshot(self):
+        return {
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_requests_total": 0,
+        }
+
+
+class _FakeClient:
+    def close(self):
+        pass
+
+
+class _FakeTarget:
+    @staticmethod
+    def build():
+        return Target(
+            endpoint="https://example.invalid", project_api_key="p",
+            global_api_key="g",
+            database={"branch": "main",
+                      "namespace": {"tenant": "t", "database": "d"}})
+
+
+class _LedgerRunner(runner.Runner):
+    def __init__(self, spec, failure_index=0, error_factory=None):
+        super().__init__(
+            target=_FakeTarget.build(), fixture=None, scenarios=[spec],
+            metrics=_FakeMetrics(), concurrency_requests=4)
+        self.failure_index = failure_index
+        self.error_factory = error_factory or (
+            lambda: RuntimeError("simulated driver failure"))
+
+    def _client(self, name):
+        return _FakeClient()
+
+    def _request_once(self, *, spec, protocol, client, sql, args, want_rows,
+                      phase, round_index, sample_index, operation="",
+                      concurrency=0, baton=None, baton_reused=False,
+                      close_stream=True):
+        return Measurement(
+            scenario=spec.key, protocol=protocol.name, kind=spec.kind,
+            phase=phase, round_index=round_index, sample_index=sample_index,
+            status=200, duration_ms=1.0, ttfb_ms=0.5, request_bytes=1,
+            response_bytes=1, rows=1, rows_read=0, rows_written=0,
+            affected_row_count=0, query_ms=0.1, outcome="ok",
+            concurrency=concurrency)
+
+    def _concurrent_one(self, spec, protocol, local, level, index):
+        if index == self.failure_index:
+            raise self.error_factory()
+        return self._request_once(
+            spec=spec, protocol=protocol, client=None, sql=spec.sql,
+            args=spec.args, want_rows=spec.want_rows, phase="timed",
+            round_index=1, sample_index=index + 1, concurrency=level)
+
+
+class ConcurrencyLedgerTests(unittest.TestCase):
+    def _spec(self):
+        return contract.ScenarioSpec(
+            key="X1.concurrency", title="X1", kind="concurrency",
+            protocols=(contract.JSON_PIPELINE,), sql="SELECT 1",
+            expected_rows=1, concurrency_levels=(4,))
+
+    def test_exception_still_becomes_a_measurement(self):
+        result = _LedgerRunner(self._spec()).run()
+        self.assertEqual(len(result.measurements), 4)
+        self.assertEqual(result.concurrency[0].requests, 4)
+        self.assertEqual(result.concurrency[0].planned, 4)
+        failed = [item for item in result.measurements if item.outcome != "ok"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0].outcome, "driver_error")
+        self.assertEqual(failed[0].error_code, "RuntimeError")
+        self.assertEqual(failed[0].status, 0)
+        summary = report.concurrency_summary(result)
+        self.assertEqual(summary[0]["requests"], 4)
+        self.assertEqual(summary[0]["planned"], 4)
+        self.assertEqual(summary[0]["verdict"], "FAIL")
+
+    def test_fatal_transport_is_recorded_before_abort(self):
+        result = _LedgerRunner(
+            self._spec(), error_factory=lambda: FatalTransportError("authentication rejected"),
+        ).run()
+        self.assertTrue(result.fatal)
+        self.assertEqual(len(result.measurements), 4)
+        self.assertEqual(
+            [item.outcome for item in result.measurements].count("transport_error"), 1)
+
+
+class ExitCodeTests(unittest.TestCase):
+    def test_concurrency_failure_is_not_waived_by_allow_misses(self):
+        concurrency = [{"level": 16, "requests": 99, "planned": 100, "verdict": "FAIL"}]
+        self.assertEqual(issue28_run.resolve_exit_code([], concurrency, "", True, True), 1)
+
+    def test_clean_run_exits_zero(self):
+        concurrency = [{"level": 16, "requests": 100, "planned": 100, "verdict": "PASS"}]
+        self.assertEqual(issue28_run.resolve_exit_code([], concurrency, "", True, False), 0)
+
+    def test_fatal_or_incomplete_fixture_exits_two(self):
+        self.assertEqual(issue28_run.resolve_exit_code([], [], "fatal", True, True), 2)
+        self.assertEqual(issue28_run.resolve_exit_code([], [], "", False, True), 2)
+
+    def test_regular_failure_honors_allow_misses(self):
+        rows = [SimpleNamespace(verdict="FAIL")]
+        self.assertEqual(issue28_run.resolve_exit_code(rows, [], "", True, False), 1)
+        self.assertEqual(issue28_run.resolve_exit_code(rows, [], "", True, True), 0)
+
+
+class ConcurrencyArgumentTests(unittest.TestCase):
+    def test_requests_default_and_override(self):
+        default = issue28_run._parse_args(["--connection-file", "private.json"])
+        self.assertEqual(default.concurrency_requests, 100)
+        override = issue28_run._parse_args([
+            "--connection-file", "private.json", "--concurrency-requests", "7"])
+        self.assertEqual(override.concurrency_requests, 7)
+
+    def test_zero_requests_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            issue28_run._parse_args([
+                "--connection-file", "private.json", "--concurrency-requests", "0"])
 
 
 if __name__ == "__main__":
