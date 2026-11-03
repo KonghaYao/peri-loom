@@ -21,6 +21,7 @@ func quotaManagementStore(test *testing.T) (StateStore, Identity, *gatewayTestAu
 	test.Cleanup(func() { _ = store.Close() })
 	custom := legacyProjectQuotas
 	custom.RequestsPerSecond = 42
+	custom.MaxConcurrent = 8
 	database := controller.DatabaseID{Namespace: controller.Namespace{Tenant: "tenant-legacy", Database: "db-main"}, Branch: "main"}
 	if err := store.Update(func(state *State) error {
 		state.Organizations["org"] = Organization{ID: "org", Name: "quota tests"}
@@ -134,8 +135,8 @@ func TestQuotaMigrationPreservesExplicitValues(test *testing.T) {
 		test.Fatalf("quota migration failed: %v %s", err, response.Body.String())
 	}
 	_, _, migrated, code := quotaReply(test, response)
-	if code != "" || migrated.Quotas.RequestsPerSecond != 500 {
-		test.Fatalf("legacy project did not migrate to 500/s: code=%s quotas=%+v", code, migrated.Quotas)
+	if code != "" || migrated.Quotas.RequestsPerSecond != 500 || migrated.Quotas.MaxConcurrent != 100 {
+		test.Fatalf("legacy project did not migrate to current defaults: code=%s quotas=%+v", code, migrated.Quotas)
 	}
 	after, err := store.Snapshot()
 	if err != nil {
@@ -156,12 +157,12 @@ func TestQuotaMigrationPreservesExplicitValues(test *testing.T) {
 	if json.Unmarshal(response.Body.Bytes(), &reply) != nil {
 		test.Fatal("invalid migration reply")
 	}
-	if reply.Result.Migrated || reply.Result.Project.Quotas.RequestsPerSecond != 42 {
-		test.Fatalf("explicit 42 RPS was overwritten by defaults: %+v", reply.Result)
+	if reply.Result.Migrated || reply.Result.Project.Quotas.RequestsPerSecond != 42 || reply.Result.Project.Quotas.MaxConcurrent != 8 {
+		test.Fatalf("explicit values were overwritten by defaults: %+v", reply.Result)
 	}
 	after, err = store.Snapshot()
-	if err != nil || after.Projects["custom"].Quotas.RequestsPerSecond != 42 {
-		test.Fatalf("explicit 42 RPS was not durable: %v %+v", err, after.Projects["custom"].Quotas)
+	if err != nil || after.Projects["custom"].Quotas.RequestsPerSecond != 42 || after.Projects["custom"].Quotas.MaxConcurrent != 8 {
+		test.Fatalf("explicit values were not durable: %v %+v", err, after.Projects["custom"].Quotas)
 	}
 }
 

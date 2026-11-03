@@ -7,7 +7,7 @@ func TestDefaultQuotasRaiseRequestRate(t *testing.T) {
 	if quotas.RequestsPerSecond != 500 {
 		t.Fatalf("default requests_per_second = %d, want 500", quotas.RequestsPerSecond)
 	}
-	if quotas.MaxDatabases != 8 || quotas.MaxSessions != 16 || quotas.MaxConcurrent != 4 ||
+	if quotas.MaxDatabases != 8 || quotas.MaxSessions != 16 || quotas.MaxConcurrent != 100 ||
 		quotas.MaxSQLBytes != 65536 || quotas.MaxResultBytes != 4*1024*1024 {
 		t.Fatalf("non-rate defaults changed: %+v", quotas)
 	}

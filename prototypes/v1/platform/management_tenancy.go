@@ -33,7 +33,7 @@ func defaultQuotas(quotas Quotas) Quotas {
 		quotas.MaxSessions = 16
 	}
 	if quotas.MaxConcurrent == 0 {
-		quotas.MaxConcurrent = 4
+		quotas.MaxConcurrent = 100
 	}
 	if quotas.RequestsPerSecond == 0 {
 		quotas.RequestsPerSecond = 500
@@ -48,11 +48,12 @@ func defaultQuotas(quotas Quotas) Quotas {
 }
 
 // legacyProjectQuotas is the quota set createProject applied before the default
-// request rate rose to 500/s. Migration rewrites only the fields that still hold
-// these values: every other value is a deliberate operator setting and must
-// survive the upgrade. A project that explicitly chose a legacy value cannot be
-// distinguished from an untouched default, which is why migration is an
-// explicit per-project instruction rather than an automatic rewrite.
+// request rate rose to 500/s and the default concurrency rose to 100. Migration
+// rewrites only the fields that still hold these values: every other value is a
+// deliberate operator setting and must survive the upgrade. A project that
+// explicitly chose a legacy value cannot be distinguished from an untouched
+// default, which is why migration is an explicit per-project instruction rather
+// than an automatic rewrite.
 var legacyProjectQuotas = Quotas{
 	MaxDatabases:      8,
 	MaxSessions:       16,
@@ -103,8 +104,9 @@ func (management *Management) updateProjectQuotas(principal Principal, input man
 	return map[string]any{"project": updated, "quotas": updated.Quotas, "revision": input.Revision + 1}, nil
 }
 
-// migratedProjectQuotas raises fields that still carry a pre-500/s default and
-// leaves every other field alone, so an explicit 42 RPS survives the migration.
+// migratedProjectQuotas raises fields that still carry a legacy default (the
+// pre-500/s request rate, the pre-100 concurrency) and leaves every other field
+// alone, so an explicit 42 RPS survives the migration.
 func migratedProjectQuotas(quotas Quotas) Quotas {
 	current := defaultQuotas(Quotas{})
 	if quotas.MaxDatabases == legacyProjectQuotas.MaxDatabases {
