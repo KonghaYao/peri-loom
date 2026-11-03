@@ -1,0 +1,81 @@
+{
+  "round": "R37",
+  "date": "2026-11-03",
+  "probe_commits": [
+    "b7f0d0d",
+    "248ddf4",
+    "055d1ee"
+  ],
+  "files": [
+    {
+      "name": "A-catalog.json",
+      "sha256": "5c3b9c86975f0976a6439068bc09ade64384c5feb1ec77904115560f3c8b9b72",
+      "bytes": 645
+    },
+    {
+      "name": "A-read-after.json",
+      "sha256": "6dfac2fc0050326fc670d5234797d6df689234ab2a7c666db95333b7c0d28209",
+      "bytes": 109
+    },
+    {
+      "name": "A-write.json",
+      "sha256": "1cfc563262730ad8c8b2a0947a53e8f80625d1e4aaf2a1668fe20bcacb898034",
+      "bytes": 127
+    },
+    {
+      "name": "B-catalog.json",
+      "sha256": "9b2418e50730f6a919bf77d0579ae22e38a7c9b3f1debacdc8a2e453ce50af65",
+      "bytes": 645
+    },
+    {
+      "name": "B-read-after.json",
+      "sha256": "387703206d142fe576321ce2c1a6d76b3e09338d40e6dab33e211f36ab36eb69",
+      "bytes": 78
+    },
+    {
+      "name": "D-catalog.json",
+      "sha256": "3f8e70dc892a48a4e8fc9a1fac519dbc7f225ea12d3b1161b8abb5a05ca0b898",
+      "bytes": 645
+    },
+    {
+      "name": "D-read-after.json",
+      "sha256": "e87be673d30abc1772976df2396293059ea6f0886838ddf18c7d9983d04f874c",
+      "bytes": 110
+    },
+    {
+      "name": "README.md",
+      "sha256": "cd62b138a8a7cb18870048ef85a3b6551bdadfaf34ae087ec3fa9eaae09a4b0e",
+      "bytes": 3519
+    },
+    {
+      "name": "binaries.txt",
+      "sha256": "63af9fda93893f90a431d80bb3d8ad1584eafe9fbc69f4df910797c1ac53ffba",
+      "bytes": 671
+    },
+    {
+      "name": "clean-gate.txt",
+      "sha256": "15ae5d2468bc7c829006e11272f38be1537cd5cd2998656d8d8b01a85080b50f",
+      "bytes": 81
+    },
+    {
+      "name": "journal-B-pre.json",
+      "sha256": "9085696f1538c8773e882822e5de5143e7f0f8a40e4bafe97aa70b350bdfdc99",
+      "bytes": 500
+    },
+    {
+      "name": "journal-D-pre.json",
+      "sha256": "6406cd97e38cf0de0c3a160f5870b117a2089f3106cbb5da58c6f4fca9fc5e0a",
+      "bytes": 377
+    },
+    {
+      "name": "state-A.json",
+      "sha256": "c8e394a1d0a93257ef8bdd6460774832dc186b589aa95f60a60edcd9ab08f9f9",
+      "bytes": 3157
+    },
+    {
+      "name": "state-D-post.json",
+      "sha256": "332cd8e834ad6ed430dd9c449dbcf33af5eab5d272333fc086752e7f2df4ba84",
+      "bytes": 630
+    }
+  ]
+}

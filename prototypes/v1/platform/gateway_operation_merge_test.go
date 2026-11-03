@@ -92,6 +92,9 @@ func TestNonCommittingOperationKeepsNoSidecarRecord(test *testing.T) {
 	if json.Unmarshal(response.Body.Bytes(), &opened) != nil || !publicSessionID(opened.Result.Session) {
 		test.Fatalf("invalid public session: %s", response.Body.String())
 	}
+	// The open's outcome record is paid after its reply; the sidecar counters
+	// below are only stable once that barrier returned.
+	gateway.deferred.wait()
 	session := opened.Result.Session
 	requests := []struct {
 		name   string
@@ -155,6 +158,9 @@ func TestNonCommittingOperationRefusedWhileDatabaseIsIsolated(test *testing.T) {
 	if json.Unmarshal(response.Body.Bytes(), &opened) != nil || !publicSessionID(opened.Result.Session) {
 		test.Fatalf("invalid public session: %s", response.Body.String())
 	}
+	// The open's outcome record is paid after its reply; the sidecar counters
+	// below are only stable once that barrier returned.
+	gateway.deferred.wait()
 	session := opened.Result.Session
 	if err := beginOperation(store, database, "isolated-probe", "gateway", "execute", "tool_rpc", "worker-a", "", nil); err != nil {
 		test.Fatal(err)

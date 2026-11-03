@@ -109,6 +109,10 @@ func unifiedOpenSession(test *testing.T, gateway *Gateway, credential string) st
 func TestUnifiedCompletionGatewayUsesOneBarrier(test *testing.T) {
 	gateway, _, credential, store, audit, _ := unifiedGateway(test)
 	session := unifiedOpenSession(test, gateway, credential)
+	// The open cannot commit, so its reply no longer waits for its record. Take
+	// the baseline after the deferred account drained, or the open's barrier
+	// would be counted as part of the write.
+	gateway.deferred.wait()
 	before := store.operations.stats()["operation_journal_syncs_total"]
 	sequence := store.operations.auditHead.Sequence
 	response := gatewayHTTP(test, gateway, credential, "/v1/sql/execute", map[string]any{"session": session, "sql": "INSERT INTO t VALUES (1)"})
@@ -136,6 +140,7 @@ func TestUnifiedCompletionGatewayUsesOneBarrier(test *testing.T) {
 	if response.Code != 200 {
 		test.Fatalf("close: %s", response.Body.String())
 	}
+	gateway.deferred.wait()
 }
 
 // Closing sessions of one database must not queue behind each other: each
@@ -149,6 +154,9 @@ func TestUnifiedCompletionDropsNamespaceFenceBeforeBarrier(test *testing.T) {
 	for index := range sessions {
 		sessions[index] = unifiedOpenSession(test, gateway, credential)
 	}
+	// The opens cannot commit, so their records may still be in flight; the gate
+	// below is read by the committer and must be installed on an idle journal.
+	gateway.deferred.wait()
 	ordered := operationOrderedTotal(store)
 	release := gatePop(test, store)
 	var once sync.Once
@@ -166,18 +174,20 @@ func TestUnifiedCompletionDropsNamespaceFenceBeforeBarrier(test *testing.T) {
 		}(index)
 	}
 	// The first close is parked inside its barrier; the second one is only able
-	// to admit itself if the fence was dropped before that barrier.
+	// to reach the queue if the fence was dropped before that barrier. The
+	// admission charge no longer marks it (a completion record releases that when
+	// the queue accepts it), so the queue depth and the ordered appends do.
 	waitOrdered(test, store, ordered+1)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		audit.queueMutex.Lock()
-		admitted := audit.admitted[AuditClassCompletion]
+		queued := len(audit.pending)
 		audit.queueMutex.Unlock()
-		if admitted >= closes {
+		if queued >= 1 || operationOrderedTotal(store) >= ordered+2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			test.Fatalf("only %d of %d closes were admitted while one barrier was held", admitted, closes)
+			test.Fatal("the second close did not reach the queue while one barrier was held")
 		}
 		time.Sleep(time.Millisecond)
 	}

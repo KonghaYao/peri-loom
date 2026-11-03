@@ -27,6 +27,9 @@ func TestHranaReadonlyProbeLeavesNoRecordOrAuditRow(test *testing.T) {
 	if response.Code != 200 {
 		test.Fatalf("cursor request failed: %d %s", response.Code, response.Body.String())
 	}
+	// The internal open cannot commit, so its record is paid after the reply;
+	// the sidecar counters are only stable once that barrier returned.
+	gateway.deferred.wait()
 	if upstream.count("describe") != 1 {
 		test.Fatal("readonly probe did not reach the worker")
 	}
@@ -59,6 +62,7 @@ func TestHranaReadonlyProbeLeavesNoRecordOrAuditRow(test *testing.T) {
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &opened) != nil || !publicSessionID(opened.Result.Session) {
 		test.Fatalf("open failed: %d %s", response.Code, response.Body.String())
 	}
+	gateway.deferred.wait()
 	describeBefore, auditBefore := sidecarRevision(store), len(audit.actions())
 	response = gatewayHTTP(test, gateway, credential, "/v1/sql/describe", map[string]any{"session": opened.Result.Session, "sql": "SELECT id FROM records"})
 	if response.Code != 200 {
@@ -136,6 +140,7 @@ func TestHranaFailedProbeKeepsAuditRow(test *testing.T) {
 	// that returns the session and its quota to an accounted end. Neither writes
 	// an intent, so each costs one outcome record. The cursor itself never
 	// dispatched, so no cursor operation is recorded above.
+	gateway.deferred.wait()
 	if grew := sidecarRevision(store) - before; grew != 2 {
 		test.Fatalf("refused cursor request cost %d operation sidecar revisions, want 2", grew)
 	}
@@ -183,7 +188,8 @@ func TestHranaAutocommitProbeCostsNoSQLOrRecord(test *testing.T) {
 	}
 	// Only the client's own session open and close remain: neither writes an
 	// intent, so each costs one outcome record, and the probe and the skipped
-	// step add nothing.
+	// step add nothing. Both are paid after their replies.
+	gateway.deferred.wait()
 	if grew := sidecarRevision(store) - before; grew != 2 {
 		test.Fatalf("autocommit probe cost %d operation sidecar revisions, want 2", grew)
 	}

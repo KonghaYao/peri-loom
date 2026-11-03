@@ -91,21 +91,51 @@ func (collector *pipelineAuditCollector) Add(event AuditEvent, completion AuditR
 // batch. A failed flush poisons the collector: later completions must not be
 // presented as durable by a caller that already knows the audit is unusable.
 func (collector *pipelineAuditCollector) Flush() error {
+	wait, err := collector.enqueue()
+	if err != nil || wait == nil {
+		return err
+	}
+	if err := wait(); err != nil {
+		collector.mutex.Lock()
+		collector.failure = err
+		collector.mutex.Unlock()
+		return err
+	}
+	return nil
+}
+
+// FlushDeferred submits the same batch and hands its barrier to the account that
+// pays it after the reply. Every prepared row belongs to a statement that cannot
+// commit, so the reply reports nothing the row would have to witness; a failure
+// refuses later admission instead of rewriting this answer. A nil account keeps
+// the synchronous Flush, which every committing step and error path needs.
+func (collector *pipelineAuditCollector) FlushDeferred(deferAfter *deferredDurability) error {
+	if deferAfter == nil {
+		return collector.Flush()
+	}
+	wait, err := collector.enqueue()
+	if err != nil || wait == nil {
+		return err
+	}
+	return deferAfter.settle("pipeline audit", wait)
+}
+
+func (collector *pipelineAuditCollector) enqueue() (func() error, error) {
 	if collector == nil {
-		return nil
+		return nil, nil
 	}
 	collector.mutex.Lock()
 	if collector.failure != nil {
 		err := collector.failure
 		collector.mutex.Unlock()
-		return err
+		return nil, err
 	}
 	prepared := collector.prepared
 	collector.prepared = nil
 	audit := collector.audit
 	collector.mutex.Unlock()
 	if len(prepared) == 0 {
-		return nil
+		return nil, nil
 	}
 	if audit == nil {
 		// Add refuses without an audit, so prepared without one is impossible.
@@ -113,15 +143,16 @@ func (collector *pipelineAuditCollector) Flush() error {
 		collector.mutex.Lock()
 		collector.failure = err
 		collector.mutex.Unlock()
-		return err
+		return nil, err
 	}
-	if err := audit.submitCompletionBatch(prepared); err != nil {
+	wait, err := audit.enqueueCompletionBatch(prepared)
+	if err != nil {
 		collector.mutex.Lock()
 		collector.failure = err
 		collector.mutex.Unlock()
-		return err
+		return nil, err
 	}
-	return nil
+	return wait, nil
 }
 
 // Seal stops the collector from accepting new completions. It does not discard

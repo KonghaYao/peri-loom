@@ -75,7 +75,7 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 	if err != nil {
 		result = gateway.upstreamFailure(err, session, permit)
 	}
-	gateway.settlePendingOperation(pending, &result, permit)
+	gateway.settlePendingOperation(pending, &result, permit, nil)
 	if result.code == "outcome_unknown" {
 		return &SQLRPCError{Ambiguous: true, cause: err}
 	}
@@ -196,23 +196,42 @@ func pendingOutcomeOperation(database controller.DatabaseID, worker, session, ac
 // and admission isolate the namespace, so it is still written and quarantined. An
 // action in deferredRecordOperation is the other exception: it skips the intent, so
 // the record after the call is the only trace of the resource it opened or closed.
-func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit) {
+//
+// deferAfter hands the barrier of a known outcome to the reply-independent account;
+// the retirement path passes nil because its retry decision needs the result.
+func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, deferAfter *deferredDurability) {
 	_ = gateway.settlePendingOperationUsing(pending, result, permit, func(change func(*operationEdit) error) (func() error, error) {
 		return submitOperationRecords(gateway.config.State, change)
-	})
+	}, deferAfter)
 }
 
-func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error)) error {
+func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), deferAfter *deferredDurability) error {
 	unknown := result.code == "outcome_unknown"
 	if !unknown && !pending.outcome {
 		return nil
+	}
+	// The edit may be applied in the audit drain after a deferred reply, while
+	// the request is still writing its live result, so it reads a snapshot.
+	settled := *result
+	// A known outcome may be paid after the reply; a quarantine record may not,
+	// because admission answers from it before the caller can be told anything.
+	settle := submit
+	if deferAfter != nil && !unknown {
+		settle = func(change func(*operationEdit) error) (func() error, error) {
+			wait, err := submit(change)
+			if err != nil || wait == nil {
+				return wait, err
+			}
+			label := "operation " + pending.action + " " + pending.requestID
+			return func() error { return deferAfter.settle(label, wait) }, nil
+		}
 	}
 	// observed keeps the committed copy of the record whose outcome the reply must
 	// quote: an open whose reply was lost is answered from its own record, so the
 	// reply cannot claim a commit the record does not.
 	var observed *OperationStatus
 	operationID, err := settleNonCommittingOperationUsing(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(edit *operationEdit, record *OperationRecord) error {
-		applyOperationOutcome(record, *result, pending.stage)
+		applyOperationOutcome(record, settled, pending.stage)
 		if pending.stage == "open_session" && unknown {
 			status := record.OperationStatus
 			observed = &status
@@ -221,7 +240,7 @@ func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, r
 			dischargePendingOpenSessions(edit, *record)
 		}
 		return nil
-	}, submit)
+	}, settle)
 	result.operationID, result.operationStage = operationID, pending.stage
 	if err != nil {
 		finish := result.finish

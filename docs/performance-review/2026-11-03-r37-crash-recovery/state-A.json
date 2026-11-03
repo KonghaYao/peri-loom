@@ -1,0 +1,92 @@
+{
+  "operation_count": 6,
+  "operation_storage_version": 2,
+  "operations": [
+    {
+      "action": "close",
+      "ambiguous": false,
+      "business_outcome": "not_applicable",
+      "cleanup_outcome": "completed",
+      "execution_completed": false,
+      "execution_proven": true,
+      "may_have_committed": false,
+      "operation_id": "09b15de13a785c86253e9b29021e98d7",
+      "request_id": "c0eb1536166a4b7c21d1df037737b7ec",
+      "session": "023fc5108f307d136be00494a37322652817c1abd22e69974784777e14767207",
+      "stage": "close_session",
+      "state": "terminal"
+    },
+    {
+      "action": "open",
+      "ambiguous": false,
+      "business_outcome": "completed",
+      "cleanup_outcome": "completed",
+      "execution_completed": false,
+      "execution_proven": true,
+      "may_have_committed": false,
+      "operation_id": "3f030adcf3e5cc534a8ca69d6c898199",
+      "request_id": "148b49621b1875840ff0f0991ddc4ca8",
+      "session": "023fc5108f307d136be00494a37322652817c1abd22e69974784777e14767207",
+      "stage": "open_session",
+      "state": "terminal"
+    },
+    {
+      "action": "open",
+      "ambiguous": false,
+      "business_outcome": "completed",
+      "cleanup_outcome": "completed",
+      "execution_completed": false,
+      "execution_proven": true,
+      "may_have_committed": false,
+      "operation_id": "702c9950c31b5c35e838c820de5a0f65",
+      "request_id": "554a2932c0653a912e68cc55af3fe517",
+      "session": "d2aa4b0acfc7e463905ae1336494e4addb9674d7f7addf6b37e3f28077fe2d8e",
+      "stage": "open_session",
+      "state": "terminal"
+    },
+    {
+      "action": "cursor_start",
+      "ambiguous": false,
+      "business_outcome": "completed",
+      "cleanup_outcome": "not_applicable",
+      "execution_completed": false,
+      "execution_proven": true,
+      "may_have_committed": false,
+      "operation_id": "b3ae9a98965abd4dec289492d8dd32cd",
+      "request_id": "70ca0452eba1b52c60e12e11adba3528",
+      "session": "023fc5108f307d136be00494a37322652817c1abd22e69974784777e14767207",
+      "stage": "tool_rpc",
+      "state": "terminal"
+    },
+    {
+      "action": "close",
+      "ambiguous": false,
+      "business_outcome": "not_applicable",
+      "cleanup_outcome": "completed",
+      "execution_completed": false,
+      "execution_proven": true,
+      "may_have_committed": false,
+      "operation_id": "bd1c88c046481e2fdc5b19020d5d49f9",
+      "request_id": "7f4a66ea1565336aa6d146b5a63a5fd3",
+      "session": "d2aa4b0acfc7e463905ae1336494e4addb9674d7f7addf6b37e3f28077fe2d8e",
+      "stage": "close_session",
+      "state": "terminal"
+    },
+    {
+      "action": "cursor_start",
+      "ambiguous": false,
+      "business_outcome": "completed",
+      "cleanup_outcome": "not_applicable",
+      "execution_completed": false,
+      "execution_proven": true,
+      "may_have_committed": false,
+      "operation_id": "ee1412787d271e9540b9dce8ac52e5b6",
+      "request_id": "0d194b90caa975f4319e3d6119345b4b",
+      "session": "023fc5108f307d136be00494a37322652817c1abd22e69974784777e14767207",
+      "stage": "tool_rpc",
+      "state": "terminal"
+    }
+  ],
+  "operations_checkpoint": 13,
+  "revision": 13
+}

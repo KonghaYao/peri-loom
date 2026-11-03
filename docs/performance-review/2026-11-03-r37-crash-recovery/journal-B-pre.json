@@ -1,0 +1,28 @@
+{
+  "entries": 14,
+  "last_revision": 14,
+  "record_actions": [
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "open",
+    "audit:None",
+    "audit:None",
+    "audit:None",
+    "open",
+    "close",
+    "audit:None"
+  ],
+  "request_ids": [
+    "898d12b430272bce690853a1e93f23c1",
+    "898d12b430272bce690853a1e93f23c1",
+    "c9768d2d97155ae67e6144400d86ef2e"
+  ]
+}

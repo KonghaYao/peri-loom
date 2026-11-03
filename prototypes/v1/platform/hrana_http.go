@@ -311,13 +311,15 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		}
 		hranaPipelineFailureWithResults(writer, pipeline.Baton, dispatched, reply, results, cleanup...)
 	}
-	// A full batch is paid for as soon as it exists, so a long pipeline pays one
-	// barrier per pipelineAuditBatchMaximum statements instead of one per step.
+	// A full batch is paid for as soon as it exists, so a long pipeline queues
+	// one barrier per pipelineAuditBatchMaximum statements instead of one per
+	// step. Every collected row is a statement that cannot commit, so the batch
+	// may be paid after the pipeline reply; a failure refuses later admission.
 	flushIfFull := func() bool {
 		if collector.Pending() < pipelineAuditBatchMaximum {
 			return true
 		}
-		if err := collector.Flush(); err != nil {
+		if err := collector.FlushDeferred(handler.gateway.deferred); err != nil {
 			writePipelineAuditFailure(writer, dispatched)
 			return false
 		}
@@ -579,9 +581,12 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 		return
 	}
-	// The success response reports every step, so it may not be written until the
-	// read-only completions that cover them are durable.
-	if err := collector.Flush(); err != nil {
+	// The success response reports every step. The read-only completions that
+	// cover them are submitted before it is written, so the chain order is the
+	// step order, but their barrier is paid after the reply: none of them can
+	// commit, so a failure refuses later admission instead of rewriting this
+	// answer.
+	if err := collector.FlushDeferred(handler.gateway.deferred); err != nil {
 		writePipelineAuditFailure(writer, dispatched)
 		return
 	}
