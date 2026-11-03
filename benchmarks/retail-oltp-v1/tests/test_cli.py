@@ -60,6 +60,35 @@ class CommandLineTests(unittest.TestCase):
             _quiet(["run", "--mode", "smoke", "--output", tempfile.mkdtemp()])
         self.assertEqual(caught.exception.code, 2)
 
+    def test_full_matrix_rejects_a_level_filter(self) -> None:
+        fixture = Path(tempfile.mkdtemp()) / "fixture.json"
+        fixture.write_text(
+            json.dumps(
+                {
+                    "endpoint": "https://127.0.0.1:1",
+                    "tenant": "t",
+                    "project": "p",
+                    "global_api_key": "g",
+                    "project_api_key": "k",
+                }
+            ),
+            encoding="utf-8",
+        )
+        code = _quiet(
+            [
+                "run",
+                "--fixture-file",
+                str(fixture),
+                "--output",
+                tempfile.mkdtemp(),
+                "--mode",
+                "full",
+                "--level",
+                "U1",
+            ]
+        )
+        self.assertEqual(code, EXIT_CODES[Status.BLOCKED])
+
     def test_digest_command_prints_the_driver_digest(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):

@@ -79,6 +79,12 @@ def _runner_config(args: argparse.Namespace) -> RunnerConfig:
     fixture = FixtureConfig.from_file(args.fixture_file)
     levels = LEVELS
     if args.level:
+        if args.mode == "full":
+            # A filtered matrix is not the fixed contract matrix; refusing is
+            # clearer than emitting a bundle the scorer must mark INVALID.
+            raise PrerequisiteError(
+                "--level is a smoke/debug filter; the full matrix cannot be filtered"
+            )
         wanted = set(args.level)
         levels = tuple(item for item in LEVELS if item[0] in wanted)
         if not levels:
@@ -126,7 +132,11 @@ def _runner_config(args: argparse.Namespace) -> RunnerConfig:
 
 
 def _command_run(args: argparse.Namespace) -> int:
-    config = _runner_config(args)
+    try:
+        config = _runner_config(args)
+    except PrerequisiteError as error:
+        print("run blocked: %s" % error, file=sys.stderr)
+        return EXIT_CODES[Status.BLOCKED]
     contract = load_contract(args.contract)
     try:
         result = run_matrix(config)
