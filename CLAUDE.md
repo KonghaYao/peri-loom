@@ -235,6 +235,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R37 | `perf/issue30-r37-deferred-durability` / `8684987`+`1dfa9f4` | 非提交操作的 completion/audit 在回复后按 FIFO 异步持久化（8 worker 池、上限 256，饱和回退内联等待）；completion 槽位改为入队即释放；close 在审计预算耗尽时仍 dispatch 并关闭 worker 会话。写语句 intent/terminal 仍同步 durable（用户授权见 issue #30） | 分层实测（v1.1.27，c1，单连接 connect→all→close）：只发 **2 个 HTTP 请求**（open+execute、close），却产生 **3 条耐久记录**（open / 只读 audit / close），`appends==syncs`、每次 fsync 2.36ms，合计 9.67ms = E2E 的 46%；worker 自报 SQL 0.53ms。首版（8684987）在 c64 失败 656–1192/1280（429/502/503）：异步等待仍持有 64 个 completion 槽 → 503 → close 未执行 → `session_seats=190` → `worker session capacity exceeded`；1dfa9f4 把槽位改为入队释放、饱和回退同步后通过。c1 配对 A/B（v1.1.27 vs r37b，3 轮 × 3 样本/侧，每样本 20 次，逐轮交替，两侧全新卷）：cellp **19.89→5.81ms（−70.8%）**、peri **21.36→5.68ms（−73.4%）**、by-id **19.99→4.84ms（−75.8%）**，27/27 样本 fail=0；同 harness 的 sqld 对照为 cellp 1.09×、peri **1.37×**、by-id 1.23×，达到 #30 的 ≤1.5× 目标。c64 回归门（3 轮 × 3 样本/侧，64 并发 × 20 次/worker）：qps cellp +4.6%、peri +1.3%、by-id +5.2%，p50 −1.0% / −0.2% / −4.0%，27/27 样本 fail=0 | 合入 main（崩溃恢复 E2E 通过；掉电丢 close 尾记录会触发隔离，见 R37 节） |
 | R38 | `fix/worker-gate-wakeup` / `1b66f58`（merge `0bca5d0`）+ `fix/issue28-verdict` / `f42cfeb`（merge `ef2502f`）；归因探针 `probe/gate-attribution` / `1679f85`（不合入） | G0：`RefreshGate` 过期等待者被唤醒后越过 deadline 时把唤醒转交给下一位（`expire`），超时仍不进临界区；G1：Issue28 并发验收把异常路径、缺测、账本请求数不符与并发 FAIL 纳入 verdict 与退出码。D1 用站点探针归因闸门排队/持有/分段；D2 用 Go benchmark 归因剩余编解码分配 | G0：回退修复的负向对照 8/8 稳定失败，修复后 8/8 通过；clippy 退出码 0；`cargo test --lib` 675 passed / 0 failed。G1：issue28 32 tests OK；`scripts/perf-reliability` 21 个测试文件共 330 tests 全 OK。D1（单库热库 c1–c64，探针 worker `29fe45d4…`）：open 786.7µs = 排队 517.9 + open_session 251.4 + prepare 5.7 + image_check 0.8 + registry 0.3；close 497.2µs = 排队 387.0 + native 89.8 + remove 8.2；begin 283.6µs = 排队 276.4；闸内可移出的 `prepare`（只读检查+ID+Entry）占每查询闸门服务时间 **1.5%**。D2：两候选点合计 7.5µs/请求（json v1，占 5ms 固定成本 **0.15%**），整段删除 `callVersionInto` 上限也只有 1.65µs | D1/D2 都低于 10% 门槛，按方向文档停止、不合入；G0/G1 合入 `main` 并随 v1.2.5 发布 |
 | R39 | `perf/issue28-r39-image-gate-shared` / `0b879c9`（merge `446d3fb`） | worker 镜像刷新闸门由互斥改为共享/独占租约：数据面 open/begin/close 持共享租约并发，镜像替换持独占租约（写者优先、双边 deadline、释放即唤醒） | 上限探针（闸门直通、未合入，`3b4b85c2…`，两轮交替）：X1 c16 p50 **7.63→3.54 / 7.29→4.17ms**（−42.8%~−53.6%），c1 不变。配对 A/B（8 轮/侧，json-pipeline，100 请求/档，两侧全新同数据卷，基线 worker `3f2a5175…` vs 候选 `13129acb…`）：c1 0.82→0.79（−3.6%，噪声）、c4 **1.32→0.96（−27.6%）**、c8 **3.06→2.05（−32.9%）**、c16 **9.83→5.36（−45.5%）**；p25 同向 −26.7%~−37.4%。同龄新栈对照（`run-base3` 基线 worker）：c4 1.37/1.40 vs 0.88/1.18、c16 6.29/7.33 vs 4.59/4.71 | 合入 main：回归门 F1 −8.2%、L1 0%、B1 −5.7%、C1 +1.4%、H1 −6.3%、H3 −2.0%，无 >10% 回归；Rust lib 677 passed / 0 failed，clippy/fmt 干净；测量期间 0×429、0 错误、`session_seats`/`active_permits` 归零 |
+| R40 | 无代码改动（探针轮，未合入） | 审计头检查点（witness）频率：把 `state_disk.go` 的 `auditBatchMaximum` 32→256 构建探针平台二进制（`aefcb903…`，源码已还原）；动机是 R39 窗口 `head_checkpoint_attempts_total` 1,111 次 / 24.2s（均值 21.8ms） | 机制核验：X1 每轮检查点 **39→5（−87%）**；B1+F1 窗口 11→1（209→20ms）。端到端：F1 p50 0.78/0.87→1.01/0.91ms、B1 2.11/2.17→2.30/2.24ms（均未改善）；X1 c16 基线 3.72/2.96/4.07/6.19ms vs 探针 3.49/190.70/33.11/38.55ms（B2 起 429/错误后劣化；B3/B4 无 429 仍 33–39ms）。归因：检查点停顿同时充当审计批的合并延迟，去掉后 X1 每轮追加 fsync **50→170**，B3/B4 审计总 I/O ≈1.1s vs 基线 1.06s | 上限不成立（无 ≥10% 改善，小查询不改善），不实现、不申请耐久语义授权；分支与提交均无，探针二进制留证。附带发现：X1 在候选明显更快时会耗尽 500 rps 配额出现 429（B1 c4 100 请求 86ms），运行间需留间隔 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1263,6 +1264,52 @@ H1.content-20mb（json-cursor）151.96→142.35ms（−6.3%）、H3.content-proj
 **环境记录**：历史 Issue 28 容器/数据集在本机不存在，本轮重建了确定性夹具
 （`/tmp/peri-perf/seed_fixture.py`，201 threads / 8,625 messages / 20,177,069 chars）与两个同源基线栈；
 空 A/B 校准（同二进制两栈，2 轮 × 5 样本）F1/B1/H1 离散 <1%，证明栈间可比后才进入正式测量。
+
+#### R40：审计头检查点放宽的上限探针（2026-11-03，探针轮，未合入）
+
+**动机**：R39 的测量窗口里，基线栈累计 `head_checkpoint_attempts_total=1,111`、
+`head_checkpoint_ns_total=24.2s`（均值 21.8ms/次），而单次审计追加 fsync 均值 3.66ms；
+检查点是 4 次屏障（payload/floor 各 temp-write + fsync，再 rename + 目录 fsync）。先例是
+operation journal 压实预算 256→1024→4096：R19 中性、R32/R34 在限速器变化后分别 +19.39%/+9.61%。
+若同构，把检查点周期从 32 条记录放宽 8 倍应当摊薄固定成本。
+
+**探针（未合入）**：`prototypes/v1/platform/state_disk.go` 的 `auditBatchMaximum` 32→256，
+构建一次性平台二进制 `/tmp/peri-perf/bin/peri-platform-r40-probe`（sha256 `aefcb903…`）；
+源码构建后立即还原（`git checkout -- prototypes/v1/platform/state_disk.go`），无分支、无提交。
+基线平台从 `main`（`2c9a8f3`）重建（`909a6453…`），两侧 worker 同为 R39 的 `13129acb…`。
+两栈独立卷、同一导入、v1 耐久；探针同时放宽了追加批上限（arm C），不单独做“只放宽 witness 步长”的
+arm B——碎片化来自去掉检查点停顿，而不是批上限，C 已是更宽松的上限。
+
+**机制核验（Gate 0）**：
+- X1 每轮检查点 **39→5（−87%）**，单次成本两侧相当（约 21–30ms）；
+- B1+F1 窗口（双方各 324 成功请求）检查点 11→1、209.3→19.9ms；追加 fsync 两侧同为 42 次。
+
+**端到端结果（两侧交替，A/B/B/A）**：
+
+| 场景 | 基线 p50（两次运行） | 探针 p50（两次运行） | 判定 |
+|---|---:|---:|---|
+| F1.select-1 | 0.78 / 0.87ms | 1.01 / 0.91ms | 未改善（偏慢） |
+| B1.batch-20 | 2.11 / 2.17ms | 2.30 / 2.24ms | 未改善（+6~9%） |
+| X1 c1 | 0.78 / 0.78 / 0.75 / 0.73ms | 0.73 / 0.79 / 0.78 / 0.73ms | 噪声内 |
+| X1 c4 | 0.99 / 1.03 / 1.27 / 0.86ms | 0.83 / 4.10 / 1.87 / 1.07ms | B1 略好，B2/B3 劣化 |
+| X1 c8 | 1.74 / 1.52 / 2.28 / 1.98ms | 1.39 / 87.69 / 2.59 / 1.66ms | B2 429 风暴；B3 劣化 |
+| X1 c16 | 3.72 / 2.96 / 4.07 / 6.19ms | 3.49 / 190.70 / 33.11 / 38.55ms | B1 相当（7×429）；B2–B4 劣化 |
+
+- B2 的 `status_429=21/6`、`errors=39/8`：探针在 c4 上用 86ms 完成 100 请求（约 1,160 rps），
+  耗尽项目 500 rps 令牌桶；B1 的 c16 也吃到 7 次 429，此后 B3/B4 虽无新 429，c16 仍 33–39ms。
+- 归因：基线侧检查点停顿本身在“顺带”合并审计批——每轮追加 fsync 稳定在 48–51 次（约 31 条/批）；
+  探针去掉停顿后，drain 面对的是刚到达的零散记录，每轮追加 fsync 升到 84/371/170/172 次，
+  B3/B4 审计总 I/O ≈1.1s，与基线≈1.06s 相当甚至更高。**检查点成本被它的合批副作用部分抵消，
+  单纯放宽周期不改变串行审计 I/O 总量。**
+
+**判定**：上限不成立（无 ≥10% 改善，小查询不改善且 X1 多次劣化），不实现、不申请耐久语义授权。
+本方向不再重试；若未来审计链需要降低检查点成本，应同时设计“显式合批窗口”，不能只改周期。
+
+**协议经验**：X1 的 100 请求/档没有速率限制，候选一旦明显变快（本例 c4 86ms）就会触发 429，
+使该档失去可比性；后续 X1 A/B 需在运行间留 ≥2s 间隔或降低每档请求数，且 429>0 的样本不得计入中位。
+
+**证据**：`/tmp/peri-perf/{r40-probe.log,r40-probe-metrics.csv,r40-probe2.log,r40-probe2-metrics.csv,r40-actions.py,r40-h1.py}`、
+`/tmp/peri-perf/r40-{A1..A4,B1..B4}`、`/tmp/peri-perf/r40p2-*`；探针脚本 `r40-probe.sh`、`r40-probe2.sh`。
 
 ## 代码约定
 
