@@ -27,6 +27,11 @@ type Gateway struct {
 	// command. A positive answer is a property of that binary; a negative one is
 	// re-asked after its TTL.
 	readonlyBatch readonlyBatchCapabilityCache
+	// fusedOpen caches whether a worker parses the open+statement command. It
+	// uses the same discovery answer as readonlyBatch under its own key, so a
+	// worker that supports one private command is not assumed to support the
+	// other.
+	fusedOpen readonlyBatchCapabilityCache
 	// cleanup is the in-process age account of the cleanup facts whose durable
 	// record carries no timestamp.
 	cleanup *cleanupLedger

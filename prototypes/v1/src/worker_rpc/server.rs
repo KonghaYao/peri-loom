@@ -437,6 +437,7 @@ impl State {
             &parsed.command,
             WorkerCommand::Query { .. }
                 | WorkerCommand::Statement { .. }
+                | WorkerCommand::OpenGuardedStatement { .. }
                 | WorkerCommand::GuardedReadonlyBatch { .. }
                 | WorkerCommand::FetchReadCursor { .. }
                 | WorkerCommand::FetchWriteCursor { .. }
@@ -460,6 +461,7 @@ impl State {
                 | WorkerCommand::Describe { .. }
                 | WorkerCommand::Statement { .. }
                 | WorkerCommand::GuardedReadonlyStatement { .. }
+                | WorkerCommand::OpenGuardedStatement { .. }
                 | WorkerCommand::GuardedReadonlyBatch { .. }
                 | WorkerCommand::SessionAutocommit { .. }
                 | WorkerCommand::OpenReadCursor { .. }

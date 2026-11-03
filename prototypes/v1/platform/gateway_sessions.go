@@ -105,7 +105,22 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if gateway.authorizeIn(ctx, principal, database) != nil {
 		return gatewayFailure(403, "forbidden")
 	}
-	openCommand, err := freezeCommand(map[string]any{"command": "open_session", "database": database})
+	writerProtocol := gateway.admission.eligible(quota)
+	// The Hrana adapter may ask for the first statement to ride along with this
+	// open. A remembered committing statement is never fused: the worker would
+	// run it read-only before the platform's durable intent exists, and the
+	// committing path would then send it a second time.
+	fusedStatement, fusedRequested := fusedOpenStatementFrom(ctx)
+	fusedRequested = fusedRequested && fusedStatement.SQL != "" && !writerProtocol &&
+		quota.MaxSQLBytes > 0 && len(fusedStatement.SQL) <= quota.MaxSQLBytes &&
+		!gateway.committingStatements.remembered(committingStatementKey{worker: worker.ID, digest: digestHex([]byte(fusedStatement.SQL))})
+	fusedAttempt := fusedRequested && gateway.fusedOpenSupported(ctx, worker)
+	plainOpenCommand := map[string]any{"command": "open_session", "database": database}
+	openFields := plainOpenCommand
+	if fusedAttempt {
+		openFields = fusedOpenCommand(database, fusedStatement)
+	}
+	openCommand, err := freezeCommand(openFields)
 	if err != nil {
 		return gateway.admissionFailure(database, err)
 	}
@@ -120,15 +135,15 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		result.operationPending, result.operationDeferred = operationID != "", pending
 	}()
 	var reply struct {
-		Session  string `json:"session"`
-		Readonly *bool  `json:"readonly"`
+		Session   string          `json:"session"`
+		Readonly  *bool           `json:"readonly"`
+		Statement json.RawMessage `json:"statement"`
 	}
 	// The worker span covers the open call on both protocol branches; it is deferred so every
 	// refusal below still attributes its time to the worker.
 	var writerState *SessionWriterState
 	leaveWorker := requestPhaseSpan(ctx, requestPhaseWorker)
 	defer leaveWorker()
-	writerProtocol := gateway.admission.eligible(quota)
 	if writerProtocol {
 		probeID, probeErr := controller.RandomID()
 		if probeErr != nil {
@@ -162,12 +177,45 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
 		err = gateway.config.Upstream.Call(ctx, worker, requestID, openCommand, &reply)
 		leaveNative()
+		if err != nil && fusedAttempt {
+			var failure *SQLRPCError
+			if errors.As(err, &failure) && failure.unsupportedCommand {
+				// An older worker rejects the private command before it reads a
+				// session, so nothing opened and no statement ran. Rebuild the
+				// plain open (and its pending record) and send that instead.
+				gateway.markFusedOpenUnsupported(worker)
+				fusedAttempt = false
+				openCommand, err = freezeCommand(plainOpenCommand)
+				if err == nil {
+					leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
+					operationID, pending, err = gateway.beginSessionOpen(database, requestID, worker.ID, openCommand)
+					leaveIntent()
+				}
+				if err != nil {
+					return gateway.admissionFailure(database, err)
+				}
+				leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
+				err = gateway.config.Upstream.Call(ctx, worker, requestID, openCommand, &reply)
+				leaveNative()
+			}
+		}
 	}
 	if err != nil {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenUpstreamResult, gateway.upstreamFailure(err, nil, permit), err)
 	}
 	if !upstreamSessionID(reply.Session) || reply.Readonly == nil || *reply.Readonly != (binding.Role == "read_only") {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
+	}
+	var fusedReply json.RawMessage
+	if fusedAttempt {
+		// The statement already ran, so an answer this platform cannot read is
+		// not a reason to send it again. It is also not a reason to isolate the
+		// namespace: the worker only runs statements its engine proved read-only
+		// in this request, so the lost answer cannot hide a commit.
+		if _, valid := parseFusedStatementAnswer(reply.Statement); !valid {
+			return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
+		}
+		fusedReply = reply.Statement
 	}
 	identifier, err := controller.RandomID()
 	if err != nil {
@@ -187,7 +235,13 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	gateway.sessions[identifier] = session
 	gateway.mu.Unlock()
 	permit.keepSession = true
-	return gatewayResult{value: map[string]any{"session": identifier, "readonly": *reply.Readonly}, dispatched: true, session: session, finish: func() {
+	value := map[string]any{"session": identifier, "readonly": *reply.Readonly}
+	if fusedReply != nil {
+		// Private to the in-process adapter that asked for the fused open; the
+		// public open result still carries exactly session and readonly.
+		value["fused_statement"] = fusedReply
+	}
+	return gatewayResult{value: value, dispatched: true, session: session, finish: func() {
 		session.lastUsed = time.Now()
 		session.mu.Unlock()
 	}}
@@ -357,6 +411,12 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	// same prepared statement before each step, including automatic reprepare.
 	if action == "statement" {
 		key := committingStatementKey{worker: session.worker.ID, digest: digestHex([]byte(request.SQL))}
+		// The successful open may already carry this entry's answer. The marker
+		// names the public session and the statement it belongs to, so a fused
+		// answer can never be spent on a different entry.
+		if fused, ok := fusedStatementResultFrom(ctx); ok && fused.Session == session.public && fused.SQL == request.SQL {
+			return gateway.fusedGuardedStatement(ctx, session, currentBinding, requestID, stage, key, frozen, fused, permit, quota)
+		}
 		// A planned block already decided this entry when its first entry sent
 		// the block: consuming that item avoids a second worker call, while the
 		// authorization, placement, admission, permit and completion checks

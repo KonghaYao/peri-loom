@@ -1010,6 +1010,16 @@ pub(super) fn result_row_count(result: &JsonValue) -> Option<usize> {
                         .sum(),
                 );
             }
+            // A fused open answers one statement inside its open result; the
+            // request is still row-bearing when that statement returned rows.
+            if let Some(rows) = fields
+                .get("statement")
+                .and_then(|statement| statement.get("result"))
+                .and_then(|result| result.get("rows"))
+                .and_then(JsonValue::as_array)
+            {
+                return Some(rows.len());
+            }
             fields
                 .get("rows")
                 .and_then(JsonValue::as_array)
