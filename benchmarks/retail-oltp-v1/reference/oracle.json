@@ -1,0 +1,35 @@
+{
+  "contract": "PL-RETAIL-OLTP",
+  "contract_version": "1.0.0",
+  "independent_oracle": true,
+  "seed": 20261103,
+  "rows": {
+    "warehouses": 4,
+    "products": 10000,
+    "stock": 40000,
+    "customers": 10000,
+    "orders": 100000,
+    "order_lines": 500000,
+    "payments": 100000,
+    "total_initial": 760004
+  },
+  "money_unit": "integer_cents",
+  "totals": {
+    "historical_payments_cents": 47551602679,
+    "sold_units": 1000000,
+    "available_stock_units": 39999000000,
+    "customer_balance_cents": 9952448397321,
+    "initial_text_bytes": 55040000
+  },
+  "derived": {
+    "stock_keys": 40000,
+    "stock_units_per_key": 1000000,
+    "customer_initial_balance_cents": 1000000000,
+    "lines_per_order": 5,
+    "order_note_bytes": 128,
+    "customer_note_bytes": 128,
+    "product_description_bytes": 256,
+    "order_line_note_bytes": 64,
+    "payment_note_bytes": 64
+  }
+}

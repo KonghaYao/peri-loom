@@ -1,0 +1,326 @@
+{
+  "contract": "PL-RETAIL-OLTP",
+  "contract_version": "1.0.0",
+  "profile": "local-8c8g-legacy-hrana-v1",
+  "status": "engineering-integration",
+  "seed": 20261103,
+  "scale": "full",
+  "certified_driver_sha256": null,
+  "certification_rules": {
+    "certified_driver_sha256_stays_null_until": [
+      "strict evidence parser and scorer are accepted",
+      "known-rejection close-retirement policy has an accepted A/B comparison",
+      "formal runner and the new driver digest are accepted",
+      "data and effective-config audit are accepted"
+    ],
+    "no_full_score_without": [
+      "the full LOAD / U1 / U4 / U8 / U16 / H8 / RESTART matrix",
+      "three repetitions per level with a fresh complete database per round",
+      "strict evidence digests and post-stream / restart verification",
+      "effective-config audit before and after each measured window"
+    ]
+  },
+  "dataset": {
+    "initial_rows": 760004,
+    "tables": {
+      "warehouses": 4,
+      "products": 10000,
+      "stock": 40000,
+      "customers": 10000,
+      "orders": 100000,
+      "order_lines": 500000,
+      "payments": 100000
+    },
+    "money_unit": "integer_cents",
+    "stock_units_per_key": 1000000,
+    "customer_initial_balance_cents": 1000000000,
+    "text_bytes": {
+      "product_description": 256,
+      "customer_note": 128,
+      "order_note": 128,
+      "order_line_note": 64,
+      "payment_note": 64,
+      "initial_total": 55040000
+    },
+    "generation": {
+      "rule_id": "pl-retail-fixed-v1",
+      "price_cents": "44000 + product_id for product_id in [1, 10000]",
+      "stock_key": "cartesian product of warehouse_id in [1, 4] and product_id in [1, 10000]",
+      "order_customer": "((order_id - 1) mod 10000) + 1",
+      "order_warehouse": "((order_id - 1) mod 4) + 1",
+      "order_request_key": "\"hist-20261103-\" + zero padded order_id (6 digits)",
+      "line_product_base": "((((order_id - 1) * 5 + offset) mod 10000) + 1) for offset in [0, 4]",
+      "line_quantity": "1 + (((order_id - 1) * 5 + offset) mod 3), with the final line of the final order set to 3 so total units equal 1000000",
+      "exact_payment_adjustment": "iterate lines by id; shift the product id by the largest multiple of the line quantity that does not exceed the remaining difference to 47551602679 cents, never reusing a product already present in the same order; deterministic",
+      "payment_amount": "sum(quantity * unit_price_cents) of the five order lines",
+      "warehouse_cash": "sum of payments whose order is assigned to the warehouse",
+      "customer_balance": "1000000000 - sum of that customer's payments",
+      "stock_available": "1000000 - sum of quantities sold from that warehouse/product key"
+    },
+    "text_rule": "fixed ASCII strings, each one byte per character, with the contract lengths above"
+  },
+  "oracle": {
+    "payments_total_cents": 47551602679,
+    "sold_units": 1000000,
+    "available_stock_units": 39999000000,
+    "customer_balance_total_cents": 9952448397321,
+    "initial_text_bytes": 55040000
+  },
+  "business": {
+    "classes": {
+      "product_stock": {
+        "weight_per_100": 20,
+        "http_calls": 3,
+        "kind": "read"
+      },
+      "order_detail": {
+        "weight_per_100": 25,
+        "http_calls": 3,
+        "kind": "read"
+      },
+      "customer_orders": {
+        "weight_per_100": 15,
+        "http_calls": 3,
+        "kind": "read"
+      },
+      "stock_report": {
+        "weight_per_100": 10,
+        "http_calls": 3,
+        "kind": "read"
+      },
+      "checkout": {
+        "weight_per_100": 30,
+        "http_calls": 13,
+        "kind": "write"
+      }
+    },
+    "shuffle": {
+      "block_size": 100,
+      "seed": 20261103,
+      "applies_to": "every block of planned businesses, including warmups"
+    },
+    "checkout_shape": [
+      "BEGIN IMMEDIATE",
+      "one price query for five products",
+      "five conditional stock UPDATEs",
+      "one conditional wallet UPDATE",
+      "one warehouse cash UPDATE",
+      "one order INSERT",
+      "one merged five-line INSERT",
+      "one payment INSERT",
+      "COMMIT"
+    ],
+    "read_shape": [
+      "BEGIN",
+      "one query",
+      "COMMIT"
+    ],
+    "rules": {
+      "single_execute_per_http": true,
+      "auto_retry": false,
+      "batch_http_calls": false,
+      "check_affected_rows": true,
+      "business_deadline_seconds": 5
+    },
+    "hotspot_h8": {
+      "checkout_share": 0.8,
+      "warehouse_id": 1,
+      "product_ids": [
+        1,
+        100
+      ],
+      "customer_ids": "1 + 4 * k for k in [0, 99]",
+      "other_checkouts": "full domain",
+      "reads": "uniform full domain"
+    }
+  },
+  "matrix": {
+    "repetitions": 3,
+    "window_seconds": 120,
+    "warmups_per_worker": 20,
+    "barrier_start": true,
+    "order": [
+      "U1",
+      "U4",
+      "U8",
+      "U16",
+      "H8"
+    ],
+    "levels": {
+      "U1": {
+        "concurrency": 1,
+        "mode": "uniform"
+      },
+      "U4": {
+        "concurrency": 4,
+        "mode": "uniform"
+      },
+      "U8": {
+        "concurrency": 8,
+        "mode": "uniform"
+      },
+      "U16": {
+        "concurrency": 16,
+        "mode": "uniform"
+      },
+      "H8": {
+        "concurrency": 8,
+        "mode": "hotspot"
+      }
+    },
+    "fresh_database_per_round": true,
+    "repetition_order": "1, 2, 3; inside each repetition U1, U4, U8, U16, H8",
+    "row_counts_recorded_separately": {
+      "after_import": 760004,
+      "after_preflight": 760011,
+      "timing_window_start": "recorded per round as rows_after_preflight + 7 rows per observed warmup checkout ACK",
+      "timing_window_start_rule": "import rows + 1 preflight checkout (1 order, 5 lines, 1 payment = 7 rows) + 7 rows per warmup checkout ACK observed in that round; the three counts are recorded separately, never collapsed. The 7-ACK figure in the prose is the reference driver's warmup shape; a runner with 20 warmups per worker records its own observed count.",
+      "preflight_checkout_rows": 7,
+      "warmup_checkout_acks_before_window": 7
+    },
+    "extra_rows_after_preflight_and_warmups": 49
+  },
+  "pipeline": {
+    "per_performance_round": [
+      "new fixture and effective-config audit",
+      "full import",
+      "preflight",
+      "pre-stream verification",
+      "20 warmups per worker",
+      "120 second timed window",
+      "stop dispatch, drain in-flight, retire sessions (<= 30 s)",
+      "post-stream verification",
+      "clean shutdown proof (<= 30 s)",
+      "restart on the same volume (<= 30 s to accept work)",
+      "post-restart stream verification"
+    ],
+    "drain_seconds": 30,
+    "shutdown_seconds": 30,
+    "restart_accept_seconds": 30,
+    "additional_scenarios": {
+      "LOAD": "one worker, complete load; reports rows/s and duration, no SLO",
+      "IDLE": "120 s without requests, then prove worker/database unload through an external non-activating observation; 180 s without proof is INVALID",
+      "RESTART": "same volume restart is a performance-round gate; a restart after a confirmed commit must keep it and return a known terminal or outcome_unknown"
+    }
+  },
+  "statistics": {
+    "business_goodput": "successful read_ok and committed_ack attempts started in [t0, t1) and completed by t1, divided by 120 seconds; monotonic clock",
+    "checkout_goodput": "the committed_ack subset of business_goodput, divided by 120 seconds",
+    "success_rate_window": "successful attempts with latency <= 5000 ms / all attempts started in [t0, t1) and completed by t1",
+    "latency": "per class n / p50 / p95 / p99 / max for success, failure and all; nearest-rank on sorted samples",
+    "round_value": "each of the three rounds is reported; the round summary is the median, never the best round",
+    "pooled_p99": "sort the pooled successful samples of the class across the three rounds, index ceil(0.99 * N) - 1",
+    "sample_threshold_per_class": 1000,
+    "below_threshold": "INCONCLUSIVE for that class; do not sign a p99 pass",
+    "aborted_round": "capacity fields are null and the round is marked aborted",
+    "per_round_p99_guard": "any round p99 over the limit blocks PASS even if the pooled p99 passes"
+  },
+  "slo": {
+    "read_p95_ms": 100,
+    "read_p99_ms": 250,
+    "checkout_p95_ms": 250,
+    "checkout_p99_ms": 1000,
+    "business_deadline_ms": 5000,
+    "unexpected_errors": 0,
+    "service_unknown": 0,
+    "transport_unknown": 0,
+    "cleanup_unconfirmed": 0,
+    "invariant_violations": 0,
+    "success_rate_floor": 0.999
+  },
+  "environment": {
+    "cpu_quota": 8,
+    "memory_bytes": 8589934592,
+    "client_server_same_machine": true,
+    "one_fixture_at_a_time": true,
+    "storage_backend": "local",
+    "device_layout": "fixed local device, filesystem and mount recorded in the platform descriptor",
+    "durability": "legacy_completion",
+    "object_pack": "off",
+    "hrana_experimental": "on",
+    "tls_verify": true,
+    "project_quotas": {
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_databases": 8
+    },
+    "limits": {
+      "sql_bytes": 65536,
+      "result_bytes": 4194304,
+      "sql_vm_steps": 10000000,
+      "execution_seconds": 5,
+      "segment_ram_bytes": 8388608,
+      "segment_disk_bytes": 67108864,
+      "native_pager_bytes_per_connection": 16777216
+    },
+    "protocol": {
+      "single_execute_per_http": true,
+      "independent_baton": true,
+      "connection_reuse": true,
+      "business_deadline_seconds": 5,
+      "rollback_budget_seconds": 5,
+      "close_budget_seconds": 5
+    }
+  },
+  "forbidden_optimizations": [
+    "automatic retry of SQL requests",
+    "reducing the sample after an error",
+    "skipping pre/post/restart verification",
+    "lowering durability, quota or cache settings for a score",
+    "silently dropping a q99 tail or a failed round",
+    "using the in-product SQL execution path to produce the oracle",
+    "temporarily adding or removing indexes"
+  ],
+  "statuses": {
+    "PASS": "all SLOs, invariants, evidence and recovery gates pass",
+    "FAIL": "a valid execution observed a requirement violation",
+    "INVALID": "evidence, configuration or timing cannot be trusted",
+    "INCONCLUSIVE": "valid execution but a class has fewer than 1000 successful samples",
+    "BLOCKED": "a prerequisite prevented the matrix from running",
+    "NOT_RUN": "the matrix or a required pipeline stage did not run"
+  },
+  "acceptance": {
+    "scorer_exit_zero_only_for": "PASS",
+    "summary_exit_zero_has_no_acceptance_authority": true
+  },
+  "evidence": {
+    "required_per_round": [
+      "round.json",
+      "config-before.json",
+      "config-after.json",
+      "initial-data-manifest.json",
+      "attempts.jsonl",
+      "http.jsonl",
+      "ledger.json",
+      "verify-pre.json",
+      "verify-post.json",
+      "verify-restart.json",
+      "shutdown.json",
+      "restart.json",
+      "resource.jsonl",
+      "scorecard.json"
+    ],
+    "required_at_run_level": [
+      "run.json",
+      "evidence-manifest.json",
+      "scorecard.json"
+    ],
+    "digest_rule": "every evidence file has bytes, record count and SHA256 in evidence-manifest.json; the scorer rejects a missing digest or a mismatch",
+    "non_empty_success_rule": "each round must contain successful traces for every business class; an empty success trace is INVALID",
+    "timing_rule": "t0 and t1 must be monotonic and the measured window must be 120 seconds within one second"
+  },
+  "driver": {
+    "entrypoint": "pl_retail.cli",
+    "legacy_reference_path": "reference/reference_driver.py",
+    "legacy_reference_sha256": "5201f42520464b1a32e42408c3bb87734207802a5f795ad2a9d5c4429add68c1",
+    "legacy_reference_present": false,
+    "certified_driver_sha256": null
+  },
+  "reference": {
+    "historical_scorecard": "reference/historical-v1.2.6.json",
+    "historical_note": "historical values are context, not an acceptance source",
+    "ddl": "reference/ddl.sql",
+    "oracle": "reference/oracle.json"
+  }
+}
