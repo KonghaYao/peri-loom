@@ -472,9 +472,13 @@ impl Service {
     }
 
     fn check_binding(&self, binding: &LeaseBinding) -> Result<()> {
+        let probe_started = std::time::Instant::now();
         self.live(binding)?;
+        let probe_live = std::time::Instant::now();
         self.authority.ownership_view()?.matches(binding)?;
+        let probe_view = std::time::Instant::now();
         self.live(binding)?;
+        probe_check_binding(probe_started, probe_live, probe_view);
         Ok(())
     }
 
@@ -572,4 +576,37 @@ fn digest(value: &impl serde::Serialize) -> Result<String> {
     Ok(blake3::hash(&serde_json::to_vec(value)?)
         .to_hex()
         .to_string())
+}
+
+fn probe_check_binding(
+    started: std::time::Instant,
+    after_live: std::time::Instant,
+    after_view: std::time::Instant,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
+    static LIVE: AtomicU64 = AtomicU64::new(0);
+    static VIEW: AtomicU64 = AtomicU64::new(0);
+    let finished = std::time::Instant::now();
+    let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let total = TOTAL
+        .fetch_add((finished - started).as_nanos() as u64, Ordering::Relaxed)
+        + (finished - started).as_nanos() as u64;
+    let live = LIVE
+        .fetch_add((after_live - started).as_nanos() as u64, Ordering::Relaxed)
+        + (after_live - started).as_nanos() as u64;
+    let view = VIEW
+        .fetch_add((after_view - after_live).as_nanos() as u64, Ordering::Relaxed)
+        + (after_view - after_live).as_nanos() as u64;
+    if calls % 20 == 0 {
+        eprintln!(
+            "probe=check_binding calls={} mean_us={:.1} live1_us={:.1} view_us={:.1} live2_us={:.1}",
+            calls,
+            total as f64 / calls as f64 / 1000.0,
+            live as f64 / calls as f64 / 1000.0,
+            view as f64 / calls as f64 / 1000.0,
+            (total - live - view) as f64 / calls as f64 / 1000.0
+        );
+    }
 }

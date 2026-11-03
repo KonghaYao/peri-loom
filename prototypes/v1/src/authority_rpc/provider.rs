@@ -316,7 +316,9 @@ impl ObjectStore for RemoteStore {
         if crate::session::lease_window::satisfied() {
             return Ok(());
         }
+        let probe_started = std::time::Instant::now();
         let reply: GrantReply = serde_json::from_value(self.call(SessionOperation::Validate)?)?;
+        probe_record(probe_started.elapsed());
         ensure!(
             same_identity(&self.binding, &reply.binding)
                 && reply.binding.renewal_sequence >= self.binding.renewal_sequence
@@ -688,5 +690,22 @@ mod lease_window_tests {
         let seen = authority.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 2, "validation was merged without a window");
         Ok(())
+    }
+}
+
+fn probe_record(elapsed: std::time::Duration) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static NANOS: AtomicU64 = AtomicU64::new(0);
+    let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let nanos = NANOS
+        .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed)
+        + elapsed.as_nanos() as u64;
+    if calls % 20 == 0 {
+        eprintln!(
+            "probe=authority_rpc_validate calls={} mean_us={:.1}",
+            calls,
+            nanos as f64 / calls as f64 / 1000.0
+        );
     }
 }
