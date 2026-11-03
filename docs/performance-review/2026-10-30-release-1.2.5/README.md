@@ -211,3 +211,21 @@ verdict PASS、0 error、0 个 429、`active_permits`/`session_seats` 归零。
 同一侧另一轮为 0.249ms，base 两轮为 0.310/0.223ms。该行是单场景 SQL-only 预算校验，
 不是跨侧比值；出现于整体变慢的那一轮（该轮 F1 客户端中位 6.22ms，base 同侧跨度为
 1.75–4.83ms）。按原样记录，不重跑挑选结果。
+
+## 发布产物
+
+- 工作流 [run 41595166087](https://github.com/KonghaYao/peri-loom/actions/runs/41595166087)：
+  `check` / `baseline`（p0 + SQL/SDK 矩阵）/ `build`（arm64、amd64 原生）/ `publish` 全绿。
+- 镜像 `ghcr.io/konghayao/peri-loom:v1.2.5`，manifest list
+  `sha256:b4892696c0062e30658a5fe8c9c75d9a1c81453e6bd69bd46b9ec2a02a904f00`；
+  arm64 `sha256:62ccb67e2c8906acc732bc3cf556d558c92e34ec211db6e9364ccdbf26415503`，
+  amd64 `sha256:9f5bcfb202494462aca79431a0594fbaa49170c759f3fca3932355b196bf690e`。
+  镜像标签 `org.opencontainers.image.revision=7a5ca10d81e560e7d4fd2337f34a33a5d089fa3c`
+  （= tag `v1.2.5` 指向的提交）、`version=v1.2.5`。
+- 镜像内平台二进制 `9085f035…`，与 A/B 四侧和 v1.2.0 镜像**逐字节一致**。
+- 镜像内 worker `678b79e6…`；A/B 候选 `7fe99014…`（`/src` 构建）、`/source` 干净复现
+  `1e381a70…`、`/source` + 默认 target 目录 `dc8ce6bf…`，三者互不相同。三者 rustc
+  版本串一致（`48a229ce…`）、构建命令与 `--locked` 一致、源码同 tag；差异来自构建目录与
+  BuildKit 缓存挂载下依赖产物的路径，**不宣称镜像 worker 可逐字节复现**。
+- GitHub release 页 `https://github.com/KonghaYao/peri-loom/releases/tag/v1.2.5`
+  （prerelease，与 v1.2.0 一致）。
