@@ -200,7 +200,9 @@ impl State {
                 ensure!(version == 1, "readonly capabilities require protocol v1");
                 Ok(json!({
                     "readonly_batch_protocol": 1,
-                    "open_guarded_statement": 1,
+                    // Level 2 adds `close_after_statement`; a caller that only
+                    // knows level 1 keeps the session it was given.
+                    "open_guarded_statement": 2,
                 }))
             }
             WorkerCommand::WriterProfileStatus => {
@@ -318,6 +320,7 @@ impl State {
                 args,
                 named_args,
                 want_rows,
+                close_after_statement,
             } => {
                 // The fused command is v1-only, like the guarded block: a v2
                 // caller carries writer state this answer does not describe.
@@ -351,7 +354,10 @@ impl State {
                 // runs SQL. A failure here is therefore a proof the statement was
                 // not executed, and the opened session is still returned so the
                 // platform can register, use and retire it.
-                let statement = match self.sessions.begin(&session, deadline) {
+                // The statement call is released before the close: a session close
+                // waits for the active RPC to finish, so holding it here would
+                // turn the fused close into a deadline wait.
+                let (statement, settled) = match self.sessions.begin(&session, deadline) {
                     Ok(call) => {
                         let result =
                             crate::slow_diagnostics::native("open_guarded_statement", || {
@@ -363,38 +369,55 @@ impl State {
                                 )
                             });
                         match result {
-                            Ok(GuardedStatementOutcome::Executed(result)) => {
-                                json!({"status": "ok", "result": encoded_statement_result(result)})
-                            }
-                            Ok(GuardedStatementOutcome::RequiresIntent(reason)) => {
-                                json!({"status": "requires_intent", "reason": guarded_intent_reason(reason)})
-                            }
+                            Ok(GuardedStatementOutcome::Executed(result)) => (
+                                json!({"status": "ok", "result": encoded_statement_result(result)}),
+                                true,
+                            ),
+                            Ok(GuardedStatementOutcome::RequiresIntent(reason)) => (
+                                json!({"status": "requires_intent", "reason": guarded_intent_reason(reason)}),
+                                false,
+                            ),
                             Err(error) => {
                                 self.diagnostics.emit(Action::Query, request_id, &error);
                                 // Same evidence a dedicated statement failure would
                                 // carry: an unsettled error stays absent, never false.
+                                let completed = execution_completed(&error);
+                                let settled = completed || execution_rejected(&error);
                                 let mut failed =
                                     json!({"status": "error", "error": format!("{error:#}")});
-                                if execution_completed(&error) {
+                                if completed {
                                     failed["execution_completed"] = json!(true);
-                                } else if execution_rejected(&error) {
+                                } else if settled {
                                     failed["execution_completed"] = json!(false);
                                 }
-                                failed
+                                (failed, settled)
                             }
                         }
                     }
                     Err(error) => {
                         let mut failed = json!({"status": "error", "error": format!("{error:#}")});
                         failed["execution_completed"] = json!(false);
-                        failed
+                        (failed, false)
                     }
                 };
-                Ok(json!({
+                let mut response = json!({
                     "session": session,
                     "readonly": readonly,
                     "statement": statement,
-                }))
+                });
+                // Only a statement whose outcome is settled may end the lifecycle
+                // here: a refused write and an unsettled failure keep the session
+                // for the platform's committing path or its ordinary close. A
+                // close error is answer data, and the session stays registered so
+                // the platform can retry it through `close_session`.
+                if close_after_statement && settled {
+                    let close = match self.sessions.close(&session, version, deadline) {
+                        Ok(_) => json!({"status": "ok"}),
+                        Err(error) => json!({"status": "error", "error": format!("{error:#}")}),
+                    };
+                    response["close"] = close;
+                }
+                Ok(response)
             }
             WorkerCommand::CloseSession { session } => {
                 *terminal = self.sessions.close(&session, version, deadline)?;

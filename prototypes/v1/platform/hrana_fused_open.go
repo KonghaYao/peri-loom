@@ -37,6 +37,10 @@ type hranaOpenResult struct {
 	// FusedStatement is the statement reply the gateway received from the same
 	// worker request, or nil when the worker did not fuse it.
 	FusedStatement json.RawMessage
+	// FusedClose records that the same worker request also retired the session.
+	// The adapter still sends its close entry so the platform keeps its own
+	// records; this field only tells it that the worker session is gone.
+	FusedClose bool
 }
 
 // hranaOpen is the implicit open of a Hrana pipeline. It asks the gateway to
@@ -44,11 +48,17 @@ type hranaOpenResult struct {
 // gateway performs the capability probe, so the adapter only supplies the
 // candidate. A worker that does not fuse the statement answers with the usual
 // session-only result and the entry takes the ordinary statement path.
-func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, database controller.DatabaseID, statement *hranaStatement) (hranaOpenResult, hranaReply) {
+//
+// closeAfter says the adapter's very next entry is the session's close, so the
+// gateway may ask the worker to retire the session in the same request. That
+// answer is still the gateway's decision: a worker that does not advertise the
+// close level keeps the session.
+func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, database controller.DatabaseID, statement *hranaStatement, closeAfter bool) (hranaOpenResult, hranaReply) {
 	openRequest := request
 	candidate := false
 	if statement != nil {
 		if fused, ok := hranaFusionCandidate(*statement); ok {
+			fused.CloseAfter = closeAfter
 			candidate = true
 			openRequest = request.WithContext(withFusedOpenStatement(request.Context(), fused))
 		}
@@ -60,6 +70,7 @@ func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, da
 	var opened struct {
 		Session        string          `json:"session"`
 		FusedStatement json.RawMessage `json:"fused_statement"`
+		FusedClose     bool            `json:"fused_close"`
 	}
 	if json.Unmarshal(reply.result, &opened) != nil {
 		return hranaOpenResult{}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
@@ -76,16 +87,21 @@ func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, da
 			handler.cleanupRetiredSession(opened.Session, 0)
 			return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 		}
+	} else if opened.FusedClose {
+		// A close without the statement it followed cannot be spent: the close
+		// entry would skip the worker call for a session nothing proved closed.
+		handler.cleanupRetiredSession(opened.Session, 0)
+		return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 	}
-	return hranaOpenResult{Session: opened.Session, FusedStatement: opened.FusedStatement}, hranaReply{status: http.StatusOK}
+	return hranaOpenResult{Session: opened.Session, FusedStatement: opened.FusedStatement, FusedClose: opened.FusedClose}, hranaReply{status: http.StatusOK}
 }
 
 // hranaFusedStatementResult is the marker the next statement call consumes. It
 // carries the statement text so the gateway can prove the answer belongs to
 // this entry before it uses it.
-func hranaFusedStatementResult(session string, statement hranaStatement, reply json.RawMessage) *fusedStatementResult {
+func hranaFusedStatementResult(session string, statement hranaStatement, reply json.RawMessage, closed bool) *fusedStatementResult {
 	if reply == nil {
 		return nil
 	}
-	return &fusedStatementResult{Session: session, SQL: statement.SQL, Reply: reply}
+	return &fusedStatementResult{Session: session, SQL: statement.SQL, Reply: reply, Closed: closed}
 }

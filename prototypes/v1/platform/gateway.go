@@ -59,6 +59,11 @@ type gatewaySession struct {
 	writerSequence uint64
 	hrana          bool
 	lastUsed       time.Time
+	// fusedClose marks a worker session the fused open already retired. The
+	// close entry still runs so the platform keeps its own records and quota;
+	// only the worker round trip is skipped, because the command's session no
+	// longer exists.
+	fusedClose bool
 	// The worker holds at most one write cursor per session. These flags are the
 	// gateway's own record of what it has proven about that cursor; they never
 	// stand in for a native reply.

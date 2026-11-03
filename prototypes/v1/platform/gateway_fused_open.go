@@ -26,6 +26,11 @@ type fusedOpenStatement struct {
 	Args      []sqlArgument
 	NamedArgs []namedSQLArgument
 	WantRows  bool
+	// CloseAfter asks the worker to close the session in the same request, once
+	// the statement's outcome is settled. Only the adapter that also owns the
+	// next entry (`close`) can set it, and the open handler still requires the
+	// worker to advertise that level of the command.
+	CloseAfter bool
 }
 
 type fusedOpenStatementContextKey struct{}
@@ -47,6 +52,10 @@ type fusedStatementResult struct {
 	Session string
 	SQL     string
 	Reply   json.RawMessage
+	// Closed records that the same worker request already retired the session
+	// this statement ran on. The adapter still runs its close entry, but an
+	// entry served by this open may not make another worker call on the session.
+	Closed bool
 }
 
 type fusedStatementResultContextKey struct{}
@@ -72,7 +81,7 @@ func fusedOpenCommand(database controller.DatabaseID, statement fusedOpenStateme
 	if namedArgs == nil {
 		namedArgs = []namedSQLArgument{}
 	}
-	return map[string]any{
+	command := map[string]any{
 		"command":    "open_guarded_statement",
 		"database":   database,
 		"sql":        statement.SQL,
@@ -80,6 +89,13 @@ func fusedOpenCommand(database controller.DatabaseID, statement fusedOpenStateme
 		"named_args": namedArgs,
 		"want_rows":  statement.WantRows,
 	}
+	// The field is absent unless the adapter asked for the lifecycle fusion and
+	// the worker advertised it: an older binary denies unknown fields, and paying
+	// a refused open on every request would silently drop the first fusion too.
+	if statement.CloseAfter {
+		command["close_after_statement"] = true
+	}
+	return command
 }
 
 // fusedOpenCommandValid mirrors the worker request struct. It is deliberately
@@ -93,15 +109,21 @@ func fusedOpenCommandValid(operation string, encoded []byte) bool {
 	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	var command struct {
-		Command   string                `json:"command"`
-		Database  controller.DatabaseID `json:"database"`
-		SQL       string                `json:"sql"`
-		Args      []sqlArgument         `json:"args"`
-		NamedArgs []namedSQLArgument    `json:"named_args"`
-		WantRows  *bool                 `json:"want_rows"`
+		Command    string                `json:"command"`
+		Database   controller.DatabaseID `json:"database"`
+		SQL        string                `json:"sql"`
+		Args       []sqlArgument         `json:"args"`
+		NamedArgs  []namedSQLArgument    `json:"named_args"`
+		WantRows   *bool                 `json:"want_rows"`
+		CloseAfter *bool                 `json:"close_after_statement"`
 	}
 	if decoder.Decode(&command) != nil || decoder.Decode(new(any)) != io.EOF ||
 		command.Command != operation || command.SQL == "" || command.WantRows == nil {
+		return false
+	}
+	// The platform only ever asks for the close fusion, never for its absence:
+	// a body that spells the field out with false was not built by this path.
+	if command.CloseAfter != nil && !*command.CloseAfter {
 		return false
 	}
 	if command.Database.Validate() != nil || !validSQLArguments(command.Args) ||
@@ -116,30 +138,31 @@ func fusedOpenCommandValid(operation string, encoded []byte) bool {
 	return true
 }
 
-// fusedOpenSupport answers whether this worker parses the fused command. A
-// probe failure is cached as unsupported, exactly like the guarded block
-// capability: the probe executes no SQL, and an upgraded worker is picked up
-// after the negative TTL.
-func (gateway *Gateway) fusedOpenSupported(ctx context.Context, worker controller.Worker) bool {
+// fusedOpenLevel answers how much of the fused-open command this worker parses:
+// zero when it refuses the command, one for an open fused with the statement,
+// and two when the statement's close may ride along too. One probe answers both
+// questions, so a worker that supports only the first keeps that fusion instead
+// of being downgraded whenever a pipeline ends with a close.
+func (gateway *Gateway) fusedOpenLevel(ctx context.Context, worker controller.Worker) int {
 	key := "fused\x00" + guardedBatchCapabilityKey(worker)
-	if supported, known := gateway.fusedOpen.lookup(key, time.Now()); known {
-		return supported
+	if level, known := gateway.fusedOpen.lookupLevel(key, time.Now()); known {
+		return level
 	}
-	supported := gateway.probeFusedOpen(ctx, worker)
+	level := gateway.probeFusedOpen(ctx, worker)
 	if ctx.Err() == nil {
-		gateway.fusedOpen.remember(key, supported, time.Now())
+		gateway.fusedOpen.rememberLevel(key, level, time.Now())
 	}
-	return supported
+	return level
 }
 
-func (gateway *Gateway) probeFusedOpen(ctx context.Context, worker controller.Worker) bool {
+func (gateway *Gateway) probeFusedOpen(ctx context.Context, worker controller.Worker) int {
 	requestID, err := controller.RandomID()
 	if err != nil {
-		return false
+		return 0
 	}
 	var reply json.RawMessage
 	if err := gateway.config.Upstream.Call(ctx, worker, requestID, map[string]any{"command": "capabilities"}, &reply); err != nil {
-		return false
+		return 0
 	}
 	var capabilities struct {
 		Protocol *int `json:"readonly_batch_protocol"`
@@ -148,17 +171,17 @@ func (gateway *Gateway) probeFusedOpen(ctx context.Context, worker controller.Wo
 	decoder := json.NewDecoder(bytes.NewReader(reply))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&capabilities) != nil || decoder.Decode(new(any)) != io.EOF ||
-		capabilities.Fused == nil || *capabilities.Fused != 1 {
-		return false
+		capabilities.Fused == nil || *capabilities.Fused < 1 {
+		return 0
 	}
-	return true
+	return *capabilities.Fused
 }
 
 // markFusedOpenUnsupported records a worker that refused the command after the
 // cache said it would parse it. The refusal proves nothing ran, so this only
 // changes which call the next open makes.
 func (gateway *Gateway) markFusedOpenUnsupported(worker controller.Worker) {
-	gateway.fusedOpen.remember("fused\x00"+guardedBatchCapabilityKey(worker), false, time.Now())
+	gateway.fusedOpen.rememberLevel("fused\x00"+guardedBatchCapabilityKey(worker), 0, time.Now())
 }
 
 // fusedStatementAnswer is the statement part of a fused open reply. The three
@@ -226,6 +249,55 @@ func parseFusedStatementAnswer(reply json.RawMessage) (fusedStatementAnswer, boo
 		}, true
 	default:
 		return fusedStatementAnswer{}, false
+	}
+}
+
+// fusedCloseReply is the close half of a fused open reply. `ok` is the only
+// shape that proves the worker retired the session; `error` is answer data and
+// leaves the session for the ordinary close entry.
+type fusedCloseReply struct {
+	Status string  `json:"status"`
+	Error  *string `json:"error"`
+}
+
+// parseFusedCloseAnswer accepts only the complete shapes the worker emits. A
+// payload this platform cannot read is not evidence of a close, so the caller
+// falls back to the ordinary close instead of guessing.
+func parseFusedCloseAnswer(reply json.RawMessage) (closed bool, valid bool) {
+	var parsed fusedCloseReply
+	decoder := json.NewDecoder(bytes.NewReader(reply))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&parsed) != nil || decoder.Decode(new(any)) != io.EOF {
+		return false, false
+	}
+	switch parsed.Status {
+	case "ok":
+		if parsed.Error != nil {
+			return false, false
+		}
+		return true, true
+	case "error":
+		if parsed.Error == nil || *parsed.Error == "" {
+			return false, false
+		}
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// fusedCloseEligible reports whether a statement answer can carry a fused close.
+// The worker only closes a session whose statement outcome is settled, and a
+// refused write keeps its session by contract; trusting a close next to either
+// of those would retire a session the platform still needs.
+func fusedCloseEligible(answer fusedStatementAnswer) bool {
+	switch answer.kind {
+	case fusedStatementOK:
+		return true
+	case fusedStatementError:
+		return answer.executionCompleted != nil
+	default:
+		return false
 	}
 }
 

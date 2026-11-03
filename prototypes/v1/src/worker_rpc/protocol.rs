@@ -88,6 +88,12 @@ pub enum WorkerCommand {
         named_args: Vec<NamedStatementArg>,
         #[serde(default = "want_rows_default")]
         want_rows: bool,
+        // The caller knows the session ends with this statement (a pipeline whose
+        // last entry is `close`), so the close joins the same request and lease
+        // window. The field is absent from the protocol's first version: an older
+        // worker rejects the whole body instead of ignoring a flag it cannot honor.
+        #[serde(default)]
+        close_after_statement: bool,
     },
     // The same guarded statement, repeated for a caller-known contiguous block of
     // read-only work. Each statement keeps its own budget, deadline check and

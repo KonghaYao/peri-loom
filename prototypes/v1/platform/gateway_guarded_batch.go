@@ -22,8 +22,11 @@ import (
 const guardedBatchCapabilityTTL = 60 * time.Second
 
 type workerCapability struct {
-	supported bool
-	checked   time.Time
+	// level is the private command protocol the worker answered, zero when it
+	// refused the command. A positive level is a property of that binary; a
+	// zero level is re-asked after the TTL.
+	level   int
+	checked time.Time
 }
 
 type readonlyBatchCapabilityCache struct {
@@ -32,25 +35,38 @@ type readonlyBatchCapabilityCache struct {
 }
 
 func (cache *readonlyBatchCapabilityCache) lookup(key string, now time.Time) (bool, bool) {
+	level, known := cache.lookupLevel(key, now)
+	return level >= 1, known
+}
+
+func (cache *readonlyBatchCapabilityCache) lookupLevel(key string, now time.Time) (int, bool) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	entry, found := cache.entries[key]
 	if !found {
-		return false, false
+		return 0, false
 	}
-	if !entry.supported && now.Sub(entry.checked) >= guardedBatchCapabilityTTL {
-		return false, false
+	if entry.level == 0 && now.Sub(entry.checked) >= guardedBatchCapabilityTTL {
+		return 0, false
 	}
-	return entry.supported, true
+	return entry.level, true
 }
 
 func (cache *readonlyBatchCapabilityCache) remember(key string, supported bool, now time.Time) {
+	level := 0
+	if supported {
+		level = 1
+	}
+	cache.rememberLevel(key, level, now)
+}
+
+func (cache *readonlyBatchCapabilityCache) rememberLevel(key string, level int, now time.Time) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if cache.entries == nil {
 		cache.entries = make(map[string]workerCapability)
 	}
-	cache.entries[key] = workerCapability{supported: supported, checked: now}
+	cache.entries[key] = workerCapability{level: level, checked: now}
 }
 
 func guardedBatchCapabilityKey(worker controller.Worker) string {

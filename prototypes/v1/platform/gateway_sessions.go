@@ -114,7 +114,16 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	fusedRequested = fusedRequested && fusedStatement.SQL != "" && !writerProtocol &&
 		quota.MaxSQLBytes > 0 && len(fusedStatement.SQL) <= quota.MaxSQLBytes &&
 		!gateway.committingStatements.remembered(committingStatementKey{worker: worker.ID, digest: digestHex([]byte(fusedStatement.SQL))})
-	fusedAttempt := fusedRequested && gateway.fusedOpenSupported(ctx, worker)
+	fusedLevel := 0
+	if fusedRequested {
+		fusedLevel = gateway.fusedOpenLevel(ctx, worker)
+	}
+	fusedAttempt := fusedLevel >= 1
+	// The close joins the open only when the adapter knows it is the next entry
+	// and the worker advertises that level. A level-1 worker keeps the first
+	// fusion and answers the close separately.
+	closeAfter := fusedAttempt && fusedStatement.CloseAfter && fusedLevel >= 2
+	fusedStatement.CloseAfter = closeAfter
 	plainOpenCommand := map[string]any{"command": "open_session", "database": database}
 	openFields := plainOpenCommand
 	if fusedAttempt {
@@ -138,6 +147,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		Session   string          `json:"session"`
 		Readonly  *bool           `json:"readonly"`
 		Statement json.RawMessage `json:"statement"`
+		Close     json.RawMessage `json:"close"`
 	}
 	// The worker span covers the open call on both protocol branches; it is deferred so every
 	// refusal below still attributes its time to the worker.
@@ -185,6 +195,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 				// plain open (and its pending record) and send that instead.
 				gateway.markFusedOpenUnsupported(worker)
 				fusedAttempt = false
+				closeAfter = false
 				openCommand, err = freezeCommand(plainOpenCommand)
 				if err == nil {
 					leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
@@ -207,21 +218,31 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
 	}
 	var fusedReply json.RawMessage
+	fusedClose := false
 	if fusedAttempt {
 		// The statement already ran, so an answer this platform cannot read is
 		// not a reason to send it again. It is also not a reason to isolate the
 		// namespace: the worker only runs statements its engine proved read-only
 		// in this request, so the lost answer cannot hide a commit.
-		if _, valid := parseFusedStatementAnswer(reply.Statement); !valid {
+		answer, valid := parseFusedStatementAnswer(reply.Statement)
+		if !valid {
 			return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
 		}
 		fusedReply = reply.Statement
+		// A close is only usable next to a settled statement answer, and an
+		// answer this platform cannot read leaves the session for the ordinary
+		// close entry instead of guessing that the worker retired it.
+		if closeAfter && reply.Close != nil && fusedCloseEligible(answer) {
+			if closed, valid := parseFusedCloseAnswer(reply.Close); valid && closed {
+				fusedClose = true
+			}
+		}
 	}
 	identifier, err := controller.RandomID()
 	if err != nil {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenPublicID, gateway.unknown(nil, permit), nil)
 	}
-	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, keyID: principal.KeyID, writerProtocol: writerProtocol, hrana: ctx.Value(hranaSessionContextKey{}) != nil, lastUsed: time.Now()}
+	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, keyID: principal.KeyID, writerProtocol: writerProtocol, hrana: ctx.Value(hranaSessionContextKey{}) != nil, lastUsed: time.Now(), fusedClose: fusedClose}
 	if writerProtocol && (!session.acceptWriterState(writerState, binding) || writerState.Owner) {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenWriterBinding, gateway.unknown(nil, permit), nil)
 	}
@@ -240,6 +261,11 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		// Private to the in-process adapter that asked for the fused open; the
 		// public open result still carries exactly session and readonly.
 		value["fused_statement"] = fusedReply
+	}
+	if fusedClose {
+		// The adapter still sends its close entry for the platform's own records,
+		// but it knows the worker session is already gone.
+		value["fused_close"] = true
 	}
 	return gatewayResult{value: value, dispatched: true, session: session, finish: func() {
 		session.lastUsed = time.Now()
@@ -458,6 +484,15 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		}()
 	}
 	if action == "close" {
+		if session.fusedClose {
+			// The fused open already retired the worker session. The close entry
+			// still runs every platform-side step - admission, the close record,
+			// quota and retirement - but the worker call it would make names a
+			// session that no longer exists, so it is skipped.
+			session.fusedClose = false
+			gateway.removeSession(session)
+			return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
+		}
 		var reply struct {
 			Closed bool `json:"closed"`
 		}

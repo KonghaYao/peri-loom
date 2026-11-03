@@ -1270,7 +1270,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 	if resultLimit <= resultReserve {
 		return false
 	}
-	opened, reply := handler.hranaOpen(request, credential, database, &statement)
+	opened, reply := handler.hranaOpen(request, credential, database, &statement, true)
 	if reply.status != http.StatusOK || reply.code != "" {
 		return false
 	}
@@ -1288,7 +1288,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 		}
 	}()
 	statementRequest := request
-	if fused := hranaFusedStatementResult(session, statement, opened.FusedStatement); fused != nil {
+	if fused := hranaFusedStatementResult(session, statement, opened.FusedStatement, opened.FusedClose); fused != nil {
 		statementRequest = request.WithContext(withFusedStatementResult(request.Context(), *fused))
 	}
 	value, executeReply := handler.executeWithin(statementRequest, credential, session, statement, resultLimit)

@@ -343,6 +343,16 @@ func TestFusedOpenCommandValidation(t *testing.T) {
 	if fusedOpenCommandValid("open_session", frozen.bytes()) {
 		t.Fatal("a fused body was accepted as another command")
 	}
+	withClose, err := freezeCommand(fusedOpenCommand(database, fusedOpenStatement{
+		SQL:        "SELECT ?",
+		Args:       []sqlArgument{{Type: "text", Value: json.RawMessage(`"x"`)}},
+		NamedArgs:  []namedSQLArgument{},
+		WantRows:   true,
+		CloseAfter: true,
+	}))
+	if err != nil || !fusedOpenCommandValid("open_guarded_statement", withClose.bytes()) {
+		t.Fatalf("the platform's own fused close command was refused: %v", err)
+	}
 	invalid := map[string]string{
 		"missing rows":     `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"tenant-a","database":"db-a"},"branch":"main"},"sql":"SELECT 1","args":[],"named_args":[]}`,
 		"empty sql":        `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"tenant-a","database":"db-a"},"branch":"main"},"sql":"","args":[],"named_args":[],"want_rows":true}`,
@@ -350,6 +360,8 @@ func TestFusedOpenCommandValidation(t *testing.T) {
 		"bad database":     `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"","database":"db-a"},"branch":"main"},"sql":"SELECT 1","args":[],"named_args":[],"want_rows":true}`,
 		"bad argument":     `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"tenant-a","database":"db-a"},"branch":"main"},"sql":"SELECT ?","args":[{"type":"integer","value":"NaN"}],"named_args":[],"want_rows":true}`,
 		"empty named name": `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"tenant-a","database":"db-a"},"branch":"main"},"sql":"SELECT :x","args":[],"named_args":[{"name":"","value":{"type":"text","value":"x"}}],"want_rows":true}`,
+		"close off":        `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"tenant-a","database":"db-a"},"branch":"main"},"sql":"SELECT 1","args":[],"named_args":[],"want_rows":true,"close_after_statement":false}`,
+		"close not a bool": `{"command":"open_guarded_statement","database":{"namespace":{"tenant":"tenant-a","database":"db-a"},"branch":"main"},"sql":"SELECT 1","args":[],"named_args":[],"want_rows":true,"close_after_statement":"yes"}`,
 	}
 	for name, body := range invalid {
 		if fusedOpenCommandValid("open_guarded_statement", []byte(body)) {
