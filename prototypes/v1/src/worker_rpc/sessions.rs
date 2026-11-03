@@ -97,28 +97,46 @@ impl RefreshGate {
             .lock()
             .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
         loop {
-            ensure!(Instant::now() < deadline, AdmissionError::Deadline);
+            if Instant::now() >= deadline {
+                return Err(self.expire(held));
+            }
             if !*held {
                 *held = true;
                 return Ok(RefreshGuard(self));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(AdmissionError::Deadline.into());
+                return Err(self.expire(held));
             }
             let (guard, timeout) = self
                 .released
                 .wait_timeout(held, remaining)
                 .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
             held = guard;
-            if timeout.timed_out() && *held {
-                drop(held);
-                // Hand the wakeup on: the notified waiter may give up on its deadline before
-                // it can take the section, and nobody else would wake the remaining sleepers.
-                self.released.notify_one();
-                return Err(AdmissionError::Deadline.into());
+            if timeout.timed_out() {
+                if *held {
+                    drop(held);
+                    // Hand the wakeup on: the notified waiter may give up on its deadline
+                    // before it can take the section, and nobody else would wake the
+                    // remaining sleepers.
+                    self.released.notify_one();
+                    return Err(AdmissionError::Deadline.into());
+                }
+                return Err(self.expire(held));
             }
         }
+    }
+
+    /// A waiter that consumed a release notification can reach its deadline before it
+    /// acquires the mutex. When the section is free that wakeup belongs to the sleepers
+    /// behind it, so forward it instead of leaving them parked until the next release.
+    fn expire(&self, held: std::sync::MutexGuard<'_, bool>) -> anyhow::Error {
+        let free = !*held;
+        drop(held);
+        if free {
+            self.released.notify_one();
+        }
+        AdmissionError::Deadline.into()
     }
 }
 
@@ -585,7 +603,7 @@ impl Sessions {
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
-    use super::{result_row_count, RefreshLocks};
+    use super::{result_row_count, RefreshGate, RefreshLocks};
     use crate::namespace::Namespace;
     use crate::runtime::DatabaseId;
     use crate::session::AdmissionError;
@@ -805,6 +823,52 @@ mod tests {
     }
 
     #[test]
+    fn an_expired_waiter_hands_its_wakeup_to_the_next_sleeper() -> anyhow::Result<()> {
+        let gate = Arc::new(RefreshGate::default());
+        for attempt in 0..8 {
+            let guard = gate.lock_until(Instant::now() + Duration::from_secs(5))?;
+            let (short_tx, short_rx) = mpsc::channel();
+            let short_gate = Arc::clone(&gate);
+            let short = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_millis(200);
+                short_tx
+                    .send(short_gate.lock_until(deadline).is_ok())
+                    .unwrap();
+            });
+            std::thread::sleep(Duration::from_millis(30));
+            let (long_tx, long_rx) = mpsc::channel();
+            let long_gate = Arc::clone(&gate);
+            let long = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                long_tx
+                    .send(long_gate.lock_until(deadline).is_ok())
+                    .unwrap();
+            });
+            std::thread::sleep(Duration::from_millis(30));
+            // Signal the first waiter well before its deadline, then keep the mutex
+            // past that deadline. It wakes as signalled, but finds the deadline gone
+            // once it re-acquires the mutex, so it must forward the wakeup.
+            std::mem::forget(guard);
+            {
+                let mut held = gate.held.lock().unwrap();
+                *held = false;
+                gate.released.notify_one();
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let short_ok = short_rx.recv_timeout(Duration::from_secs(1))?;
+            let long_ok = long_rx.recv_timeout(Duration::from_secs(1))?;
+            short.join().unwrap();
+            long.join().unwrap();
+            assert!(!short_ok, "attempt {attempt}: the short waiter must expire");
+            assert!(
+                long_ok,
+                "attempt {attempt}: the long waiter lost the wakeup"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn slow_database_refresh_does_not_block_another_database_or_wait_past_deadline(
     ) -> anyhow::Result<()> {
         let locks = RefreshLocks::default();
@@ -824,10 +888,10 @@ mod tests {
         let first = Instant::now();
         let _healthy = b_lock.lock_until(first + Duration::from_millis(250))?;
         let waiting_a = locks.for_database(&a)?;
-        let failure =
-            waiting_a.lock_until(Instant::now() + Duration::from_millis(30))
-                .err()
-                .expect("a held section must time out");
+        let failure = waiting_a
+            .lock_until(Instant::now() + Duration::from_millis(30))
+            .err()
+            .expect("a held section must time out");
         assert!(failure.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline));
         assert!(first.elapsed() < Duration::from_millis(250));
         slow.join().expect("slow refresh thread panicked");
