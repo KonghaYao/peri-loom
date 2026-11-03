@@ -236,6 +236,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R38 | `fix/worker-gate-wakeup` / `1b66f58`（merge `0bca5d0`）+ `fix/issue28-verdict` / `f42cfeb`（merge `ef2502f`）；归因探针 `probe/gate-attribution` / `1679f85`（不合入） | G0：`RefreshGate` 过期等待者被唤醒后越过 deadline 时把唤醒转交给下一位（`expire`），超时仍不进临界区；G1：Issue28 并发验收把异常路径、缺测、账本请求数不符与并发 FAIL 纳入 verdict 与退出码。D1 用站点探针归因闸门排队/持有/分段；D2 用 Go benchmark 归因剩余编解码分配 | G0：回退修复的负向对照 8/8 稳定失败，修复后 8/8 通过；clippy 退出码 0；`cargo test --lib` 675 passed / 0 failed。G1：issue28 32 tests OK；`scripts/perf-reliability` 21 个测试文件共 330 tests 全 OK。D1（单库热库 c1–c64，探针 worker `29fe45d4…`）：open 786.7µs = 排队 517.9 + open_session 251.4 + prepare 5.7 + image_check 0.8 + registry 0.3；close 497.2µs = 排队 387.0 + native 89.8 + remove 8.2；begin 283.6µs = 排队 276.4；闸内可移出的 `prepare`（只读检查+ID+Entry）占每查询闸门服务时间 **1.5%**。D2：两候选点合计 7.5µs/请求（json v1，占 5ms 固定成本 **0.15%**），整段删除 `callVersionInto` 上限也只有 1.65µs | D1/D2 都低于 10% 门槛，按方向文档停止、不合入；G0/G1 合入 `main` 并随 v1.2.5 发布 |
 | R39 | `perf/issue28-r39-image-gate-shared` / `0b879c9`（merge `446d3fb`） | worker 镜像刷新闸门由互斥改为共享/独占租约：数据面 open/begin/close 持共享租约并发，镜像替换持独占租约（写者优先、双边 deadline、释放即唤醒） | 上限探针（闸门直通、未合入，`3b4b85c2…`，两轮交替）：X1 c16 p50 **7.63→3.54 / 7.29→4.17ms**（−42.8%~−53.6%），c1 不变。配对 A/B（8 轮/侧，json-pipeline，100 请求/档，两侧全新同数据卷，基线 worker `3f2a5175…` vs 候选 `13129acb…`）：c1 0.82→0.79（−3.6%，噪声）、c4 **1.32→0.96（−27.6%）**、c8 **3.06→2.05（−32.9%）**、c16 **9.83→5.36（−45.5%）**；p25 同向 −26.7%~−37.4%。同龄新栈对照（`run-base3` 基线 worker）：c4 1.37/1.40 vs 0.88/1.18、c16 6.29/7.33 vs 4.59/4.71 | 合入 main：回归门 F1 −8.2%、L1 0%、B1 −5.7%、C1 +1.4%、H1 −6.3%、H3 −2.0%，无 >10% 回归；Rust lib 677 passed / 0 failed，clippy/fmt 干净；测量期间 0×429、0 错误、`session_seats`/`active_permits` 归零 |
 | R40 | 无代码改动（探针轮，未合入） | 审计头检查点（witness）频率：把 `state_disk.go` 的 `auditBatchMaximum` 32→256 构建探针平台二进制（`aefcb903…`，源码已还原）；动机是 R39 窗口 `head_checkpoint_attempts_total` 1,111 次 / 24.2s（均值 21.8ms） | 机制核验：X1 每轮检查点 **39→5（−87%）**；B1+F1 窗口 11→1（209→20ms）。端到端：F1 p50 0.78/0.87→1.01/0.91ms、B1 2.11/2.17→2.30/2.24ms（均未改善）；X1 c16 基线 3.72/2.96/4.07/6.19ms vs 探针 3.49/190.70/33.11/38.55ms（B2 起 429/错误后劣化；B3/B4 无 429 仍 33–39ms）。归因：检查点停顿同时充当审计批的合并延迟，去掉后 X1 每轮追加 fsync **50→170**，B3/B4 审计总 I/O ≈1.1s vs 基线 1.06s | 上限不成立（无 ≥10% 改善，小查询不改善），不实现、不申请耐久语义授权；分支与提交均无，探针二进制留证。附带发现：X1 在候选明显更快时会耗尽 500 rps 配额出现 429（B1 c4 100 请求 86ms），运行间需留间隔 |
+| R41 | `perf/r41-session-open-local-validate` / `e4b39ac`（未合入，留证） | `RemoteDatabase::session()` 与 `is_readonly()` 不再为打开会话/探测只读发 authority `validate_session`/`validate_transaction` 往返：`ObjectStore` 新增带默认实现的 `validate_session_local`/`validate_transaction_local`（无权威的存储回退完整校验），`ContextStore` 只跑 generation + `context.check`（保留 draining 拒绝新事务），`MetricsObjectStore` 透传 | 上限探针（在 Validate RPC 前直接返回 Ok，源码已还原，`5819171f…`，A/B/B/A 20 样本）：F1 json 0.77/0.79→0.47/0.46ms（−39%）、pb 0.66/0.69→0.42/0.44ms（−36%）。Gate 0：20 条 pipeline 的 authority `validate_session` **40→20**（每请求恰少一次）。配对 A/B（6 轮，两侧独立预热栈，A/B 交错，组间 ≥2s）：F1 json 中位 **0.764→0.629ms（−17.6%，配对中位 −17.5%）**、pb **0.714→0.582ms（−18.4%，配对中位 −19.1%）**，6/6 轮同向 | 未达门槛、不合入：F1 属 <10ms 场景，仓库协议要求 ≥20%，实测 −17.6%/−18.4%；回归门无 >10% 可复现退化（L1/C1/X1 c1 反而改善，B1 有单点抖动、H1 持平），分支与提交留证 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1310,6 +1311,90 @@ arm B——碎片化来自去掉检查点停顿，而不是批上限，C 已是�
 
 **证据**：`/tmp/peri-perf/{r40-probe.log,r40-probe-metrics.csv,r40-probe2.log,r40-probe2-metrics.csv,r40-actions.py,r40-h1.py}`、
 `/tmp/peri-perf/r40-{A1..A4,B1..B4}`、`/tmp/peri-perf/r40p2-*`；探针脚本 `r40-probe.sh`、`r40-probe2.sh`。
+
+#### R41：会话建立与只读探测改用本地校验（2026-11-03，未达门槛，不合入）
+
+**归因**：F1（`execute SELECT 1` + `close`）基线中位 0.76–0.88ms，worker 自报 `query_ms` ≈0.139ms；
+平台相位 span 的 `close` p50 0.115ms（native 0.075、terminal 0.022），未归属 ≈0.001ms——平台侧每请求
+开销不足 0.1ms。worker RPC 无操作 `capabilities` RTT p50 0.074ms；`Database::session()` 分段探针
+`validate1` p50 686µs（有负载时漂到 700–1400µs），其余阶段 ≤2µs；authority RPC 链 `validate_session`
+p50 497µs（稳态窗口 143µs）、`open_session` 142µs、`validate_lease` 271µs、`close_session` 84µs。
+直接计数：`main` 上一条 F1 形态 pipeline（execute + close）恰好花 **2 次** authority `validate_session`
+——一次来自 `Database::session()`/`is_readonly()` 的开库，一次来自 execute 路径；`close` 为 0。
+可移除的是前一半（约 0.14ms / 0.88ms ≈16%）。
+
+**改动**（分支 `perf/r41-session-open-local-validate` / `e4b39ac`，5 文件 +43/−4）：
+- `ObjectStore` 新增带默认实现的 `validate_session_local`/`validate_transaction_local`，默认回退到完整
+  校验，权威侧存储（LocalStore/BranchStore/FencedStore 等）行为不变；
+- `ContextStore` 实现本地版：`generation()` + `context.check(...)`（事务版保留 draining 拒绝新事务的
+  规则），`MetricsObjectStore` 透传；
+- `src/database.rs::session()` 两处 `validate_transaction(false)`、`is_readonly()` 与
+  `src/session/lane.rs::is_readonly()` 改用本地版。
+边界：打开会话与只读探测不读写任何存储对象；权威端会在真正读写的操作上重新校验绑定，头部 CAS 仍是
+最终 fence。execute 路径上的那次 `validate_session` **保留**——它守的是数据操作，移除会改变安全语义，
+本轮未尝试。
+
+**上限探针**（未合入，源码已还原）：候选 worker 里在 Validate RPC 前直接返回 Ok（`5819171f…`），
+A/B/B/A 20 样本：F1 json 0.767/0.788→0.466/0.461ms（−39%）、pb 0.664/0.687→0.421/0.440ms（−36%）。
+上限远高于门槛，先证明方向成立再写生产代码。
+
+**Gate 0（机制核验）**：同一 diag 栈上 20 条 pipeline 的 authority `validate_session` 计数 **40→20**
+（候选 `a89bff00…`；基线同法测 `13129acb…` 为 40），即每请求恰少一次，与改动一一对应。
+
+**A/B 结果**（两侧独立预热栈：基线 worker `13129acb…`、候选 worker `a89bff00…`，同一平台
+`peri-platform-r41-base` `c8cf19fe…`，同一导入 fixture，每轮 A/B/B/A，组间 ≥2s）：
+
+| 轮次 | 每侧样本 | 基线 json / pb（ms） | 候选 json / pb（ms） | json 变化 | pb 变化 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 20 | 0.750 / 0.676 | 0.660 / 0.536 | −12.0% | −20.7% |
+| 2 | 20 | 0.830 / 0.745 | 0.646 / 0.583 | −22.2% | −21.7% |
+| 3 | 30 | 0.778 / 0.682 | 0.705 / 0.527 | −9.3% | −22.6% |
+| 4 | 30 | 0.784 / 0.663 | 0.572 / 0.582 | −27.1% | −12.2% |
+| 5 | 50 | 0.689 / 0.832 | 0.571 / 0.687 | −17.1% | −17.5% |
+| 6 | 50 | 0.746 / 0.757 | 0.613 / 0.635 | −17.9% | −16.1% |
+
+- 6 个 run 中位数取中位：json **0.764→0.629ms（−17.6%）**、pb **0.714→0.582ms（−18.4%）**；
+  **6/6 轮同向**（json 最弱一轮 −9.3%，pb 最弱一轮 −12.2%）。
+- 同一轮内配对差值的中位：json **−17.5%**、pb **−19.1%**。
+
+**判定：未达门槛、不合入。** F1 属 <10ms 场景，`CLAUDE.md` 性能实验协议（2026-10-30 用户指定）
+要求主指标 ≥20%；实测 −17.6%/−18.4%（配对中位 −17.5%/−19.1%），低于门槛。分支与提交 `e4b39ac`
+保留作证据，`main` 保持 `3cce186`。本轮未在 A/B 前另写判据，采用上述既存协议门槛。
+
+**回归门**（5 样本/轮，A/B/B/A，候选 vs 基线）：
+- L1.list-20：1.42/1.47→1.36/1.10、1.46/1.13→1.16/0.96（改善，p95 噪声大）；
+- B1.batch-20：2.19/2.16、2.16/2.25→2.49/2.43、1.94/5.22（protobuf 单点 5.22ms、p95 6.60，
+  按抖动处理；B1 不作为本轮收益声明）；
+- C1.baton-10：0.37/0.36→0.33/0.33（−10%）；
+- X1：c1 0.79/0.80→0.61/0.61（−23%）、c4 1.11/0.89→0.72/0.80、c8 2.35/3.26→2.16/2.16、
+  c16 3.47/2.63→3.49/3.67（持平/噪声，p95 两侧 100–160ms）；全程 429=0；
+- H1.content-20mb：json 144.81/147.02→149.16/145.79ms、pb 120.26/125.29→123.38/122.67ms（持平）。
+无 >10% 且可复现的退化。一次更早的 X1 基线 c16 曾出现 20.08ms / p95 150ms，当时 load average 2.15、
+另有无关 `peri` 进程占 9.6% CPU；随后的 A/B/B/A 未复现，c16 按环境敏感项处理。
+
+**配置**：fixture 201 threads / 8,625 messages / 20,177,069 chars；v1 耐久（`audit_file_v1`）；
+配额 max_databases 8、max_sessions 16、max_concurrent 100、rps 500、max_sql_bytes 65536、
+max_result_bytes 4194304；127.0.0.1、无 TLS；A/B 期间无观测器。Rust 1.98.1 / Go 1.27.3 / macOS arm64。
+worker 两侧各从对应源码 release 构建；平台两侧同为 `c8cf19fe…`。
+
+**正确性 / 测试**：`cargo fmt --check` 干净；`cargo clippy --all-targets --no-deps -- -D warnings` 通过；
+`cargo test --release --locked --lib`（`ulimit -n 92160`）**677 passed / 0 failed / 10 ignored**。
+不加 fd 上限时曾报 1 个 `Too many open files`
+（`authority::local_migration_tests::near_8mib_v1_root_migrates_on_a_real_local_store`），
+属 shell 软 fd 上限（256）导致的环境失败，与 diff 无关。
+
+**剩余风险 / 未测量**：
+1. 该改动把 open/readonly 探测上的权威绑定校验推迟到第一次真实操作；改变的是校验时点而非授权结果
+   （权威仍在数据操作上校验、头部 CAS 兜底）。若未来要合入，需在记录中明确这一语义。
+2. 未做崩溃恢复 E2E（不涉及耐久时点/fencing）；若合入需补。
+3. B1 protobuf 的单点 5.22ms 未复跑；X1 c16 环境敏感。
+4. 证据在 `/tmp/peri-perf/`（`r41probe-F1-*`、`r41ab*`、`r41reg-*`、`r41x1b-*`、`r41h1-*`、
+   `r41-diagcount*`；采集与计数脚本 `r41-rpc-count.py`、`r41-phases.py`、`r41-rtt.py`），非持久目录；
+   需长期留档时应复制进 `docs/performance-review/`。
+
+**下一轮提示**：F1 剩余的 authority 校验在 execute 路径（每请求 1 次），移除它会改变数据操作前的
+安全语义，不在性能轮范围内。更大的结构性杠杆仍是会话生命周期：每请求 open+close 约 387 qps /
+p50 2.15ms，而复用一条 baton 约 1,650–1,697 qps / p50 1.34ms（≈0.8ms/op），但改动面远大于本轮。
 
 ## 代码约定
 
