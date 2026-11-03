@@ -1,0 +1,1539 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:8092",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.9.6",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "git_revision": "51a2cffd68096304d7f6a7971460870300f6fb91",
+    "connection_file": "provided (redacted)",
+    "container": "peri-loom-bench-126",
+    "image": "peri-loom:v1.2.0",
+    "peri_image_version": "v1.2.0",
+    "peri_image_revision": "34d281072e5b4805ceeca1458cd14f2893b58e99",
+    "platform_label": "HEAD 51a2cff / rust v1.2.0",
+    "quota_max_sessions": 1024,
+    "quota_max_concurrent": 1024,
+    "quota_requests_per_second": 100000,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-03T07:10:05.779337+00:00",
+    "ended_utc": "2026-11-03T07:10:59.560792+00:00",
+    "duration_seconds": 53.781,
+    "rounds": 3,
+    "warmup": 1,
+    "samples": 5,
+    "concurrency_requests": 100,
+    "resource_before": {
+      "mem_usage": "159.3MiB / 7.816GiB",
+      "cpu_percent": "1.27%",
+      "memory_stat": {
+        "anon": 165511168,
+        "file": 121929728,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 121929728,
+        "active_file": 0,
+        "slab": 0,
+        "pgfault": 58099,
+        "pgmajfault": 55
+      }
+    },
+    "resource_after": {
+      "mem_usage": "195.5MiB / 7.816GiB",
+      "cpu_percent": "1.10%",
+      "memory_stat": {
+        "anon": 197189632,
+        "file": 12824576,
+        "file_dirty": 40960,
+        "file_writeback": 0,
+        "inactive_file": 12742656,
+        "active_file": 81920,
+        "slab": 0,
+        "pgfault": 441809,
+        "pgmajfault": 60
+      }
+    },
+    "resource_after_idle": {
+      "mem_usage": "195.8MiB / 7.816GiB",
+      "cpu_percent": "1.52%",
+      "memory_stat": {
+        "anon": 197304320,
+        "file": 12840960,
+        "file_dirty": 0,
+        "file_writeback": 0,
+        "inactive_file": 12759040,
+        "active_file": 81920,
+        "slab": 0,
+        "pgfault": 443051,
+        "pgmajfault": 60
+      }
+    }
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 23505319,
+    "focus_thread": "01a0c6e1-def2-7ee2-8f84-83f4e219f231",
+    "focus_messages": 8625,
+    "focus_content_bytes": 23505319,
+    "list_cwd": "/Users/mino/code/remote/cellp",
+    "list_threads": 20,
+    "empty_cwd": "/Users/mino/code/remote/cellp/__issue28_missing__",
+    "projection_non_null": 1,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 1024,
+      "max_concurrent": 1024,
+      "requests_per_second": 100000,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "F1.select-1",
+      "title": "固定开销 select 1（返回 1 行）",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 6.224125,
+      "p95_ms": 10.923875,
+      "min_ms": 2.265166,
+      "max_ms": 10.923875,
+      "round_medians_ms": [
+        8.337792,
+        7.864042,
+        5.050125
+      ],
+      "rows": 1,
+      "response_bytes": 312,
+      "query_ms": 0.544669,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "FAIL",
+      "verdict_detail": "SQL-only 0.545ms > 0.500ms"
+    },
+    {
+      "scenario": "F1.select-1",
+      "title": "固定开销 select 1（返回 1 行）",
+      "protocol": "protobuf-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 4.359417,
+      "p95_ms": 8.790375,
+      "min_ms": 1.748625,
+      "max_ms": 8.790375,
+      "round_medians_ms": [
+        4.738125,
+        4.359417,
+        3.962375
+      ],
+      "rows": 1,
+      "response_bytes": 40,
+      "query_ms": 0.32116700000000004,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "F1.select-1",
+      "title": "固定开销 select 1（返回 1 行）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 3.86425,
+      "p95_ms": 10.791458,
+      "min_ms": 1.668083,
+      "max_ms": 10.791458,
+      "round_medians_ms": [
+        1.980625,
+        4.001916,
+        3.86425
+      ],
+      "rows": 1,
+      "response_bytes": 252,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "F1.select-1",
+      "title": "固定开销 select 1（返回 1 行）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.000375,
+      "p95_ms": 8.315209,
+      "min_ms": 1.672792,
+      "max_ms": 8.315209,
+      "round_medians_ms": [
+        1.926,
+        2.000375,
+        4.056708
+      ],
+      "rows": 1,
+      "response_bytes": 57,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "F2.select-1-no-rows",
+      "title": "固定开销 select 1（want_rows=false）",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 4.271584,
+      "p95_ms": 8.39925,
+      "min_ms": 1.281375,
+      "max_ms": 8.39925,
+      "round_medians_ms": [
+        4.927584,
+        1.764084,
+        4.857792
+      ],
+      "rows": 0,
+      "response_bytes": 280,
+      "query_ms": 0.25079300000000004,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "F2.select-1-no-rows",
+      "title": "固定开销 select 1（want_rows=false）",
+      "protocol": "protobuf-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.197458,
+      "p95_ms": 8.394458,
+      "min_ms": 1.413042,
+      "max_ms": 8.394458,
+      "round_medians_ms": [
+        2.197458,
+        7.297291,
+        1.810958
+      ],
+      "rows": 0,
+      "response_bytes": 34,
+      "query_ms": 0.233542,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L1.list-20",
+      "title": "列表 20 行（cwd 命中）",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 5.607916,
+      "p95_ms": 11.147666,
+      "min_ms": 2.81275,
+      "max_ms": 11.147666,
+      "round_medians_ms": [
+        6.298792,
+        6.446708,
+        4.264792
+      ],
+      "rows": 20,
+      "response_bytes": 10744,
+      "query_ms": 1.3642960000000002,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L1.list-20",
+      "title": "列表 20 行（cwd 命中）",
+      "protocol": "protobuf-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 4.40225,
+      "p95_ms": 5.703125,
+      "min_ms": 2.306417,
+      "max_ms": 5.703125,
+      "round_medians_ms": [
+        4.4795,
+        4.40225,
+        4.31875
+      ],
+      "rows": 20,
+      "response_bytes": 4981,
+      "query_ms": 1.0347119999999999,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L1.list-20",
+      "title": "列表 20 行（cwd 命中）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.431917,
+      "p95_ms": 4.852208,
+      "min_ms": 2.081834,
+      "max_ms": 4.852208,
+      "round_medians_ms": [
+        2.425666,
+        4.024459,
+        2.431917
+      ],
+      "rows": 20,
+      "response_bytes": 11081,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L1.list-20",
+      "title": "列表 20 行（cwd 命中）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.278375,
+      "p95_ms": 4.52775,
+      "min_ms": 1.812167,
+      "max_ms": 4.52775,
+      "round_medians_ms": [
+        2.509333,
+        1.971167,
+        2.323417
+      ],
+      "rows": 20,
+      "response_bytes": 5115,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L2.list-empty",
+      "title": "列表 20 行（空 cwd）",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 3.848917,
+      "p95_ms": 5.706084,
+      "min_ms": 1.90275,
+      "max_ms": 5.706084,
+      "round_medians_ms": [
+        4.002875,
+        4.102709,
+        3.347042
+      ],
+      "rows": 0,
+      "response_bytes": 741,
+      "query_ms": 0.843419,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L2.list-empty",
+      "title": "列表 20 行（空 cwd）",
+      "protocol": "protobuf-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 3.277041,
+      "p95_ms": 9.2565,
+      "min_ms": 1.851,
+      "max_ms": 9.2565,
+      "round_medians_ms": [
+        3.858042,
+        3.090208,
+        3.453416
+      ],
+      "rows": 0,
+      "response_bytes": 201,
+      "query_ms": 0.796002,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L2.list-empty",
+      "title": "列表 20 行（空 cwd）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 1.920875,
+      "p95_ms": 5.228375,
+      "min_ms": 1.500875,
+      "max_ms": 5.228375,
+      "round_medians_ms": [
+        1.641583,
+        1.920875,
+        1.987709
+      ],
+      "rows": 0,
+      "response_bytes": 657,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "L2.list-empty",
+      "title": "列表 20 行（空 cwd）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 1.650334,
+      "p95_ms": 4.3885,
+      "min_ms": 1.510417,
+      "max_ms": 4.3885,
+      "round_medians_ms": [
+        1.650334,
+        1.586625,
+        3.297167
+      ],
+      "rows": 0,
+      "response_bytes": 295,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "P1.thread-by-id",
+      "title": "按 id 投影单线程",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.0275,
+      "p95_ms": 4.319459,
+      "min_ms": 0.99775,
+      "max_ms": 4.319459,
+      "round_medians_ms": [
+        1.955042,
+        1.824208,
+        2.540125
+      ],
+      "rows": 1,
+      "response_bytes": 1265,
+      "query_ms": 0.206042,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "P1.thread-by-id",
+      "title": "按 id 投影单线程",
+      "protocol": "protobuf-pipeline",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.405042,
+      "p95_ms": 4.879958,
+      "min_ms": 0.994,
+      "max_ms": 4.879958,
+      "round_medians_ms": [
+        2.984333,
+        3.560833,
+        1.776417
+      ],
+      "rows": 1,
+      "response_bytes": 461,
+      "query_ms": 0.208209,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "P1.thread-by-id",
+      "title": "按 id 投影单线程",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 2.068292,
+      "p95_ms": 4.015875,
+      "min_ms": 0.932458,
+      "max_ms": 4.015875,
+      "round_medians_ms": [
+        1.185,
+        2.068292,
+        2.096666
+      ],
+      "rows": 1,
+      "response_bytes": 1205,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "P1.thread-by-id",
+      "title": "按 id 投影单线程",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 1.3115,
+      "p95_ms": 4.7295,
+      "min_ms": 0.971583,
+      "max_ms": 4.7295,
+      "round_medians_ms": [
+        1.160458,
+        3.778625,
+        1.115167
+      ],
+      "rows": 1,
+      "response_bytes": 558,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "H1.content-20mb",
+      "title": "20.2MB 历史内容（8,625 行）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 262.883833,
+      "p95_ms": 277.446708,
+      "min_ms": 258.75075,
+      "max_ms": 277.446708,
+      "round_medians_ms": [
+        263.522583,
+        261.730833,
+        262.883833
+      ],
+      "rows": 8625,
+      "response_bytes": 25162268,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "H1.content-20mb",
+      "title": "20.2MB 历史内容（8,625 行）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 216.2595,
+      "p95_ms": 234.165625,
+      "min_ms": 210.003834,
+      "max_ms": 234.165625,
+      "round_medians_ms": [
+        214.81325,
+        214.826667,
+        218.18575
+      ],
+      "rows": 8625,
+      "response_bytes": 23600883,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": "protobuf vs JSON -17.7% (within noise)"
+    },
+    {
+      "scenario": "H2.projection",
+      "title": "投影历史（8,625 行，当前快照多为 NULL）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 30.684166,
+      "p95_ms": 34.529708,
+      "min_ms": 29.830541,
+      "max_ms": 34.529708,
+      "round_medians_ms": [
+        32.678291,
+        30.565959,
+        30.455667
+      ],
+      "rows": 8625,
+      "response_bytes": 336595,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "H2.projection",
+      "title": "投影历史（8,625 行，当前快照多为 NULL）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 29.874542,
+      "p95_ms": 30.839417,
+      "min_ms": 28.842625,
+      "max_ms": 30.839417,
+      "round_medians_ms": [
+        29.593541,
+        29.874542,
+        30.396375
+      ],
+      "rows": 8625,
+      "response_bytes": 60440,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "H3.content-projection",
+      "title": "内容 + 投影（8,625 行）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 265.1735,
+      "p95_ms": 290.329541,
+      "min_ms": 260.641417,
+      "max_ms": 290.329541,
+      "round_medians_ms": [
+        264.916,
+        265.201667,
+        265.1735
+      ],
+      "rows": 8625,
+      "response_bytes": 25300319,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "H3.content-projection",
+      "title": "内容 + 投影（8,625 行）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 15,
+      "median_ms": 216.189208,
+      "p95_ms": 229.460125,
+      "min_ms": 210.04225,
+      "max_ms": 229.460125,
+      "round_medians_ms": [
+        219.185208,
+        216.203834,
+        216.146458
+      ],
+      "rows": 8625,
+      "response_bytes": 23635410,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": "protobuf vs JSON -18.5% (within noise)"
+    },
+    {
+      "scenario": "B1.batch-20",
+      "title": "同 pipeline 20 个 select 1",
+      "protocol": "json-pipeline",
+      "kind": "batch",
+      "samples": 15,
+      "median_ms": 2.411834,
+      "p95_ms": 7.583417,
+      "min_ms": 2.202375,
+      "max_ms": 7.583417,
+      "round_medians_ms": [
+        2.278375,
+        2.411834,
+        2.759166
+      ],
+      "rows": 20,
+      "response_bytes": 4977,
+      "query_ms": 0.39521199999999984,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "B1.batch-20",
+      "title": "同 pipeline 20 个 select 1",
+      "protocol": "protobuf-pipeline",
+      "kind": "batch",
+      "samples": 15,
+      "median_ms": 3.015041,
+      "p95_ms": 4.404875,
+      "min_ms": 2.547958,
+      "max_ms": 4.404875,
+      "round_medians_ms": [
+        2.8005,
+        2.826,
+        3.62275
+      ],
+      "rows": 20,
+      "response_bytes": 686,
+      "query_ms": 0.482875,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "C1.baton-10",
+      "title": "同 baton 连续 10 个 select 1",
+      "protocol": "json-pipeline",
+      "kind": "baton",
+      "samples": 150,
+      "median_ms": 0.464938,
+      "p95_ms": 2.259875,
+      "min_ms": 0.358875,
+      "max_ms": 4.9725,
+      "round_medians_ms": [
+        0.501375,
+        0.44862500000000005,
+        0.438396
+      ],
+      "rows": 1,
+      "response_bytes": 300,
+      "query_ms": 0.14206249999999998,
+      "status_counts": {
+        "200": 150
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 150
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-100",
+      "title": "大结果 LIMIT 100",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 12.295916,
+      "p95_ms": 12.740584,
+      "min_ms": 11.279334,
+      "max_ms": 12.740584,
+      "round_medians_ms": [
+        12.554667,
+        12.190833,
+        12.295916
+      ],
+      "rows": 100,
+      "response_bytes": 499643,
+      "query_ms": 0.586961,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-100",
+      "title": "大结果 LIMIT 100",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 12.469875,
+      "p95_ms": 13.550375,
+      "min_ms": 11.006792,
+      "max_ms": 13.550375,
+      "round_medians_ms": [
+        12.0105,
+        12.469875,
+        12.724125
+      ],
+      "rows": 100,
+      "response_bytes": 476779,
+      "query_ms": 0.565835,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-500",
+      "title": "大结果 LIMIT 500",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 47.208667,
+      "p95_ms": 49.745542,
+      "min_ms": 46.180375,
+      "max_ms": 49.745542,
+      "round_medians_ms": [
+        47.315834,
+        47.898208,
+        47.039
+      ],
+      "rows": 500,
+      "response_bytes": 2209375,
+      "query_ms": 1.86934,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-500",
+      "title": "大结果 LIMIT 500",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 44.092167,
+      "p95_ms": 49.357417,
+      "min_ms": 43.197,
+      "max_ms": 49.357417,
+      "round_medians_ms": [
+        44.092167,
+        43.946167,
+        46.094791
+      ],
+      "rows": 500,
+      "response_bytes": 2110232,
+      "query_ms": 1.9247990000000001,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-1000",
+      "title": "大结果 LIMIT 1000",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 76.649041,
+      "p95_ms": 78.819541,
+      "min_ms": 75.127792,
+      "max_ms": 78.819541,
+      "round_medians_ms": [
+        77.23525,
+        76.034917,
+        76.394292
+      ],
+      "rows": 1000,
+      "response_bytes": 3625252,
+      "query_ms": 3.301803,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-1000",
+      "title": "大结果 LIMIT 1000",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 72.760375,
+      "p95_ms": 79.133542,
+      "min_ms": 70.098625,
+      "max_ms": 79.133542,
+      "round_medians_ms": [
+        70.879625,
+        71.981,
+        73.305542
+      ],
+      "rows": 1000,
+      "response_bytes": 3446233,
+      "query_ms": 3.1672610000000003,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-2000",
+      "title": "大结果 LIMIT 2000",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 61.246958,
+      "p95_ms": 71.517541,
+      "min_ms": 58.042458,
+      "max_ms": 71.517541,
+      "round_medians_ms": [
+        60.983583,
+        61.246958,
+        61.531125
+      ],
+      "rows": 0,
+      "response_bytes": 143,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {
+        "result_limit": 15
+      },
+      "outcomes": {
+        "expected_limit": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-2000",
+      "title": "大结果 LIMIT 2000",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 62.209,
+      "p95_ms": 68.189333,
+      "min_ms": 58.234542,
+      "max_ms": 68.189333,
+      "round_medians_ms": [
+        63.180542,
+        62.209,
+        61.090209
+      ],
+      "rows": 0,
+      "response_bytes": 38,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {
+        "result_limit": 15
+      },
+      "outcomes": {
+        "expected_limit": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-5000",
+      "title": "大结果 LIMIT 5000",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 62.323333,
+      "p95_ms": 69.680042,
+      "min_ms": 58.263,
+      "max_ms": 69.680042,
+      "round_medians_ms": [
+        62.323333,
+        62.875292,
+        61.071583
+      ],
+      "rows": 0,
+      "response_bytes": 143,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {
+        "result_limit": 15
+      },
+      "outcomes": {
+        "expected_limit": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-5000",
+      "title": "大结果 LIMIT 5000",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 62.7025,
+      "p95_ms": 72.423959,
+      "min_ms": 59.609459,
+      "max_ms": 72.423959,
+      "round_medians_ms": [
+        62.512584,
+        60.749708,
+        63.233917
+      ],
+      "rows": 0,
+      "response_bytes": 38,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {
+        "result_limit": 15
+      },
+      "outcomes": {
+        "expected_limit": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-8625",
+      "title": "大结果 LIMIT 8625",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 61.701791,
+      "p95_ms": 66.198209,
+      "min_ms": 58.921292,
+      "max_ms": 66.198209,
+      "round_medians_ms": [
+        62.457958,
+        61.421917,
+        60.378125
+      ],
+      "rows": 0,
+      "response_bytes": 143,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {
+        "result_limit": 15
+      },
+      "outcomes": {
+        "expected_limit": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-8625",
+      "title": "大结果 LIMIT 8625",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 15,
+      "median_ms": 61.122833,
+      "p95_ms": 70.276791,
+      "min_ms": 57.697666,
+      "max_ms": 70.276791,
+      "round_medians_ms": [
+        60.658417,
+        61.667834,
+        61.233041
+      ],
+      "rows": 0,
+      "response_bytes": 38,
+      "query_ms": null,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {
+        "result_limit": 15
+      },
+      "outcomes": {
+        "expected_limit": 15
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.create",
+      "title": "写入 create table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 39.27425,
+      "p95_ms": 68.344541,
+      "min_ms": 27.024625,
+      "max_ms": 68.344541,
+      "round_medians_ms": [
+        34.027792,
+        37.264042,
+        56.592625
+      ],
+      "rows": 0,
+      "response_bytes": 253,
+      "query_ms": 25.631965,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.create",
+      "title": "写入 create table",
+      "protocol": "protobuf-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 50.92875,
+      "p95_ms": 71.709041,
+      "min_ms": 29.763125,
+      "max_ms": 71.709041,
+      "round_medians_ms": [
+        58.446167,
+        37.975375,
+        57.982833
+      ],
+      "rows": 0,
+      "response_bytes": 29,
+      "query_ms": 35.101457,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 58.2535,
+      "p95_ms": 74.967666,
+      "min_ms": 48.346084,
+      "max_ms": 74.967666,
+      "round_medians_ms": [
+        57.934875,
+        57.376709,
+        62.403542
+      ],
+      "rows": 0,
+      "response_bytes": 252,
+      "query_ms": 38.711011,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "protobuf-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 55.006375,
+      "p95_ms": 78.249042,
+      "min_ms": 40.507625,
+      "max_ms": 78.249042,
+      "round_medians_ms": [
+        60.92225,
+        55.006375,
+        48.931792
+      ],
+      "rows": 0,
+      "response_bytes": 31,
+      "query_ms": 36.428033,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.delete",
+      "title": "写入 delete table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 20.6595,
+      "p95_ms": 79.319833,
+      "min_ms": 14.469875,
+      "max_ms": 79.319833,
+      "round_medians_ms": [
+        63.888708,
+        20.6595,
+        15.874583
+      ],
+      "rows": 0,
+      "response_bytes": 253,
+      "query_ms": 14.56488,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.delete",
+      "title": "写入 delete table",
+      "protocol": "protobuf-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 17.319458,
+      "p95_ms": 21.810334,
+      "min_ms": 16.384833,
+      "max_ms": 21.810334,
+      "round_medians_ms": [
+        17.360792,
+        18.093375,
+        17.2615
+      ],
+      "rows": 0,
+      "response_bytes": 29,
+      "query_ms": 11.826162,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.drop",
+      "title": "写入 drop table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 19.260042,
+      "p95_ms": 32.107375,
+      "min_ms": 17.630625,
+      "max_ms": 32.107375,
+      "round_medians_ms": [
+        19.824583,
+        19.383208,
+        19.208375
+      ],
+      "rows": 0,
+      "response_bytes": 254,
+      "query_ms": 13.112124,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.drop",
+      "title": "写入 drop table",
+      "protocol": "protobuf-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 18.592875,
+      "p95_ms": 36.081958,
+      "min_ms": 16.3905,
+      "max_ms": 36.081958,
+      "round_medians_ms": [
+        19.551084,
+        18.613792,
+        18.484375
+      ],
+      "rows": 0,
+      "response_bytes": 29,
+      "query_ms": 12.497955999999999,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [
+    {
+      "level": 1,
+      "requests": 100,
+      "planned": 100,
+      "median_ms": 0.8544375,
+      "p95_ms": 4.977042,
+      "p99_ms": 7.924667,
+      "min_ms": 0.661,
+      "max_ms": 8.390917,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 3.1844999999997015,
+      "verdict": "PASS"
+    },
+    {
+      "level": 4,
+      "requests": 100,
+      "planned": 100,
+      "median_ms": 1.8782085,
+      "p95_ms": 48.22875,
+      "p99_ms": 49.07775,
+      "min_ms": 1.082375,
+      "max_ms": 49.2305,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 3.4809160000008887,
+      "verdict": "PASS"
+    },
+    {
+      "level": 8,
+      "requests": 100,
+      "planned": 100,
+      "median_ms": 4.210979,
+      "p95_ms": 14.441,
+      "p99_ms": 18.380833,
+      "min_ms": 1.286708,
+      "max_ms": 18.986459,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 4.071208000002713,
+      "verdict": "PASS"
+    },
+    {
+      "level": 16,
+      "requests": 100,
+      "planned": 100,
+      "median_ms": 6.9873755,
+      "p95_ms": 25.256958,
+      "p99_ms": 33.44725,
+      "min_ms": 2.208833,
+      "max_ms": 33.994708,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 4.82254199999943,
+      "verdict": "PASS"
+    }
+  ],
+  "warnings": [],
+  "fatal": ""
+}

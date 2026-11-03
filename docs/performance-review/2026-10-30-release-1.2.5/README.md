@@ -16,8 +16,9 @@
     （v1.2.0 镜像自带，与本轮发布候选相同：本轮没有改 Go 平台产品代码）。
   - worker 基线 `89580e1c6825e0cde57ed94e30d1d3dab015e395ce2cdd09ab15b53403b19727`
     （v1.2.0 镜像自带）。
-  - worker 候选 `3a12c667246f70d0412adf385efd36fadcda370b1d3e35c7205d784edc9b9b3f`
-    （`main` 上的 G0 修复，rust:1.98-bookworm、`cargo build --locked --release`）。
+  - worker 候选 `7fe99014ede9edeafefffde927f1f55fd4dcf201eeb46e7ba6d3cb2c6985eea3`
+    （`main` 的 G0 修复 + v1.2.5 版本号，rust:1.98-bookworm、`cargo build --locked --release`；
+    与仅含 G0 的 `3a12c667…` 只差 `CARGO_PKG_VERSION` 写入的退出快照）。
   - 归因探针 worker `29fe45d48f7dddb3042eebf6d797d252c709034a35038cd39bbdb68af5c76b76`
     （`probe/gate-attribution` / `1679f85`，**不合入**）。
 - 数据集（每次全新卷导入，`/tmp/import-threads-loom-126.mjs`）：
@@ -153,3 +154,60 @@ Go 1.27 的 json v2 与 `GOEXPERIMENT=nojsonv2`（对齐发布用 Go 1.23 的 js
 - D1/D2 的停止不表示没有收益空间：D1 的下一步是「热代际快路径 + 替换慢路径」的
   读写协调，需要先给出代际一致性证明与替换/close/begin/sweep/旧 owner 恢复的
   交错验证。
+
+## 发布级 endpoint A/B（v1.2.0 → v1.2.5）
+
+- A 侧：`peri-loom:v1.2.0` 镜像自带平台 `9085f035…` 与 worker `89580e1c…`。
+- B 侧：同镜像，仅把 worker 换成 `7fe99014…`（`v1.2.5` 源码构建，平台二进制不变）。
+- 每个侧全新卷，A/B/B/A 两轮；`--rounds 3 --warmup 1 --samples 5`；默认 `audit_file_v1`；
+  `max_concurrent=1024`、`requests_per_second=100000`；数据集 8,625 messages / 201 threads / 46 workspaces。
+- 原始摘要：`summary-{base,cand}-r{1,2}.json`；逐行对比：`release-ab-compare.txt`。
+- 四侧容器内 `/usr/local/bin` 哈希逐一核对：base 两轮 = 平台 `9085f035…` + worker
+  `89580e1c…`，cand 两轮 = 平台 `9085f035…` + worker `7fe99014…`。
+- 审计不变量：四侧 `events.json` 各 10,605 条，hash/sequence 逐条连续（`verify-audit.py`
+  在容器内校验，任一处不符即非零退出），四侧 harness 日志中 `audit_unavailable` 与
+  `outcome_unknown` 均为 0。
+
+### 稳定场景（12–270ms）无回归
+
+| 场景 | 协议 | A 中位 (ms) | B 中位 (ms) | 变化 |
+|---|---|---:|---:|---:|
+| H1.content-20mb | json-cursor | 268.44 | 265.19 | −1.2% |
+| H1.content-20mb | protobuf-cursor | 216.75 | 216.51 | −0.1% |
+| H2.projection | json-cursor | 32.10 | 31.49 | −1.9% |
+| H2.projection | protobuf-cursor | 31.12 | 30.07 | −3.4% |
+| H3.content-projection | json-cursor | 269.10 | 265.81 | −1.2% |
+| H3.content-projection | protobuf-cursor | 218.00 | 216.25 | −0.8% |
+| R1.limit-8625 | json-pipeline | 59.25 | 61.94 | +4.5% |
+| R1.limit-5000 | json-pipeline | 60.69 | 61.76 | +1.8% |
+| R1.limit-1000 | json-pipeline | 77.87 | 76.56 | −1.7% |
+| R1.limit-100 | json-pipeline | 11.98 | 12.40 | +3.5% |
+| B1.batch-20 | json-pipeline | 2.87 | 2.47 | −13.9% |
+| C1.baton-10 | json-pipeline | 0.46 | 0.49 | +8.3% |
+
+### 亚 5ms 场景：跨侧差异小于同侧重复抖动
+
+`F1/F2/L1/L2/P1` 两侧中位差异在 −23%～+135% 之间，但同一侧两轮的跨度达到 17%～207%
+（例：F1 json-pipeline base 4.83/1.75ms、cand 2.26/6.22ms；P1 protobuf-pipeline base
+1.35/2.80ms）。该量级低于测试台的可分辨度，不能归因于只改动超时唤醒交接的 worker。
+逐行 PASS/FAIL 与细节见 `release-ab-compare.txt`。
+
+### 并发（X1，各级 100 次，逐侧一轮）
+
+| 级别 | A p50 | B p50 | A p95 | B p95 | B 错误/429 |
+|---|---:|---:|---:|---:|---:|
+| c1 | 1.94 | 1.35 | 3.60 | 4.39 | 0/0 |
+| c4 | 4.38 | 4.26 | 10.31 | 30.65 | 0/0 |
+| c8 | 6.00 | 4.94 | 11.34 | 14.49 | 0/0 |
+| c16 | 8.36 | 7.58 | 36.14 | 19.54 | 0/0 |
+
+c4 的 p95 变化来自 cand-r2 单轮离群（48.23ms；cand-r1 为 13.08ms），同侧 base 两轮为
+10.67/9.95ms、c8 中位数同侧跨度为 7.25/4.74ms，同样是测试台噪声主导。四侧全部并发档
+verdict PASS、0 error、0 个 429、`active_permits`/`session_seats` 归零。
+
+### 唯一 FAIL 行
+
+`cand-r2` 的 `F1.select-1 / json-pipeline` 触发场景预算 `SQL-only 0.545ms > 0.500ms`；
+同一侧另一轮为 0.249ms，base 两轮为 0.310/0.223ms。该行是单场景 SQL-only 预算校验，
+不是跨侧比值；出现于整体变慢的那一轮（该轮 F1 客户端中位 6.22ms，base 同侧跨度为
+1.75–4.83ms）。按原样记录，不重跑挑选结果。
