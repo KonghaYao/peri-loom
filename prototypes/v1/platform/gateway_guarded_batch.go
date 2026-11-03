@@ -98,6 +98,7 @@ func (gateway *Gateway) probeReadonlyBatch(ctx context.Context, worker controlle
 	}
 	var capabilities struct {
 		Protocol *int `json:"readonly_batch_protocol"`
+		Fused    *int `json:"open_guarded_statement"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(reply))
 	decoder.DisallowUnknownFields()

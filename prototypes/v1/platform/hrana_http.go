@@ -339,17 +339,18 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 			return
 		}
+		var fusedMarker *fusedStatementResult
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
-			reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
-			if reply.status != 200 || reply.code != "" {
+			var candidate *hranaStatement
+			if entry.Type == "execute" {
+				if entry.Stmt.SQL == "" {
+					entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
+				}
+				candidate = &entry.Stmt
+			}
+			opened, reply := handler.hranaOpen(request, credential, database, candidate)
+			if reply.status != http.StatusOK || reply.code != "" {
 				failPipeline(reply)
-				return
-			}
-			var opened struct {
-				Session string `json:"session"`
-			}
-			if json.Unmarshal(reply.result, &opened) != nil {
-				failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
 				return
 			}
 			if !publicSessionID(opened.Session) {
@@ -363,6 +364,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			stream.session = opened.Session
+			if candidate != nil {
+				fusedMarker = hranaFusedStatementResult(opened.Session, *candidate, opened.FusedStatement)
+			}
 		}
 		// A contiguous run of top-level executes is sent as one block when the
 		// worker parses the command and the block fits the remaining result
@@ -370,7 +374,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		// settlement; only the worker round trip is shared.
 		batch := (*guardedBatch)(nil)
 		count := 1
-		if entry.Type == "execute" {
+		if entry.Type == "execute" && fusedMarker == nil {
 			remaining := resultLimit - resultBytes - resultReserve
 			batch = handler.planGuardedBatch(request.Context(), stream, pipeline.Requests, entryIndex, remaining)
 			if batch != nil {
@@ -383,6 +387,10 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			entryRequest := request
 			if batch != nil {
 				entryRequest = request.WithContext(withGuardedBatch(request.Context(), batch, offset))
+			}
+			if fusedMarker != nil && offset == 0 {
+				entryRequest = entryRequest.WithContext(withFusedStatementResult(entryRequest.Context(), *fusedMarker))
+				fusedMarker = nil
 			}
 			previousResults := len(response.Results)
 			switch entry.Type {

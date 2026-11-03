@@ -13,7 +13,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{ensure, Result};
+use peri_loom_v1::namespace::Namespace;
 use peri_loom_v1::ownership::types::AccessRole;
+use peri_loom_v1::runtime::DatabaseId;
 use peri_loom_v1::worker_rpc::protocol::{
     BatchStatement, NamedStatementArg, StatementArg, WorkerCommand, WorkerRequest,
 };
@@ -1282,7 +1284,7 @@ fn capabilities_answer_the_readonly_batch_protocol_on_v1_only() -> Result<()> {
     assert_eq!(capabilities["ok"], true, "{capabilities}");
     assert_eq!(
         capabilities["result"],
-        json!({"readonly_batch_protocol": 1})
+        json!({"readonly_batch_protocol": 1, "open_guarded_statement": 1})
     );
     let session = worker.session()?;
     let empty = worker.guarded_batch(&session, vec![], 1024)?;
@@ -1299,6 +1301,177 @@ fn capabilities_answer_the_readonly_batch_protocol_on_v1_only() -> Result<()> {
     assert!(
         profile.call(WorkerCommand::Capabilities, false).is_err(),
         "v2 worker answered a v1-only capability command"
+    );
+    Ok(())
+}
+
+#[test]
+fn fused_open_runs_the_first_read_in_the_open_request() -> Result<()> {
+    let worker = Worker::new()?;
+    let response = worker.call(
+        WorkerCommand::OpenGuardedStatement {
+            database: worker.fixture.identifier.clone(),
+            sql: "SELECT 7 AS value".into(),
+            args: vec![],
+            named_args: vec![],
+            want_rows: true,
+        },
+        false,
+    )?;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["readonly"], false);
+    let session = response["result"]["session"]
+        .as_str()
+        .expect("fused open returns its session");
+    assert_eq!(session.len(), 64);
+    assert_eq!(
+        response["result"]["statement"]["status"], "ok",
+        "{response}"
+    );
+    assert_eq!(
+        response["result"]["statement"]["result"]["rows"],
+        json!([[7]]),
+        "{response}"
+    );
+    // The session is registered, so the caller can keep using it after the
+    // statement that rode along with the open.
+    assert_eq!(
+        worker.statement(session, "SELECT 8", vec![])?["result"]["rows"],
+        json!([[8]])
+    );
+    assert_eq!(
+        worker.call(
+            WorkerCommand::CloseSession {
+                session: session.into()
+            },
+            false
+        )?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn fused_open_refuses_a_write_before_it_runs_and_keeps_the_session() -> Result<()> {
+    let worker = Worker::new()?;
+    let response = worker.call(
+        WorkerCommand::OpenGuardedStatement {
+            database: worker.fixture.identifier.clone(),
+            sql: "CREATE TABLE fused_guard_must_not_exist(id INTEGER)".into(),
+            args: vec![],
+            named_args: vec![],
+            want_rows: true,
+        },
+        false,
+    )?;
+    assert_eq!(response["ok"], true, "{response}");
+    let session = response["result"]["session"]
+        .as_str()
+        .expect("fused open returns its session");
+    assert_eq!(
+        response["result"]["statement"]["status"], "requires_intent",
+        "{response}"
+    );
+    let reason = response["result"]["statement"]["reason"]
+        .as_str()
+        .expect("refusal names its reason");
+    assert!(
+        [
+            "engine_writable",
+            "transaction_context",
+            "connection_control"
+        ]
+        .contains(&reason),
+        "{response}"
+    );
+    // The refusal is a proof the statement did not run, and the session the
+    // open created is still usable for what the platform does next.
+    assert_eq!(
+        worker.statement(
+            session,
+            "SELECT count(*) FROM sqlite_master WHERE name = 'fused_guard_must_not_exist'",
+            vec![],
+        )?["result"]["rows"],
+        json!([[0]])
+    );
+    assert_eq!(
+        worker.call(
+            WorkerCommand::CloseSession {
+                session: session.into()
+            },
+            false
+        )?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn fused_open_reports_a_statement_error_and_returns_the_session() -> Result<()> {
+    let worker = Worker::new()?;
+    let response = worker.call(
+        WorkerCommand::OpenGuardedStatement {
+            database: worker.fixture.identifier.clone(),
+            sql: "SELECT * FROM fused_missing_table".into(),
+            args: vec![],
+            named_args: vec![],
+            want_rows: true,
+        },
+        false,
+    )?;
+    assert_eq!(response["ok"], true, "{response}");
+    let statement = &response["result"]["statement"];
+    assert_eq!(statement["status"], "error", "{response}");
+    assert!(
+        !statement["error"].as_str().unwrap_or("").is_empty(),
+        "{response}"
+    );
+    let session = response["result"]["session"]
+        .as_str()
+        .expect("fused open returns its session");
+    assert_eq!(
+        worker.statement(session, "SELECT 9", vec![])?["result"]["rows"],
+        json!([[9]])
+    );
+    assert_eq!(
+        worker.call(
+            WorkerCommand::CloseSession {
+                session: session.into()
+            },
+            false
+        )?["ok"],
+        true
+    );
+    Ok(())
+}
+
+#[test]
+fn fused_open_reports_an_open_failure_without_a_session() -> Result<()> {
+    let worker = Worker::new()?;
+    let invalid = DatabaseId {
+        namespace: Namespace {
+            tenant: String::new(),
+            database: "runtime".into(),
+        },
+        branch: "main".into(),
+    };
+    let response = worker.call(
+        WorkerCommand::OpenGuardedStatement {
+            database: invalid,
+            sql: "SELECT 1".into(),
+            args: vec![],
+            named_args: vec![],
+            want_rows: true,
+        },
+        false,
+    )?;
+    assert_eq!(response["ok"], false, "{response}");
+    assert!(response["result"].is_null(), "{response}");
+    // A refused open creates nothing: the worker still serves a normal session.
+    let session = worker.session()?;
+    assert_eq!(
+        worker.statement(&session, "SELECT 6", vec![])?["result"]["rows"],
+        json!([[6]])
     );
     Ok(())
 }
