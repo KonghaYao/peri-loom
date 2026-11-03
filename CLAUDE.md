@@ -234,6 +234,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R36 | 测量轮（无代码变更，探针 `d2877e4`、pprof 探针 `a3b6655`，均不合入） | 定位 R35 之后每查询 34.1ms 的归属：worker 调用 15.0ms、平台侧审计屏障 ~10ms、其余 ~9ms | 无插桩分层（r35 二进制，c64）：每次查询 4 条审计追加、0.27 次 sync（c1 是 4.1 次），sync 链 70% 忙。httptrace 传输分层（每命令一组）：连接复用 **94%**，`wait` 0.03ms、`write` 0.02ms、`tail` 0.02ms，**全部成本在 worker 的 server 时间**——describe 2.03ms、statement 1.22ms、cursor 5.91ms、open_session 4.34ms、close_session 1.47ms。把 SQL 换成 `SELECT 1` 后各命令 server 时间不变（1.59/0.97/7.09/4.11/1.16ms），说明这是**与 SQL 无关的每请求固定开销 + 排队**，不是查询执行；worker 自报 `query` 0.48ms/次。CPU 实测（1,538 qps）：platform 0.30 core、worker **0.10 core**，两者都远未饱和 → 仍是等待。c8→c64 同一命令从 ~0.3ms 涨到 2–7ms（8 倍并发换 6.7 倍膨胀），指向 worker 侧按库串行（`RefreshGate` 覆盖 `open`/`begin`/`close`/`health`，注释称守卫区内工作为微秒级） | 留证，未改代码 |
 | R37 | `perf/issue30-r37-deferred-durability` / `8684987`+`1dfa9f4` | 非提交操作的 completion/audit 在回复后按 FIFO 异步持久化（8 worker 池、上限 256，饱和回退内联等待）；completion 槽位改为入队即释放；close 在审计预算耗尽时仍 dispatch 并关闭 worker 会话。写语句 intent/terminal 仍同步 durable（用户授权见 issue #30） | 分层实测（v1.1.27，c1，单连接 connect→all→close）：只发 **2 个 HTTP 请求**（open+execute、close），却产生 **3 条耐久记录**（open / 只读 audit / close），`appends==syncs`、每次 fsync 2.36ms，合计 9.67ms = E2E 的 46%；worker 自报 SQL 0.53ms。首版（8684987）在 c64 失败 656–1192/1280（429/502/503）：异步等待仍持有 64 个 completion 槽 → 503 → close 未执行 → `session_seats=190` → `worker session capacity exceeded`；1dfa9f4 把槽位改为入队释放、饱和回退同步后通过。c1 配对 A/B（v1.1.27 vs r37b，3 轮 × 3 样本/侧，每样本 20 次，逐轮交替，两侧全新卷）：cellp **19.89→5.81ms（−70.8%）**、peri **21.36→5.68ms（−73.4%）**、by-id **19.99→4.84ms（−75.8%）**，27/27 样本 fail=0；同 harness 的 sqld 对照为 cellp 1.09×、peri **1.37×**、by-id 1.23×，达到 #30 的 ≤1.5× 目标。c64 回归门（3 轮 × 3 样本/侧，64 并发 × 20 次/worker）：qps cellp +4.6%、peri +1.3%、by-id +5.2%，p50 −1.0% / −0.2% / −4.0%，27/27 样本 fail=0 | 合入 main（崩溃恢复 E2E 通过；掉电丢 close 尾记录会触发隔离，见 R37 节） |
 | R38 | `fix/worker-gate-wakeup` / `1b66f58`（merge `0bca5d0`）+ `fix/issue28-verdict` / `f42cfeb`（merge `ef2502f`）；归因探针 `probe/gate-attribution` / `1679f85`（不合入） | G0：`RefreshGate` 过期等待者被唤醒后越过 deadline 时把唤醒转交给下一位（`expire`），超时仍不进临界区；G1：Issue28 并发验收把异常路径、缺测、账本请求数不符与并发 FAIL 纳入 verdict 与退出码。D1 用站点探针归因闸门排队/持有/分段；D2 用 Go benchmark 归因剩余编解码分配 | G0：回退修复的负向对照 8/8 稳定失败，修复后 8/8 通过；clippy 退出码 0；`cargo test --lib` 675 passed / 0 failed。G1：issue28 32 tests OK；`scripts/perf-reliability` 21 个测试文件共 330 tests 全 OK。D1（单库热库 c1–c64，探针 worker `29fe45d4…`）：open 786.7µs = 排队 517.9 + open_session 251.4 + prepare 5.7 + image_check 0.8 + registry 0.3；close 497.2µs = 排队 387.0 + native 89.8 + remove 8.2；begin 283.6µs = 排队 276.4；闸内可移出的 `prepare`（只读检查+ID+Entry）占每查询闸门服务时间 **1.5%**。D2：两候选点合计 7.5µs/请求（json v1，占 5ms 固定成本 **0.15%**），整段删除 `callVersionInto` 上限也只有 1.65µs | D1/D2 都低于 10% 门槛，按方向文档停止、不合入；G0/G1 合入 `main` 并随 v1.2.5 发布 |
+| R39 | `perf/issue28-r39-image-gate-shared` / `0b879c9`（merge `446d3fb`） | worker 镜像刷新闸门由互斥改为共享/独占租约：数据面 open/begin/close 持共享租约并发，镜像替换持独占租约（写者优先、双边 deadline、释放即唤醒） | 上限探针（闸门直通、未合入，`3b4b85c2…`，两轮交替）：X1 c16 p50 **7.63→3.54 / 7.29→4.17ms**（−42.8%~−53.6%），c1 不变。配对 A/B（8 轮/侧，json-pipeline，100 请求/档，两侧全新同数据卷，基线 worker `3f2a5175…` vs 候选 `13129acb…`）：c1 0.82→0.79（−3.6%，噪声）、c4 **1.32→0.96（−27.6%）**、c8 **3.06→2.05（−32.9%）**、c16 **9.83→5.36（−45.5%）**；p25 同向 −26.7%~−37.4%。同龄新栈对照（`run-base3` 基线 worker）：c4 1.37/1.40 vs 0.88/1.18、c16 6.29/7.33 vs 4.59/4.71 | 合入 main：回归门 F1 −8.2%、L1 0%、B1 −5.7%、C1 +1.4%、H1 −6.3%、H3 −2.0%，无 >10% 回归；Rust lib 677 passed / 0 failed，clippy/fmt 干净；测量期间 0×429、0 错误、`session_seats`/`active_permits` 归零 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1195,6 +1196,73 @@ A,B,B,A，2 轮 × 4 档 × 4 样本/侧，每样本 320 次查询）：
 - **限制**：未做真实掉电/机器崩溃测试；D 是确定性故障注入。A/D 的重启是直接启动平台二进制（绕过 `dev.py` clean gate），clean gate 单独在优雅关闭后的物化状态上执行。D 中无写入，写不丢由 A 覆盖。
 
 **已知风险与下一杠杆**：① 进程崩溃不丢尾部，掉电才可能丢；close 尾记录丢失会被启动恢复隔离，命名空间在操作员释放前不可用（已授权，需在发布说明中写明）。② unified journal 的 64 个 completion 槽仍限制 dispatch 并发；瞬时超过 64 个在途请求仍可能 503，下一个杠杆是槽位数量本身。③ close 审计行在 completion 预算耗尽时回退 request 预算；两者都满时 close 可能在会话已退役后返回 503（不泄漏会话，但客户端看到歧义重试）。④ 池饱和转为延迟，高负载 p99 会上升；`dropped_by_class.completion` 可能增加，需改用 `queue_count`/`queue_bytes` 加 journal status 计费。
+
+#### R39：worker 镜像刷新闸门改为共享/独占租约（2026-11-03，合入）
+
+**问题**：worker 的 `RefreshGate`（`src/worker_rpc/sessions.rs`）按数据库串行化 open/begin/close/health。
+每次状态命令在临界区内做原生工作：`open_session` 约 250µs、`close` 约 90µs。R38 D1 已量到 open/close 的
+66–78% 时间花在排队（517.9µs / 387.0µs），闸内可移出的准备只占 1.5%。会话生命周期又占每请求大头，
+于是同库并发被一把本应只保护「镜像替换」的闸门限速：X1 的 p50 从 c1 的 0.78ms 涨到 c16 的 7.3–7.6ms，
+16 个并发包的理论排队（15 × 350µs ≈ 5.1ms）与实测 c1→c16 的增长 6.6–6.9ms 同量级。
+
+**上限探针（未合入）**：把闸门临时改为直通（保留 `refresh_initial_image` 调用，只去掉互斥），
+在基线栈与探针栈（同数据、同平台二进制、worker sha256 `3b4b85c2…`）两轮交替：
+c16 p50 7.63→3.54 / 7.29→4.17ms（−42.8%~−53.6%），c4 1.71→1.15 / 1.41→0.81ms，
+c1 0.78→0.77 / 0.74→0.74ms。探针源码已还原，二进制保留在 `/tmp/peri-perf/bin/peri-loom-v1-probe`。
+
+**实现（`0b879c9`）**：闸门改为共享/独占租约。
+- 数据面 `open`/`begin`/`close` 持共享租约并发执行；`pin_image` 先在共享侧检查
+  `initial_image_replaced`，为真才释放共享、取独占、重查并执行替换，随后的命令在独占侧执行（罕见路径）。
+- 镜像替换（`clear_database`、`close_owned`）持独占租约；维护清扫用非阻塞的 `try_exclusive`。
+- 等待中的写者挡住后来的读者（`writers_waiting`），避免持续数据流饿死替换；两侧都遵守 deadline，
+  任何状态变化 `notify_all`，超时者不会把其他等待者留到各自的 deadline。
+
+**Gate 0（机制核验）**：候选第一次运行 c16 p50 27.76ms（刚导入数据后的冷态瞬态），第二次 3.64ms，
+落在探针区间；c8 1.25–1.76ms 低于基线 2.2–4.0ms——共享路径确实生效。正式 A/B 只用预热过的栈。
+
+**A/B（8 轮/侧，A/B/B/A 与 B/A/A/B 交替，json-pipeline，100 请求/档）**：基线 worker `3f2a5175…`
+（从 `main` 重建，与原始基线二进制逐字节同哈希）vs 候选 `13129acb…`；平台二进制不变（`80caaec…`）；
+两侧独立卷、同一导入（201 threads / 8,625 messages / 20,177,069 chars），v1 耐久（`audit_file_v1`）。
+
+| 并发 | 基线 p50 中位（范围） | 候选 p50 中位（范围） | 变化 | p25 中位变化 |
+|---:|---:|---:|---:|---:|
+| 1 | 0.82ms（0.74–0.84） | 0.79ms（0.75–0.85） | −3.6%（噪声） | −2.5% |
+| 4 | 1.32ms（1.21–2.15） | 0.96ms（0.83–1.40） | **−27.6%** | −30.3% |
+| 8 | 3.06ms（2.03–4.04） | 2.05ms（1.47–13.94） | **−32.9%** | −26.7% |
+| 16 | 9.83ms（4.97–43.35） | 5.36ms（3.97–26.79） | **−45.5%** | −37.4% |
+
+- c16 单轮存在「快/慢态」翻转（同一侧跨轮 4.97–43.35ms，p95 恒在 130–160ms），按 8 轮中位判定；
+  三条并发档同向，c1 不变。
+- **同龄新栈对照**：新建 `run-base3`（与候选栈同龄、同样刚导入、跑基线 worker）：c4 1.37/1.40 vs 候选
+  0.88/1.18ms、c16 6.29/7.33 vs 4.59/4.71ms；c8 2.06/3.36 vs 2.44/2.83（小样本内重叠）。排除「新栈更快」
+  的混淆，方向与 8 轮结论一致。
+
+**回归门（1 warmup + 5 samples，A/B/B/A，各 2 次运行取中位）**：F1.select-1 0.98→0.90ms（−8.2%）、
+L1.list-20 1.47→1.47ms（0%）、B1.batch-20 2.30→2.17ms（−5.7%）、C1.baton-10 0.360→0.365ms（+1.4%，噪声）、
+H1.content-20mb（json-cursor）151.96→142.35ms（−6.3%）、H3.content-projection 149.6→146.65ms（−2.0%）。
+无 >10% 回归。
+
+**质量门**：Rust lib 677 passed / 0 failed / 10 ignored；sessions 模块 10/10（新增共享并发、写者优先、
+超时不拖累等待者三个用例）；`clippy --all-targets --no-deps -D warnings` 退出码 0；`cargo fmt --check`
+干净。测量运行 429=0、错误 0；结束后 `session_seats`/`active_permits`/`unknown_held_permits` 均为 0，
+`peak_sessions` 16（每库上限，符合预期），候选累计 `session_limit` 拒绝 0。
+
+**剩余风险 / 未验证**：
+1. c16 的测量被一个与本轮无关的 ~150ms 尾延迟污染：基线栈生命周期内 `head_checkpoint_attempts_total`
+   1111 次、`head_checkpoint_ns_total` 24.2s（均值 21.8ms），叠加 fsync 均值 3.66ms/次；它同时作用于
+   两侧，是运行级「慢态」的来源。单轮 c16 差值不可作结论，只能看多轮中位；下一轮应查审计头检查点的
+   触发频率与锁内成本。
+2. `sweep` 的 `try_exclusive` 在有读者时跳过该库一轮；持续高负载下会话过期/回收可能延后，空闲后仍会执行。
+   未做长时高负载下的会话回收验证。
+3. `close_owned`（控制面按 owner 关闭）现在要等在途读者排空；60s deadline 下未做极端压测。
+4. 同一数据库现在允许并发 `open_session`。功能由 Rust 单测、全量测试与 8+ 轮压测覆盖，但未做对抗性
+   并发/故障注入。
+5. 本轮环境是重建的合成 Issue 28 数据集 + 本地 release 二进制（127.0.0.1、无 TLS），绝对数字只在本窗口内
+   可比，不与历史 Issue 28 行比较。
+
+**环境记录**：历史 Issue 28 容器/数据集在本机不存在，本轮重建了确定性夹具
+（`/tmp/peri-perf/seed_fixture.py`，201 threads / 8,625 messages / 20,177,069 chars）与两个同源基线栈；
+空 A/B 校准（同二进制两栈，2 轮 × 5 样本）F1/B1/H1 离散 <1%，证明栈间可比后才进入正式测量。
 
 ## 代码约定
 
