@@ -1270,14 +1270,11 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 	if resultLimit <= resultReserve {
 		return false
 	}
-	reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
+	opened, reply := handler.hranaOpen(request, credential, database, &statement, true)
 	if reply.status != http.StatusOK || reply.code != "" {
 		return false
 	}
-	var opened struct {
-		Session string `json:"session"`
-	}
-	if json.Unmarshal(reply.result, &opened) != nil || !publicSessionID(opened.Session) {
+	if !publicSessionID(opened.Session) {
 		if opened.Session != "" {
 			handler.cleanupRetiredSession(opened.Session, 0)
 		}
@@ -1290,7 +1287,11 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 			handler.cleanupRetiredSession(session, 0)
 		}
 	}()
-	value, executeReply := handler.executeWithin(request, credential, session, statement, resultLimit)
+	statementRequest := request
+	if fused := hranaFusedStatementResult(session, statement, opened.FusedStatement, opened.FusedClose); fused != nil {
+		statementRequest = request.WithContext(withFusedStatementResult(request.Context(), *fused))
+	}
+	value, executeReply := handler.executeWithin(statementRequest, credential, session, statement, resultLimit)
 	if executeReply.code != "" {
 		results := []any{map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(executeReply), "code": executeReply.code}}}
 		if closeReply := handler.call(request, credential, "/v1/sql/close", map[string]any{"session": session}); closeReply.status == http.StatusOK && closeReply.code == "" {

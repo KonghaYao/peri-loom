@@ -178,6 +178,12 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		if version != 1 || !guardedBatchCommandValid(operation, encoded) {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
 		}
+	case "open_guarded_statement":
+		// Private v1 command: the fused open carries a statement, so its body is
+		// validated as a whole before it can reach a worker.
+		if version != 1 || !fusedOpenCommandValid(operation, encoded) {
+			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
+		}
 	case "writer_profile_status":
 		if version != 2 || len(fields) != 1 {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenRequestValidation, &SQLRPCError{})
@@ -251,7 +257,7 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		// That exact body, and only that body, proves the command was never
 		// executed. It stays a request-level fact: it releases no earlier unknown
 		// and authorises no replay.
-		if (operation == "capabilities" || operation == "guarded_readonly_batch") && unsupportedWorkerCommand(ctx, response) {
+		if (operation == "capabilities" || operation == "guarded_readonly_batch" || operation == "open_guarded_statement") && unsupportedWorkerCommand(ctx, response) {
 			return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenHTTPStatus, &SQLRPCError{StatusCode: response.StatusCode, unsupportedCommand: true})
 		}
 		if rejection := admissionRejection(ctx, response); rejection != nil {

@@ -74,6 +74,27 @@ pub enum WorkerCommand {
         #[serde(default = "want_rows_default")]
         want_rows: bool,
     },
+    // One implicit session open fused with the first guarded read-only statement.
+    // The worker opens exactly as `open_session` and then runs the statement in the
+    // same request's lease window, so the authority validation is paid once. A
+    // statement the engine classifies as writing is refused before it steps, which
+    // is what makes the whole command unable to commit.
+    OpenGuardedStatement {
+        database: DatabaseId,
+        sql: String,
+        #[serde(default)]
+        args: Vec<StatementArg>,
+        #[serde(default)]
+        named_args: Vec<NamedStatementArg>,
+        #[serde(default = "want_rows_default")]
+        want_rows: bool,
+        // The caller knows the session ends with this statement (a pipeline whose
+        // last entry is `close`), so the close joins the same request and lease
+        // window. The field is absent from the protocol's first version: an older
+        // worker rejects the whole body instead of ignoring a flag it cannot honor.
+        #[serde(default)]
+        close_after_statement: bool,
+    },
     // The same guarded statement, repeated for a caller-known contiguous block of
     // read-only work. Each statement keeps its own budget, deadline check and
     // engine verdict; the block only removes round trips, never evidence.

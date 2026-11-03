@@ -67,6 +67,20 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 	var closed struct {
 		Closed bool `json:"closed"`
 	}
+	if session.fusedClose {
+		// The fused open already closed the worker session; only the platform's
+		// own close record is still owed. It is settled exactly like a completed
+		// close so the pending open it discharges and the retry account agree.
+		// The marker stays set when the record cannot be written: a later retry
+		// must skip the worker call again, because that session does not exist.
+		result := gatewayResult{session: session, dispatched: true, value: map[string]bool{"closed": true}}
+		gateway.settlePendingOperation(pending, &result, permit, nil)
+		if result.code == "outcome_unknown" {
+			return &SQLRPCError{Ambiguous: true}
+		}
+		session.fusedClose = false
+		return nil
+	}
 	err = gateway.callSession(ctx, session, session.binding, requestID, command, &closed)
 	if err == nil && !closed.Closed {
 		err = &SQLRPCError{Ambiguous: true}

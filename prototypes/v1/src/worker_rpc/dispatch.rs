@@ -52,6 +52,13 @@ impl RequestMemory {
                 named_args,
                 want_rows,
                 ..
+            }
+            | WorkerCommand::OpenGuardedStatement {
+                sql,
+                args,
+                named_args,
+                want_rows,
+                ..
             } => (
                 sql_bytes(sql, args, named_args),
                 if *want_rows { result } else { 0 },
@@ -190,11 +197,13 @@ impl State {
                 // no durable evidence. Only v1 asks: v2 callers carry a writer
                 // state the answer does not describe.
                 ensure!(!control, "SQL authorization required");
-                ensure!(
-                    version == 1,
-                    "readonly batch capabilities require protocol v1"
-                );
-                Ok(json!({"readonly_batch_protocol": 1}))
+                ensure!(version == 1, "readonly capabilities require protocol v1");
+                Ok(json!({
+                    "readonly_batch_protocol": 1,
+                    // Level 2 adds `close_after_statement`; a caller that only
+                    // knows level 1 keeps the session it was given.
+                    "open_guarded_statement": 2,
+                }))
             }
             WorkerCommand::WriterProfileStatus => {
                 ensure!(
@@ -304,6 +313,111 @@ impl State {
                     .open(&database, version, deadline, None, request_id)?;
                 *terminal = snapshot;
                 Ok(result)
+            }
+            WorkerCommand::OpenGuardedStatement {
+                database,
+                sql,
+                args,
+                named_args,
+                want_rows,
+                close_after_statement,
+            } => {
+                // The fused command is v1-only, like the guarded block: a v2
+                // caller carries writer state this answer does not describe.
+                ensure!(version == 1, "open guarded statement requires protocol v1");
+                ensure!(
+                    sql.len() <= Budget::trusted_default().max_sql_bytes,
+                    "SQL byte budget exceeded"
+                );
+                // Arguments are bound before the session exists, so a malformed
+                // request cannot leave a session the caller never learns about.
+                let args = args
+                    .into_iter()
+                    .map(native_arg)
+                    .collect::<Result<Vec<_>>>()?;
+                let named_args = named_args
+                    .into_iter()
+                    .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                    .collect::<Result<Vec<_>>>()?;
+                let (opened, snapshot) = self
+                    .sessions
+                    .open(&database, version, deadline, None, request_id)?;
+                *terminal = snapshot;
+                let session = opened["session"]
+                    .as_str()
+                    .context("missing session identity")?
+                    .to_owned();
+                let readonly = opened["readonly"]
+                    .as_bool()
+                    .context("missing readonly verdict")?;
+                // `begin` only pins the image and takes the session call; it never
+                // runs SQL. A failure here is therefore a proof the statement was
+                // not executed, and the opened session is still returned so the
+                // platform can register, use and retire it.
+                // The statement call is released before the close: a session close
+                // waits for the active RPC to finish, so holding it here would
+                // turn the fused close into a deadline wait.
+                let (statement, settled) = match self.sessions.begin(&session, deadline) {
+                    Ok(call) => {
+                        let result =
+                            crate::slow_diagnostics::native("open_guarded_statement", || {
+                                call.handle().guarded_readonly_statement(
+                                    &sql,
+                                    &args,
+                                    &named_args,
+                                    want_rows,
+                                )
+                            });
+                        match result {
+                            Ok(GuardedStatementOutcome::Executed(result)) => (
+                                json!({"status": "ok", "result": encoded_statement_result(result)}),
+                                true,
+                            ),
+                            Ok(GuardedStatementOutcome::RequiresIntent(reason)) => (
+                                json!({"status": "requires_intent", "reason": guarded_intent_reason(reason)}),
+                                false,
+                            ),
+                            Err(error) => {
+                                self.diagnostics.emit(Action::Query, request_id, &error);
+                                // Same evidence a dedicated statement failure would
+                                // carry: an unsettled error stays absent, never false.
+                                let completed = execution_completed(&error);
+                                let settled = completed || execution_rejected(&error);
+                                let mut failed =
+                                    json!({"status": "error", "error": format!("{error:#}")});
+                                if completed {
+                                    failed["execution_completed"] = json!(true);
+                                } else if settled {
+                                    failed["execution_completed"] = json!(false);
+                                }
+                                (failed, settled)
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let mut failed = json!({"status": "error", "error": format!("{error:#}")});
+                        failed["execution_completed"] = json!(false);
+                        (failed, false)
+                    }
+                };
+                let mut response = json!({
+                    "session": session,
+                    "readonly": readonly,
+                    "statement": statement,
+                });
+                // Only a statement whose outcome is settled may end the lifecycle
+                // here: a refused write and an unsettled failure keep the session
+                // for the platform's committing path or its ordinary close. A
+                // close error is answer data, and the session stays registered so
+                // the platform can retry it through `close_session`.
+                if close_after_statement && settled {
+                    let close = match self.sessions.close(&session, version, deadline) {
+                        Ok(_) => json!({"status": "ok"}),
+                        Err(error) => json!({"status": "error", "error": format!("{error:#}")}),
+                    };
+                    response["close"] = close;
+                }
+                Ok(response)
             }
             WorkerCommand::CloseSession { session } => {
                 *terminal = self.sessions.close(&session, version, deadline)?;

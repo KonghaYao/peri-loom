@@ -339,17 +339,23 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			limitFailure(http.StatusGatewayTimeout, "pipeline_timeout")
 			return
 		}
+		var fusedMarker *fusedStatementResult
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
-			reply := handler.call(request, credential, "/v1/sql/open", map[string]any{"database": database})
-			if reply.status != 200 || reply.code != "" {
+			var candidate *hranaStatement
+			closeAfter := false
+			if entry.Type == "execute" {
+				if entry.Stmt.SQL == "" {
+					entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
+				}
+				candidate = &entry.Stmt
+				// Only the exact statement-then-close pipeline can end the
+				// lifecycle in the open: any later entry would need the session
+				// the worker request already retired.
+				closeAfter = len(pipeline.Requests) == 2 && pipeline.Requests[1].Type == "close"
+			}
+			opened, reply := handler.hranaOpen(request, credential, database, candidate, closeAfter)
+			if reply.status != http.StatusOK || reply.code != "" {
 				failPipeline(reply)
-				return
-			}
-			var opened struct {
-				Session string `json:"session"`
-			}
-			if json.Unmarshal(reply.result, &opened) != nil {
-				failPipeline(hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true})
 				return
 			}
 			if !publicSessionID(opened.Session) {
@@ -363,6 +369,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				return
 			}
 			stream.session = opened.Session
+			if candidate != nil {
+				fusedMarker = hranaFusedStatementResult(opened.Session, *candidate, opened.FusedStatement, opened.FusedClose)
+			}
 		}
 		// A contiguous run of top-level executes is sent as one block when the
 		// worker parses the command and the block fits the remaining result
@@ -370,7 +379,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		// settlement; only the worker round trip is shared.
 		batch := (*guardedBatch)(nil)
 		count := 1
-		if entry.Type == "execute" {
+		if entry.Type == "execute" && fusedMarker == nil {
 			remaining := resultLimit - resultBytes - resultReserve
 			batch = handler.planGuardedBatch(request.Context(), stream, pipeline.Requests, entryIndex, remaining)
 			if batch != nil {
@@ -383,6 +392,10 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			entryRequest := request
 			if batch != nil {
 				entryRequest = request.WithContext(withGuardedBatch(request.Context(), batch, offset))
+			}
+			if fusedMarker != nil && offset == 0 {
+				entryRequest = entryRequest.WithContext(withFusedStatementResult(entryRequest.Context(), *fusedMarker))
+				fusedMarker = nil
 			}
 			previousResults := len(response.Results)
 			switch entry.Type {
@@ -1019,7 +1032,10 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
 	}
 	reply := handler.call(request, credential, "/v1/sql/statement", map[string]any{"session": session, "sql": statement.SQL, "args": args, "named_args": namedArgs, "want_rows": statement.WantRows})
 	if reply.code != "" {
-		if reply.readOnlyCandidate {
+		// An entry that rode on an open whose close the worker already ran has no
+		// session left to re-probe: the describe fallback would answer "unknown
+		// session" and turn a settled statement error into an unknown outcome.
+		if reply.readOnlyCandidate && !hranaFusedCloseConsumed(request.Context(), session) {
 			readonly, describeReply, fatal := handler.cursorStatementReadonly(request, credential, session, statement.SQL)
 			if fatal {
 				return nil, hranaFatalDescribeReply(describeReply)
@@ -1066,6 +1082,14 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
 		result[name] = value
 	}
 	return result, hranaReply{}
+}
+
+// hranaFusedCloseConsumed reports that this entry's open already retired the
+// worker session. Such an entry may not fall back to another worker call on the
+// session; the answer it holds is the one to publish.
+func hranaFusedCloseConsumed(ctx context.Context, session string) bool {
+	fused, ok := fusedStatementResultFrom(ctx)
+	return ok && fused.Closed && fused.Session == session
 }
 
 // hranaNativeStatementMetrics decodes the optional execution counters a worker
