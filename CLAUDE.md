@@ -240,6 +240,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R42 | `perf/r42-fused-open-statement` / `0bc488b`（未合入，留证） | Hrana 隐式 open 与首条顶层只读 execute 融合为一个私有 worker 命令 `open_guarded_statement`（capability 探测、旧 worker 400 回退、写语句返回 `requires_intent` 后走原提交路径）：每请求 authority `validate_session` 2→1、worker RTT 3→2 | Gate 0：20 条 pipeline 的 `validate_session` **40→20**。配对 A/B（3 轮 A/B/B/A，两侧独立平台+worker 二进制、各自全新同数据卷）：F1 json 中位 **0.766→0.635ms（−17.1%，配对中位 −17.4%，6/6 同向）**、pb **0.819→0.593ms（−27.5%，配对中位 −29.1%，6/6 同向）**；响应字节 312/40 不变 | 未达门槛、不合入：F1 属 <10ms 场景，协议要求 ≥20%；pb 达标、JSON −17.1% 未达（与 R41 的 −17.6% 同量级）。回归门无 >10% 可复现退化（L1 −8.0%、B1 json −4.3%/pb −1.1%、H1 +3.2%/+2.0%、C1 首轮单腿瞬时停顿复测不复现、X1 c1/c4 候选更快、c16 环境敏感，全程 429=0）。分支留证 |
 
 | R43 | `perf/r43-fused-lifecycle` / `6d5c9da`（merge `99a2361`；含 R42 cherry-pick `d41ca9d`） | Hrana `[execute, close]` 融合会话关闭：worker `open_guarded_statement` capability 1→2，level≥2 在同一请求/租约窗口内关闭会话（仅在语句已结算时）；平台 close 入口仍走原 handler（准入、记录、R37 回复后异步耐久），仅跳过 worker close RPC；旧 worker/`requires_intent`/close 失败全部回退普通 close | 上限探针（零代码形状探针，基线栈）：`[execute, close]` 0.752ms vs `[execute]` 0.608ms，close 入口 ≈0.143ms，投影 −20%~−24%。Gate 0（临时平台探针 + authority diag）：20 条 pipeline → `open_guarded_statement` **20**、`close_session` **0**（R42 级 worker 对照 20+20；`validate_session` 20 vs 基线 40）。配对 A/B（3 轮 A/B/B/A，两侧独立预热栈，samples 20/30/50）：F1 json 中位 **0.794→0.510ms（−35.7%，配对中位 −39.3/−34.6/−30.2%，6/6 同向）**、pb **0.768→0.513ms（−33.3%，配对 −32.6/−33.5/−33.8%，6/6 同向）**；响应字节 312/40 不变、warnings=[]、无 429 | 合入 main：F1 <10ms 场景 ≥20% 门槛双协议达标。回归门无 >10% 可复现退化（L1 −11.3%、B1 json +3.9%/pb −3.2%、C1 −3.2%、H1 cursor json 149.59 vs 145.13ms/pb −4.5%；X1 c1 候选更快、c8/c16 宿主瞬态不可确认；全程 429=0、errors=0、seats/permits 归零）。未做崩溃恢复 E2E 与真实 close 失败 Rust 集成测试 |
+| R44 | 测量轮（探针分支 `probe/r44-validate` @ `0a65f65`、`probe/r44-rpc-cost` @ `a576fb8`，均不合入） | 在 R43 之后的 0.50ms 底上找剩余方向：D1 close 每次线程 spawn、D3 pipeline 每 entry 内部 HTTP 跳转、authority lease 校验往返 | D1 零代码微基准 `spawn+condvar+join` 0.021ms/次（F1 的 4%）；D3 每 entry 可省 **2.6µs**（marshal 0.61 + NewRequest 1.16 + reply 0.69 + 响应编码 0.16；F1 ≈1%、B1 ≈2.4%）；lease 校验：R41 部分本地校验 0.50→0.46/0.49ms（−2~−8%），全量本地校验 **0.50→0.34/0.36ms（−28%~−32%）**；成本拆分 worker 侧 RPC **207µs/次**、authority 侧 `check_binding` **≈84µs/次**（其中 `ownership_view()` = `store.get(authority/root)`+解码 ≈85µs，两次 `live()` 合计 ≈2µs） | 仅记录，不合入：D1/D3 远低于 20% 门槛；lease 校验是唯一过门槛的方向，但去掉它等于放宽安全语义（读路径再无其它 authority 交互），需用户明确授权，本轮询问被拒绝；authority 侧只缓存 root 视图可省 ≈85µs ≈17%，仍不够 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1578,6 +1579,52 @@ SHA256 与端口区分。
 记录/准入，以及 worker 侧每条语句的固定原生时间。继续压 F1 需要减少每请求的 HTTP 往返或复用会话
 （会改变会话语义）；更高价值的方向转向 c64 容量路径（R37 之后的 completion 槽位、审计批），
 或按 R23 的结论处理 worker 每查询固定原生时间。
+
+#### R44：R43 之后剩余方向的上限探针（2026-11-03，测量轮，无代码合入）
+
+**背景**：R43 合入后 F1 json 0.510ms、pb 0.513ms；`<10ms` 场景的验收门槛是 20%（=0.102ms）。
+本轮先对三条候选做零/低代码上限探针，只有上限过门槛才实现。
+
+**D1：close 的每次线程 spawn（否掉）**
+- `worker_rpc/session_entry.rs` 的 `Entry::close` → `start_close_when` 为每个 close spawn 一个 OS 线程。
+- 零代码微基准（`/tmp/peri-perf/spawn_bench.rs`，rustc -O，n=2000）：`spawn+condvar+join`
+  mean 0.021ms / p50 0.021 / p95 0.029 / p99 0.034。
+- 上限 0.021ms = F1 的 **4%**，远低于 20% 门槛；固定清理执行器方案作废。
+
+**D3：pipeline 每个 entry 的内部 HTTP/JSON 跳转（否掉）**
+- `hrana_http.go` 的 `dispatch`：每条 entry 都 `json.Marshal` → `httptest.NewRequest` →
+  `Gateway.ServeHTTP` → 解码 reply。
+- 零代码微基准（`/tmp/peri-perf/hop_bench.go`，与实际 request/reply 编码同形）：
+  marshal 0.61µs、`httptest.NewRequest` 1.16µs、reply 解码 0.69µs、响应编码 0.16µs，
+  合计 **2.6µs/entry**。
+- F1（2 entry）≈5µs ≈1%；B1（21 entry）≈55µs ≈2.4%；直调 handler 的重构不做。
+  reflect 预估的 10–25µs/entry 高了 4–10 倍。
+
+**authority lease 校验（唯一过门槛，但属安全语义变更）**
+- lease window 已把一轮请求内的多次校验压到**每请求 1 次**（实测一轮 40 请求 = 40 次 `check_binding`）。
+- 探针 A（`probe/r44-validate` @ `eb11608`，R41 的部分本地校验补丁 cherry-pick 到 main）：
+  F1 0.50 → 0.46/0.49ms（−2~−8%）——只去掉 open 路径的几处，第一个校验仍会落到 authority。
+- 探针 B（同分支 `0a65f65`，把 `ContextStore::validate_session`/`validate_transaction` 全改本地）：
+  F1 **0.50 → 0.34/0.36ms（−28%~−32%）**。
+- 探针 C（`probe/r44-rpc-cost` @ `a576fb8`，worker 侧 + authority 侧计时；按一轮 F1 40 请求的
+  计数/均值增量计算）：worker 侧往返 **207µs/次**；authority 侧 `check_binding` **≈84µs/次**，
+  其中 `ownership_view()`（`store.get(authority/root)` + 解码）≈85µs，两次 `live()` 合计 ≈2µs。
+  即 authority 侧几乎全部成本是每次校验都重读并解码 authority root。
+- 判决：去掉这次校验可拿 −28%~−32%，但读路径此后没有任何 authority 交互，迁移/失联后的陈旧读
+  要到下一次写或对象访问才暴露——属安全语义变更，需用户明确授权；本轮询问被拒绝，**不实现**。
+  只做 authority 侧安全优化（缓存并失效 root 解码视图、保留全部检查）省 ≈85µs = F1 的 17%，
+  仍低于 20% 门槛，不单独成轮。
+
+**本轮结论**：无代码合入 `main`。F1 在「不改变安全语义」的前提下已到结构下限；探针分支与二进制留证：
+- `probe/r44-validate`（`eb11608`、`0a65f65`）、`probe/r44-rpc-cost`（`a576fb8`），均不合入。
+- 二进制：`peri-loom-v1-r43-cand` `27d8dd46…`（main）、`peri-loom-v1-r44-validate` `f385f510…`、
+  `peri-loom-v1-r44-novalidate` `991075ca…`、`peri-loom-v1-r44-rpcprobe` `ed1b7f40…`。
+- 证据 `/tmp/peri-perf/`：`r44check/`、`r44v-A1/A2`、`r44v-B1/B2`、`r44nv-B1/B2`、`r44-shapes.py`、
+  `hop_bench.go`、`spawn_bench.rs`、`run-r44*.log`，非持久目录。
+
+**下一轮提示**：`<10ms` 场景（F1/B1）在安全边界内已无 ≥20% 的空间。下一轮转向门槛 10% 的更大场景
+（H1 约 145ms、R1-1000 约 70ms 的大结果路径），或 c64 容量路径（R37 之后的 completion 槽位、
+deferred durability 池饱和）；若用户授权放宽 lease 校验，可直接实现 −28%~−32% 的候选。
 
 ## 代码约定
 
