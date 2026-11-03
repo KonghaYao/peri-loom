@@ -239,6 +239,8 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R41 | `perf/r41-session-open-local-validate` / `e4b39ac`（未合入，留证） | `RemoteDatabase::session()` 与 `is_readonly()` 不再为打开会话/探测只读发 authority `validate_session`/`validate_transaction` 往返：`ObjectStore` 新增带默认实现的 `validate_session_local`/`validate_transaction_local`（无权威的存储回退完整校验），`ContextStore` 只跑 generation + `context.check`（保留 draining 拒绝新事务），`MetricsObjectStore` 透传 | 上限探针（在 Validate RPC 前直接返回 Ok，源码已还原，`5819171f…`，A/B/B/A 20 样本）：F1 json 0.77/0.79→0.47/0.46ms（−39%）、pb 0.66/0.69→0.42/0.44ms（−36%）。Gate 0：20 条 pipeline 的 authority `validate_session` **40→20**（每请求恰少一次）。配对 A/B（6 轮，两侧独立预热栈，A/B 交错，组间 ≥2s）：F1 json 中位 **0.764→0.629ms（−17.6%，配对中位 −17.5%）**、pb **0.714→0.582ms（−18.4%，配对中位 −19.1%）**，6/6 轮同向 | 未达门槛、不合入：F1 属 <10ms 场景，仓库协议要求 ≥20%，实测 −17.6%/−18.4%；回归门无 >10% 可复现退化（L1/C1/X1 c1 反而改善，B1 有单点抖动、H1 持平），分支与提交留证 |
 | R42 | `perf/r42-fused-open-statement` / `0bc488b`（未合入，留证） | Hrana 隐式 open 与首条顶层只读 execute 融合为一个私有 worker 命令 `open_guarded_statement`（capability 探测、旧 worker 400 回退、写语句返回 `requires_intent` 后走原提交路径）：每请求 authority `validate_session` 2→1、worker RTT 3→2 | Gate 0：20 条 pipeline 的 `validate_session` **40→20**。配对 A/B（3 轮 A/B/B/A，两侧独立平台+worker 二进制、各自全新同数据卷）：F1 json 中位 **0.766→0.635ms（−17.1%，配对中位 −17.4%，6/6 同向）**、pb **0.819→0.593ms（−27.5%，配对中位 −29.1%，6/6 同向）**；响应字节 312/40 不变 | 未达门槛、不合入：F1 属 <10ms 场景，协议要求 ≥20%；pb 达标、JSON −17.1% 未达（与 R41 的 −17.6% 同量级）。回归门无 >10% 可复现退化（L1 −8.0%、B1 json −4.3%/pb −1.1%、H1 +3.2%/+2.0%、C1 首轮单腿瞬时停顿复测不复现、X1 c1/c4 候选更快、c16 环境敏感，全程 429=0）。分支留证 |
 
+| R43 | `perf/r43-fused-lifecycle` / `6d5c9da`（merge `99a2361`；含 R42 cherry-pick `d41ca9d`） | Hrana `[execute, close]` 融合会话关闭：worker `open_guarded_statement` capability 1→2，level≥2 在同一请求/租约窗口内关闭会话（仅在语句已结算时）；平台 close 入口仍走原 handler（准入、记录、R37 回复后异步耐久），仅跳过 worker close RPC；旧 worker/`requires_intent`/close 失败全部回退普通 close | 上限探针（零代码形状探针，基线栈）：`[execute, close]` 0.752ms vs `[execute]` 0.608ms，close 入口 ≈0.143ms，投影 −20%~−24%。Gate 0（临时平台探针 + authority diag）：20 条 pipeline → `open_guarded_statement` **20**、`close_session` **0**（R42 级 worker 对照 20+20；`validate_session` 20 vs 基线 40）。配对 A/B（3 轮 A/B/B/A，两侧独立预热栈，samples 20/30/50）：F1 json 中位 **0.794→0.510ms（−35.7%，配对中位 −39.3/−34.6/−30.2%，6/6 同向）**、pb **0.768→0.513ms（−33.3%，配对 −32.6/−33.5/−33.8%，6/6 同向）**；响应字节 312/40 不变、warnings=[]、无 429 | 合入 main：F1 <10ms 场景 ≥20% 门槛双协议达标。回归门无 >10% 可复现退化（L1 −11.3%、B1 json +3.9%/pb −3.2%、C1 −3.2%、H1 cursor json 149.59 vs 145.13ms/pb −4.5%；X1 c1 候选更快、c8/c16 宿主瞬态不可确认；全程 429=0、errors=0、seats/permits 归零）。未做崩溃恢复 E2E 与真实 close 失败 Rust 集成测试 |
+
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
   全量运行 `warnings=[]`、无 429、`session_seats=0`、`active_permits=0`。按“明确收益且零回归”接受并记录例外。
@@ -1491,6 +1493,91 @@ harness 的 `platform_label` 记录的是检出 HEAD（`0bc488b`），两侧相�
 `close_session` + 审计）与平台侧两次 HTTP 编解码；pb 已到 0.593ms，JSON 的额外开销来自 JSON
 编解码本身，继续压 JSON 不在 worker RTT。若用户批准 R42 例外合入，下一步可在其之上评估
 「close 与最后一条语句融合」的上限；否则从 `main` 重新选向。
+
+#### R43：Hrana `[execute, close]` 融合会话关闭（2026-11-03，合入）
+
+**归因与上限探针**：R42 把 open 与首条只读 execute 融合后，F1 剩余成本仍在 close 路径。
+零代码形状探针（`/tmp/peri-perf/r43-shapes.py`，基线栈，120 组交错样本、0 错误）给出 p50：
+完整 `[execute, close]` 0.752ms、仅 `[execute]` 0.608ms、复用 baton 的 `[execute]` 0.342ms、
+带 baton 的 `[close]` 0.218ms；分解为 open ≈0.266、execute ≈0.342、close 入口 ≈0.143ms。
+可融合的 close 入口开销估计 0.05–0.07ms（在 R42 已测 −0.131ms 之上），投影 0.752→0.57–0.60ms
+（−20%~−24%），高于 20% 门槛，因此实现。
+
+**方案与改动边界**：
+- worker：`open_guarded_statement` capability level 1→2；level≥2 时接受 `close_after_statement`，
+  在语句结算后于同一请求/租约窗口内关闭会话（`dispatch.rs`、`protocol.rs`）。只在语句结果
+  **已结算**时关闭（成功，或带 `execution_completed` 的 SQL 错误）；`requires_intent`、未结算错误、
+  `begin` 失败保留会话。close 失败返回 `close:{"status":"error"}` 并保留注册会话，平台回落普通 close。
+  `deny_unknown_fields` 使 R42 级 worker 对整条命令返回 400，平台安全降级。
+- platform：`gateway_fused_open.go`/`hrana_fused_open.go` 解析并校验 `fused_close`，
+  `hrana_http.go` 只对精确的 `[execute, close]` 形态启用；`gateway_sessions.go` 在会话上记录
+  `fusedClose`，close 入口**仍运行原 handler**（准入、open/close 记录、R37 回复后异步耐久、
+  `dischargePendingOpenSessions`、配额、retirement），仅跳过 worker close RPC；记录写失败保留标记，
+  重试仍跳过 worker。`gateway_operations.go` 的空闲清理与 `Gateway.Close` 排空共用同一分支。
+- 一处必要的窄行为变化：open 已融合 close 的条目，`result_limit`/`sql_error` 的 describe→cursor
+  回退被抑制——已退役的 worker 会话会把已结算答案变成 502 `outcome_unknown` 并污染会话；只读、
+  无数据副作用，由 `TestHranaFusedCloseDoesNotReProbeTheRetiredSession` 覆盖。
+- 回退矩阵（全部回落普通 close）：open 回复 unknown、`requires_intent`、`close.status!=ok`、
+  `close` 缺失/畸形、旧 worker `unsupportedCommand`。
+
+**Gate 0**：临时平台探针（`sql_upstream.go` 加一行 `println`，未提交、源码已还原，探针二进制
+`96673a3e…`）+ authority diag（`PERI_DIAG_SLOW=1`）：20 条 `[execute, close]` pipeline →
+worker `open_guarded_statement` **20**、`close_session` **0**；同平台配 R42 级 worker（level 1）
+对照为 20 + **20**（退化为普通 close）——即「关掉改动」后 close RPC 回归。diag 侧
+`validate_session` 候选 **20/20**、基线 **40/20**。
+
+**验收（A/B/B/A）**：两侧独立预热栈（base = `main` `db96753` 代码：平台 `peri-platform-r41-base`
+`c8cf19fe…`、worker `peri-loom-v1-cand` `13129acb…`；cand = `6d5c9da`：平台
+`peri-platform-r43-cand` `dfc4ae16…`、worker `peri-loom-v1-r43-cand` `27d8dd46…`），
+3 轮 × 4 腿，样本 20/30/50，组间 ≥2s，无观测器。逐轮中位（ms，base A1/A4 → cand B2/B3）：
+- json：r1 0.790/1.214 → 0.513/0.704；r2 0.799/0.807 → 0.547/0.503；r3 0.700/0.701 → 0.470/0.508。
+- pb：r1 0.769/0.768 → 0.506/0.530；r2 0.772/0.798 → 0.519/0.524；r3 0.737/0.752 → 0.494/0.491。
+
+6 样本中位：json **0.794→0.510ms（−35.7%）**、pb **0.768→0.513ms（−33.3%）**；同轮配对中位
+json −39.3/−34.6/−30.2%、pb −32.6/−33.5/−33.8%，**6/6 同向**。响应字节 312/40 与基线一致，
+全部运行 `warnings=[]`、无 429/错误。对 R42 候选（0.635ms）本轮 close 融合单独贡献约 −0.125ms，
+约为探针投影的 2 倍；未进一步归因。
+
+**回归门**（5 样本/腿，A/B/B/A，≥2s）：L1 **1.388→1.231ms（−11.3%）**、B1 json 2.249→2.337
+（+3.9%）、B1 pb 2.375→2.300（−3.2%）、C1 0.373→0.361（−3.2%）、H1 cursor json 149.59 vs
+145.13ms（A4 的 233.59ms 为宿主离群，A1 对候选 −3.0%）、pb 127.40→121.64（−4.5%）。
+X1 复测 2 轮 A/B/B/A：c1 候选 0.52–0.61 vs 基线 0.73–0.83ms，c4 接近，c8/c16 两侧均出现宿主瞬态
+（候选 2.35–6.52 / 4.93–23.84ms，基线 1.95–2.54 / 2.57–20.79ms），方向不可确认；全部运行
+429=0、errors=0、verdict PASS，结束时 `session_seats=0`、`active_permits=0`。
+
+**正确性/测试**：新增 Go `gateway_fused_close_test.go`（+377，8 个融合 close 用例 + 表驱动形态/资格）
+与 `gateway_fused_open_test.go` 更新；Rust `statement_worker.rs` +168（融合 close 成功、`requires_intent`
+不关闭、SQL 错误仍关闭、关闭后会话不可用且 close 幂等、未知字段 → 400）。质量门：`cargo fmt --check`
+干净；clippy `-D warnings` 退出码 0（仅 9 条上游 `turso_core` 警告）；`statement_worker`
+**42 passed / 0 failed**；`cargo test --release --locked --lib`（`ulimit -n 92160`）
+**677 passed / 0 failed / 10 ignored**；`go build ./cmd/peri-platform ./cmd/peri`、`go vet ./...` 干净；
+平台 `go test -count=1 .` **PASS（180.3s，运行两次）**；定向 `-race` PASS（69.6s）。本轮复核：
+`go build`/`go vet`/`fmt`、定向 Go 融合用例（ok 1.494s）、Rust `fused_close` 3 passed / 0 failed。
+
+**配置与二进制**：默认配额（`max_sessions=16`、`max_concurrent=100`、`rps=500`、
+`max_result_bytes=4MiB`），`audit.durability_source=audit_file_v1`（未启用 v2 完成日志），
+local backend、无 TLS；fixture 201 threads / 8625 messages / 20177069 chars。两侧均未开观测器。
+harness 的 `metadata.git_revision` 对两侧都写 `6d5c9da`（读取工作区 HEAD），两侧身份以二进制
+SHA256 与端口区分。
+
+**剩余风险/未测量**：
+1. 未做真实 `sessions.close` 失败的 Rust 集成测试（Go mock 覆盖平台回退，Rust 分支仅代码审查）。
+2. 未做崩溃恢复 E2E：融合把 worker 会话退役提前到语句回复内，平台若在 close 记录持久化前崩溃，
+   恢复仍按现有 fail-closed 规则把 pending open 视为未解决并隔离——与 R37 已接受的「掉电丢 close
+   尾记录」同类，窗口约等于被省去的 close 入口时间；本轮未实测该窗口。
+3. 只覆盖精确 `[execute, close]` 形态；cursor close、批量读、写路径不变。
+4. capability 正缓存不主动失效（与 R42 相同），worker 降级需缓存过期或平台重启。
+5. 融合 close 条目抑制 describe→cursor 回退（只读、无数据副作用），属有意的窄行为变化。
+6. X1 c8/c16 环境敏感，本轮不宣称并发收益；无容量/SLA 结论。
+7. 本分支包含 R42 的 cherry-pick `d41ca9d`：R42 单独轮次未达 20% 的判决不变，本轮的 A/B 基线是
+   不含 R42 的 `main`，收益为 R42+R43 合计；close 融合单独贡献约 −0.125ms（R42 候选 0.635→0.510）。
+8. 证据在 `/tmp/peri-perf/`（`r43ab-*`、`r43reg*`、`r43warm-*`；脚本 `r43-ab.sh`、`r43-reg.sh`、
+   `r43-rpc-count.py`、`r43-shapes.py`），非持久目录。
+
+**下一轮提示**：F1 json 已到 0.510ms、pb 0.513ms；剩余成本是平台两次 HTTP 编解码 + close 入口的
+记录/准入，以及 worker 侧每条语句的固定原生时间。继续压 F1 需要减少每请求的 HTTP 往返或复用会话
+（会改变会话语义）；更高价值的方向转向 c64 容量路径（R37 之后的 completion 槽位、审计批），
+或按 R23 的结论处理 worker 每查询固定原生时间。
 
 ## 代码约定
 
