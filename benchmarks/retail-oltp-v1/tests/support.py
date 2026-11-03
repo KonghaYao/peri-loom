@@ -16,6 +16,12 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from pl_retail.call_profiles import (  # noqa: E402
+    DEFAULT_PROFILE_NAME,
+    PROFILES,
+    CallProfile,
+    resolve_profile,
+)
 from pl_retail.contract import (  # noqa: E402
     driver_digest,
     load_contract,
@@ -26,6 +32,7 @@ WINDOW_NS = 120_000_000_000
 T0 = 1_000_000_000_000
 
 READ_PHASES = ("begin", "query", "commit")
+AUTOCOMMIT_READ_PHASES = ("query",)
 CHECKOUT_PHASES = (
     "begin_immediate",
     "prices",
@@ -41,18 +48,41 @@ CHECKOUT_PHASES = (
     "payment_insert",
     "commit",
 )
-HTTP_CALLS = {
-    "product_stock": 3,
-    "order_detail": 3,
-    "customer_orders": 3,
-    "stock_report": 3,
-    "checkout": 13,
-}
+MERGED_CHECKOUT_PHASES = (
+    "begin_immediate",
+    "prices",
+    "stock_merged",
+    "wallet",
+    "warehouse",
+    "order_insert",
+    "order_lines",
+    "payment_insert",
+    "commit",
+)
+HTTP_CALLS = dict(PROFILES[DEFAULT_PROFILE_NAME].expected_http_calls)
 BUSINESS = tuple(HTTP_CALLS)
 
 
-def _phases(business: str, attempt_id: str) -> list[dict[str, Any]]:
-    labels = CHECKOUT_PHASES if business == "checkout" else READ_PHASES
+def _phases(
+    business: str,
+    attempt_id: str,
+    profile: CallProfile,
+    defects: set[str],
+) -> list[dict[str, Any]]:
+    if business == "checkout":
+        labels = (
+            MERGED_CHECKOUT_PHASES if profile.stock_mode == "merged" else CHECKOUT_PHASES
+        )
+    elif profile.read_mode == "autocommit":
+        # ``autocommit_commit_tail`` is the negative twin of the normal shape:
+        # it keeps the one-call count but ends the attempt on a commit label.
+        labels = (
+            ("commit",)
+            if "autocommit_commit_tail" in defects
+            else AUTOCOMMIT_READ_PHASES
+        )
+    else:
+        labels = READ_PHASES
     return [
         {
             "label": label,
@@ -73,11 +103,13 @@ def _attempt(
     window: str,
     started_ns: int,
     latency_ms: float,
+    profile: CallProfile,
+    defects: set[str],
     terminal: str = "read_ok",
 ) -> dict[str, Any]:
     attempt_id = "%s-w%02d-%06d" % (round_id, worker, index)
     success = terminal in {"read_ok", "committed_ack"}
-    phases = _phases(business, attempt_id)
+    phases = _phases(business, attempt_id, profile, defects)
     if not success:
         phases = phases[:-1] + [
             {"label": "commit", "status": 400, "code": "known_failure", "latency_ms": 1.0,
@@ -101,7 +133,8 @@ def _attempt(
         "success": success,
         "stop_fixture": False,
         "unexpected": False,
-        "http_calls": HTTP_CALLS[business],
+        "http_calls": len(phases),
+        "call_profile": profile.name,
         "http_request_ids": [phase["request_id"] for phase in phases],
         "bytes_sent": 10,
         "bytes_received": 10,
@@ -214,6 +247,7 @@ def _write_round(
     round_id: str,
     level: str,
     contract,
+    profile: CallProfile,
     *,
     successes_per_class: int = 400,
     defects: set[str] | None = None,
@@ -256,6 +290,8 @@ def _write_round(
                 "warmup",
                 T0 - 10_000_000_000 + index,
                 5.0,
+                profile,
+                defects,
                 "committed_ack" if business == "checkout" else "read_ok",
             )
         )
@@ -280,6 +316,8 @@ def _write_round(
                     "measure",
                     measure_start + (index - warmups) * step,
                     latency,
+                    profile,
+                    defects,
                     "committed_ack" if business == "checkout" else "read_ok",
                 )
             )
@@ -294,13 +332,26 @@ def _write_round(
                 "measure",
                 measure_start + (index - warmups) * step,
                 3.0,
+                profile,
+                defects,
                 "service_unknown",
             )
         )
     if "bad_http_calls" in defects:
         attempts.append(
             {
-                **_attempt(round_id, 0, index + 2, "checkout", "measure", measure_start + 10, 4.0, "committed_ack"),
+                **_attempt(
+                    round_id,
+                    0,
+                    index + 2,
+                    "checkout",
+                    "measure",
+                    measure_start + 10,
+                    4.0,
+                    profile,
+                    defects,
+                    "committed_ack",
+                ),
                 "http_calls": 12,
             }
         )
@@ -322,10 +373,20 @@ def build_bundle(
     repetitions: int | None = None,
     defects: set[str] | None = None,
     include_cleanup_ab: bool = True,
+    call_profile: str = DEFAULT_PROFILE_NAME,
 ) -> Path:
     """Write a complete synthetic evidence bundle and return its root."""
     defects = defects or set()
     contract = load_contract(None)
+    profile = resolve_profile(call_profile)
+    # ``baseline_calls`` keeps the attempts at the frozen 3/13 shape while
+    # run.json still declares the requested profile: the contradiction the
+    # scorer must reject.
+    attempt_profile = (
+        resolve_profile(DEFAULT_PROFILE_NAME)
+        if "baseline_calls" in defects
+        else profile
+    )
     repetitions = repetitions if repetitions is not None else int(
         contract.document["matrix"]["repetitions"]
     )
@@ -340,11 +401,11 @@ def build_bundle(
         for level in levels:
             round_id = "r%02d-%s" % (repetition, level)
             rounds.append(round_id)
-            _write_round(writer, round_id, level, contract, defects=defects)
+            _write_round(writer, round_id, level, contract, attempt_profile, defects=defects)
         for level in ("L1", "H1", "IDLE"):
             round_id = "r%02d-%s" % (repetition, level)
             rounds.append(round_id)
-            _write_round(writer, round_id, level, contract, defects=defects)
+            _write_round(writer, round_id, level, contract, attempt_profile, defects=defects)
     if include_cleanup_ab and mode == "full":
         for repetition in range(1, repetitions + 1):
             round_id = "r%02d-CLEANUP" % repetition
@@ -375,6 +436,7 @@ def build_bundle(
         "window_seconds": 120.0,
         "warmups_per_worker": int(contract.document["matrix"]["warmups_per_worker"]),
         "levels": [{"name": name, "concurrency": int(contract.document["matrix"]["levels"][name]["concurrency"]), "mode": contract.document["matrix"]["levels"][name]["mode"]} for name in levels],
+        "call_profile": profile.as_dict(),
         "driver_sha256": driver_digest(),
         "contract": {
             "path": str(contract.path),

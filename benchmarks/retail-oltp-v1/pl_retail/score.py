@@ -15,6 +15,14 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+from .call_profiles import (
+    DEFAULT_PROFILE_NAME,
+    PROFILES,
+    CallProfile,
+    expected_http_calls,
+    resolve_profile,
+    success_tail_label,
+)
 from .contract import Contract, driver_digest, load_contract
 from .errors import Status
 
@@ -29,13 +37,10 @@ ALL_TERMINALS = (
     | UNEXPECTED_TERMINALS
 )
 
-EXPECTED_HTTP_CALLS = {
-    "product_stock": 3,
-    "order_detail": 3,
-    "customer_orders": 3,
-    "stock_report": 3,
-    "checkout": 13,
-}
+#: The frozen v1.0 call shape.  Kept as a constant for readers and existing
+#: callers, but derived from the profile table so there is one authority; the
+#: per-run expectation comes from the profile recorded in run.json.
+EXPECTED_HTTP_CALLS = dict(PROFILES[DEFAULT_PROFILE_NAME].expected_http_calls)
 READ_CLASSES = ("product_stock", "order_detail", "customer_orders", "stock_report")
 BUSINESS_CLASSES = READ_CLASSES + ("checkout",)
 
@@ -302,6 +307,7 @@ def _load_round(
     round_id: str,
     contract: Contract,
     run: dict[str, Any],
+    call_profile: CallProfile,
 ) -> RoundResult:
     level = round_id.split("-", 1)[1] if "-" in round_id else "UNKNOWN"
     concurrency = 0
@@ -389,7 +395,7 @@ def _load_round(
     result.verify["violations"] = _verify_violations(verify)
 
     if result.level in PERFORMANCE_LEVELS:
-        _score_performance_round(root, recorded, contract, result, record)
+        _score_performance_round(root, recorded, contract, result, record, call_profile)
     elif result.level == "L1":
         _score_load_round(result, record, contract)
     elif result.level == "H1":
@@ -472,7 +478,9 @@ def _score_performance_round(
     contract: Contract,
     result: RoundResult,
     record: dict[str, Any],
+    call_profile: CallProfile,
 ) -> None:
+    expected_calls = expected_http_calls(call_profile)
     relative = "rounds/%s/attempts.jsonl" % result.round_id
     path = _require_files(root, recorded, relative, result)
     if path is None:
@@ -539,7 +547,7 @@ def _score_performance_round(
         business = attempt.get("business")
         terminal = attempt.get("terminal")
         window_name = attempt.get("window")
-        if business not in EXPECTED_HTTP_CALLS:
+        if business not in expected_calls:
             result.invalid("%s: unknown business %r" % (attempt_id, business))
             continue
         if terminal not in ALL_TERMINALS:
@@ -548,12 +556,24 @@ def _score_performance_round(
         if window_name not in {"warmup", "measure"}:
             result.invalid("%s: unknown window %r" % (attempt_id, window_name))
             continue
+        recorded_profile = attempt.get("call_profile")
+        if recorded_profile is not None and recorded_profile != call_profile.name:
+            result.invalid(
+                "%s: attempt was recorded under call profile %r, run.json fixes %r"
+                % (attempt_id, recorded_profile, call_profile.name)
+            )
         if attempt.get("success") != (terminal in SUCCESS_TERMINALS):
             result.invalid("%s: success flag disagrees with terminal" % attempt_id)
-        if int(attempt.get("http_calls") or 0) != EXPECTED_HTTP_CALLS[business]:
+        if int(attempt.get("http_calls") or 0) != expected_calls[business]:
             result.invalid(
-                "%s: %s used %r HTTP calls, contract fixes %d"
-                % (attempt_id, business, attempt.get("http_calls"), EXPECTED_HTTP_CALLS[business])
+                "%s: %s used %r HTTP calls, profile %s fixes %d"
+                % (
+                    attempt_id,
+                    business,
+                    attempt.get("http_calls"),
+                    call_profile.name,
+                    expected_calls[business],
+                )
             )
         started_ns = attempt.get("started_ns")
         finished_ns = attempt.get("finished_ns")
@@ -571,10 +591,20 @@ def _score_performance_round(
                 http_ids.add(str(phase["request_id"]))
         if terminal in SUCCESS_TERMINALS:
             last = phases[-1] if phases else {}
-            if not isinstance(last, dict) or last.get("label") != "commit":
-                result.invalid("%s: successful attempt does not end with COMMIT" % attempt_id)
+            tail = success_tail_label(call_profile, business)
+            if not isinstance(last, dict) or last.get("label") != tail:
+                if tail == "commit":
+                    result.invalid("%s: successful attempt does not end with COMMIT" % attempt_id)
+                else:
+                    result.invalid(
+                        "%s: successful %s read does not end with its query"
+                        % (attempt_id, call_profile.name)
+                    )
             elif last.get("status") != 200 or last.get("code"):
-                result.invalid("%s: COMMIT did not succeed" % attempt_id)
+                if tail == "commit":
+                    result.invalid("%s: COMMIT did not succeed" % attempt_id)
+                else:
+                    result.invalid("%s: the read query did not succeed" % attempt_id)
         if attempt.get("stop_fixture"):
             stopped = True
         terminals[terminal] = terminals.get(terminal, 0) + 1
@@ -896,6 +926,35 @@ def _aggregate_level(
 # -- main scoring ----------------------------------------------------------
 
 
+def _recorded_call_profile(
+    run: dict[str, Any], violations: list[str]
+) -> CallProfile:
+    """Resolve the profile the evidence was produced under.
+
+    A bundle from before the profile layer carries no ``call_profile`` and is
+    the baseline by definition.  An unknown name, or modes that disagree with
+    the profile table, invalidate the bundle instead of guessing which shape
+    the attempts were supposed to have.
+    """
+    recorded = run.get("call_profile")
+    if recorded is None:
+        return resolve_profile(DEFAULT_PROFILE_NAME)
+    name = recorded.get("name") if isinstance(recorded, dict) else recorded
+    profile = PROFILES.get(name) if isinstance(name, str) else None
+    if profile is None:
+        violations.append("run.json call_profile %r is not a known profile" % (name,))
+        return resolve_profile(DEFAULT_PROFILE_NAME)
+    if isinstance(recorded, dict):
+        for key in ("read_mode", "stock_mode"):
+            value = recorded.get(key)
+            if value is not None and value != getattr(profile, key):
+                violations.append(
+                    "run.json call_profile %s is %r, profile %s fixes %r"
+                    % (key, value, profile.name, getattr(profile, key))
+                )
+    return profile
+
+
 def score_run(
     root: Path,
     contract: Contract,
@@ -926,6 +985,7 @@ def score_run(
         violations.append("run mode %r is not full or smoke" % mode)
     if mode == "smoke" and run.get("certifiable") is True:
         violations.append("smoke runs cannot be certifiable")
+    call_profile = _recorded_call_profile(run, violations)
 
     listed_files = {
         path.relative_to(root).as_posix()
@@ -949,7 +1009,9 @@ def score_run(
     expected = _expected_rounds(contract, run)
     rounds: list[RoundResult] = []
     for round_id in expected:
-        rounds.append(_load_round(root, recorded, round_id, contract, run))
+        rounds.append(
+            _load_round(root, recorded, round_id, contract, run, call_profile)
+        )
 
     level_order = list(contract.document["matrix"]["levels"])
     levels: dict[str, Any] = {}
@@ -1111,6 +1173,7 @@ def score_run(
             "version": contract.version,
             "profile": contract.profile,
             "sha256": contract.sha256,
+            "call_profile": call_profile.as_dict(),
         },
         "run": {
             "run_id": run.get("run_id"),
@@ -1215,6 +1278,11 @@ def emit_scorecards(
 def print_summary(scorecard: dict[str, Any]) -> None:
     print("PL-RETAIL-OLTP scorecard")
     print("contract: %(version)s profile: %(profile)s" % scorecard["contract"])
+    call_profile = scorecard["contract"].get("call_profile") or {}
+    print(
+        "call profile: %s (%s/%s)"
+        % (call_profile.get("name"), call_profile.get("read_mode"), call_profile.get("stock_mode"))
+    )
     print("status: %s" % scorecard["status"])
     print("certifiable: %s" % scorecard["run"]["certifiable"])
     for name, document in scorecard["dimensions"].items():

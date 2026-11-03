@@ -151,6 +151,69 @@ class ScorerTests(unittest.TestCase):
         self.assertEqual(scorecard["status"], "INCONCLUSIVE")
         self.assertFalse(scorecard["run"]["certifiable"])
 
+    def test_app_read_stock_profile_evidence_passes(self) -> None:
+        root = Path(tempfile.mkdtemp()) / "bundle"
+        support.build_bundle(root, call_profile="app-read-stock-v1")
+        scorecard = score_run(root, self.contract)
+        self.assertEqual(scorecard["status"], "PASS", scorecard["failures"])
+        self.assertEqual(
+            scorecard["contract"]["call_profile"],
+            {"name": "app-read-stock-v1", "read_mode": "autocommit", "stock_mode": "merged"},
+        )
+
+    def test_a_bundle_without_a_call_profile_is_the_baseline(self) -> None:
+        root, _ = self._score()
+        run_path = root / "run.json"
+        run = json.loads(run_path.read_text(encoding="utf-8"))
+        run.pop("call_profile", None)
+        writer = EvidenceWriter(root, reuse_manifest=True)
+        writer.write_json("run.json", run)
+        writer.finalize()
+        scorecard = score_run(root, self.contract)
+        self.assertEqual(scorecard["status"], "PASS", scorecard["failures"])
+        self.assertEqual(scorecard["contract"]["call_profile"]["name"], "baseline-v1")
+
+    def test_profile_call_counts_are_enforced(self) -> None:
+        # Attempts keep the baseline 3/13 shape while run.json declares the
+        # 1/9 profile: the scorer must notice the contradiction.
+        _, scorecard = self._score(
+            call_profile="app-read-stock-v1", defects={"baseline_calls"}
+        )
+        self.assertEqual(scorecard["status"], "INVALID")
+        self.assertTrue(
+            any("HTTP calls" in failure for failure in scorecard["failures"]),
+            scorecard["failures"][:5],
+        )
+
+    def test_an_autocommit_read_must_end_with_its_query(self) -> None:
+        _, scorecard = self._score(
+            call_profile="app-read-v1", defects={"autocommit_commit_tail"}
+        )
+        self.assertEqual(scorecard["status"], "INVALID")
+        self.assertTrue(
+            any("does not end with its query" in failure for failure in scorecard["failures"]),
+            scorecard["failures"][:5],
+        )
+
+    def test_unknown_call_profile_invalidates(self) -> None:
+        root, _ = self._score()
+        run_path = root / "run.json"
+        run = json.loads(run_path.read_text(encoding="utf-8"))
+        run["call_profile"] = {
+            "name": "no-such-profile",
+            "read_mode": "autocommit",
+            "stock_mode": "merged",
+        }
+        writer = EvidenceWriter(root, reuse_manifest=True)
+        writer.write_json("run.json", run)
+        writer.finalize()
+        scorecard = score_run(root, self.contract)
+        self.assertEqual(scorecard["status"], "INVALID")
+        self.assertTrue(
+            any("call_profile" in failure for failure in scorecard["failures"]),
+            scorecard["failures"][:5],
+        )
+
     def test_exit_codes_are_fail_closed(self) -> None:
         self.assertEqual(EXIT_CODES[Status.PASS], 0)
         for status in (Status.FAIL, Status.INVALID, Status.INCONCLUSIVE,
