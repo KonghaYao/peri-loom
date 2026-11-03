@@ -237,6 +237,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R39 | `perf/issue28-r39-image-gate-shared` / `0b879c9`（merge `446d3fb`） | worker 镜像刷新闸门由互斥改为共享/独占租约：数据面 open/begin/close 持共享租约并发，镜像替换持独占租约（写者优先、双边 deadline、释放即唤醒） | 上限探针（闸门直通、未合入，`3b4b85c2…`，两轮交替）：X1 c16 p50 **7.63→3.54 / 7.29→4.17ms**（−42.8%~−53.6%），c1 不变。配对 A/B（8 轮/侧，json-pipeline，100 请求/档，两侧全新同数据卷，基线 worker `3f2a5175…` vs 候选 `13129acb…`）：c1 0.82→0.79（−3.6%，噪声）、c4 **1.32→0.96（−27.6%）**、c8 **3.06→2.05（−32.9%）**、c16 **9.83→5.36（−45.5%）**；p25 同向 −26.7%~−37.4%。同龄新栈对照（`run-base3` 基线 worker）：c4 1.37/1.40 vs 0.88/1.18、c16 6.29/7.33 vs 4.59/4.71 | 合入 main：回归门 F1 −8.2%、L1 0%、B1 −5.7%、C1 +1.4%、H1 −6.3%、H3 −2.0%，无 >10% 回归；Rust lib 677 passed / 0 failed，clippy/fmt 干净；测量期间 0×429、0 错误、`session_seats`/`active_permits` 归零 |
 | R40 | 无代码改动（探针轮，未合入） | 审计头检查点（witness）频率：把 `state_disk.go` 的 `auditBatchMaximum` 32→256 构建探针平台二进制（`aefcb903…`，源码已还原）；动机是 R39 窗口 `head_checkpoint_attempts_total` 1,111 次 / 24.2s（均值 21.8ms） | 机制核验：X1 每轮检查点 **39→5（−87%）**；B1+F1 窗口 11→1（209→20ms）。端到端：F1 p50 0.78/0.87→1.01/0.91ms、B1 2.11/2.17→2.30/2.24ms（均未改善）；X1 c16 基线 3.72/2.96/4.07/6.19ms vs 探针 3.49/190.70/33.11/38.55ms（B2 起 429/错误后劣化；B3/B4 无 429 仍 33–39ms）。归因：检查点停顿同时充当审计批的合并延迟，去掉后 X1 每轮追加 fsync **50→170**，B3/B4 审计总 I/O ≈1.1s vs 基线 1.06s | 上限不成立（无 ≥10% 改善，小查询不改善），不实现、不申请耐久语义授权；分支与提交均无，探针二进制留证。附带发现：X1 在候选明显更快时会耗尽 500 rps 配额出现 429（B1 c4 100 请求 86ms），运行间需留间隔 |
 | R41 | `perf/r41-session-open-local-validate` / `e4b39ac`（未合入，留证） | `RemoteDatabase::session()` 与 `is_readonly()` 不再为打开会话/探测只读发 authority `validate_session`/`validate_transaction` 往返：`ObjectStore` 新增带默认实现的 `validate_session_local`/`validate_transaction_local`（无权威的存储回退完整校验），`ContextStore` 只跑 generation + `context.check`（保留 draining 拒绝新事务），`MetricsObjectStore` 透传 | 上限探针（在 Validate RPC 前直接返回 Ok，源码已还原，`5819171f…`，A/B/B/A 20 样本）：F1 json 0.77/0.79→0.47/0.46ms（−39%）、pb 0.66/0.69→0.42/0.44ms（−36%）。Gate 0：20 条 pipeline 的 authority `validate_session` **40→20**（每请求恰少一次）。配对 A/B（6 轮，两侧独立预热栈，A/B 交错，组间 ≥2s）：F1 json 中位 **0.764→0.629ms（−17.6%，配对中位 −17.5%）**、pb **0.714→0.582ms（−18.4%，配对中位 −19.1%）**，6/6 轮同向 | 未达门槛、不合入：F1 属 <10ms 场景，仓库协议要求 ≥20%，实测 −17.6%/−18.4%；回归门无 >10% 可复现退化（L1/C1/X1 c1 反而改善，B1 有单点抖动、H1 持平），分支与提交留证 |
+| R42 | `perf/r42-fused-open-statement` / `0bc488b`（未合入，留证） | Hrana 隐式 open 与首条顶层只读 execute 融合为一个私有 worker 命令 `open_guarded_statement`（capability 探测、旧 worker 400 回退、写语句返回 `requires_intent` 后走原提交路径）：每请求 authority `validate_session` 2→1、worker RTT 3→2 | Gate 0：20 条 pipeline 的 `validate_session` **40→20**。配对 A/B（3 轮 A/B/B/A，两侧独立平台+worker 二进制、各自全新同数据卷）：F1 json 中位 **0.766→0.635ms（−17.1%，配对中位 −17.4%，6/6 同向）**、pb **0.819→0.593ms（−27.5%，配对中位 −29.1%，6/6 同向）**；响应字节 312/40 不变 | 未达门槛、不合入：F1 属 <10ms 场景，协议要求 ≥20%；pb 达标、JSON −17.1% 未达（与 R41 的 −17.6% 同量级）。回归门无 >10% 可复现退化（L1 −8.0%、B1 json −4.3%/pb −1.1%、H1 +3.2%/+2.0%、C1 首轮单腿瞬时停顿复测不复现、X1 c1/c4 候选更快、c16 环境敏感，全程 429=0）。分支留证 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1395,6 +1396,101 @@ worker 两侧各从对应源码 release 构建；平台两侧同为 `c8cf19fe…
 **下一轮提示**：F1 剩余的 authority 校验在 execute 路径（每请求 1 次），移除它会改变数据操作前的
 安全语义，不在性能轮范围内。更大的结构性杠杆仍是会话生命周期：每请求 open+close 约 387 qps /
 p50 2.15ms，而复用一条 baton 约 1,650–1,697 qps / p50 1.34ms（≈0.8ms/op），但改动面远大于本轮。
+
+#### R42：Hrana 隐式 open 融合首条只读语句（2026-11-03，protobuf 达标、JSON 未达 20%，不合入）
+
+**归因**：R41 记录显示 F1 形态 pipeline（`execute SELECT 1` + `close`）在 `main` 上恰好花 **2 次**
+authority `validate_session`（open 一次、execute 一次），open 侧那次约 0.14ms / 0.88ms ≈16%。
+本轮不删校验，而是把「隐式 open」与「首条顶层只读 execute」合并成一次 worker 请求：在同一 lease
+window 内先开会话再执行语句，authority 校验只付一次，同时省掉一次 worker RTT（无操作
+`capabilities` RTT p50 0.074ms）。
+
+**改动**（分支 `perf/r42-fused-open-statement` / `0bc488b`，14 文件 +1134/−28）：
+- Rust：新增 `WorkerCommand::OpenGuardedStatement`（`src/worker_rpc/protocol.rs`）；`dispatch.rs`
+  按 `open_session` 打开会话，再在同一请求的 lease window 内 `begin` + `guarded_readonly_statement`，
+  返回 `{session, readonly, statement}`；语句由 worker 引擎判定只读，写语句在步进前返回
+  `requires_intent`，因此该命令自身不可能提交；`capabilities` 增加 `{"open_guarded_statement":1}`
+  （仅 v1）；`sessions.rs::result_row_count` 读取融合结果行数。
+- Go：`gateway_fused_open.go` 承载请求上下文标记、私有命令构造与严格校验、capability 探测
+  （独立负缓存 TTL）、应答解析与 `fusedGuardedStatement`（重跑准入、结果预算 413、写语句走
+  `committingStatement` 的 durable intent、同样的失败分类与 unknown 语义）；`hrana_fused_open.go`
+  只对「隐式 open + 首条 execute」提供候选并校验回包；`hrana_http.go`/`hrana_protobuf.go` 只在
+  隐式 open 分支融合，批计划从下一条开始；`gateway_sessions.go` 在 open 内计算候选、发送融合命令，
+  旧 worker 返回 400 时重建普通 open 并重试一次。
+- 边界：融合语句仍是只读；open 仍在派发前通过 `verifyNonCommittingAdmission`；open/close 记录仍按
+  R11 的「回复后写一条已结算记录」；公共协议不变（`fused_statement` 只出现在进程内适配器拼接的
+  open 结果里，外部 `/v1/sql/open` 不携带）。
+
+**Gate 0（机制核验）**：同一 diag 栈（`PERI_DIAG_SLOW=1 PERI_DIAG_RPC_LINK=1`）上 20 条
+`SELECT 1` + `close` pipeline 的 authority `validate_session` 计数 **40→20**
+（`{"delta":{"validate_session":20},"requests":20}`），即每请求恰少一次。
+
+**A/B 结果**（两侧独立预热栈：基线平台 `c8cf19fe…` + worker `13129acb…`，候选平台 `ac976bc7…` +
+worker `b48b8b55…`；同一导入 fixture；3 轮 × 每轮 A/B/B/A，样本 20/30/50，组间 ≥2s）：
+
+| 轮次 | 每侧样本 | 基线 json / pb（ms） | 候选 json / pb（ms） | json 变化 | pb 变化 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 20 | 0.796 / 0.879 | 0.711 / 0.643 | −10.7% | −26.9% |
+| 2 | 30 | 0.824 / 0.780 | 0.635 / 0.609 | −22.9% | −22.0% |
+| 3 | 50 | 0.727 / 0.814 | 0.560 / 0.563 | −23.0% | −30.8% |
+
+- 6 个 run 中位数取中位：json **0.766→0.635ms（−17.1%）**、pb **0.819→0.593ms（−27.5%）**；
+  **6/6 轮同向**（配对差值区间 json −8.7%~−31.6%、pb −15.5%~−36.1%）。
+- 同一轮内配对差值的中位：json **−17.4%**、pb **−29.1%**。
+- 候选侧 `query_ms` 0.006–0.013ms vs 基线 0.14–0.17ms：融合命令走 guarded statement 的引擎计时
+  口径，属口径差异，不作为收益。
+- 响应字节 json 312 / pb 40，与基线一致。
+
+**判定：protobuf 达标、JSON 未达 20%，不合入。** F1 属 <10ms 场景，`CLAUDE.md` 性能实验协议
+（2026-10-30 用户指定）要求主指标 ≥20%。pb −27.5%（配对 −29.1%，6/6 同向）达标；JSON −17.1%
+（配对 −17.4%，6/6 同向）未达，且与 R41 独立测得的 −17.6% 同量级。按「判据先冻结、例外须用户批准」
+的规则，本轮整体不合入；分支与提交 `0bc488b` 保留作证据，`main` 保持 `d88c2a1`。若用户批准例外，
+可直接 `git merge --no-ff perf/r42-fused-open-statement`（Gate 0、回归门、质量门均已通过）。
+
+**回归门**（5 样本/轮，A/B/B/A，同一对二进制）：
+- L1.list-20 json：1.414/1.374→1.247/1.317ms（侧中位 −8.0%，改善）；
+- B1.batch-20 json：2.708/2.458→2.620/2.326ms（−4.3%）；protobuf：2.338/2.479→2.430/2.334ms
+  （−1.1%，噪声）；
+- C1.baton-10 json：首轮 B3 腿出现 0.63–0.91ms 的瞬时停顿（p50 0.63 vs 其他腿 0.34–0.37），
+  复测 A1/B2/B3/A4 = 0.551/0.366/0.371/0.371ms，**不复现**；
+- X1 json：首轮 c16 = 18.11/15.33/3.92/3.20ms（前两腿受宿主瞬时影响），复测 3.22/2.76/11.52/3.57ms；
+  c1/c4 候选更快（c1 0.74/0.75→0.60/0.61，复测 0.79/0.77→0.59/0.68）；全程 **429=0、errors=0**；
+- H1.content-20mb（cursor）：json 148.21/145.36→150.12/152.90ms（侧中位 +3.2%）、
+  pb 126.87/124.44→126.55/129.68ms（+2.0%），均在噪声内；响应字节 20,608,525 / 20,272,006 两侧一致。
+- 无 >10% 且可复现的退化；X1 c16 仍为环境敏感项。
+
+**配置**：fixture 201 threads / 8,625 messages / 20,177,069 chars；v1 耐久（`audit_file_v1`）；
+配额 max_databases 8、max_sessions 16、max_concurrent 100、rps 500、max_sql_bytes 65536、
+max_result_bytes 4194304；127.0.0.1、无 TLS；A/B 期间无观测器。Rust 1.98.1 / Go 1.27.3 / macOS arm64。
+平台基线 `c8cf19fe…`、候选 `ac976bc7…`；worker 基线 `13129acb…`、候选 `b48b8b55…`。
+harness 的 `platform_label` 记录的是检出 HEAD（`0bc488b`），两侧相同，实际二进制以 SHA 为准。
+
+**正确性 / 测试**：`cargo fmt --check` 干净；`cargo clippy --all-targets --no-deps -- -D warnings`
+通过；`cargo test --release --locked --lib`（`ulimit -n 92160`）**677 passed / 0 failed / 10 ignored**；
+`cargo test --release --locked --test statement_worker fused_open` 4/4、`capabilities_answer…` 1/1；
+`go build ./cmd/peri-platform ./cmd/peri`、`go vet ./...` 干净；`go test -count=1 .`（platform 包，
+由执行会话运行）通过（171.7s）；本轮复核定向融合用例 `go test -run 'TestHranaFused|TestFusedOpen…' .`
+通过。新增 11 个 Go 用例覆盖 JSON/pb 融合、旧 worker 400 回退 + 负缓存、`requires_intent` 提交路径、
+语句错误保留会话、unknown 不重放不隔离、批计划起点、结果预算、私有命令校验；Rust 侧 4 个融合用例。
+
+**剩余风险 / 未测量**：
+1. 本轮**没有做写生产代码前的上限探针**（直接采用反思估算），是本轮对单轮流程的唯一偏离；
+   Gate 0、A/B、回归门与质量门均已完成。
+2. 融合语句在 open 请求内执行，早于 `dispatchLocked` 的逐语句准入（隔离/配额复查）；open 本身在
+   派发前已通过 `verifyNonCommittingAdmission`，且 worker 在步进前证明只读，最坏情况是一条只读
+   语句在随后被拒的请求中执行过（无数据效果）。
+3. capability 正缓存 60s 不主动失效；worker 升级需缓存过期或平台重启（与 R5 的只读批相同）。
+4. 适配器首条语句与融合语句不匹配时会重发该只读语句（不产生重复的可见效果）。
+5. 未做崩溃恢复 E2E：本轮不改变耐久时点或 fencing（open 记录仍按 R11 在回复后写），但融合命令
+   把语句执行提前到 open 请求内。
+6. 证据在 `/tmp/peri-perf/`（`r42ab-*`、`r42reg2-*`、`r42reg3-*`、`r42warm-*`、`r42-diag*`；
+   脚本 `r42-ab.sh`、`r42-reg2.sh`、`r42-reg-h1.sh`、`r42-reg-c1x1.sh`、`r42-rpc-count.py`），
+   非持久目录。
+
+**下一轮提示**：融合后 F1 json 仍有 0.635ms，剩余成本主要在 close 路径（1 次 worker RTT +
+`close_session` + 审计）与平台侧两次 HTTP 编解码；pb 已到 0.593ms，JSON 的额外开销来自 JSON
+编解码本身，继续压 JSON 不在 worker RTT。若用户批准 R42 例外合入，下一步可在其之上评估
+「close 与最后一条语句融合」的上限；否则从 `main` 重新选向。
 
 ## 代码约定
 
