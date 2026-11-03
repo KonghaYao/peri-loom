@@ -69,6 +69,8 @@ class ConcurrencyMetrics:
     requests: int
     status_counts: dict
     error_codes: dict
+    planned: int = 0
+    allow_expected_limit: bool = False
 
 
 @dataclass
@@ -92,7 +94,10 @@ class Runner:
             rounds: int = 3,
             warmup: int = 1,
             samples: int = 5,
-            metrics: MetricsApi | None = None):
+            metrics: MetricsApi | None = None,
+            concurrency_requests: int = 100):
+        if concurrency_requests < 1:
+            raise ValueError("concurrency_requests must be at least 1")
         self.target = target
         self.fixture = fixture
         self.scenarios = scenarios
@@ -100,6 +105,7 @@ class Runner:
         self.warmup = warmup
         self.samples = samples
         self.metrics = metrics
+        self.concurrency_requests = concurrency_requests
         self.result = RunResult()
         self._clients: dict[str, HranaClient] = {}
         self._concurrency_clients: list[HranaClient] = []
@@ -311,21 +317,29 @@ class Runner:
             before = self._metrics_snapshot("before %d" % level)
             started = time.monotonic()
             local = threading.local()
+            planned = self.concurrency_requests
+            measurements: list[Measurement] = []
+            fatal: FatalTransportError | None = None
             with concurrent.futures.ThreadPoolExecutor(max_workers=level) as pool:
-                futures = [
-                    pool.submit(self._concurrent_one, spec, protocol, local, level, index)
-                    for index in range(100)
-                ]
-                measurements = []
+                futures = {
+                    pool.submit(self._concurrent_one, spec, protocol, local, level, index): index
+                    for index in range(planned)
+                }
                 for future in concurrent.futures.as_completed(futures):
+                    index = futures[future]
                     try:
                         measurements.append(future.result())
-                    except FatalTransportError:
-                        raise
+                    except FatalTransportError as error:
+                        measurements.append(self._failed_measurement(
+                            spec, protocol, level, index, error, "transport_error"))
+                        if fatal is None:
+                            fatal = error
                     except Exception as error:  # noqa: BLE001 - keep evidence
+                        measurements.append(self._failed_measurement(
+                            spec, protocol, level, index, error, "driver_error"))
                         self.result.warnings.append(
-                            "concurrency level %d request failed: %s" % (
-                                level, type(error).__name__))
+                            "concurrency level %d request %d failed: %s" % (
+                                level, index + 1, type(error).__name__))
             elapsed_ms = (time.monotonic() - started) * 1000.0
             with self._concurrency_lock:
                 clients = list(self._concurrency_clients)
@@ -334,6 +348,7 @@ class Runner:
                 client.close()
             after = self._metrics_snapshot("after %d" % level)
             drained, drain_ms = self._drain_metrics(level)
+            measurements.sort(key=lambda item: item.sample_index)
             status_counts: dict[str, int] = {}
             error_codes: dict[str, int] = {}
             for item in measurements:
@@ -350,11 +365,26 @@ class Runner:
                 requests=len(measurements),
                 status_counts=status_counts,
                 error_codes=error_codes,
+                planned=planned,
+                allow_expected_limit=spec.expect_result_limit,
             ))
             durations = sorted(item.duration_ms for item in measurements)
-            print("  X1 concurrency=%-2d n=%d elapsed=%.0fms p50=%.2fms p95=%.2fms p99=%.2fms 429=%d" % (
-                level, len(durations), elapsed_ms, _p50(durations), _p95(durations),
+            print("  X1 concurrency=%-2d n=%d/%d elapsed=%.0fms p50=%.2fms p95=%.2fms p99=%.2fms 429=%d" % (
+                level, len(durations), planned, elapsed_ms, _p50(durations), _p95(durations),
                 _p99(durations), status_counts.get("429", 0)), file=sys.stderr)
+            if fatal is not None:
+                raise fatal
+
+    def _failed_measurement(self, spec, protocol, level: int, index: int,
+                            error: Exception, outcome: str) -> Measurement:
+        return Measurement(
+            scenario=spec.key, protocol=protocol.name, kind=spec.kind,
+            phase="timed", round_index=1, sample_index=index + 1,
+            status=0, duration_ms=0.0, ttfb_ms=0.0,
+            request_bytes=0, response_bytes=0, rows=0, rows_read=0,
+            rows_written=0, affected_row_count=0, query_ms=None,
+            outcome=outcome, error_code=type(error).__name__,
+            detail=self._redact(str(error)), concurrency=level)
 
     def _concurrent_one(self, spec, protocol, local, level: int, index: int) -> Measurement:
         client = getattr(local, "client", None)
