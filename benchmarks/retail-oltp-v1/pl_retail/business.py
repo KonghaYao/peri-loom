@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .call_profiles import CallProfile, resolve_profile
 from .client import HranaClient, Reply, classify_transport
 from .errors import Terminal
 from .generate import fixed_text
@@ -72,6 +73,22 @@ PAYMENT_INSERT_SQL = (
     "INSERT INTO payments (order_id, customer_id, amount_cents, note) VALUES (?, ?, ?, ?)"
 )
 
+#: The ``merged`` stock profile collapses the five checkout decrements into one
+#: statement.  The parameter order is fixed and must stay positional: this
+#: client only sends positional arguments, so ``:p1`` would arrive as NULL.
+#: Five (product_id, qty) pairs feed the decrement CASE, then the warehouse id,
+#: then the five product ids for IN, then the same five pairs feed the guard
+#: CASE.  The guard is evaluated per row, so a short product only skips its own
+#: row: the other qualified rows are still decremented and the caller must roll
+#: the transaction back when fewer than five rows changed.
+MERGED_STOCK_UPDATE_SQL = (
+    "UPDATE stock SET available_qty = available_qty - CASE product_id "
+    "WHEN ? THEN ? WHEN ? THEN ? WHEN ? THEN ? WHEN ? THEN ? WHEN ? THEN ? END "
+    "WHERE warehouse_id = ? AND product_id IN (?, ?, ?, ?, ?) "
+    "AND available_qty >= CASE product_id "
+    "WHEN ? THEN ? WHEN ? THEN ? WHEN ? THEN ? WHEN ? THEN ? WHEN ? THEN ? END"
+)
+
 DEFAULT_BUDGET_SECONDS = 5.0
 
 
@@ -122,10 +139,20 @@ class BusinessOutcome:
 class Session:
     """One worker's independent session and reused HTTP connection."""
 
-    def __init__(self, client: HranaClient, budget_seconds: float = DEFAULT_BUDGET_SECONDS):
+    def __init__(
+        self,
+        client: HranaClient,
+        budget_seconds: float = DEFAULT_BUDGET_SECONDS,
+        profile: CallProfile | None = None,
+    ):
         self.client = client
         self.budget_seconds = budget_seconds
+        self.profile = resolve_profile(None) if profile is None else profile
         self.baton: str | None = None
+        # Tracks an explicitly opened transaction.  An autocommit read is only
+        # legal while this is False; an unknown COMMIT/ROLLBACK keeps it True
+        # because the server state is unproven and the fixture stops anyway.
+        self.in_transaction = False
 
     def open(self) -> None:
         reply = self.client.open()
@@ -267,6 +294,9 @@ def _read(
     args: tuple,
     check: Callable[[list[list[Any]], PlannedOp], str | None],
 ) -> BusinessOutcome:
+    if session.profile.read_mode == "autocommit" and not session.in_transaction:
+        return _read_autocommit(session, trace, op, success_terminal, sql, args, check)
+
     reply = session.execute(BEGIN)
     trace.add("begin", reply)
     verdict, reason = _verdict(reply)
@@ -290,6 +320,7 @@ def _read(
             },
             trace=trace,
         )
+    session.in_transaction = True
 
     reply = session.execute(sql, args=args, want_rows=True)
     trace.add("query", reply)
@@ -353,6 +384,103 @@ def _read(
             trace=trace,
             stop_fixture=not rollback,
             isolation_required=not rollback,
+        )
+    session.in_transaction = False
+    return BusinessOutcome(
+        terminal=success_terminal,
+        detail={"kind": op.kind, "rows": len(rows)},
+        trace=trace,
+    )
+
+
+def _read_autocommit(
+    session: Session,
+    trace: AttemptTrace,
+    op: PlannedOp,
+    success_terminal: str,
+    sql: str,
+    args: tuple,
+    check: Callable[[list[list[Any]], PlannedOp], str | None],
+) -> BusinessOutcome:
+    """One SELECT, no BEGIN/COMMIT and therefore no ROLLBACK.
+
+    The statement is its own transaction, so a failed or ambiguous reply has
+    no transaction to clean up.  Sending ROLLBACK would be a second attempt
+    against a session whose state is not proven; the outcome records that no
+    rollback was sent instead of pretending the read is transactional.
+    """
+    reply = session.execute(sql, args=args, want_rows=True)
+    trace.add("query", reply)
+    verdict, reason = _verdict(reply)
+    if verdict == "unknown":
+        return BusinessOutcome(
+            terminal=Terminal.SERVICE_UNKNOWN.value,
+            detail={
+                "stage": "query",
+                "reason": reason,
+                "kind": op.kind,
+                "rollback_sent": False,
+                "rollback_reason": "autocommit_no_transaction",
+            },
+            trace=trace,
+            stop_fixture=True,
+            isolation_required=True,
+        )
+    if verdict == "known_not_executed":
+        return BusinessOutcome(
+            terminal=Terminal.KNOWN_FAILURE_ROLLED_BACK.value,
+            detail={
+                "stage": "query",
+                "reason": reason,
+                "kind": op.kind,
+                "rollback_sent": False,
+                "rollback_reason": "autocommit_no_transaction",
+            },
+            trace=trace,
+            execution_proven_not_started=True,
+        )
+    if verdict != "ok":
+        return BusinessOutcome(
+            terminal=Terminal.KNOWN_FAILURE_ROLLED_BACK.value,
+            detail={
+                "stage": "query",
+                "reason": reason,
+                "kind": op.kind,
+                "rollback_sent": False,
+                "rollback_reason": "autocommit_statement_failed",
+            },
+            trace=trace,
+        )
+
+    rows = reply.results[0].rows if reply.results else None
+    if rows is None:
+        return BusinessOutcome(
+            terminal=Terminal.SERVICE_UNKNOWN.value,
+            detail={
+                "stage": "query",
+                "reason": "missing_rows",
+                "kind": op.kind,
+                "rollback_sent": False,
+                "rollback_reason": "autocommit_no_transaction",
+            },
+            trace=trace,
+            stop_fixture=True,
+            isolation_required=True,
+        )
+    problem = check(rows, op)
+    if problem is not None:
+        return BusinessOutcome(
+            terminal=Terminal.UNEXPECTED_ERROR.value,
+            detail={
+                "stage": "business_check",
+                "reason": problem,
+                "kind": op.kind,
+                "rollback_sent": False,
+                "rollback_reason": "autocommit_no_transaction",
+            },
+            trace=trace,
+            stop_fixture=True,
+            unexpected=True,
         )
     return BusinessOutcome(
         terminal=success_terminal,
@@ -440,6 +568,13 @@ def _checkout(
     round_id: str,
 ) -> BusinessOutcome:
     items = list(op.params["items"])
+    merged_items: tuple[tuple[int, int], ...] | None = None
+    if session.profile.stock_mode == "merged":
+        # Validate the plan before the first statement: a malformed batch must
+        # not open a transaction or touch stock at all.
+        merged_items, problem = _ordered_merged_items(items)
+        if problem is not None:
+            return _invalid_merged_items(trace, problem)
     if len(items) != 5:
         raise ValueError("checkout requires exactly five items")
     warehouse_id = int(op.params["warehouse_id"])
@@ -459,6 +594,7 @@ def _checkout(
             rollback=False,
             not_executed=verdict == "known_not_executed",
         )
+    session.in_transaction = True
 
     reply = session.execute(PRICE_SQL, args=tuple(pid for pid, _ in items), want_rows=True)
     trace.add("prices", reply)
@@ -484,30 +620,35 @@ def _checkout(
     if total <= 0:
         return _abort_unexpected(session, trace, "prices", "checkout total is not positive")
 
-    for index, (pid, qty) in enumerate(items):
-        reply = session.execute(
-            STOCK_UPDATE_SQL, args=(int(qty), warehouse_id, int(pid), int(qty))
-        )
-        trace.add("stock_%d" % index, reply)
-        verdict, reason = _verdict(reply)
-        if verdict == "unknown":
-            return _unknown(trace, "stock_%d" % index, reason, "checkout")
-        if verdict != "ok":
-            return _known_with_rollback(
-                session,
-                trace,
-                "stock_%d" % index,
-                reason,
-                "checkout",
-                not_executed=verdict == "known_not_executed",
+    if merged_items is not None:
+        blocked = _stock_merged(session, trace, merged_items, warehouse_id)
+        if blocked is not None:
+            return blocked
+    else:
+        for index, (pid, qty) in enumerate(items):
+            reply = session.execute(
+                STOCK_UPDATE_SQL, args=(int(qty), warehouse_id, int(pid), int(qty))
             )
-        affected = _affected(reply)
-        if affected is None:
-            return _unknown(trace, "stock_%d" % index, "missing_affected_rows", "checkout")
-        if affected != 1:
-            return _known_with_rollback(
-                session, trace, "stock_%d" % index, "stock_unavailable", "checkout"
-            )
+            trace.add("stock_%d" % index, reply)
+            verdict, reason = _verdict(reply)
+            if verdict == "unknown":
+                return _unknown(trace, "stock_%d" % index, reason, "checkout")
+            if verdict != "ok":
+                return _known_with_rollback(
+                    session,
+                    trace,
+                    "stock_%d" % index,
+                    reason,
+                    "checkout",
+                    not_executed=verdict == "known_not_executed",
+                )
+            affected = _affected(reply)
+            if affected is None:
+                return _unknown(trace, "stock_%d" % index, "missing_affected_rows", "checkout")
+            if affected != 1:
+                return _known_with_rollback(
+                    session, trace, "stock_%d" % index, "stock_unavailable", "checkout"
+                )
 
     reply = session.execute(WALLET_UPDATE_SQL, args=(total, customer_id, total))
     trace.add("wallet", reply)
@@ -602,6 +743,7 @@ def _checkout(
             session, trace, "commit", reason, "checkout",
             not_executed=verdict == "known_not_executed",
         )
+    session.in_transaction = False
 
     ledger = {
         "request_key": request_key,
@@ -621,6 +763,117 @@ def _checkout(
         trace=trace,
         ledger=ledger,
     )
+
+
+def _ordered_merged_items(
+    items: list[Any],
+) -> tuple[tuple[tuple[int, int], ...] | None, str | None]:
+    """Normalize checkout items for the merged update, or name the defect.
+
+    The merged statement matches rows by product id, so duplicates would make
+    one CASE branch unreachable and the affected-row count meaningless.  The
+    plan draws five distinct products with quantities 1..3; anything else is a
+    plan defect, not a database condition.
+    """
+    if len(items) != 5:
+        return None, "checkout requires exactly five items"
+    normalized: list[tuple[int, int]] = []
+    for item in items:
+        try:
+            product_id, qty = item
+        except (TypeError, ValueError):
+            return None, "checkout item is not a product id and quantity pair"
+        if qty is True or not isinstance(qty, int) or not 1 <= qty <= 3:
+            return None, "checkout quantity is outside 1..3: %r" % (qty,)
+        try:
+            product_id_value = int(product_id)
+        except (TypeError, ValueError):
+            return None, "checkout product id is not an integer: %r" % (product_id,)
+        normalized.append((product_id_value, qty))
+    if len({product_id for product_id, _ in normalized}) != 5:
+        return None, "checkout product ids are not distinct"
+    return tuple(sorted(normalized, key=lambda pair: pair[0])), None
+
+
+def _invalid_merged_items(trace: AttemptTrace, reason: str) -> BusinessOutcome:
+    # Nothing was dispatched, so there is nothing to roll back; the fixture
+    # stops because a later attempt would validate against unknown data.
+    return BusinessOutcome(
+        terminal=Terminal.UNEXPECTED_ERROR.value,
+        detail={
+            "stage": "validate",
+            "reason": reason,
+            "kind": "checkout",
+            "rollback_sent": False,
+            "rollback_reason": "invalid_plan",
+        },
+        trace=trace,
+        stop_fixture=True,
+        unexpected=True,
+    )
+
+
+def _stock_merged(
+    session: Session,
+    trace: AttemptTrace,
+    ordered_items: tuple[tuple[int, int], ...],
+    warehouse_id: int,
+) -> BusinessOutcome | None:
+    """Run the single merged decrement; ``None`` means all five rows moved.
+
+    The guard CASE is per row, so a shortage changes only the other rows and
+    returns fewer than five affected rows; that is the same
+    ``stock_unavailable`` condition the per-item path detects, and the caller
+    rolls the whole transaction back.
+    """
+    args: list[Any] = []
+    for product_id, qty in ordered_items:
+        args.extend((product_id, qty))
+    args.append(warehouse_id)
+    args.extend(product_id for product_id, _ in ordered_items)
+    for product_id, qty in ordered_items:
+        args.extend((product_id, qty))
+
+    reply = session.execute(MERGED_STOCK_UPDATE_SQL, args=tuple(args))
+    trace.add("stock_merged", reply)
+    verdict, reason = _verdict(reply)
+    if verdict == "unknown":
+        return _unknown(trace, "stock_merged", reason, "checkout")
+    if verdict != "ok":
+        return _known_with_rollback(
+            session,
+            trace,
+            "stock_merged",
+            reason,
+            "checkout",
+            not_executed=verdict == "known_not_executed",
+        )
+    affected = _affected(reply)
+    if affected is None:
+        return _unknown(trace, "stock_merged", "missing_affected_rows", "checkout")
+    if affected < 5:
+        return _known_with_rollback(
+            session, trace, "stock_merged", "stock_unavailable", "checkout"
+        )
+    if affected > 5:
+        # One row per product is the only legal outcome; more means the
+        # statement matched something the plan never asked for.
+        confirmed = _rollback(session, trace)
+        return BusinessOutcome(
+            terminal=Terminal.UNEXPECTED_ERROR.value,
+            detail={
+                "stage": "stock_merged",
+                "reason": "merged_stock_affected_more_than_five",
+                "kind": "checkout",
+                "rollback_sent": True,
+                "rollback_confirmed": confirmed,
+            },
+            trace=trace,
+            stop_fixture=True,
+            isolation_required=not confirmed,
+            unexpected=True,
+        )
+    return None
 
 
 def _affected(reply: Reply) -> int | None:
@@ -768,9 +1021,14 @@ def _rollback(session: Session, trace: AttemptTrace) -> bool:
     trace.add("rollback", reply)
     verdict, reason = _verdict(reply)
     if verdict == "ok":
+        session.in_transaction = False
         return True
     if verdict == "known_not_executed":
         # The server proved the rollback was not dispatched.  That is only
         # acceptable when it also proves there is no transaction to roll back.
-        return "no transaction" in (reply.message or "").lower()
+        if "no transaction" in (reply.message or "").lower():
+            session.in_transaction = False
+            return True
+    # Unknown or refused: the transaction may still be open, so the flag stays
+    # set and the session is not reused.
     return False
