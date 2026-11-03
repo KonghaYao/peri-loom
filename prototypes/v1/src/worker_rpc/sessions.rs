@@ -49,94 +49,131 @@ pub(super) struct Sessions {
 #[derive(Default)]
 struct RefreshLocks(Mutex<BTreeMap<DatabaseId, Weak<RefreshGate>>>);
 
-/// Serialises the image-refresh section of one database without polling.
+/// Coordinates the stateful commands of one database with image replacement.
 ///
-/// The mutex is shared by every stateful command of a database (`open`, `begin`, `close`,
-/// `health`), so a 2ms retry loop put a fixed sleep on the request path whenever two of them
-/// overlapped. The handoff keeps the same mutual exclusion and deadline while waking the next
-/// waiter as soon as the section ends: the guarded work itself is microseconds, so the wake
-/// replaces the poll.
+/// Every `open`/`begin`/`close` needs the image to stay stable while it runs, but not to
+/// exclude the other commands: the previous mutual exclusion queued their native session
+/// work (hundreds of microseconds each) behind one another, so the same-database gate became
+/// the throughput ceiling of concurrent pipelines. Commands now take the gate shared and run
+/// concurrently; a replacement takes it exclusively, which waits for the in-flight commands
+/// and keeps new ones out until the swap is done.
+///
+/// A waiting writer blocks later readers so an arriving stream of shared sections cannot
+/// starve it. Deadlines are honoured on both sides, and every state change wakes all waiters
+/// so a timed-out caller never leaves the others parked until their own deadline.
 #[derive(Default)]
 struct RefreshGate {
-    held: Mutex<bool>,
-    released: Condvar,
+    state: Mutex<GateState>,
+    changed: Condvar,
 }
 
-struct RefreshGuard<'gate>(&'gate RefreshGate);
+#[derive(Default)]
+struct GateState {
+    readers: usize,
+    writer: bool,
+    writers_waiting: usize,
+}
+
+enum RefreshGuard<'gate> {
+    Shared(&'gate RefreshGate),
+    Exclusive(&'gate RefreshGate),
+}
+
+impl RefreshGuard<'_> {
+    fn gate(&self) -> &RefreshGate {
+        match self {
+            RefreshGuard::Shared(gate) | RefreshGuard::Exclusive(gate) => gate,
+        }
+    }
+}
 
 impl Drop for RefreshGuard<'_> {
     fn drop(&mut self) {
-        let mut held = self
-            .0
-            .held
+        let gate = self.gate();
+        let mut state = gate
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *held = false;
-        drop(held);
-        self.0.released.notify_one();
+        match self {
+            RefreshGuard::Shared(_) => state.readers -= 1,
+            RefreshGuard::Exclusive(_) => state.writer = false,
+        }
+        drop(state);
+        gate.changed.notify_all();
     }
 }
 
 impl RefreshGate {
-    /// Non-blocking attempt for maintenance sweeps: a held section is skipped, never waited on.
-    fn try_lock(&self) -> Result<Option<RefreshGuard<'_>>> {
-        let mut held = self
-            .held
+    /// Non-blocking exclusive attempt for maintenance sweeps: a busy gate is skipped, never
+    /// waited on.
+    fn try_exclusive(&self) -> Result<Option<RefreshGuard<'_>>> {
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
-        if *held {
+        if state.writer || state.readers > 0 || state.writers_waiting > 0 {
             return Ok(None);
         }
-        *held = true;
-        Ok(Some(RefreshGuard(self)))
+        state.writer = true;
+        Ok(Some(RefreshGuard::Exclusive(self)))
     }
 
-    fn lock_until(&self, deadline: Instant) -> Result<RefreshGuard<'_>> {
-        let mut held = self
-            .held
+    fn share_until(&self, deadline: Instant) -> Result<RefreshGuard<'_>> {
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
         loop {
             if Instant::now() >= deadline {
-                return Err(self.expire(held));
+                return Err(AdmissionError::Deadline.into());
             }
-            if !*held {
-                *held = true;
-                return Ok(RefreshGuard(self));
+            if !state.writer && state.writers_waiting == 0 {
+                state.readers += 1;
+                return Ok(RefreshGuard::Shared(self));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(self.expire(held));
+                return Err(AdmissionError::Deadline.into());
             }
-            let (guard, timeout) = self
-                .released
-                .wait_timeout(held, remaining)
+            let (next, _) = self
+                .changed
+                .wait_timeout(state, remaining)
                 .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
-            held = guard;
-            if timeout.timed_out() {
-                if *held {
-                    drop(held);
-                    // Hand the wakeup on: the notified waiter may give up on its deadline
-                    // before it can take the section, and nobody else would wake the
-                    // remaining sleepers.
-                    self.released.notify_one();
-                    return Err(AdmissionError::Deadline.into());
-                }
-                return Err(self.expire(held));
-            }
+            state = next;
         }
     }
 
-    /// A waiter that consumed a release notification can reach its deadline before it
-    /// acquires the mutex. When the section is free that wakeup belongs to the sleepers
-    /// behind it, so forward it instead of leaving them parked until the next release.
-    fn expire(&self, held: std::sync::MutexGuard<'_, bool>) -> anyhow::Error {
-        let free = !*held;
-        drop(held);
-        if free {
-            self.released.notify_one();
-        }
-        AdmissionError::Deadline.into()
+    fn exclusive_until(&self, deadline: Instant) -> Result<RefreshGuard<'_>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("image refresh mutex poisoned"))?;
+        state.writers_waiting += 1;
+        let outcome = loop {
+            if Instant::now() >= deadline {
+                break Err(AdmissionError::Deadline.into());
+            }
+            if !state.writer && state.readers == 0 {
+                state.writer = true;
+                break Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break Err(AdmissionError::Deadline.into());
+            }
+            match self.changed.wait_timeout(state, remaining) {
+                Ok((next, _)) => state = next,
+                Err(poisoned) => {
+                    let (next, _) = poisoned.into_inner();
+                    state = next;
+                }
+            }
+        };
+        state.writers_waiting -= 1;
+        drop(state);
+        // A writer that gives up removes the readers' barrier, so the waiters must re-check.
+        self.changed.notify_all();
+        outcome.map(|()| RefreshGuard::Exclusive(self))
     }
 }
 
@@ -219,8 +256,7 @@ impl Sessions {
         // opens, so a slow S3 or a large WAL outliving this request is not a cancelled load.
         let _waiter_deadline = crate::runtime::WaiterDeadlineScope::until(deadline);
         let refresh = self.image_refresh.for_database(database)?;
-        let _refresh = refresh.lock_until(deadline)?;
-        self.refresh_initial_image(database)?;
+        let _pin = self.pin_image(&refresh, database, deadline)?;
         ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         let handle = Arc::new(self.runtime.open_session(database)?);
         // The cold load is allowed to outrun the RPC deadline: `WorkerRuntime::open`
@@ -291,10 +327,33 @@ impl Sessions {
     pub fn begin(&self, identifier: &str, deadline: Instant) -> Result<SessionCall> {
         let database = self.entry(identifier)?.database.clone();
         let refresh = self.image_refresh.for_database(&database)?;
-        let _refresh = refresh.lock_until(deadline)?;
-        self.refresh_initial_image(&database)?;
+        let _pin = self.pin_image(&refresh, &database, deadline)?;
         ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         self.entry(identifier)?.begin(identifier)
+    }
+
+    /// Keeps the database image stable for one stateful command.
+    ///
+    /// The common path takes the shared side and returns without waiting for other sessions.
+    /// A pending replacement must commit first: the exclusive side waits for the in-flight
+    /// commands, the swap is applied once, and the command then runs under the exclusive
+    /// guard so it still observes a stable image.
+    fn pin_image<'gate>(
+        &self,
+        gate: &'gate RefreshGate,
+        database: &DatabaseId,
+        deadline: Instant,
+    ) -> Result<RefreshGuard<'gate>> {
+        let shared = gate.share_until(deadline)?;
+        if !self.runtime.initial_image_replaced(database)? {
+            return Ok(shared);
+        }
+        drop(shared);
+        let exclusive = gate.exclusive_until(deadline)?;
+        if self.runtime.initial_image_replaced(database)? {
+            self.refresh_initial_image(database)?;
+        }
+        Ok(exclusive)
     }
 
     fn refresh_initial_image(&self, database: &DatabaseId) -> Result<()> {
@@ -373,7 +432,7 @@ impl Sessions {
         }
         let entry = self.entry(identifier)?;
         let refresh = self.image_refresh.for_database(&entry.database)?;
-        let _refresh = refresh.lock_until(deadline)?;
+        let _pin = refresh.share_until(deadline)?;
         let entry = self.entry(identifier).or_else(|_| {
             self.registry
                 .lock()
@@ -437,7 +496,7 @@ impl Sessions {
         let refresh = self.image_refresh.for_database(database)?;
         // Administrative teardown has no request deadline; the generous cap only keeps a
         // wedged peer from parking the caller forever.
-        let _refresh = refresh.lock_until(Instant::now() + Duration::from_secs(60))?;
+        let _refresh = refresh.exclusive_until(Instant::now() + Duration::from_secs(60))?;
         self.clear_matching(|entry| entry.database == *database)
     }
 
@@ -496,7 +555,7 @@ impl Sessions {
             .collect();
         for (id, entry) in entries {
             let refresh = self.image_refresh.for_database(&entry.database)?;
-            let _refresh = match refresh.try_lock()? {
+            let _refresh = match refresh.try_exclusive()? {
                 Some(guard) => guard,
                 None => continue,
             };
@@ -523,7 +582,7 @@ impl Sessions {
         crate::ownership::types::validate_label(owner)?;
         crate::ownership::types::validate_label(request)?;
         let refresh = self.image_refresh.for_database(&binding.database)?;
-        let _refresh = refresh.lock_until(deadline)?;
+        let _refresh = refresh.exclusive_until(deadline)?;
         let registry = self
             .registry
             .lock()
@@ -790,12 +849,12 @@ mod tests {
         let a_second = locks.for_database(&a)?;
         assert!(Arc::ptr_eq(&a_lock, &a_second));
         let held = a_lock
-            .lock_until(Instant::now() + Duration::from_secs(5))
+            .exclusive_until(Instant::now() + Duration::from_secs(5))
             .unwrap();
-        assert!(a_second.try_lock().unwrap().is_none());
+        assert!(a_second.try_exclusive().unwrap().is_none());
         let b_lock = locks.for_database(&b)?;
         let _b_held = b_lock
-            .try_lock()
+            .try_exclusive()
             .unwrap()
             .expect("unrelated database must proceed");
         drop(held);
@@ -803,7 +862,7 @@ mod tests {
         drop(a_lock);
         let replacement = locks.for_database(&a)?;
         assert_eq!(locks.0.lock().unwrap().len(), 2);
-        assert!(replacement.try_lock().unwrap().is_some());
+        assert!(replacement.try_exclusive().unwrap().is_some());
         Ok(())
     }
 
@@ -823,48 +882,81 @@ mod tests {
     }
 
     #[test]
-    fn an_expired_waiter_hands_its_wakeup_to_the_next_sleeper() -> anyhow::Result<()> {
+    fn shared_sections_run_concurrently_and_hold_back_the_exclusive_section() -> anyhow::Result<()>
+    {
         let gate = Arc::new(RefreshGate::default());
-        for attempt in 0..8 {
-            let guard = gate.lock_until(Instant::now() + Duration::from_secs(5))?;
-            let (short_tx, short_rx) = mpsc::channel();
-            let short_gate = Arc::clone(&gate);
-            let short = std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_millis(200);
-                short_tx
-                    .send(short_gate.lock_until(deadline).is_ok())
-                    .unwrap();
-            });
-            std::thread::sleep(Duration::from_millis(30));
-            let (long_tx, long_rx) = mpsc::channel();
-            let long_gate = Arc::clone(&gate);
-            let long = std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(2);
-                long_tx
-                    .send(long_gate.lock_until(deadline).is_ok())
-                    .unwrap();
-            });
-            std::thread::sleep(Duration::from_millis(30));
-            // Signal the first waiter well before its deadline, then keep the mutex
-            // past that deadline. It wakes as signalled, but finds the deadline gone
-            // once it re-acquires the mutex, so it must forward the wakeup.
-            std::mem::forget(guard);
-            {
-                let mut held = gate.held.lock().unwrap();
-                *held = false;
-                gate.released.notify_one();
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            let short_ok = short_rx.recv_timeout(Duration::from_secs(1))?;
-            let long_ok = long_rx.recv_timeout(Duration::from_secs(1))?;
-            short.join().unwrap();
-            long.join().unwrap();
-            assert!(!short_ok, "attempt {attempt}: the short waiter must expire");
-            assert!(
-                long_ok,
-                "attempt {attempt}: the long waiter lost the wakeup"
-            );
-        }
+        let first = gate.share_until(Instant::now() + Duration::from_secs(5))?;
+        // A second shared section must not wait for the first one: that is the whole point of
+        // the split, because every stateful command of a database takes the shared side.
+        let second = gate.share_until(Instant::now() + Duration::from_secs(5))?;
+        assert!(gate.try_exclusive()?.is_none(), "a shared holder remains");
+        drop(first);
+        assert!(
+            gate.try_exclusive()?.is_none(),
+            "the last shared holder still runs"
+        );
+        drop(second);
+        assert!(gate.try_exclusive()?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn a_waiting_writer_keeps_new_readers_out() -> anyhow::Result<()> {
+        let gate = Arc::new(RefreshGate::default());
+        let held = gate.share_until(Instant::now() + Duration::from_secs(5))?;
+        let writer_gate = Arc::clone(&gate);
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let guard = writer_gate
+                .exclusive_until(Instant::now() + Duration::from_secs(2))
+                .unwrap();
+            acquired_tx.send(()).unwrap();
+            drop(guard);
+        });
+        // Give the writer time to park so the probe below meets `writers_waiting > 0`.
+        std::thread::sleep(Duration::from_millis(50));
+        let blocked = gate.share_until(Instant::now() + Duration::from_millis(50));
+        assert!(
+            blocked.is_err(),
+            "a new reader must not overtake a waiting writer"
+        );
+        drop(held);
+        acquired_rx.recv_timeout(Duration::from_secs(1))?;
+        writer.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn a_timed_out_writer_does_not_park_the_other_waiters() -> anyhow::Result<()> {
+        let gate = Arc::new(RefreshGate::default());
+        let held = gate.exclusive_until(Instant::now() + Duration::from_secs(5))?;
+        let (short_tx, short_rx) = mpsc::channel();
+        let short_gate = Arc::clone(&gate);
+        let short = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(120);
+            short_tx
+                .send(short_gate.exclusive_until(deadline).is_ok())
+                .unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        let (long_tx, long_rx) = mpsc::channel();
+        let long_gate = Arc::clone(&gate);
+        let long = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            long_tx
+                .send(long_gate.exclusive_until(deadline).is_ok())
+                .unwrap();
+        });
+        // The short waiter expires while the section is still held. The release must wake the
+        // longer waiter even though nobody else touched the gate in between.
+        std::thread::sleep(Duration::from_millis(200));
+        drop(held);
+        let short_ok = short_rx.recv_timeout(Duration::from_secs(1))?;
+        let long_ok = long_rx.recv_timeout(Duration::from_secs(1))?;
+        short.join().unwrap();
+        long.join().unwrap();
+        assert!(!short_ok, "the short waiter must expire");
+        assert!(long_ok, "the long waiter lost the wakeup");
         Ok(())
     }
 
@@ -879,17 +971,17 @@ mod tests {
         let (ready, started) = mpsc::channel();
         let slow = std::thread::spawn(move || {
             let _guard = a_lock
-                .lock_until(Instant::now() + Duration::from_secs(5))
+                .exclusive_until(Instant::now() + Duration::from_secs(5))
                 .unwrap();
             ready.send(()).unwrap();
             std::thread::sleep(Duration::from_millis(500));
         });
         started.recv()?;
         let first = Instant::now();
-        let _healthy = b_lock.lock_until(first + Duration::from_millis(250))?;
+        let _healthy = b_lock.exclusive_until(first + Duration::from_millis(250))?;
         let waiting_a = locks.for_database(&a)?;
         let failure = waiting_a
-            .lock_until(Instant::now() + Duration::from_millis(30))
+            .exclusive_until(Instant::now() + Duration::from_millis(30))
             .err()
             .expect("a held section must time out");
         assert!(failure.downcast_ref::<AdmissionError>() == Some(&AdmissionError::Deadline));
