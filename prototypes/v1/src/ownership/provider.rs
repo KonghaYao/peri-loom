@@ -109,11 +109,9 @@ impl ObjectStore for ContextStore {
     }
 
     fn validate_session(&self) -> Result<()> {
-        self.generation()?;
-        self.context.check(None)?;
-        self.inner.validate_session()?;
-        self.context.check(None)?;
-        self.generation()
+        // Upper-bound probe only: the authority round trip is removed entirely so
+        // the measurement answers what one validation costs on this path.
+        self.validate_local()
     }
 
     fn validate_session_local(&self) -> Result<()> {
@@ -121,11 +119,8 @@ impl ObjectStore for ContextStore {
     }
 
     fn validate_transaction(&self, in_transaction: bool) -> Result<()> {
-        self.generation()?;
-        self.context.check(Some(in_transaction))?;
-        self.inner.validate_transaction(in_transaction)?;
-        self.context.check(Some(in_transaction))?;
-        self.generation()
+        // Upper-bound probe only: no authority round trip on this path.
+        self.validate_transaction_local(in_transaction)
     }
 
     fn validate_transaction_local(&self, in_transaction: bool) -> Result<()> {
