@@ -1,0 +1,6 @@
+probe-delay	06a2c417a3161924b0a43f98da5d623bf20c29faf878bf31aa5f572ee23a9535	/tmp/bench-bin/peri-platform-r37probe
+probe-drop-close-job	1000641227a5e795172bee6741a70d7f0b72c3d1e11b254d648372587b01f77f	/tmp/bench-bin/peri-platform-r37drop
+probe-skip-close-submit	7a95f53970ff937f29f0a9bd355cef4a519184044a83fd74b7982cf6b0256af3	/tmp/bench-bin/peri-platform-r37drop2
+production-r37b	a353454d6f0d6129dcb11ee4ab727b2799858101061b020277ecc6b620f5d720	/tmp/bench-bin/peri-platform-r37b
+worker-r24b	2921e355d996761007add5f17561ce78dba94edb0de3f8b41ba15510b694e008	/tmp/bench-bin/peri-loom-v1-r24b
+probe-commits b7f0d0d 248ddf4 055d1ee (perf/issue30-r37-crash-probe, not merged)
