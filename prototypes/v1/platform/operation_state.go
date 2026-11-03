@@ -144,9 +144,11 @@ func removeKnownDatabaseOperations(state *State, database controller.DatabaseID)
 }
 
 // submitOperationRecords applies one operation edit and returns the wait function for its
-// barrier. The caller must call it before replying to a client, but it is deliberately not
-// part of the edit: dropping the namespace fence before the wait is what lets two commits of
-// one namespace share a barrier instead of paying one fsync each.
+// barrier. The edit must be queued before the reply; a committing operation also pays the
+// barrier before it, while a provably non-committing one may hand the barrier to the account
+// that pays it after the reply. The wait stays outside the edit: dropping the namespace fence
+// before it is what lets two commits of one namespace share a barrier instead of paying one
+// fsync each.
 func submitOperationRecords(store StateStore, change func(*operationEdit) error) (func() error, error) {
 	if change == nil {
 		change = func(*operationEdit) error { return nil }
@@ -405,8 +407,9 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 // edit, not only the new record, so an action that finishes another one (a close
 // discharging the open it closed) does it inside the same batch and the same
 // barrier. submit queues the edit and hands back the barrier, so the namespace
-// fence is released before the request waits on it: two settlements of the same
-// database then share one fsync instead of queueing behind each other.
+// fence is released before the request waits on it - or hands it to the account
+// that pays it after the reply: two settlements of the same database then share
+// one fsync instead of queueing behind each other.
 func settleNonCommittingOperationUsing(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, apply func(*operationEdit, *OperationRecord) error, submit func(func(*operationEdit) error) (func() error, error)) (string, error) {
 	operationID, err := controller.RandomID()
 	if err != nil {

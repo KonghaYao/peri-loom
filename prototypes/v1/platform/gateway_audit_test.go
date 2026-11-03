@@ -180,6 +180,10 @@ func TestGatewayAuditCapacityRefusesBeforeDispatch(test *testing.T) {
 	fixture, service, _ := gatewayFileAuditFixture(test)
 	audit := service.(*fileAudit)
 	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	// The open's audit row is paid after its reply, so its completion slot is
+	// still held here; only after the deferred account drained is the budget
+	// entirely free for the reservations this test takes.
+	fixture.gateway.deferred.wait()
 	held := make([]AuditReservation, 0, auditCompletionMaximum)
 	for index := 0; index < auditCompletionMaximum; index++ {
 		reservation, err := audit.ReserveCompletion()
@@ -224,6 +228,9 @@ func TestGatewayRejectionStormKeepsCompletionCapacity(test *testing.T) {
 	fixture, service, _ := gatewayFileAuditFixture(test)
 	audit := service.(*fileAudit)
 	session := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	// The open's audit row is paid after its reply; the gate below is written
+	// from this goroutine and read by the writer, so the writer must be idle.
+	fixture.gateway.deferred.wait()
 	entered, release := blockAuditSync(audit)
 	test.Cleanup(release)
 	const extra = 16

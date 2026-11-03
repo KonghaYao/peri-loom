@@ -30,6 +30,9 @@ type Gateway struct {
 	// cleanup is the in-process age account of the cleanup facts whose durable
 	// record carries no timestamp.
 	cleanup *cleanupLedger
+	// deferred is the fail-closed account of completion barriers paid after the
+	// reply. NewGateway always sets it; a nil value pays every barrier inline.
+	deferred *deferredDurability
 }
 
 type gatewaySession struct {
@@ -175,7 +178,7 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 	}
 	ledger := &cleanupLedger{}
 	ledger.observe(isolated, time.Now())
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, deferred: &deferredDurability{}, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {

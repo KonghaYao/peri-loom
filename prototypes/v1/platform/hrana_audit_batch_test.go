@@ -205,6 +205,10 @@ func TestPipelineAuditBatchFlushOnCloseAndWrite(test *testing.T) {
 	if response.Code != http.StatusOK {
 		test.Fatalf("pipeline failed: %d %s", response.Code, response.Body.String())
 	}
+	// The open, the read behind the sealed write and the close pay their
+	// barriers after the reply; the pipeline answer outlives them, so the test
+	// reads the chain only once the deferred account has drained.
+	fixture.gateway.deferred.wait()
 	events := auditChainEvents(test, path)
 	want := []string{"open", "execute", "execute", "statement", "execute", "close"}
 	actual := make([]string, len(events))
@@ -214,11 +218,12 @@ func TestPipelineAuditBatchFlushOnCloseAndWrite(test *testing.T) {
 	if strings.Join(actual, ",") != strings.Join(want, ",") {
 		test.Fatalf("audit order=%v, want %v", actual, want)
 	}
-	// The two reads before the write shared one barrier; open, the write, the
-	// read after the seal and close each kept their own. The write must not share
-	// a barrier with a read on either side.
-	if syncs := audit.syncCount.Load(); syncs != 5 {
-		test.Fatalf("pipeline paid %d barriers, want 5", syncs)
+	// The read rows before the write keep one synchronous barrier: they are
+	// submitted before the write's own record and awaited, so the write never
+	// shares a barrier with a read. The deferred rows may coalesce, so only the
+	// chain order above is fixed.
+	if syncs := audit.syncCount.Load(); syncs < 3 {
+		test.Fatalf("pipeline paid %d barriers, want at least open, the read batch and the write", syncs)
 	}
 }
 
@@ -246,16 +251,22 @@ func TestPipelineAuditBatchMixedWriteDoesNotMask(test *testing.T) {
 	if json.Unmarshal(response.Body.Bytes(), &reply) != nil || len(reply.Results) != 3 {
 		test.Fatalf("unexpected pipeline body: %s", response.Body.String())
 	}
-	for index := 0; index < 2; index++ {
+	// The read behind the write cannot commit, so its row is paid after the reply
+	// and its failure can no longer rewrite the step it already answered. It must
+	// surface on the next admission instead.
+	for index := 0; index < 3; index++ {
 		result, _ := reply.Results[index].(map[string]any)
 		if result["type"] != "ok" {
 			test.Fatalf("step %d lost its settled result: %v", index, reply.Results[index])
 		}
 	}
-	failed, _ := reply.Results[2].(map[string]any)
-	detail, _ := failed["error"].(map[string]any)
-	if failed["type"] != "error" || detail["code"] != "audit_unavailable" {
-		test.Fatalf("failed read did not report audit_unavailable: %v", reply.Results[2])
+	fixture.gateway.deferred.wait()
+	if failure := fixture.gateway.deferred.refusal(); failure == nil {
+		test.Fatal("the deferred read failure left no refusal behind")
+	}
+	next := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/query", map[string]any{"session": "", "sql": "SELECT 1"})
+	if next.Code != 503 || gatewayCode(test, next) != "audit_unavailable" {
+		test.Fatalf("admission after a deferred failure answered %d %s", next.Code, next.Body.String())
 	}
 	if sequence := audit.state.Sequence; sequence != 3 {
 		test.Fatalf("durable sequence=%d, want open + read + write", sequence)
@@ -618,21 +629,22 @@ func (writer *pipelineGateWriter) result() (int, string) {
 	return writer.status, writer.body.String()
 }
 
-func TestPipelineAuditBatchResponseWaitsForFlush(test *testing.T) {
+// A read-only pipeline answers before its completion row is durable: the row
+// cannot commit, so only a failed barrier can follow it, and that failure refuses
+// the next admission instead of rewriting a reply the client already has.
+func TestPipelineAuditBatchResponseDoesNotWaitForFlush(test *testing.T) {
 	fixture, service, path := gatewayFileAuditFixture(test)
 	audit := service.(*fileAudit)
 	fixture.upstream.setHook(pipelineReadHook())
-	var syncs atomic.Int32
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var enteredOnce, releaseOnce sync.Once
+	// Every barrier of this pipeline belongs to a non-committing operation (the
+	// internal open and the read), so holding the first one is enough: the
+	// pipeline must already have answered while it is held.
 	audit.testSyncGate = func() {
-		// The first barrier is the internal open; the second is the final flush
-		// of the single read-only completion.
-		if syncs.Add(1) == 2 {
-			enteredOnce.Do(func() { close(entered) })
-			<-release
-		}
+		enteredOnce.Do(func() { close(entered) })
+		<-release
 	}
 	releaseGate := func() { releaseOnce.Do(func() { close(release) }) }
 	test.Cleanup(releaseGate)
@@ -646,21 +658,18 @@ func TestPipelineAuditBatchResponseWaitsForFlush(test *testing.T) {
 		handler.ServeHTTP(writer, request)
 		close(done)
 	}()
-	awaitClosed(test, entered, "the final audit flush")
-	select {
-	case <-writer.wrote:
-		status, body := writer.result()
-		test.Fatalf("pipeline answered before its completion row was durable: %d %s", status, body)
-	case <-time.After(100 * time.Millisecond):
-	}
-	releaseGate()
+	awaitClosed(test, entered, "a completion barrier of the pipeline")
+	// The barrier is held, so its record is not durable - but the pipeline may
+	// not wait for it.
 	awaitClosed(test, done, "the pipeline response")
 	status, body := writer.result()
 	if status != http.StatusOK || !strings.Contains(body, `"results"`) {
 		test.Fatalf("pipeline answered %d: %s", status, body)
 	}
+	releaseGate()
+	fixture.gateway.deferred.wait()
 	events := auditChainEvents(test, path)
 	if len(events) != 2 || events[1].Action != "execute" || events[1].Outcome != "ok" {
-		test.Fatalf("flush did not leave the read row durable: %+v", events)
+		test.Fatalf("deferred flush did not leave the read row durable: %+v", events)
 	}
 }

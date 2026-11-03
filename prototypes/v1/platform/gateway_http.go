@@ -147,8 +147,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		var flushFailure error
 		if needsAudit && !batchCompletion {
 			// A synchronous record enters the chain after the prepared rows, so
-			// those have to be durable first or the chain would reorder.
-			flushFailure = collector.Flush()
+			// those are submitted first. A request that cannot commit pays their
+			// barrier after its reply; every other request pays it before its own.
+			flushFailure = collector.FlushDeferred(gateway.deferredCompletion(action, &result))
 		}
 		if result.operationPending && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
@@ -156,7 +157,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 			leaveTerminal()
 		} else if result.operationDeferred != nil && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
-			gateway.settlePendingOperation(result.operationDeferred, &result, permit)
+			gateway.settlePendingOperation(result.operationDeferred, &result, permit, gateway.deferredCompletion(action, &result))
 			leaveTerminal()
 		}
 		outcome := result.code
@@ -188,7 +189,7 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 					caller := newDurabilityCaller(gateway.config.State, result.operationID, identifier, "completion", "gateway")
 					auditErr = gateway.settleOperationUsingCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, submit, caller)
 				} else {
-					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, submit)
+					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, submit, gateway.deferredCompletion(action, &result))
 				}
 				completion.Release()
 				completion = nil
@@ -197,13 +198,13 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				if !consumed {
 					// The collector closed between the check and the handoff, so
 					// the row keeps the synchronous barrier.
-					auditErr = gateway.recordAuditEvent(event, completion, principal, &result)
+					auditErr = gateway.recordAuditEvent(event, completion, principal, &result, gateway.deferredCompletion(action, &result))
 				} else {
 					auditErr = err
 				}
 				completion = nil
 			} else {
-				auditErr = gateway.recordAuditEvent(event, completion, principal, &result)
+				auditErr = gateway.recordAuditEvent(event, completion, principal, &result, gateway.deferredCompletion(action, &result))
 				completion = nil
 			}
 			leaveAudit()
@@ -275,6 +276,12 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	if err != nil || principal.Subject == "" || principal.Project == "" || (principal.ExpiresMS > 0 && principal.ExpiresMS <= time.Now().UnixMilli()) {
 		principal = Principal{}
 		result = gatewayFailure(401, "unauthenticated")
+		return
+	}
+	// A barrier that failed after its reply has already left a gap the answer
+	// cannot close, so the process refuses new work before anything is dispatched.
+	if gateway.deferred.refusal() != nil {
+		result = gatewayFailure(503, "audit_unavailable")
 		return
 	}
 	var parsed gatewayRequest
@@ -436,14 +443,39 @@ func pipelineBatchableCompletion(action string, result *gatewayResult, needsOper
 	return false
 }
 
+// deferredCompletion hands the account a request's completion may be paid
+// through, or nil when the reply has to wait. Only a dispatched operation that
+// provably cannot commit, answered with success, qualifies: a refusal, a failed
+// record or an unknown outcome keeps the barrier in front of the answer it
+// belongs to.
+func (gateway *Gateway) deferredCompletion(action string, result *gatewayResult) *deferredDurability {
+	if result.code != "" || !result.dispatched {
+		return nil
+	}
+	if deferredRecordOperation(action) || result.operationDeferred != nil && !result.operationDeferred.outcome {
+		return gateway.deferred
+	}
+	return nil
+}
+
 // recordAuditEvent charges one request to the budget its traffic belongs to.
 // A reserved completion row goes through the reservation; everything else is
 // split so an unauthenticated storm and ordinary requests cannot starve each
 // other. A sink without admission support keeps the plain Record contract.
-func (gateway *Gateway) recordAuditEvent(event AuditEvent, completion AuditReservation, principal Principal, result *gatewayResult) error {
+// deferAfter pays a reserved row's barrier after the reply; nil pays it here,
+// which every committing request, refusal and unknown outcome keeps.
+func (gateway *Gateway) recordAuditEvent(event AuditEvent, completion AuditReservation, principal Principal, result *gatewayResult, deferAfter *deferredDurability) error {
 	if completion != nil {
 		defer completion.Release()
-		return completion.Record(event)
+		held, ok := completion.(*auditReservation)
+		if deferAfter == nil || !ok {
+			return completion.Record(event)
+		}
+		wait, err := held.RecordDeferred(event)
+		if err != nil {
+			return err
+		}
+		return deferAfter.settle("audit "+event.Action+" "+event.RequestID, wait)
 	}
 	admission, ok := gateway.config.Audit.(AuditAdmission)
 	if !ok {

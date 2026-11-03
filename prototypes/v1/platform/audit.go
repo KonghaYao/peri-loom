@@ -269,6 +269,20 @@ func (reservation *auditReservation) Record(event AuditEvent) error {
 	return reservation.audit.recordCompletion(event, reservation)
 }
 
+// RecordDeferred queues this reservation's row and returns its barrier instead of
+// paying it here, so a request that provably cannot commit may answer first. The
+// caller owns the barrier from this return on; the reservation is spent either way.
+func (reservation *auditReservation) RecordDeferred(event AuditEvent) (func() error, error) {
+	if reservation == nil || reservation.audit == nil {
+		return nil, ErrStateClosed
+	}
+	request, err := reservation.audit.prepareCompletionOperation(event, reservation, nil)
+	if err != nil {
+		return nil, err
+	}
+	return reservation.audit.enqueueCompletion(request)
+}
+
 // ReserveCompletion takes one completion slot and its fixed byte charge. The
 // slot is held from before dispatch until the record is durable, so queued
 // traffic that arrived later can never take it away.
@@ -362,8 +376,19 @@ func (audit *fileAudit) enqueueCompletion(request *auditRequest) (func() error, 
 // Each caller still decides its own response from its own error: a batch shares
 // the barrier, not the answer.
 func (audit *fileAudit) submitCompletionBatch(requests []*auditRequest) error {
+	wait, err := audit.enqueueCompletionBatch(requests)
+	if err != nil || wait == nil {
+		return err
+	}
+	return wait()
+}
+
+// enqueueCompletionBatch orders a whole prepared batch behind the queue lock and
+// hands the shared barrier back. Nothing is waited for here, so a request whose
+// records cannot commit may answer and let its barrier decide admission later.
+func (audit *fileAudit) enqueueCompletionBatch(requests []*auditRequest) (func() error, error) {
 	if len(requests) == 0 {
-		return nil
+		return nil, nil
 	}
 	audit.queueMutex.Lock()
 	if audit.closing {
@@ -374,18 +399,20 @@ func (audit *fileAudit) submitCompletionBatch(requests []*auditRequest) error {
 			audit.admittedBytes[request.class] -= request.bytes
 		}
 		audit.queueMutex.Unlock()
-		return ErrStateClosed
+		return nil, ErrStateClosed
 	}
 	for _, request := range requests {
 		request.enqueued = time.Now()
 		audit.enqueueLocked(request)
 	}
 	audit.queueMutex.Unlock()
-	var failure error
-	for _, request := range requests {
-		failure = errors.Join(failure, audit.waitObserved(request))
-	}
-	return failure
+	return func() error {
+		var failure error
+		for _, request := range requests {
+			failure = errors.Join(failure, audit.waitObserved(request))
+		}
+		return failure
+	}, nil
 }
 
 // discardPrepared returns the admission charge of a prepared completion that will

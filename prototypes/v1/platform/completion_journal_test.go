@@ -109,6 +109,10 @@ func unifiedOpenSession(test *testing.T, gateway *Gateway, credential string) st
 func TestUnifiedCompletionGatewayUsesOneBarrier(test *testing.T) {
 	gateway, _, credential, store, audit, _ := unifiedGateway(test)
 	session := unifiedOpenSession(test, gateway, credential)
+	// The open cannot commit, so its reply no longer waits for its record. Take
+	// the baseline after the deferred account drained, or the open's barrier
+	// would be counted as part of the write.
+	gateway.deferred.wait()
 	before := store.operations.stats()["operation_journal_syncs_total"]
 	sequence := store.operations.auditHead.Sequence
 	response := gatewayHTTP(test, gateway, credential, "/v1/sql/execute", map[string]any{"session": session, "sql": "INSERT INTO t VALUES (1)"})
@@ -136,6 +140,7 @@ func TestUnifiedCompletionGatewayUsesOneBarrier(test *testing.T) {
 	if response.Code != 200 {
 		test.Fatalf("close: %s", response.Body.String())
 	}
+	gateway.deferred.wait()
 }
 
 // Closing sessions of one database must not queue behind each other: each

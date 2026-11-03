@@ -19,6 +19,9 @@ import (
 func TestUnifiedCompletionFailureAfterSQLKeepsUnknown(test *testing.T) {
 	gateway, upstream, credential, store, audit, directory := unifiedGateway(test)
 	session := unifiedOpenSession(test, gateway, credential)
+	// The open's unified record is paid after its reply, so the baseline must
+	// only be taken once the deferred account drained.
+	gateway.deferred.wait()
 	sequence := store.operations.auditHead.Sequence
 	upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		if command["command"] == "execute" {
@@ -68,6 +71,7 @@ func TestUnifiedCompletionFailureAfterSQLKeepsUnknown(test *testing.T) {
 func TestUnifiedCompletionDurableEnvelopeBeforeLostReply(test *testing.T) {
 	gateway, _, credential, store, _, directory := unifiedGateway(test)
 	session := unifiedOpenSession(test, gateway, credential)
+	gateway.deferred.wait()
 	response := gatewayHTTP(test, gateway, credential, "/v1/sql/execute", map[string]any{"session": session, "sql": "INSERT INTO t VALUES (1)"})
 	if response.Code != 200 {
 		test.Fatalf("execute: %d %s", response.Code, response.Body.String())
@@ -97,6 +101,7 @@ func TestUnifiedCompletionDurableEnvelopeBeforeLostReply(test *testing.T) {
 func TestUnifiedCompletionSyncFailureRetainsPermit(test *testing.T) {
 	gateway, upstream, credential, store, _, directory := unifiedGateway(test)
 	session := unifiedOpenSession(test, gateway, credential)
+	gateway.deferred.wait()
 	sequence := store.operations.auditHead.Sequence
 	closed := make(chan error, 1)
 	upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
@@ -139,6 +144,7 @@ func TestUnifiedCompletionSyncFailureRetainsPermit(test *testing.T) {
 func TestUnifiedCompletionDeferredUnknownUsesReservedCapacity(test *testing.T) {
 	gateway, upstream, credential, store, audit, directory := unifiedGateway(test)
 	session := unifiedOpenSession(test, gateway, credential)
+	gateway.deferred.wait()
 	before := store.operations.stats()["operation_journal_syncs_total"]
 	upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		if command["command"] == "describe" {
