@@ -16,6 +16,7 @@ from typing import Any
 
 from .cleanup_ab import DEFAULT_PROBE_OPS, compare_policies, probe_policy, probe_session_capacity
 from .business import Session
+from .call_profiles import DEFAULT_PROFILE_NAME, PROFILES
 from .client import HranaClient
 from .contract import (
     DDL_PATH,
@@ -52,6 +53,12 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--warmups", type=int, default=None)
     parser.add_argument("--idle-cycles", type=int, default=None)
     parser.add_argument("--close-policy", choices=("A", "B"), default="A")
+    parser.add_argument(
+        "--call-profile",
+        choices=tuple(PROFILES),
+        default=DEFAULT_PROFILE_NAME,
+        help="application call shape; recorded in run.json and checked by score",
+    )
     parser.add_argument("--keep-fixtures", action="store_true")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--lifecycle-file", default=None, help="JSON with stop/start/ready proof commands")
@@ -127,6 +134,7 @@ def _runner_config(args: argparse.Namespace) -> RunnerConfig:
         close_policy=args.close_policy,
         idle_cycles=idle_cycles,
         run_id=args.run_id or time.strftime("retail-%Y%m%dT%H%M%SZ", time.gmtime()),
+        call_profile=args.call_profile,
         contract=contract.document,
     )
 

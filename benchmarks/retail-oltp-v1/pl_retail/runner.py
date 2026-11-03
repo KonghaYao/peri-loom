@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .business import Session, run_business, should_retire_session
+from .call_profiles import DEFAULT_PROFILE_NAME, CallProfile, resolve_profile
 from .cleanup_ab import (
     DEFAULT_PROBE_OPS,
     compare_policies,
@@ -67,6 +68,7 @@ class RunnerConfig:
     close_policy: str = "A"
     idle_cycles: int = 10
     run_id: str = ""
+    call_profile: str = DEFAULT_PROFILE_NAME
     contract: dict[str, Any] = field(default_factory=dict)
 
 
@@ -100,9 +102,13 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _open_session(target: Target, timeout: float = 5.0) -> Session:
+def _open_session(
+    target: Target,
+    timeout: float = 5.0,
+    profile: CallProfile | None = None,
+) -> Session:
     client = HranaClient(target, timeout=timeout)
-    session = Session(client)
+    session = Session(client, profile=profile)
     session.open()
     return session
 
@@ -169,6 +175,9 @@ class _WorkerStats:
 class RoundRunner:
     def __init__(self, config: RunnerConfig):
         self.config = config
+        # Resolved once per run: attempts and run.json must record the same
+        # profile the sessions were driven with.
+        self.call_profile = resolve_profile(config.call_profile)
         self.contract = config.contract or load_contract()
         self.dataset = Dataset(scale=config.scale)
         self.shape = Shape.for_scale(config.scale)
@@ -208,7 +217,7 @@ class RoundRunner:
                 "create": {"status": "ok"},
                 "wait_ready": fixture.wait_ready(30.0),
             }
-            load_session = _open_session(target, timeout=60.0)
+            load_session = _open_session(target, timeout=60.0, profile=self.call_profile)
             try:
                 load_report = load_dataset(load_session, self.dataset)
             finally:
@@ -356,7 +365,7 @@ class RoundRunner:
         def worker(index: int) -> None:
             nonlocal ready_count
             client = HranaClient(target, timeout=5.0, recorder=http_recorder)
-            session = Session(client)
+            session = Session(client, profile=self.call_profile)
             try:
                 try:
                     session.open()
@@ -549,6 +558,7 @@ class RoundRunner:
             "stop_fixture": outcome.stop_fixture,
             "unexpected": outcome.unexpected,
             "http_calls": outcome.trace.calls,
+            "call_profile": self.call_profile.name,
             "http_request_ids": outcome.trace.request_ids,
             "bytes_sent": outcome.trace.bytes_sent,
             "bytes_received": outcome.trace.bytes_received,
@@ -750,7 +760,7 @@ class RoundRunner:
         return Fixture(self.config.fixture, name, round_id)
 
     def _load_only(self, record: dict[str, Any], target: Target) -> dict[str, Any]:
-        session = _open_session(target, timeout=60.0)
+        session = _open_session(target, timeout=60.0, profile=self.call_profile)
         try:
             report = load_dataset(session, self.dataset)
         finally:
@@ -774,7 +784,7 @@ class RoundRunner:
         try:
             target = fixture.create()
             record["fixture"] = {"database": fixture.database}
-            session = _open_session(target, timeout=60.0)
+            session = _open_session(target, timeout=60.0, profile=self.call_profile)
             try:
                 report = load_dataset(session, self.dataset)
             finally:
@@ -818,7 +828,7 @@ class RoundRunner:
         try:
             target = fixture.create()
             record["fixture"] = {"database": fixture.database}
-            session = _open_session(target, timeout=60.0)
+            session = _open_session(target, timeout=60.0, profile=self.call_profile)
             try:
                 report = load_dataset(session, self.dataset)
             finally:
@@ -882,7 +892,7 @@ class RoundRunner:
         try:
             target = fixture.create()
             fixture.wait_ready(30.0)
-            session = _open_session(target, timeout=60.0)
+            session = _open_session(target, timeout=60.0, profile=self.call_profile)
             try:
                 load = load_dataset(session, self.dataset)
             finally:
@@ -908,7 +918,7 @@ class RoundRunner:
                 unload = self._unload_probe()
                 if unload.get("status") != "unloaded":
                     unproven = True
-                session = _open_session(target)
+                session = _open_session(target, profile=self.call_profile)
                 started = time.monotonic_ns()
                 try:
                     plan = PlanStream(
@@ -1045,6 +1055,7 @@ def run_matrix(config: RunnerConfig) -> dict[str, Any]:
             "window_seconds": config.window_seconds,
             "warmups_per_worker": config.warmups,
             "levels": [{"name": name, "concurrency": c, "mode": m} for name, c, m in levels],
+            "call_profile": runner.call_profile.as_dict(),
             "driver_sha256": driver_digest(),
             "contract": {
                 "path": str(contract.path),

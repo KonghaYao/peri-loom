@@ -115,7 +115,7 @@ python3 -m pl_retail.cli score --evidence /var/tmp/retail-full
 python3 -m pl_retail.cli summary --evidence /var/tmp/retail-full
 ```
 
-`run` 先执行矩阵、再按同一评分器打分：退出码等于评分卡状态（见 §5 退出码表），
+`run` 先执行矩阵、再按同一评分器打分：退出码等于评分卡状态（见 §6 退出码表），
 只有真正 PASS 才返回 0；被前置条件阻塞时返回 4。
 
 ### 每轮流水线
@@ -136,7 +136,65 @@ python3 -m pl_retail.cli summary --evidence /var/tmp/retail-full
 
 ---
 
-## 5. 评分与状态
+## 5. Call profiles
+
+`benchmark.json.profile`（`local-8c8g-legacy-hrana-v1`）描述被测环境；**call profile**
+描述同一个业务在客户端侧的调用形态（是否显式事务、库存扣减是否合并为一条语句）。
+它不改变 SQL 结果、业务校验、unknown/隔离/回滚语义，只改变每次业务的 HTTP 调用数与成功尾相位。
+默认恒为 `baseline-v1`，即冻结的 v1.0 形态。
+
+| call profile | read_mode | stock_mode | 读调用数 | checkout 调用数 |
+| - | - | - | -: | -: |
+| `baseline-v1`（默认） | transactional | per_item | 3 | 13 |
+| `app-read-v1` | autocommit | per_item | 1 | 13 |
+| `app-stock-v1` | transactional | merged | 3 | 9 |
+| `app-read-stock-v1` | autocommit | merged | 1 | 9 |
+
+```bash
+python3 -m pl_retail.cli run \
+  --fixture-file /secure/fixture.json --lifecycle-file /secure/lifecycle.json \
+  --platform-descriptor /secure/platform.json \
+  --mode smoke --scale 8 --window-seconds 10 --warmups 2 --idle-cycles 1 \
+  --call-profile app-read-stock-v1 --output /var/tmp/retail-smoke-profile
+```
+
+- profile 在 `run` 开始时解析一次，传给所有业务 `Session`；逐 attempt 记为
+  `attempts.jsonl.call_profile`，run 级记为 `run.json.call_profile = {name, read_mode, stock_mode}`。
+- `score` 不需要新参数：它从 `run.json` 读取 profile（缺失按 `baseline-v1`），按该 profile 的
+  调用数校验每条 attempt，并要求成功 attempt 的尾相位匹配（autocommit 读为 `query`，其余 `commit`）；
+  未知 profile、profile 与 mode 不符、attempt 与 run 级 profile 不一致都判 INVALID。
+- autocommit 读是单条 SELECT，自身即事务：unknown 或已知失败都**不发 ROLLBACK**，
+  detail 记录 `rollback_sent=false` 与原因（`autocommit_no_transaction` /
+  `autocommit_statement_failed`）；unknown 仍按原样隔离命名空间。
+- merged checkout 在派发前校验 5 个互不相同的 product_id 与 1–3 的整数数量，不合格直接判
+  `unexpected_error`（`stage=validate`），不发送任何 SQL；执行后按 `affected_row_count` 判定
+  `<5`（库存不足，整体回滚）、`==5`（继续后续步骤）、`>5`（不变量异常，回滚并停止 fixture）。
+
+`cleanup-retire-v1` 不是 call profile：已知拒绝的 close 退休策略仍然只由 `--close-policy B`
+控制（见 §7），不改变任何调用形态；把它与 call profile 组合时，调用数只由 call profile 决定。
+`writer-admission-v1` 同样不在这里：`writer_admission` 开关默认关闭且重启后禁止重绑，实验时必须
+为开关两侧各准备一个独立 run dir（独立 fixture 与证据目录），不能在同一次 `run` 内切换。
+
+### S3 的 live 缺口（阻塞 `ab-cleanup` 的已知拒绝现场）
+
+Hrana step 错误只回 `{message, code}`，服务端不携带“语句未开始”的执行证明。实测中 SQL 错误、
+`sql_limit`、以及以 step 错误返回的 `invalid_arguments` 都被分类为 `unknown`；唯一实测可用的
+`known_not_executed` 是平台级 429 准入拒绝（`partial_execution_possible: false`），而 open 路径
+没有 baton 可退休。因此在补上服务端执行证明或改用 native API 之前，`ab-cleanup` 所需的
+known-rejection 现场不可得（`compare_policies` 在 `known_not_executed = 0` 时直接给出 FAIL）。
+这一状态必须随任何 profile 实验一起声明。
+
+即使将来补上现场，现有实现也不会按方案矩阵退休：`_abort_known()` / `_known_with_rollback()`
+在 ROLLBACK 被“已知拒绝”时返回 `cleanup_unconfirmed`（`_rollback()` 只有在错误消息含
+`no transaction` 时才确认），而 `should_retire_session()` 只接受 `known_failure/rolled_back`。
+因此“语句已知拒绝 + ROLLBACK 已知拒绝 → 最多一次 close”的分支尚未接通；若要按方案落地，
+需先把 ROLLBACK 的 known-not-dispatched 与 unknown 区分成三态，并明确该状态不触发隔离。
+
+profile 实验只允许 smoke；不得据此宣称 full 运行、容量或认证结论（见 §8 已知缺口）。
+
+---
+
+## 6. 评分与状态
 
 严格解析器先校验 manifest：缺摘要、摘要不符、记录数不符、文件未被 manifest 覆盖、
 run 与磁盘上的轮次集合不一致，全部判 INVALID。随后按维度判定：
@@ -167,7 +225,7 @@ SLO：读 p95 ≤100 ms、p99 ≤250 ms；checkout p95 ≤250 ms、p99 ≤1,000 
 
 ---
 
-## 6. §九 交付项对照
+## 7. §九 交付项对照
 
 | 项 | 实现在哪 | 怎么验证 |
 | - | - | - |
@@ -196,7 +254,7 @@ unknown 上 0 次退休、B 侧 p95 不超过 A 侧的 2 倍且不多于 A 侧 +
 
 ---
 
-## 7. 已知缺口（必须随结论一起声明）
+## 8. 已知缺口（必须随结论一起声明）
 
 1. **没有正式全量运行**：本交付只有代码、自检与合成证据的离线测试。任何"通过"都不成立。
 2. **`certified_driver_sha256` 为 null**：§九 (a)–(d) 尚未被接受。
@@ -208,7 +266,7 @@ unknown 上 0 次退休、B 侧 p95 不超过 A 侧的 2 倍且不多于 A 侧 +
 
 ---
 
-## 8. 维护约定
+## 9. 维护约定
 
 - 改动 `pl_retail/*.py` 会改变 `driver_sha256`（按文件名+内容排序后 SHA256），
   `run.json` 与评分卡会记录新值；不要手写这个摘要。

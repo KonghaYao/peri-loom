@@ -6,17 +6,20 @@ proof and the warmup/measure split of the success counters.
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 from pl_retail.business import BusinessOutcome, AttemptTrace
 from pl_retail.errors import Terminal
 from pl_retail.fixture import FixtureConfig
-from pl_retail.runner import RunnerConfig, RoundRunner, _WorkerStats
+from pl_retail.plan import PlannedOp
+from pl_retail.runner import RunnerConfig, RoundRunner, _WindowState, _WorkerStats
 
 
-def _config(descriptor: dict | None, output: str) -> RunnerConfig:
+def _config(descriptor: dict | None, output: str, call_profile: str = "baseline-v1") -> RunnerConfig:
     return RunnerConfig(
         fixture=FixtureConfig(
             endpoint="https://127.0.0.1:1",
@@ -27,6 +30,7 @@ def _config(descriptor: dict | None, output: str) -> RunnerConfig:
         ),
         output_dir=output,
         platform_descriptor=descriptor,
+        call_profile=call_profile,
     )
 
 
@@ -83,6 +87,37 @@ class UnloadProbeTests(unittest.TestCase):
         probe = runner._unload_probe()
         self.assertEqual(probe["status"], "failed")
         self.assertEqual(probe["exit_code"], 3)
+
+
+class CallProfileWiringTests(unittest.TestCase):
+    def test_the_runner_resolves_the_configured_profile_once(self) -> None:
+        directory = tempfile.mkdtemp(prefix="pl-retail-runner-")
+        runner = RoundRunner(_config(None, directory, call_profile="app-read-stock-v1"))
+        self.assertEqual(runner.call_profile.name, "app-read-stock-v1")
+        self.assertEqual(runner.call_profile.read_mode, "autocommit")
+        self.assertEqual(runner.call_profile.stock_mode, "merged")
+
+    def test_an_attempt_records_the_call_profile(self) -> None:
+        directory = tempfile.mkdtemp(prefix="pl-retail-runner-")
+        runner = RoundRunner(_config(None, directory, call_profile="app-stock-v1"))
+        trace = AttemptTrace()
+        trace.calls = 3
+        outcome = BusinessOutcome(terminal=Terminal.READ_OK.value, detail={}, trace=trace)
+        runner._record_attempt(
+            "rounds/r01-U1/attempts.jsonl",
+            {"mode": "smoke", "level": "U1", "repetition": 1},
+            "r01-U1",
+            0,
+            PlannedOp(index=4, kind="product_stock", params={"warehouse_id": 1, "product_id": 1}),
+            outcome,
+            "measure",
+            _WindowState(),
+        )
+        runner.evidence.finalize()
+        path = Path(directory) / "rounds/r01-U1/attempts.jsonl"
+        entry = json.loads(path.read_text(encoding="utf-8").strip())
+        self.assertEqual(entry["call_profile"], "app-stock-v1")
+        self.assertEqual(entry["http_calls"], 3)
 
 
 class WorkerStatsTests(unittest.TestCase):
