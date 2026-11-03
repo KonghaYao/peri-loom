@@ -33,7 +33,7 @@ func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
 	if validated && len(raw) > 0 && hranaJSONCompact(raw) {
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
-		response.result = raw
+		response.result = hranaEscapeJSONLineSeparators(raw)
 		return true
 	}
 	// Encoder.SetEscapeHTML(false) compacts RawMessage without changing its
@@ -46,8 +46,39 @@ func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
 	}
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
-	response.result = compact.Bytes()
+	response.result = hranaEscapeJSONLineSeparators(compact.Bytes())
 	return true
+}
+
+// hranaEscapeJSONLineSeparators rewrites the two runes every caller of the
+// legacy envelope received as escapes. encoding/json escapes U+2028 and U+2029
+// inside strings even when SetEscapeHTML is false, because JavaScript treats
+// them as line terminators. The retained span is otherwise copied verbatim, so
+// without this pass a result carrying them would leave the gateway as different
+// bytes than writeResponse produces for the same value. Every other byte,
+// including <, > and &, stays exactly as written.
+func hranaEscapeJSONLineSeparators(raw []byte) []byte {
+	if !bytes.Contains(raw, []byte("\u2028")) && !bytes.Contains(raw, []byte("\u2029")) {
+		return raw
+	}
+	escaped := make([]byte, 0, len(raw)+12)
+	for position := 0; position < len(raw); {
+		if raw[position] == 0xE2 && position+2 < len(raw) && raw[position+1] == 0x80 {
+			switch raw[position+2] {
+			case 0xA8:
+				escaped = append(escaped, `\u2028`...)
+				position += 3
+				continue
+			case 0xA9:
+				escaped = append(escaped, `\u2029`...)
+				position += 3
+				continue
+			}
+		}
+		escaped = append(escaped, raw[position])
+		position++
+	}
+	return escaped
 }
 
 // hranaJSONCompact reports whether raw contains no JSON whitespace outside a
