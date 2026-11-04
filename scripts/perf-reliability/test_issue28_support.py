@@ -114,11 +114,13 @@ class ProtobufResponseTests(unittest.TestCase):
         self.assertAlmostEqual(result.query_ms, 1.25)
 
     def test_error_result(self):
-        error = pb_bytes(1, b"result_limit")
+        # Hrana 3 proto: `message = 1`, `code = 2` (HRANA_3_SPEC.md appendix).
+        error = pb_bytes(1, b"statement result exceeded budget") + pb_bytes(2, b"result_limit")
         body = self._pipeline(pb_bytes(2, error))  # StreamResult.error
         result = hrana.parse_pipeline_protobuf(body).results[0]
         self.assertFalse(result.ok)
         self.assertEqual(result.error_code, "result_limit")
+        self.assertEqual(result.error_message, "statement result exceeded budget")
 
     def test_close_result(self):
         body = self._pipeline(pb_bytes(1, pb_bytes(1, b"")))

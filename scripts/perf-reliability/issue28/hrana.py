@@ -319,11 +319,12 @@ def _parse_pipeline_result(data: bytes) -> PipelineResult:
     error_field = _one(fields, 2)
     if error_field is not None:
         error_fields = read_fields(error_field.value)
+        # Hrana 3 proto: `message = 1`, `code = 2` (HRANA_3_SPEC.md appendix).
         return PipelineResult(
             ok=False,
             response_type="error",
-            error_code=_text(_one(error_fields, 1)) or "",
-            error_message=_text(_one(error_fields, 2)) or "",
+            error_code=_text(_one(error_fields, 2)) or "",
+            error_message=_text(_one(error_fields, 1)) or "",
         )
     if ok_field is None:
         return PipelineResult(ok=False, response_type="unknown")
@@ -424,7 +425,8 @@ def parse_cursor_protobuf(body: bytes) -> CursorReply:
             failure = read_fields(item[0].value) if item else []
             if len(failure) >= 2:
                 error_fields = read_fields(failure[1].value)
-                errors.append(_text(_one(error_fields, 1)) or "step_error")
+                # Hrana 3 proto: `message = 1`, `code = 2`.
+                errors.append(_text(_one(error_fields, 2)) or "step_error")
             else:
                 errors.append("step_error")
     return CursorReply(baton=baton, rows=rows, frames=frames, errors=errors)
