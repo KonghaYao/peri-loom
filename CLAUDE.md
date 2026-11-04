@@ -261,6 +261,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R64 | 测量轮（无代码改动；候选仍为 `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`，merge `8500b5a`） | 在新冻结判据下重新评估 R62 候选：c1 尾部（p95/p99/max/>2ms）按 R63 的归因降级为报告项，c1 中位数保留护栏；其余主指标与护栏沿用 R62 口径；判据在首条腿之前提交并推送（`ad1d113`） | Gate 0：四条候选腿 `maximum=4096`、`pending_max` 741/770/661/800（>256）、`inline_total=0`；基线腿无该指标。A/B（2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 50 请求/级，无观测器）：主指标 8 个轮内比较全部 ≤90%，合并 c8 p95 **0.108** / c8 p99 **0.076** / c16 p95 **0.320** / c16 p99 **0.314**；护栏 c1 p50 0.983（R1）/1.040（R2）/1.014（合并）、c4 p50 0.754/0.737/0.709、c4 p95 0.067/0.037/0.038，全部 ≤110%；c1 尾部报告项 A 6/200、B 8/200 >2ms，两侧最大值 16.60 / 16.38ms；8 腿 0 错误 / 0×429 / 无拒绝 / `rows=1` / clean stop；掩码 `query_duration_ms` 后原始响应体逐字节相同。机制（解释变量）：journal appends 8 腿均为 404，候选 audit fsync 17–20 次 vs 基线 30–32，同步 head checkpoint B 8–10 次 vs A 19–20 次 | **合入 main**（merge `8500b5a`）：新冻结判据下主指标与全部护栏通过；R62 的原冻结判决不变（当时不合入）。候选扩大的只是回复后待办上限，耐久时点、审计链顺序、隔离与 fail-closed 未改 |
 | R65 | 测量轮（无生产代码改动；A `main`@`1399f15` sha256 `fd959df7…`，B `main`@`1a6b9dd` sha256 `9214cd0c…`，worker 两侧 `a648ecd9…`） | R64 合入后的回归门：W1/F1/H1 主协议（W1/F1 `json-pipeline`、H1 `json-cursor`），确认延后耐久待办上限 256→4096 未造成 >10% 退化；2 轮 × A/B/B/A，每场景 8 腿，共 24 腿 | 24/24 腿有效：fixture complete、352/352 请求 `ok`/HTTP 200、warnings/fatal 空、F1 rows=1、H1 rows=8625、samples 5/5/3、clean stop 且 `unresolved_operations=false`、无 429/expected_limit/audit_unavailable。主指标（候选/基线）：W1 1.101（33.705→37.125ms；round1 0.972、round2 1.153）、F1 0.987（0.532→0.525ms；两轮均 0.987）、H1 1.022（53.171→54.357ms；0.950/1.078）。**W1 边界 PASS**：round2 1.153 与合并 1.101 均 >1.10，仅因 round1 0.972 未超阈值；W1 round2 `query_ms` 从 9–11ms 阶跃到 16.96/20.41/16.14ms（A `r2a2` 同样受影响），`duration_ms − query_ms` 比值 round1 0.977 / round2 1.031 / 合并 0.977 ⇒ 平台侧无回归信号。机制快照：12 条 B 腿 `deferred_durability.maximum=4096`、`inline_total=0`，`pending_max` W1=4 / F1=91 / H1=18–21，远低于 4096，未逼近新上限；12 条 A 腿无该指标 | 无代码改动：冻结判据下三场景均无回归 PASS；W1 为边界 PASS，不是稳健无回归。后续 R43 adapter 级 fused close 撤销会改变 F1 绝对延迟，本轮判决仅代表 `a46afa2` 上的 R64 变更 |
 | R66 | 探针轮（无生产代码）；`probe/r66-legacy-settle-ceiling` @ `066ba9e` 未合入 | legacy settle / GC / fused close 三个上限探针 | legacy settle 移除：c8/c16 尾部无改善（c16 p95/p99 两轮 2.12–3.33×反向）；GOGC=off 仍有同样 15.7–32.9ms 停顿；F1 close 均值 0.248ms 但 fused close 当前仅约 4% 且属红线 | 全部判停，不合入；授权内无可过 ≥10% 门槛的方向 |
+| R67 | 测量轮（无代码改动） | 复测 v1.2.7 发布 A/B 的 F1 FAIL：v1.2.6 vs v1.2.7，2 轮 × A/B/B/A、每腿 20 个 timed 样本 | 两轮 0.800 / 1.276（方向相反），合并 2.631→2.413ms（**0.917**）；样本级 Mann-Whitney p=0.997，原窗口 40 样本 p=0.989 | 判为低功效估计量导致的噪声，不改写原 FAIL 记录；验收改用样本级合并统计 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2832,6 +2833,75 @@ fused close 未证明 ≥20% 且属红线；legacy settle 安全版本没有 ≥
 无 TLS、默认配额；探针 1 用 darwin/arm64（linux 产物仅构建留档）；探针 2 用 `/tmp` 的 `dev.py`
 副本转发 `GOGC`（仓库文件零改动），macOS `ps` 不能读他进程环境，故用 gctrace/RSS 证明；
 探针 3 的补充诊断逐请求抓 metrics 会改变系统状态，其 E2E 中位数 1.18ms 不可作为 F1 基线。
+
+#### R67：发布 A/B 的 F1 FAIL 未被复现（验收功效问题）
+
+**背景**：`docs/performance-review/2026-11-04-v1.2.7-release/README.md` 把
+`F1.select-1 / json-pipeline` 判为 **FAIL**（基线 2.433ms → 候选 2.891ms，比值 1.188，
+两轮 1.228 / 1.541，每腿 5 个 timed 样本）。本轮用更高功效的独立窗口复测同一对比，
+判断该 FAIL 是否可复现。
+
+**方法**：沿用上位冻结协议（同运行镜像 `sha256:8a8ba43b…`；A = v1.2.6 平台 `2a4a41d8…`
+/ worker `61f74236…`，B = v1.2.7 平台 `95716e4d…` / worker `b17a0708…`；每腿全新卷、
+无观测器、默认配额、每腿重新导入 fixture），把每腿 timed 样本由 5 提到 **20**；
+2 轮 × A/B/B/A = 8 腿、端口 20401–20408。样本数是相对冻结协议的唯一参数偏离，已在
+测量前预注册。8/8 腿二进制 sha256、镜像 digest、fixture、`launcher-stop` clean 与
+`stop-exit=0` 全部匹配；160 个 timed 样本全部 `outcome=ok`、`rows=1`、`response_bytes=312`。
+
+**结果**：
+
+| 轮 | 基线中位 | 候选中位 | 比值 |
+|---|---:|---:|---:|
+| round1 | 2.631ms | 2.106ms | 0.800 |
+| round2 | 2.384ms | 3.042ms | **1.276** |
+| 合并 | 2.631ms | 2.413ms | **0.917** |
+
+- 两轮方向相反；合并 0.917 < 1.10，未满足冻结的 FAIL 判据。
+- 样本级（80/侧）：中位比值 0.939，Mann-Whitney 双侧 **p=0.997**，
+  permutation p=0.386 / 0.484 / 0.787，bootstrap 95% CI 均跨 0；10% trimmed mean
+  比值 0.912；>5ms 样本占比 A 21.2% / B 16.2%。
+- 腿内 sd 1.6–2.4ms、CV 52–74%；中位差 0.41–0.75ms 远小于 3×SD（约 6.5ms）。
+- **原发布窗口自身也分不开**：40 个样本 Mann-Whitney p=0.989、permutation p=0.599。
+  1.188 来自「每轮 2 条腿中位再取中位」这个低功效估计量——在腿内 CV 45–91% 的分布上，
+  它的方差远大于要检测的 0.24–0.5ms 效应。
+- 结论：**发布报告里的 F1 FAIL 未被复现，判为噪声主导**；原 FAIL 记录按当时冻结规则
+  保留，不改写。
+
+**机制证据**：
+
+- F1 请求确实含 close：`[execute(SELECT 1), close]`，编码后 **102 bytes**，与 8 腿
+  `raw.jsonl` 的 `request_bytes=102` 一致。
+- 两侧 actions 调用次数完全相同：`open=22`、`statement=21`、`close=22`，
+  `describe` 与 `cursor_*` 全 0——没有证据表明 v1.2.7 在 F1 路径上多做了 open/close RPC。
+- journal `appends=2.095/请求`、audit fsync `1.238/请求` 两侧一致；
+  `operation_journal_syncs` 1.381/1.357、coalesced 0.714/0.738，差异在噪声内。
+- **R64 未生效**：v1.2.7 的 `deferred_durability.pending_max` 为 17/35/18/22，
+  远低于旧上限 256，`inline_total=0`。
+- **三条事实更正**：① v1.2.6 tag（11-03 15:51）没有 fused close，也没有
+  `hrana_fused_open.go`——R43 `6d5c9da`（11-04 00:06）引入、`17854a8`（11-04 18:00）
+  撤销，因此「撤销 fused close」不是 v1.2.6→v1.2.7 的行为差异；② v1.2.6→v1.2.7 实际有
+  **17 个非 merge 代码提交**（R39/R42/R46–R50/R51/R52/R56/R57/R64 等），若差异未来
+  复现，**R39（worker 每库 open/close 闸门，`0b879c9`）**比 R64 更值得先测；
+  ③ fused close 的引入与撤销都发生在 v1.2.7 开发窗口内部。
+
+**方法结论（可复用判据）**：
+
+- **亚 5ms 场景不能用「腿中位的中位」做验收**。按 σ≈2ms 估算，检测 0.5ms 差异、
+  80% power 需要约 **248 样本/侧**；每腿 5 样本、每轮 2 条腿的估计量远低于此，
+  判决接近掷硬币。
+- 后续这类场景改用**样本级合并统计**（Mann-Whitney / permutation / bootstrap，
+  并给出最小样本量）或**请求级交错 A/B**（同一栈内交替发出两侧请求，抵消腿间
+  宿主漂移）。
+
+**证据**：`docs/performance-review/2026-11-05-f1-release-attribution/`（`README.md`、
+`perf-protocol.md`、`aggregate.py|txt`、`invariants.py|txt`、`legs/`、`mechanism/`）。
+提交前扫描无 `Bearer`/API Key/launch token/`connection.json`；`run_leg.sh` 产出的
+`harness`/`seed`/`container` 日志由 `.log` 改名为 `.txt`（`.gitignore` 含 `*.log`），
+内容未改。
+
+**限制**：单宿主、单窗口；未做 P0/P1/P2 提交级归因（预注册规则：两轮方向相反即结案）；
+20 样本/腿仍不足以在 0.5ms 量级上给出 80% power；F1 的双峰慢尾（~1ms 与 ~5–7ms 两簇）
+来源未定位。
 
 ## 代码约定
 
