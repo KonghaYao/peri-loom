@@ -1,0 +1,3 @@
+R58WORKER pages=33 total_ms=30.935 rows_ms=24.325 post_ms=6.539 other_ms=0.071 lane_lock_ms=0.001 lane_check_ms=0.003 lane_step_ms=24.301 lane_finish_ms=0.001 run_steps_ms=25.035 turso_step_ms=5886.001 row_work_ms=0.641 account_ms=0.313
+R58WORKER pages=33 total_ms=30.973 rows_ms=24.285 post_ms=6.626 other_ms=0.062 lane_lock_ms=0.001 lane_check_ms=0.003 lane_step_ms=24.261 lane_finish_ms=0.001 run_steps_ms=24.969 turso_step_ms=16.543 row_work_ms=0.612 account_ms=0.323
+R58WORKER pages=33 total_ms=31.092 rows_ms=24.485 post_ms=6.557 other_ms=0.049 lane_lock_ms=0.001 lane_check_ms=0.002 lane_step_ms=24.466 lane_finish_ms=0.001 run_steps_ms=25.134 turso_step_ms=16.525 row_work_ms=0.574 account_ms=0.326

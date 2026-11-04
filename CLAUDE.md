@@ -252,6 +252,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 
 | R56 | `perf/r56-cursor-page-pipeline` / `d5cf31f`（merge `ee9d553`） | 只读 cursor 页预取 + worker 响应按声明长度预分配：当前页扫描通过后、写出前发出下一页 fetch（`context.WithoutCancel` + 30s 超时，缓冲 `chan`），非首页消费在途回复；`readWorkerReply` 在 `Content-Length` 合法时 `make` + `io.ReadFull`，否则有界回退；写 cursor 不预取 | Gate 0：H1 每查询 issued=33 consumed=33（json/native 同），单页 L2 0/0。单独 A/B（2 轮 × A/B/B/A × 5 samples/leg，两侧独立栈 + 各自全新同数据卷）：H1 json **−9.23% / −8.99%**、protobuf **−9.60% / −8.87%**，4/4 同向但**均低于 10% 硬门**，不单独合入 | 与 R57 作为同一批次合入 main（merge `ee9d553`）；单独轮次按判据记为未达门槛 |
 | R57 | `perf/r57-worker-cursor-borrow` / `1daea98`（merge `5492e05`） | worker 只读 cursor 页直接借用序列化：`WorkerResult::ReadCursorPage` 把引擎行直接写进响应编码器（手写 `Serialize`），去掉每格 `serde_json::Value` 分配与整页 `to_vec`；映射逐条对齐 `sessions::value`（Null/Integer/有限 Float/Text 转义/Blob；非有限浮点→null），写 cursor 与 execute 保持 Value 树 | Gate 0：H1 json 每查询 34 页 = 1 first + 33 fetch；protobuf 34 页全部走 fetch 形状（native cursor 无融合首页）；L2 单页 fetch=0；写 cursor `UPDATE … RETURNING` 返回 200 且探针 0 命中。**批次 A/B（R56+R57 vs main，2 轮 × A/B/B/A × 5 samples，两侧全新卷）**：H1 json **−10.33% / −17.55%**、protobuf **−12.52% / −16.14%**，4/4 过 10% 硬门；H3 json −16.63%、pb −11.10% | 合入 main（与 R56 同批验收、同批合入） |
+| R58 | 测量轮（探针分支 `probe/r58-cursor-page-timing` @ `da2d8c1`、`probe/r58b-row-checks` @ `14aef4e`，均不合入） | H1 20MB cursor 剩余成本归因 + 行级检查上限探针：平台侧页等待/转码/upstream/dispatch 分段，worker 侧 turso/序列化/行级检查分段；再把 `run_steps` 的每行 budget 检查、操作读守卫与 step 时钟整体移出循环测端到端上限 | 归因（H1 json ≈53ms）：worker ≈31ms（turso VM stepping ≈17–18ms、页序列化 ≈6.6ms、行级检查 ≈4.3–5.9ms 且被探针 `Instant::now` 放大）、平台自身 ≈6.9ms，其余为客户端读取 20MB。上限 A/B（A/B/B/A × 5 samples，两侧独立栈 + 同批 fixture）：json 52.00→48.20ms（**7.3%**）、protobuf 51.94→48.03ms（**7.5%**），两条腿同向，响应字节/行数（8,625）/`warnings` 不变 | 仅记录，不实施：行级检查上限 7.3–7.5% < 10% 硬门；剩余 H1 大头（turso VM stepping、页序列化/协议帧）属 worker 引擎与协议层，需用户显式授权 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2354,6 +2355,57 @@ A/B 候选 `611fa2d8…` 内嵌 `vcs.modified=true`，事后在同一路径复�
 **下一轮提示**：H1 20MB cursor 已从 R52 后的约 62ms（json）/57ms（pb）降到约 53ms / 51ms；
 剩余主要是 worker 每页执行（turso VM，R55 实测 14.7–15.9ms/查询）与传输。再要 ≥10% 只能动
 worker 的页执行或减少协议帧数；两条都需用户显式授权。
+
+#### R58：H1 只读 cursor 页成本归因与行级检查上限（2026-11-04，测量轮，不实施）
+
+**动机**：R56/R57 之后 H1 已到约 53ms（json）/51ms（pb），下一步必须先回答「剩余时间花在哪里」，
+否则只能在已用尽的方向上迭代。两轮探针都不进生产代码：`probe/r58-cursor-page-timing`（归因）
+与 `probe/r58b-row-checks`（上限），均不合入 `main`。
+
+**归因探针**（平台 + worker 两侧同时打点，原生 macOS 单机栈，默认配额，H1 20MB）：
+
+- 平台侧（`R58CURSOR`，每次查询 34 页，json 稳定样本）：`wait_ms≈38.6`（prefetch=33、
+  direct=0，R56 预取后每页暴露等待约 0.17ms）、`process_ms≈6.0`（页转码）、`first_ms≈1.6`；
+  upstream `do≈32.5ms / read≈6.3ms / decode≈5.0ms`（35 次调用）；`dispatch_serve≈45.6ms`、
+  `marshal≈0.21ms`、`reply≈0.001ms` ⇒ 平台自身约 **6.9ms/查询**。
+- worker 侧（`R58WORKER`，每次查询 33 页）：`total≈30.8–33.6ms`，其中
+  `turso_step≈16.5–18.3ms`、`post≈6.4–7.1ms`（页序列化）、`row_work≈0.52–0.60ms`、
+  `account≈0.31–0.33ms`、`lane_*` ≈ 0；行级检查（`R58WORKER2`，17,303 次/样本）
+  `guard≈0.41–0.56 + operation_until≈0.85–1.12 + clock_enter≈1.23–1.67 +
+  thread_cpu≈1.75–2.48ms`，合计 **≈4.3–5.9ms**，但含探针自身的 `Instant::now` 开销。
+  `lane_settle≈0.002ms`（`R58WORKER3`），准入 settle 不是成本。
+- 结论（假设级）：worker 生产是限速器（平台预取深度 1 足以把页转码藏到下一页生产后面），
+  其中 turso VM ≈17ms、页序列化 ≈6.6ms、行级检查 ≈4–6ms；平台自身 ≈6.9ms；
+  其余 ≈7ms 是客户端读取 20MB。
+
+**上限探针**（`probe/r58b-row-checks` @ `14aef4e`，只改 `execution.rs::run_steps`）：
+把每行的 `guard.check()`/`deadline.check()`、`operation_until` 读守卫、`enter_step`/`finish`
+时钟与循环末尾 `account_steps` 全部提到每页一次（不安全版本），测「移除行级开销」的真实天花板。
+`account_row` 与 VM progress handler 保持不变。两侧平台二进制相同
+（`f4210c08…`，`main` @ `0a51ab9` 干净树），基线 worker `a648ecd9…`（与 R57 合入二进制逐字节一致），
+探针 worker `745888eb…`；两侧独立栈、各自全新 run dir 与同批 fixture；腿序 A1→B1→B2→A2，
+每腿 1 warmup + 5 samples，无观测器。
+
+| 协议 | A1 | B1 | B2 | A2 | 基线均值 | 探针均值 | 上限 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| json-cursor | 52.65 | 48.74 | 47.65 | 51.35 | 52.00 | 48.20 | **7.3%** |
+| protobuf-cursor | 51.72 | 48.52 | 47.54 | 52.16 | 51.94 | 48.03 | **7.5%** |
+
+配对差值 json 7.43%/7.21%、protobuf 6.19%/8.86%，两协议两条腿同向；响应字节
+（json 20,608,525 / pb 20,272,006）、行数 8,625、`warnings=[]`、全部 200/ok 不变。
+
+**判决**：**上限 ≈7.3–7.5% < 10% 硬门，不实现**。即使把行级检查全部删掉（已是不安全版本），
+端到端也只省约 3.7–3.9ms；安全的「降频/批量化」版本只会更少，不值得引入预算语义变更。
+剩余 H1 大头是 turso VM stepping（引擎）与页序列化/协议帧（worker-平台协议），
+按既定授权边界需用户显式批准后才能立项。
+
+**证据**：`docs/performance-review/2026-11-04-r58-cursor-page-attribution/`
+（`README.md`、`r58b-upper-bound.md`、平台/worker 原始探针日志与 8 份 harness `summary.json`）。
+探针二进制仅用于归因，A/B 期间不开启任何观测器；探针构建的端到端绝对值高于干净构建，
+不作为验收或对外数字。
+
+**下一轮提示**：H1 的两条剩余路径都在授权边界外。若继续在授权内迭代，应先对其它场景做
+smoke 剖面（F1/L1/B1/X1/W1）找新的限速器，而不是继续在 20MB cursor 上做 <10% 的局部优化。
 
 ## 代码约定
 

@@ -1,0 +1,8 @@
+R58CURSOR label=json pages=34 prefetch=33 direct=0 wait_ms=35.604 worker_ms=41.014 process_ms=5.914 gap_ms=0.002 direct_ms=0.000 first_ms=1.539
+R58CURSOR label=json pages=34 prefetch=33 direct=0 wait_ms=42.934 worker_ms=53.697 process_ms=11.286 gap_ms=0.002 direct_ms=0.000 first_ms=1.260
+R58CURSOR label=json pages=34 prefetch=33 direct=0 wait_ms=43.296 worker_ms=48.678 process_ms=5.851 gap_ms=0.002 direct_ms=0.000 first_ms=1.254
+R58CURSOR label=json pages=34 prefetch=33 direct=0 wait_ms=42.491 worker_ms=51.878 process_ms=9.837 gap_ms=0.002 direct_ms=0.000 first_ms=1.200
+R58CURSOR label=proto pages=34 prefetch=33 direct=1 wait_ms=40.454 worker_ms=43.076 process_ms=3.051 gap_ms=0.003 direct_ms=0.000 first_ms=1.252
+R58CURSOR label=proto pages=34 prefetch=33 direct=1 wait_ms=40.448 worker_ms=48.384 process_ms=8.354 gap_ms=0.003 direct_ms=0.000 first_ms=1.171
+R58CURSOR label=proto pages=34 prefetch=33 direct=1 wait_ms=43.151 worker_ms=50.078 process_ms=7.322 gap_ms=0.003 direct_ms=0.000 first_ms=1.086
+R58CURSOR label=proto pages=34 prefetch=33 direct=1 wait_ms=43.322 worker_ms=50.184 process_ms=7.276 gap_ms=0.003 direct_ms=0.000 first_ms=1.172

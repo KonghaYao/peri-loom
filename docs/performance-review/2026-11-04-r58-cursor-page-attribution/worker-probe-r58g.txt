@@ -1,0 +1,9 @@
+R58WORKER pages=33 total_ms=32.422 rows_ms=25.764 post_ms=6.591 other_ms=0.067 lane_lock_ms=0.001 lane_check_ms=0.003 lane_step_ms=25.741 lane_finish_ms=0.001 run_steps_ms=26.527 turso_step_ms=5969.397 row_work_ms=0.603 account_ms=0.312
+R58WORKER2 pages=33 guard_check_ms=0.558 operation_until_ms=1.122 clock_enter_ms=1.667 thread_cpu_ms=2.481 thread_cpu_calls=19483
+R58WORKER3 pages=33 lane_settle_ms=0.003
+R58WORKER pages=33 total_ms=31.734 rows_ms=24.893 post_ms=6.777 other_ms=0.064 lane_lock_ms=0.002 lane_check_ms=0.003 lane_step_ms=24.872 lane_finish_ms=0.001 run_steps_ms=25.584 turso_step_ms=17.879 row_work_ms=0.544 account_ms=0.322
+R58WORKER2 pages=33 guard_check_ms=0.425 operation_until_ms=0.868 clock_enter_ms=1.239 thread_cpu_ms=1.785 thread_cpu_calls=17303
+R58WORKER3 pages=33 lane_settle_ms=0.002
+R58WORKER pages=33 total_ms=33.616 rows_ms=26.493 post_ms=7.054 other_ms=0.069 lane_lock_ms=0.002 lane_check_ms=0.004 lane_step_ms=26.466 lane_finish_ms=0.001 run_steps_ms=27.218 turso_step_ms=18.271 row_work_ms=0.579 account_ms=0.330
+R58WORKER2 pages=33 guard_check_ms=0.424 operation_until_ms=0.889 clock_enter_ms=1.266 thread_cpu_ms=1.815 thread_cpu_calls=17303
+R58WORKER3 pages=33 lane_settle_ms=0.003
