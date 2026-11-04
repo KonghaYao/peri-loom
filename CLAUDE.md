@@ -2153,6 +2153,36 @@ Rust+Go 双侧协议与两个 worker 二进制，是下一轮唯一可能再拿�
 `serde_json::Value` 树）预期低于门槛，需先探针。worker 预取下一页会改变审计/日志语义，
 需用户授权。
 
+#### R53：worker 只读 cursor 页单趟序列化的上限探针（2026-11-04，未实施）
+
+**假设（上一轮反思）**：worker 每页对 20MB 量级文本做三趟拷贝——`row.get_values().cloned()`
+（`Value::Text` 深拷贝）、`json!` 构建 `serde_json::Value` 树、`serde_json::to_vec` 逐字节转义；
+改成借用 `Serialize` + `memchr` 批量转义可省 11–28ms。**探针否证了这个量级。**
+
+**方法**：`main` `1a2d2e0` 上构建探针 worker（`e2be9569…`），分五段计时（native、克隆、树、
+`to_vec`、`reply`）；平台用同源 `peri-platform-r53-base`（`deaea101…`）。全新卷 + 同一 seed，
+H1 json-cursor 1 warmup + 2–3 samples。
+
+**事实**：H1 是 **8,625 行 × ≈2.34KB、34 页**（每页 ≈600KB），不是单行 20MB。稳态每页：
+native 700–870µs、克隆 24–35µs、树 36–71µs、序列化 129–206µs（≈3.75GB/s）、写出 29–73µs；
+每查询合计 native ≈25.5ms、克隆 ≈1.0ms、树 ≈1.9ms、序列化 ≈5.4ms、写出 ≈1.7ms
+（端到端 64ms 中约 35ms 在 worker handler 内）。
+
+**上限**：借用序列化最多消掉树（1.9ms）与序列化的转义部分（乐观 50–60%，≈2.7–3.2ms），
+合计 **4.6–5.1ms ≈ 7.2–8.0%**；即使删掉克隆+树+序列化全部也只有 8.3ms（13%），而 20.6MB
+输出必须产生，序列化不可删除。门槛 6.4ms ⇒ **不实施**，无生产代码改动。
+
+**方法教训**：探针每页一次 `eprintln!` 把 H1 从 64.6ms 拉到 141.6ms（2.2×）；同计时的
+无输出构建为 64.56ms（干净 worker 63.80ms）。分段计时在打印前取得且与 `total_us` 自洽，
+结论不受影响；但**热路径探针不得逐请求写 stderr**，应累计到原子计数、每查询输出一次。
+
+**证据**：`docs/performance-review/2026-11-04-r53-worker-cursor-serialize/probes/`
+（`upper-bound.md`、`upper-bound-probe.diff`）。
+
+**下一轮提示**：平台侧 R52 后仍有两趟 20MB 走查（严格页校验 ≈7.9ms、Hrana 转码 3–6ms）；
+「边校验边编码、整页通过后才放行」的融合 + 文本 span 的 `memchr` 定位可能省 5–9ms（8–14%），
+须先做 Go-only 上限探针，不改协议。
+
 ## 代码约定
 
 - 提交信息用中文全角冒号：`feat(v1)：…`、`fix(authority)：…`、`docs(capacity)：…`。

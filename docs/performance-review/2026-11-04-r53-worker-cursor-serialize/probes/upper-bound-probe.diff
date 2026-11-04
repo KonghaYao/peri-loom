@@ -1,0 +1,181 @@
+diff --git a/prototypes/v1/src/session/execution.rs b/prototypes/v1/src/session/execution.rs
+index b07944d..4d6928c 100644
+--- a/prototypes/v1/src/session/execution.rs
++++ b/prototypes/v1/src/session/execution.rs
+@@ -1058,7 +1058,9 @@ fn run_steps(
+                 let row = statement.row().context("native statement row missing")?;
+                 guard.account_row(row.get_values())?;
+                 if collect {
++                    let clone_started = std::time::Instant::now();
+                     rows.push(row.get_values().cloned().collect());
++                    crate::worker_rpc::r53_probe::add_clone(clone_started.elapsed());
+                     if page_size.is_some_and(|limit| rows.len() == limit) {
+                         guard.account_steps(
+                             prior_steps.saturating_add(statement.metrics().vm_steps),
+diff --git a/prototypes/v1/src/worker_rpc.rs b/prototypes/v1/src/worker_rpc.rs
+index 4b45db3..4fed79b 100644
+--- a/prototypes/v1/src/worker_rpc.rs
++++ b/prototypes/v1/src/worker_rpc.rs
+@@ -3,6 +3,7 @@ mod diagnostics;
+ mod dispatch;
+ mod outcome;
+ pub mod protocol;
++pub(crate) mod r53_probe;
+ pub mod server;
+ mod session_entry;
+ mod sessions;
+diff --git a/prototypes/v1/src/worker_rpc/dispatch.rs b/prototypes/v1/src/worker_rpc/dispatch.rs
+index 2e8f40d..880c9a3 100644
+--- a/prototypes/v1/src/worker_rpc/dispatch.rs
++++ b/prototypes/v1/src/worker_rpc/dispatch.rs
+@@ -630,9 +630,15 @@ impl State {
+             ),
+             WorkerCommand::FetchReadCursor { max_rows, .. } => {
+                 let call = call.context("worker session RPC guard absent")?;
+-                let result = crate::slow_diagnostics::native("cursor_fetch_read", || call.handle().fetch_read_cursor(max_rows)).map(|(rows, done)| {
++                super::r53_probe::set_kind("fetch");
++                let native_started = Instant::now();
++                let fetched = crate::slow_diagnostics::native("cursor_fetch_read", || call.handle().fetch_read_cursor(max_rows));
++                super::r53_probe::add_native(native_started.elapsed());
++                let tree_started = Instant::now();
++                let result = fetched.map(|(rows, done)| {
+                     json!({"rows": rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(), "done": done})
+                 });
++                super::r53_probe::add_tree(tree_started.elapsed());
+                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
+                     *terminal = call.terminal_state().unwrap_or(None);
+                 }
+@@ -929,7 +935,12 @@ fn dispatch_cursor_first(
+         .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+         .collect::<Result<Vec<_>>>()?;
+     let call = call.context("worker session RPC guard absent")?;
+-    let result = call.handle().open_cursor_first(&sql, &args, &named_args, max_rows, writing)
++    super::r53_probe::set_kind(if writing { "first_write" } else { "first_read" });
++    let native_started = Instant::now();
++    let opened = call.handle().open_cursor_first(&sql, &args, &named_args, max_rows, writing);
++    super::r53_probe::add_native(native_started.elapsed());
++    let tree_started = Instant::now();
++    let result = opened
+         .map(|first| {
+             let mut result = json!({
+                 "cols": first.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
+@@ -943,6 +954,7 @@ fn dispatch_cursor_first(
+             }
+             result
+         });
++    super::r53_probe::add_tree(tree_started.elapsed());
+     if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
+         *terminal = call.terminal_state().unwrap_or(None);
+     }
+diff --git a/prototypes/v1/src/worker_rpc/r53_probe.rs b/prototypes/v1/src/worker_rpc/r53_probe.rs
+new file mode 100644
+index 0000000..7af0399
+--- /dev/null
++++ b/prototypes/v1/src/worker_rpc/r53_probe.rs
+@@ -0,0 +1,73 @@
++//! Temporary R53 upper-bound probe. Not for merge.
++
++use std::cell::RefCell;
++use std::time::Duration;
++
++#[derive(Default)]
++pub(crate) struct Sample {
++    kind: &'static str,
++    started: Option<std::time::Instant>,
++    native: Duration,
++    tree: Duration,
++    clone: Duration,
++    response_bytes: usize,
++    seq: u64,
++}
++
++thread_local! {
++    static SAMPLE: RefCell<Sample> = RefCell::new(Sample::default());
++}
++
++pub(crate) fn reset() {
++    SAMPLE.with(|sample| {
++        let mut sample = sample.borrow_mut();
++        sample.kind = "";
++        sample.started = Some(std::time::Instant::now());
++        sample.native = Duration::ZERO;
++        sample.tree = Duration::ZERO;
++        sample.clone = Duration::ZERO;
++        sample.response_bytes = 0;
++        sample.seq += 1;
++    });
++}
++
++pub(crate) fn set_kind(kind: &'static str) {
++    SAMPLE.with(|sample| sample.borrow_mut().kind = kind);
++}
++
++pub(crate) fn add_native(elapsed: Duration) {
++    SAMPLE.with(|sample| sample.borrow_mut().native += elapsed);
++}
++
++pub(crate) fn add_tree(elapsed: Duration) {
++    SAMPLE.with(|sample| sample.borrow_mut().tree += elapsed);
++}
++
++pub(crate) fn add_clone(elapsed: Duration) {
++    SAMPLE.with(|sample| sample.borrow_mut().clone += elapsed);
++}
++
++pub(crate) fn record_response_bytes(bytes: usize) {
++    SAMPLE.with(|sample| sample.borrow_mut().response_bytes = bytes);
++}
++
++pub(crate) fn report(serialize: Duration, write: Duration) {
++    SAMPLE.with(|sample| {
++        let sample = sample.borrow();
++        if sample.kind.is_empty() {
++            return;
++        }
++        let _ = format!(
++            "R53PROBE seq={} kind={} total_us={} native_us={} clone_us={} tree_us={} serialize_us={} write_us={} response_bytes={}",
++            sample.seq,
++            sample.kind,
++            sample.started.map(|started| started.elapsed().as_micros()).unwrap_or(0),
++            sample.native.as_micros(),
++            sample.clone.as_micros(),
++            sample.tree.as_micros(),
++            serialize.as_micros(),
++            write.as_micros(),
++            sample.response_bytes,
++        );
++    });
++}
+diff --git a/prototypes/v1/src/worker_rpc/server.rs b/prototypes/v1/src/worker_rpc/server.rs
+index 70cbbc7..db3d73c 100644
+--- a/prototypes/v1/src/worker_rpc/server.rs
++++ b/prototypes/v1/src/worker_rpc/server.rs
+@@ -648,6 +648,7 @@ impl State {
+         } else {
+             None
+         };
++        super::r53_probe::reset();
+         let result = prepared.and_then(|()| {
+             if stateful && Instant::now() >= deadline {
+                 return Err(anyhow::Error::new(AdmissionError::Deadline)
+@@ -714,7 +715,10 @@ impl State {
+         } else {
+             None
+         };
++        let serialize_started = Instant::now();
+         let bytes = serde_json::to_vec(&response)?;
++        let serialize_elapsed = serialize_started.elapsed();
++        super::r53_probe::record_response_bytes(bytes.len());
+         if let Some((rows, json_bytes)) = result_observation {
+             crate::work_metrics::observe_result(rows, json_bytes);
+         }
+@@ -723,7 +727,9 @@ impl State {
+         if !write_cursor_request {
+             drop(call.take());
+         }
++        let write_started = Instant::now();
+         let result = transport::reply(stream, 200, &bytes, keep_alive);
++        super::r53_probe::report(serialize_elapsed, write_started.elapsed());
+         if result.is_err() && write_cursor_request && response.ok {
+             if let Some(call) = call.as_ref() {
+                 let delivered_done = response
