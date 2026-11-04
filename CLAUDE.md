@@ -254,6 +254,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R57 | `perf/r57-worker-cursor-borrow` / `1daea98`（merge `5492e05`） | worker 只读 cursor 页直接借用序列化：`WorkerResult::ReadCursorPage` 把引擎行直接写进响应编码器（手写 `Serialize`），去掉每格 `serde_json::Value` 分配与整页 `to_vec`；映射逐条对齐 `sessions::value`（Null/Integer/有限 Float/Text 转义/Blob；非有限浮点→null），写 cursor 与 execute 保持 Value 树 | Gate 0：H1 json 每查询 34 页 = 1 first + 33 fetch；protobuf 34 页全部走 fetch 形状（native cursor 无融合首页）；L2 单页 fetch=0；写 cursor `UPDATE … RETURNING` 返回 200 且探针 0 命中。**批次 A/B（R56+R57 vs main，2 轮 × A/B/B/A × 5 samples，两侧全新卷）**：H1 json **−10.33% / −17.55%**、protobuf **−12.52% / −16.14%**，4/4 过 10% 硬门；H3 json −16.63%、pb −11.10% | 合入 main（与 R56 同批验收、同批合入） |
 | R58 | 测量轮（探针分支 `probe/r58-cursor-page-timing` @ `da2d8c1`、`probe/r58b-row-checks` @ `14aef4e`，均不合入） | H1 20MB cursor 剩余成本归因 + 行级检查上限探针：平台侧页等待/转码/upstream/dispatch 分段，worker 侧 turso/序列化/行级检查分段；再把 `run_steps` 的每行 budget 检查、操作读守卫与 step 时钟整体移出循环测端到端上限 | 归因（H1 json ≈53ms）：worker ≈31ms（turso VM stepping ≈17–18ms、页序列化 ≈6.6ms、行级检查 ≈4.3–5.9ms 且被探针 `Instant::now` 放大）、平台自身 ≈6.9ms，其余为客户端读取 20MB。上限 A/B（A/B/B/A × 5 samples，两侧独立栈 + 同批 fixture）：json 52.00→48.20ms（**7.3%**）、protobuf 51.94→48.03ms（**7.5%**），两条腿同向，响应字节/行数（8,625）/`warnings` 不变 | 仅记录，不实施：行级检查上限 7.3–7.5% < 10% 硬门；剩余 H1 大头（turso VM stepping、页序列化/协议帧）属 worker 引擎与协议层，需用户显式授权 |
 | R59 | 探针 `probe/r59-deferred-workers` / `fbf7b98`（不合入） | 延迟耐久账户 worker 8→64，验证 X1 并发档尾部是否由该池饱和导致；不改耐久时点、审计链语义与配额 | 归因（基线 + `PERI_DURABILITY_OBSERVER=1` + `--sql-open-observer`，独立栈）：`audit_batch` 506 批中 466 批 `count=1`、`sync_ns` p50 3.84ms；`audit_checkpoint` 55 次 p50 **21.0** / p90 31.2 / max 38.1ms，合计 1.204s；`audit_member_wait` 排队 p50 46.7ms、屏障等待 p99 115.8ms；慢 open/close 148ms = `audit` 126.2 + `terminal` 21.7。上限 A/B/B/A（X1 json-pipeline，4 档 × 100 请求，1 warmup + 3 samples/腿）：c16 中位基线 3.75 / 16.56ms → 探针 **165.62 / 124.39ms**（回归 33–44×，两条 B 腿同向），c4 p95 97.6→29.6–34.7ms 但被 c16 抵消；0 错误 / 0×429 / verdict 全 PASS | 不合入；分支与提交保留作证据：账户宽度不是限速器，加并发只让串行写者的屏障更碎（与 R29/R31 同构） |
+| R60 | 测量轮（无性能改动；harness protobuf `Error` 字段修正单独提交） | W1 写路径归因：用请求相位 + 耐久观察器拆解单条写请求（open→statement→close）的 40ms 构成，并复核 R1 smoke | 窗口 1.89s、48 statement（16 测量 + 32 harness setup/cleanup）：statement p50 **37.85ms** = native 17.59 + **intent 12.63** + audit 3.81 + terminal 3.79（open 1.08、close 0.45）；native 仅 1.3–1.6ms 的 4 条语句 intent 仍 10.9–12.8ms（p50 11.27）；open→statement 间隔 5–39µs（p50 13µs，n=48）；44/48 intent 与 audit+journal 批重叠、4 条与 checkpoint 重叠，三类 intent 均值 12.78/12.48/12.38ms ⇒ 等待不是 checkpoint CPU。窗口耐久：`audit_batch` 143（142×count=1，sync p50 3.87ms，合计 669ms）、`journal_batch` 145（98×count=1，sync p50 6.64ms，合计 867ms）、两链合计 1.54s/1.89s；`audit_checkpoint` 全run 18 次 p50 **21.0ms**（4 次 fsync：state+floor 两个 `atomicPrivate`，每 32 条审计记录一次） | 仅记录，不合入：W1 成本 = worker 写执行（native 17.6ms）+ 耐久屏障（≈20ms），intent 是上一条请求延迟会话记录的排队；两条 ≥10% 方向（提交意图/延迟记录的屏障顺序、checkpoint 频率与成本）属耐久提交时点与审计链语义，需用户显式授权 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2466,6 +2467,69 @@ smoke 剖面（F1/L1/B1/X1/W1）找新的限速器，而不是继续在 20MB cur
 （`README.md`、4 腿 `summary.json`、`durability-aggregate.json`、
 `durability-observation.jsonl.gz`、`request-phase-aggregate.json`、`request-phase-observation.jsonl`、
 `probe.txt`、`r59run.py`/`r59sum.py`/`metrics.py`）。
+
+#### R60：W1 写路径的耐久等待归因（2026-11-04，测量轮，无性能改动）
+
+**动机**：R59 的下一轮提示——授权前先做 W1 写路径归因。R59 已把 X1 c16 尾部归到单线程审计
+写者的屏障与 checkpoint；W1（写场景，中位 32–41ms）是否同一机制？
+
+**方法**：main 二进制（platform sha256 `f4210c08…`、worker `a648ecd9…`；仓库 `main` @ `3671c1c`，
+二进制构建后只有 docs 提交），`dev.py` 独立栈（127.0.0.1:19681、全新 run dir、无 TLS、默认配额），
+`PERI_DURABILITY_OBSERVER=1` + `--sql-open-observer`（sample 1000‰、threshold 0），harness
+`--scenario W1 --rounds 1 --warmup 1 --samples 3`，窗口 1.89s、16 个测量请求全部 200/ok。
+观察器会放大请求计数并压低吞吐，绝对数值只用于归因。
+
+**请求相位**（窗口内 48 open / 48 statement / 48 close = 16 个测量请求 × 3 动作
++ 32 条 harness 自身 setup/cleanup 语句）：
+
+| action | n | total p50 / p95 / max | 主要相位（p50） |
+|---|---:|---|---|
+| statement | 48 | 37.85 / 46.68 / 48.12ms | native 17.59、**intent 12.63**、audit 3.81、terminal 3.79 |
+| open | 48 | 1.08 / 2.23 / 2.71ms | native 0.93（延迟记录：回复前不等屏障） |
+| close | 48 | 0.45 / 1.08 / 1.17ms | native 0.29 |
+
+**关键证据**：
+
+1. **intent 与 SQL 无关**：4 条语句 native 只有 1.3–1.6ms，intent 仍 10.9–12.8ms（p50 11.27、
+   total p50 21.26）；native >10ms 的 42 条为 native 17.95、intent 12.65、audit 3.79、terminal 3.81。
+2. **客户端严格串行**：同连接 open 结束到 statement 开始只有 5–39µs（p50 13µs，n=48），两个请求
+   没有重叠；R37 的延迟耐久账户使 open 的 completion/audit 在回复后才持久化，statement 到达时
+   这些记录仍在途。
+3. **不是 checkpoint CPU**：44/48 的 intent 同时与 `audit_batch`+`journal_batch` 重叠，4 条与
+   `audit_checkpoint` 重叠；三类 intent 均值 12.78 / 12.48 / 12.38ms——与 checkpoint 重叠的没有更慢。
+4. **窗口内两条屏障链几乎占满**：`audit_batch` 143 批（142 批 count=1，sync p50 3.87ms，合计
+   669ms）、`journal_batch` 145 批（98 批 count=1，sync p50 6.64ms，合计 867ms），合计
+   1.54s / 1.89s 窗口。全run：`audit_batch` 601（600 count=1）、`journal_batch` 1027（980 count=1）、
+   `journal_member_wait` p50 2.70ms、`audit_member_wait` p50 3.92ms、`journal_prepare` p50 35µs。
+5. **checkpoint = 4 次 fsync**：全run 18 次、p50 **21.00ms**（18.98–24.16）、合计 386ms；窗口内
+   4 次合计 87ms（4.6%）。`checkpointAfterBatch` 在 `sequence - head.revision >= auditBatchMaximum(32)`
+   时 `commitHead` → `commitAuditBatch` → `persist`；`persist` 写 `head.path` 与 `head.path+".floor"`
+   两个文件，各自 `atomicPrivate`（tmp 写 + fsync + rename + 目录 fsync）。
+
+**机制**：`statement` 的 `intent` 覆盖 `beginDispatchOperation` → `registerOperation` →
+`beginCorrelatedOperation`：写「可能提交」意图并等它 durable。journal 单写者、按命名空间有序，
+队列里还有上一条 open 的延迟记录（audit 与 journal 两条链都在跑），intent 的屏障落在它们之后；
+12.63ms ≈ 3 个屏障单位（窗口 `journal_batch` sync p50 6.64 + audit 3.87），与排队一致。
+
+**判决：仅记录，不合入**（本轮无性能改动）。W1 成本 = worker 写执行（native 17.6ms，SQL-only
+16–18ms，属存储/引擎）+ 耐久屏障（≈20ms）。两条 ≥10% 方向都在授权边界：① 让提交意图不再排在
+上一条请求的延迟会话记录之后（journal 顺序/耐久提交时点）；② 降低 `audit_checkpoint` 单次成本或
+频率（4 次 fsync/次、每 32 条审计记录一次，属审计链与恢复语义）。未授权时不改。
+
+**工具修正**（与性能无关，单独提交）：harness 解析 protobuf `Error` 时把 field 1 当 code、field 2
+当 message；Hrana 3 规范是 `message = 1`、`code = 2`（平台 `hranaProtoError` 一致）。修正
+`hrana.py`（pipeline 与 cursor 两处）与 `test_issue28_support.py` 后，R1-5000 protobuf 由误判
+`error` 恢复为 `expected_limit`；离线 32 tests OK。修正后的 R1 smoke（1 轮 × 3 samples，仅 smoke、
+不可认证）：limit-100 1.92/1.64ms、limit-500 12.69/11.53ms、limit-1000 18.35/19.28ms，
+limit-2000/5000/8625 均 `expected_limit`（4MiB 预算）。
+
+**下一轮提示**：W1 与 X1 的剩余成本都落在同一条单线程耐久写者上，授权内只剩 <10% 的零散项。
+若继续，先做两个**不安全上限探针**（不改 main）：跳过 intent 等待以量化 W1 上限、跳过 checkpoint
+以量化 X1 尾部上限，用数字换授权决定。
+
+**证据**：`docs/performance-review/2026-11-04-r60-write-path-attribution/`
+（`README.md`、`summary.json`/`md`、`raw.jsonl`、`durability-observation.jsonl.gz`、
+`request-phase-observation.jsonl.gz`、`aggregate.py`、`smoke-r1-prefix/`、`smoke-r1-postfix/`）。
 
 ## 代码约定
 

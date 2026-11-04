@@ -1,0 +1,412 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:19680",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "3671c1c7fe7228a01c2eac8e9cc604a27b62f4ea",
+    "connection_file": "provided (redacted)",
+    "platform_label": "HEAD 3671c1c / rust unknown",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T07:54:49.923921+00:00",
+    "ended_utc": "2026-11-04T07:54:50.720878+00:00",
+    "duration_seconds": 0.797,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 3,
+    "concurrency_requests": 100,
+    "resource_before": {},
+    "resource_after": {},
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "R1.limit-100",
+      "title": "大结果 LIMIT 100",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 1.918833,
+      "p95_ms": 15.321375,
+      "min_ms": 1.70125,
+      "max_ms": 15.321375,
+      "round_medians_ms": [
+        1.918833
+      ],
+      "rows": 100,
+      "response_bytes": 237200,
+      "query_ms": 0.250292,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-100",
+      "title": "大结果 LIMIT 100",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 1.6435,
+      "p95_ms": 8.783542,
+      "min_ms": 1.616625,
+      "max_ms": 8.783542,
+      "round_medians_ms": [
+        1.6435
+      ],
+      "rows": 100,
+      "response_bytes": 234948,
+      "query_ms": 0.23466700000000001,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-500",
+      "title": "大结果 LIMIT 500",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 12.693959,
+      "p95_ms": 20.83375,
+      "min_ms": 12.104833,
+      "max_ms": 20.83375,
+      "round_medians_ms": [
+        12.693959
+      ],
+      "rows": 500,
+      "response_bytes": 1184789,
+      "query_ms": 1.160917,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-500",
+      "title": "大结果 LIMIT 500",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 11.532333,
+      "p95_ms": 12.76775,
+      "min_ms": 5.815083,
+      "max_ms": 12.76775,
+      "round_medians_ms": [
+        11.532333
+      ],
+      "rows": 500,
+      "response_bytes": 1174549,
+      "query_ms": 1.1035409999999999,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-1000",
+      "title": "大结果 LIMIT 1000",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 18.351292,
+      "p95_ms": 19.708209,
+      "min_ms": 11.937834,
+      "max_ms": 19.708209,
+      "round_medians_ms": [
+        18.351292
+      ],
+      "rows": 1000,
+      "response_bytes": 2369290,
+      "query_ms": 2.1868339999999997,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-1000",
+      "title": "大结果 LIMIT 1000",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 19.276708,
+      "p95_ms": 20.938334,
+      "min_ms": 13.152417,
+      "max_ms": 20.938334,
+      "round_medians_ms": [
+        19.276708
+      ],
+      "rows": 1000,
+      "response_bytes": 2349053,
+      "query_ms": 2.137083,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-2000",
+      "title": "大结果 LIMIT 2000",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 18.054834,
+      "p95_ms": 18.9205,
+      "min_ms": 17.934791,
+      "max_ms": 18.9205,
+      "round_medians_ms": [
+        18.054834
+      ],
+      "rows": 0,
+      "response_bytes": 244,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {
+        "result_limit": 3
+      },
+      "outcomes": {
+        "expected_limit": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-2000",
+      "title": "大结果 LIMIT 2000",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 20.770917,
+      "p95_ms": 22.004791,
+      "min_ms": 18.792708,
+      "max_ms": 22.004791,
+      "round_medians_ms": [
+        20.770917
+      ],
+      "rows": 0,
+      "response_bytes": 141,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {
+        "result_limit": 3
+      },
+      "outcomes": {
+        "expected_limit": 3
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-5000",
+      "title": "大结果 LIMIT 5000",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 18.904875,
+      "p95_ms": 19.482209,
+      "min_ms": 18.300334,
+      "max_ms": 19.482209,
+      "round_medians_ms": [
+        18.904875
+      ],
+      "rows": 0,
+      "response_bytes": 244,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {
+        "result_limit": 3
+      },
+      "outcomes": {
+        "expected_limit": 3
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-5000",
+      "title": "大结果 LIMIT 5000",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 20.083292,
+      "p95_ms": 38.886708,
+      "min_ms": 19.944833,
+      "max_ms": 38.886708,
+      "round_medians_ms": [
+        20.083292
+      ],
+      "rows": 0,
+      "response_bytes": 141,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {
+        "result_limit": 3
+      },
+      "outcomes": {
+        "expected_limit": 3
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-8625",
+      "title": "大结果 LIMIT 8625",
+      "protocol": "json-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 19.779792,
+      "p95_ms": 19.937209,
+      "min_ms": 18.882291,
+      "max_ms": 19.937209,
+      "round_medians_ms": [
+        19.779792
+      ],
+      "rows": 0,
+      "response_bytes": 244,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {
+        "result_limit": 3
+      },
+      "outcomes": {
+        "expected_limit": 3
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "R1.limit-8625",
+      "title": "大结果 LIMIT 8625",
+      "protocol": "protobuf-pipeline",
+      "kind": "limit",
+      "samples": 3,
+      "median_ms": 18.901125,
+      "p95_ms": 18.91575,
+      "min_ms": 17.811458,
+      "max_ms": 18.91575,
+      "round_medians_ms": [
+        18.901125
+      ],
+      "rows": 0,
+      "response_bytes": 141,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {
+        "result_limit": 3
+      },
+      "outcomes": {
+        "expected_limit": 3
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}
