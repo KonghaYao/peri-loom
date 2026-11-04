@@ -1,0 +1,7 @@
+legs=8 binary_sha_ok=8 image_digest_ok=8 fixture_ok=8 stop_clean=8
+summary_rows=8 timed_samples=160 status_429=0 problems=0
+
+| 场景 | 侧 | 腿数 | audit fsync 增量中位 | journal appends 增量中位 | journal syncs 增量中位 | coalesced 增量中位 | batch_max 中位 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| F1.select-1 | A | 4 | 26.0 | 44.0 | 29.0 | 15.0 | 4.5 |
+| F1.select-1 | B | 4 | 26.0 | 44.0 | 28.5 | 15.5 | 4.5 |

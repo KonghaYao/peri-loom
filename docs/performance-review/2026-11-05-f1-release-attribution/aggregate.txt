@@ -1,0 +1,73 @@
+
+## 1. 逐腿（json-pipeline）
+
+| 场景 | leg | 侧 | 样本 | median | p95 | p99 | min | max | outcomes | rows |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|
+| F1.select-1 | r1a1 | A | 20 | 2.201 | 6.625 | 8.632 | 1.116 | 8.632 | ok=20 | 1 |
+| F1.select-1 | r1a2 | A | 20 | 3.061 | 6.479 | 7.272 | 0.898 | 7.272 | ok=20 | 1 |
+| F1.select-1 | r1b1 | B | 20 | 2.386 | 5.569 | 6.526 | 0.732 | 6.526 | ok=20 | 1 |
+| F1.select-1 | r1b2 | B | 20 | 1.826 | 5.271 | 5.860 | 0.736 | 5.860 | ok=20 | 1 |
+| F1.select-1 | r2a1 | A | 20 | 1.455 | 5.897 | 6.705 | 0.871 | 6.705 | ok=20 | 1 |
+| F1.select-1 | r2a2 | A | 20 | 3.314 | 6.097 | 6.803 | 1.169 | 6.803 | ok=20 | 1 |
+| F1.select-1 | r2b1 | B | 20 | 2.441 | 6.784 | 7.754 | 1.054 | 7.754 | ok=20 | 1 |
+| F1.select-1 | r2b2 | B | 20 | 3.644 | 7.168 | 7.242 | 1.037 | 7.242 | ok=20 | 1 |
+
+## 2. 腿有效性（冻结规则）
+
+- F1.select-1/r1a1: OK
+- F1.select-1/r1a2: OK
+- F1.select-1/r1b1: OK
+- F1.select-1/r1b2: OK
+- F1.select-1/r2a1: OK
+- F1.select-1/r2a2: OK
+- F1.select-1/r2b1: OK
+- F1.select-1/r2b2: OK
+
+## 3. 主指标（冻结判据：两轮比值都 >1.10 且合并 >1.10 才判 FAIL）
+
+| 场景 | 指标 | 轮 | 基线中位(ms) | 候选中位(ms) | 比值(候选/基线) |
+|---|---|---|---:|---:|---:|
+| F1.select-1 | json-pipeline | round1 | 2.631 | 2.106 | 0.800 |
+| F1.select-1 | json-pipeline | round2 | 2.384 | 3.042 | 1.276 |
+| F1.select-1 | json-pipeline | 合并 | 2.631 | 2.413 | 0.917 |
+
+## 4. p95 / p99（报告项，不判）
+
+| 场景 | 指标 | 轮 | 基线 p95 | 候选 p95 | 比值 | 基线 p99 | 候选 p99 | 比值 |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| F1.select-1 | json-pipeline | round1 | 6.552 | 5.420 | 0.827 | 8.632 | 6.526 | 0.756 |
+| F1.select-1 | json-pipeline | round2 | 5.997 | 6.976 | 1.163 | 6.803 | 7.754 | 1.140 |
+
+## 5. 字节与逐量计数（报告项，不判）
+
+| 场景 | 轮 | 基线字节 | 候选字节 | 基线 samples | 候选 samples |
+|---|---|---:|---:|---:|---:|
+| F1.select-1 | round1 | 312.00 | 312.00 | 20,20 | 20,20 |
+| F1.select-1 | round2 | 312.00 | 312.00 | 20,20 | 20,20 |
+
+## 6. 可复现性判据（本任务预注册，样本级）
+
+### F1.select-1 round1
+- A(n=40): min=0.898 p25=1.274 median=2.460 p75=4.922 max=8.632 sd_within_leg=2.158
+- B(n=40): min=0.732 p25=0.848 median=2.052 p75=3.357 max=6.526 sd_within_leg=1.656
+- leg_medians A=2.201,3.061
+- leg_medians B=2.386,1.826
+- median_diff(B-A)=-0.407 ms; non_overlap=False; 3*sd=6.475; >3sd=False; round_ratio=0.800
+- permutation_p=0.38593 (observed diff -0.407 ms); bootstrap_95%CI=[-2.480, 0.653]
+### F1.select-1 round2
+- A(n=40): min=0.871 p25=1.342 median=2.586 p75=4.224 max=6.803 sd_within_leg=1.845
+- B(n=40): min=1.037 p25=1.293 median=3.337 p75=4.813 max=7.754 sd_within_leg=2.170
+- leg_medians A=1.455,3.314
+- leg_medians B=2.441,3.644
+- median_diff(B-A)=0.751 ms; non_overlap=False; 3*sd=6.509; >3sd=False; round_ratio=1.276
+- permutation_p=0.48353 (observed diff 0.751 ms); bootstrap_95%CI=[-1.203, 2.349]
+
+### 汇总
+- round_ratios=0.800,1.276 pooled=0.917
+- same_direction=False all_rounds_above_1.10=False
+- per_round_separation=[False, False]
+- **判决：不可复现/噪声主导**
+
+## 7. 冻结判决（与 2026-11-04 报告同规则）
+
+- F1.select-1 / json-pipeline: **PASS**

@@ -1,0 +1,26 @@
+| worker | metric | A median | B median | A values | B values |
+|---|---|---:|---:|---|---|
+| worker-a | metrics.checkpoint.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.cold_open.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.delete.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.execute.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.get.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.list.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.native_commit_durability.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.put.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.query.total | 25.0 | 25.0 | [25, 25, 25, 25] | [25, 25, 25, 25] |
+| worker-a | metrics.segment_get.total | 1.0 | 1.0 | [1, 1, 1, 1] | [1, 1, 1, 1] |
+| worker-a | metrics.segment_put.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-a | metrics.wal_durability.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.checkpoint.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.cold_open.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.delete.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.execute.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.get.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.list.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.native_commit_durability.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.put.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.query.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.segment_get.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.segment_put.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |
+| worker-b | metrics.wal_durability.total | 0.0 | 0.0 | [0, 0, 0, 0] | [0, 0, 0, 0] |

@@ -1,0 +1,8 @@
+harness: scripts/perf-reliability/issue28/runner.py _request_once defaults close_stream=True
+harness: _pipeline_requests() appends {"type": "close"} when close_stream
+harness: hrana.py pipeline_json() encodes each close entry as {"type": "close"}
+
+exact pipeline document for F1.select-1 / json-pipeline:
+{"requests":[{"type":"execute","stmt":{"sql":"SELECT 1","want_rows":true}},{"type":"close"}]}
+encoded bytes: 102
+raw.jsonl request_bytes observed (r1a1/r1b1): r1a1 [102]; r1b1 [102]; 

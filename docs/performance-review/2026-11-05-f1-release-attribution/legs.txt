@@ -1,0 +1,38 @@
+2a4a41d84011021e7c7b4d556f737a9582c5d7a48dec6a6c3887f6fbbae8294d  /tmp/peri-release-ab/bin/peri-platform-v1.2.6
+61f742362c04d095b6f23754e22bf6aa2d807ac7154feaf4af211406282faeff  /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.6
+95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912  /tmp/peri-release-ab/bin/peri-platform-v1.2.7
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+samples_per_leg=20
+=== 2026-11-04T22:08:02+0800 scenario=F1.select-1 leg=r1a1 side=A port=20401 load={_1.51_2.87_3.24_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r1a1 side=A harness_status=0
+leg F1.select-1/r1a1 exit=0
+=== 2026-11-04T22:08:16+0800 scenario=F1.select-1 leg=r1b1 side=B port=20402 load={_1.47_2.80_3.20_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r1b1 side=B harness_status=0
+leg F1.select-1/r1b1 exit=0
+=== 2026-11-04T22:08:30+0800 scenario=F1.select-1 leg=r1b2 side=B port=20403 load={_1.58_2.76_3.18_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r1b2 side=B harness_status=0
+leg F1.select-1/r1b2 exit=0
+=== 2026-11-04T22:08:44+0800 scenario=F1.select-1 leg=r1a2 side=A port=20404 load={_1.90_2.77_3.18_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r1a2 side=A harness_status=0
+leg F1.select-1/r1a2 exit=0
+=== 2026-11-04T22:08:59+0800 scenario=F1.select-1 leg=r2a1 side=A port=20405 load={_1.91_2.73_3.15_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r2a1 side=A harness_status=0
+leg F1.select-1/r2a1 exit=0
+=== 2026-11-04T22:09:13+0800 scenario=F1.select-1 leg=r2b1 side=B port=20406 load={_2.10_2.73_3.15_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r2b1 side=B harness_status=0
+leg F1.select-1/r2b1 exit=0
+=== 2026-11-04T22:09:27+0800 scenario=F1.select-1 leg=r2b2 side=B port=20407 load={_2.01_2.69_3.13_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r2b2 side=B harness_status=0
+leg F1.select-1/r2b2 exit=0
+=== 2026-11-04T22:09:41+0800 scenario=F1.select-1 leg=r2a2 side=A port=20408 load={_2.08_2.67_3.11_} ===
+verify threads=201 messages=8625 chars=20177069 focus=8625
+F1.select-1/r2a2 side=A harness_status=0
+leg F1.select-1/r2a2 exit=0
+ALL_DONE 2026-11-04T22:09:56+0800

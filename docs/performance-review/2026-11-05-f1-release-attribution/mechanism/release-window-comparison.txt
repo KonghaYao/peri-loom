@@ -1,0 +1,20 @@
+== original release window (5 timed samples/leg, 4 protocols per leg) ==
+r1a1 n=5 min=1.827 median=3.486 max=8.010 sd=2.484
+r1b1 n=5 min=0.816 median=2.784 max=7.626 sd=2.584
+r1b2 n=5 min=1.105 median=4.976 max=5.661 sd=1.882
+r1a2 n=5 min=1.145 median=2.832 max=4.891 sd=1.758
+r2a1 n=5 min=1.194 median=2.034 max=7.969 sd=2.832
+r2b1 n=5 min=1.131 median=2.260 max=3.495 sd=1.141
+r2b2 n=5 min=1.350 median=2.999 max=7.879 sd=3.061
+r2a2 n=5 min=1.097 median=1.378 max=4.541 sd=1.545
+
+== gateway action / journal deltas per leg ==
+leg	side	open	statement	close	journal_appends	journal_syncs	audit_fsync
+r1a1	A	25	12	25	50	38	33
+r1b1	B	25	12	25	50	40	36
+r1b2	B	25	12	25	50	40	38
+r1a2	A	25	12	25	50	38	40
+r2a1	A	25	12	25	50	38	35
+r2b1	B	25	12	25	50	39	33
+r2b2	B	25	12	25	50	42	40
+r2a2	A	25	12	25	50	36	32

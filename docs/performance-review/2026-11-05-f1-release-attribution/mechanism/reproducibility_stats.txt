@@ -1,0 +1,34 @@
+== sample-level pooled over both rounds (n=80/side) ==
+A: n=80 min=0.871 p25=1.282 median=2.518 p75=4.652 max=8.632 mean=3.141 sd=1.998
+B: n=80 min=0.732 p25=1.100 median=2.366 p75=4.276 max=7.754 mean=2.912 sd=1.982
+median ratio B/A = 0.939
+mean ratio B/A   = 0.927
+pooled median diff B-A = -0.152 ms, permutation p=0.78731
+pooled bootstrap 95% CI of median diff = [-1.395, 1.070]
+
+== per-leg ==
+r1a1 A n=20 min=1.116 median=2.201 max=8.632 sd=2.387 cv=70.8%
+r1b1 B n=20 min=0.732 median=2.386 max=6.526 sd=1.719 cv=66.7%
+r1b2 B n=20 min=0.736 median=1.826 max=5.860 sd=1.591 cv=74.2%
+r1a2 A n=20 min=0.898 median=3.061 max=7.272 sd=1.903 cv=59.6%
+r2a1 A n=20 min=0.871 median=1.455 max=6.705 sd=1.897 cv=73.6%
+r2b1 B n=20 min=1.054 median=2.441 max=7.754 sd=2.275 cv=69.1%
+r2b2 B n=20 min=1.037 median=3.644 max=7.242 sd=2.059 cv=56.7%
+r2a2 A n=20 min=1.169 median=3.314 max=6.803 sd=1.792 cv=52.4%
+
+== paired by within-round position (A1/B1, A2/B2) ==
+round1 r1a1(2.201) vs r1b1(2.386): B/A=1.084
+round1 r1a2(3.061) vs r1b2(1.826): B/A=0.596
+round2 r2a1(1.455) vs r2b1(2.441): B/A=1.678
+round2 r2a2(3.314) vs r2b2(3.644): B/A=1.100
+
+== robust summaries (sample-level, 80/side) ==
+median A=2.518 B=2.366 ratio=0.939
+10% trimmed mean A=2.948 B=2.690 ratio=0.912
+fraction > 2.0ms: A=47/80 (58.8%) B=47/80 (58.8%)
+fraction > 3.0ms: A=36/80 (45.0%) B=34/80 (42.5%)
+fraction > 4.0ms: A=26/80 (32.5%) B=23/80 (28.8%)
+fraction > 5.0ms: A=17/80 (21.2%) B=13/80 (16.2%)
+fraction > 6.0ms: A=9/80 (11.2%) B=8/80 (10.0%)
+Mann-Whitney U: U=3533.0 z=0.004 two-sided p=0.99691
+sample size per side for delta=0.5ms, sigma=1.987, 80% power ~ 248

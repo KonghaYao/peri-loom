@@ -1,0 +1,13 @@
+original release window, json-pipeline, timed samples only (40 total, 20/side)
+A: n=20 median=2.482 mean=3.102 sd=2.123
+B: n=20 median=3.045 mean=3.482 sd=2.236
+median ratio B/A=1.227, mean ratio=1.122, 10% trimmed ratio=1.191
+fraction > 2.0ms: A=12/20 (60.0%) B=14/20 (70.0%)
+fraction > 3.0ms: A=9/20 (45.0%) B=10/20 (50.0%)
+fraction > 4.0ms: A=6/20 (30.0%) B=6/20 (30.0%)
+fraction > 5.0ms: A=2/20 (10.0%) B=5/20 (25.0%)
+fraction > 6.0ms: A=2/20 (10.0%) B=3/20 (15.0%)
+Mann-Whitney U=181.0 z=-0.014 two-sided p=0.98891
+median diff B-A=0.563 ms, permutation p=0.59867
+round1 sample-level: A n=10 median=3.159 B n=10 median=3.392 ratio=1.074 perm_p=0.90920
+round2 sample-level: A n=10 median=1.706 B n=10 median=2.629 ratio=1.541 perm_p=0.61037

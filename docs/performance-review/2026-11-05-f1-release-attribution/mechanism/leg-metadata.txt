@@ -1,0 +1,8 @@
+r1a1 side=A rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.076s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r1b1 side=B rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.058s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r1b2 side=B rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.050s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r1a2 side=A rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.073s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r2a1 side=A rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.058s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r2b1 side=B rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.074s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r2b2 side=B rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.082s image=ghcr.io/konghayao/peri-loom:v1.2.7
+r2a2 side=A rounds=1 warmup=1 samples=20 q_sessions=16 q_concurrent=100 q_rps=500 q_result=4194304 duration=0.078s image=ghcr.io/konghayao/peri-loom:v1.2.7

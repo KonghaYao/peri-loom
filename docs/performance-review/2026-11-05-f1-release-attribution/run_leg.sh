@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# F1.select-1 / json-pipeline attribution leg.
+#
+# Adapted from docs/performance-review/2026-11-04-v1.2.7-release/run_leg.sh.
+# The only behavioural changes are:
+#   * F1 runs only the json-pipeline protocol (task scope);
+#   * volume/container/connection names use the peri-f1attr prefix so this
+#     window cannot collide with the frozen release evidence.
+# Everything else (fresh volume, seed, binary sha gate, metrics snapshots,
+# launcher stop proof, harness flags) is copied verbatim.
+#
+# Usage: run_leg.sh <scenario> <leg> <port> <side> <platform-binary> <worker-binary> <samples> <platform-sha256> <worker-sha256>
+set -euo pipefail
+scenario=$1; leg=$2; port=$3; side=$4; platform=$5; worker=$6; samples=$7
+expected_platform=${8:?expected platform sha256}; expected_worker=${9:?expected worker sha256}
+here=$(cd "$(dirname "$0")" && pwd)
+legdir=$here/legs/$scenario/$leg
+key=$(printf '%s' "$scenario" | tr '[:upper:].' '[:lower:]-')
+window=${WINDOW:-f1attr}
+volume=peri-f1attr-$window-$key-$leg
+container=peri-f1attr-$window-$key-$leg
+image=${IMAGE:-ghcr.io/konghayao/peri-loom:v1.2.7}
+# The connection file carries a private API key. Keep it outside the repository.
+conn=/tmp/peri-f1-attr/conn/conn-$window-$key-$leg.json
+mkdir -p /tmp/peri-f1-attr/conn
+
+case "$scenario" in
+  F1.select-1) protocols=(json-pipeline) ;;
+  *) echo "unsupported scenario in this window: $scenario" >&2; exit 2 ;;
+esac
+proto_args=()
+for p in "${protocols[@]}"; do proto_args+=(--protocol "$p"); done
+
+mkdir -p "$legdir"
+rm -f "$legdir/summary.json" "$legdir/summary.md" "$legdir/raw.jsonl" \
+      "$legdir/metrics-before.json" "$legdir/metrics-after.json" \
+      "$legdir/launcher-stop.json" "$legdir/stop-exit.txt" "$legdir/harness.log"
+docker rm -f "$container" >/dev/null 2>&1 || true
+docker volume create "$volume" >/dev/null
+docker run -d --name "$container" --platform linux/arm64 --network host --init --stop-timeout 60 \
+  --security-opt no-new-privileges:true --cap-drop ALL \
+  -e PERI_HRANA_EXPERIMENTAL=1 \
+  -e PERI_PLATFORM_BINARY=/usr/local/bin/peri-platform \
+  -e PERI_RUST_BINARY=/usr/local/bin/peri-loom-v1 \
+  -v "$volume":/data/peri \
+  -v "$platform":/usr/local/bin/peri-platform:ro \
+  -v "$worker":/usr/local/bin/peri-loom-v1:ro \
+  "$image" --run-dir /data/peri --backend local --listen 127.0.0.1:"$port" --no-build >/dev/null
+
+cleanup() {
+  docker logs "$container" > "$legdir/container.log" 2>&1 || true
+  docker stop -t 60 "$container" >/dev/null 2>&1 || true
+  docker inspect "$container" --format '{{.State.ExitCode}}' > "$legdir/stop-exit.txt" 2>/dev/null || true
+  if ! docker cp "$container":/data/peri/launcher-stop.json "$legdir/launcher-stop.json" 2>/dev/null; then
+    echo "launcher-stop.json missing" > "$legdir/launcher-stop.missing"
+  fi
+  docker rm "$container" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+for _ in $(seq 1 120); do
+  docker exec "$container" test -f /data/peri/connection.json 2>/dev/null && break
+  sleep 1
+done
+if ! docker exec "$container" test -f /data/peri/connection.json 2>/dev/null; then
+  echo "STACK FAILED for $scenario/$leg" >&2
+  docker logs --tail 40 "$container" >&2 || true
+  exit 1
+fi
+docker cp "$container":/data/peri/connection.json "$conn" >/dev/null
+chmod 600 "$conn"
+
+docker exec "$container" sha256sum /usr/local/bin/peri-platform /usr/local/bin/peri-loom-v1 \
+  > "$legdir/binaries.txt"
+actual_platform=$(awk '$2=="/usr/local/bin/peri-platform"{print $1}' "$legdir/binaries.txt")
+actual_worker=$(awk '$2=="/usr/local/bin/peri-loom-v1"{print $1}' "$legdir/binaries.txt")
+if [ "$actual_platform" != "$expected_platform" ] || [ "$actual_worker" != "$expected_worker" ]; then
+  echo "binary sha mismatch for $scenario/$leg side=$side" >&2
+  echo "platform expected=$expected_platform actual=$actual_platform" >&2
+  echo "worker   expected=$expected_worker actual=$actual_worker" >&2
+  exit 1
+fi
+docker inspect "$container" --format '{{.Image}}' > "$legdir/image-id.txt"
+docker image inspect "$image" --format '{{index .RepoDigests 0}}' > "$legdir/image-digest.txt"
+
+python3 "$here/seed_fixture.py" "$conn" > "$legdir/seed.log" 2>&1
+tail -1 "$legdir/seed.log"
+python3 "$here/snap_metrics.py" "$conn" "$legdir/metrics-before.json"
+
+cd /Users/kk/code/peri-loom
+set +e
+python3 scripts/perf-reliability/issue28/run.py \
+  --connection-file "$conn" \
+  --container "$container" \
+  --out "$legdir" \
+  --scenario "$scenario" "${proto_args[@]}" \
+  --rounds 1 --warmup 1 --samples "$samples" \
+  --concurrency-requests 50 --print-table --allow-misses \
+  > "$legdir/harness.log" 2>&1
+status=$?
+set -e
+python3 "$here/snap_metrics.py" "$conn" "$legdir/metrics-after.json"
+echo "$scenario/$leg side=$side harness_status=$status"
+exit $status
