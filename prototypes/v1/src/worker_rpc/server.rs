@@ -726,10 +726,7 @@ impl State {
         let result = transport::reply(stream, 200, &bytes, keep_alive);
         if result.is_err() && write_cursor_request && response.ok {
             if let Some(call) = call.as_ref() {
-                let delivered_done = response
-                    .result
-                    .as_ref()
-                    .is_some_and(|result| result["done"] == true);
+                let delivered_done = response.result.as_ref().is_some_and(|result| result.done());
                 // A lost reply is only settled by a delivered done page or by a
                 // close that actually aborted a live cursor. `Ok(false)` means
                 // there was no cursor left to abort, which is not rollback proof.

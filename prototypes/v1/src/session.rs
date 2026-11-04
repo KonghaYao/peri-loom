@@ -23,6 +23,7 @@ pub(crate) use budget::RequestDeadline;
 pub(crate) use lane::SessionLane;
 pub(crate) use notify::GateNotify;
 
+#[derive(Clone, Debug)]
 pub struct StatementColumn {
     pub name: String,
     pub decltype: Option<String>,
