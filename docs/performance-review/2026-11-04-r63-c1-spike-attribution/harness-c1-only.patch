@@ -1,0 +1,11 @@
+--- scripts/perf-reliability/issue28/contract.py	2026-11-03 15:52:22
++++ /tmp/peri-perf/work-c1/issue28/contract.py	2026-11-04 16:57:29
+@@ -169,7 +169,7 @@
+             sql="SELECT 1",
+             want_rows=True,
+             expected_rows=1,
+-            concurrency_levels=(1, 4, 8, 16),
++            concurrency_levels=(1,),
+         ),
+     ]
+     for limit in (100, 500, 1000, 2000, 5000, 8625):

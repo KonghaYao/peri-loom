@@ -257,6 +257,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R60 | 测量轮（无性能改动；harness protobuf `Error` 字段修正单独提交） | W1 写路径归因：用请求相位 + 耐久观察器拆解单条写请求（open→statement→close）的 40ms 构成，并复核 R1 smoke | 窗口 1.89s、48 statement（16 测量 + 32 harness setup/cleanup）：statement p50 **37.85ms** = native 17.59 + **intent 12.63** + audit 3.81 + terminal 3.79（open 1.08、close 0.45）；native 仅 1.3–1.6ms 的 4 条语句 intent 仍 10.9–12.8ms（p50 11.27）；open→statement 间隔 5–39µs（p50 13µs，n=48）；44/48 intent 与 audit+journal 批重叠、4 条与 checkpoint 重叠，三类 intent 均值 12.78/12.48/12.38ms ⇒ 等待不是 checkpoint CPU。窗口耐久：`audit_batch` 143（142×count=1，sync p50 3.87ms，合计 669ms）、`journal_batch` 145（98×count=1，sync p50 6.64ms，合计 867ms）、两链合计 1.54s/1.89s；`audit_checkpoint` 全run 18 次 p50 **21.0ms**（4 次 fsync：state+floor 两个 `atomicPrivate`，每 32 条审计记录一次） | 仅记录，不合入：W1 成本 = worker 写执行（native 17.6ms）+ 耐久屏障（≈20ms），intent 是上一条请求延迟会话记录的排队；两条 ≥10% 方向（提交意图/延迟记录的屏障顺序、checkpoint 频率与成本）属耐久提交时点与审计链语义，需用户显式授权 |
 | R61 | 探针 `probe/r61-w1-intent-ceiling` / `9cf4911`、`probe/r61-x1-checkpoint-ceiling` / `c59e917`（均不合入） | 两项不安全上限探针：① W1 提交意图不等自己的屏障就 dispatch；② 跳过 `appendBatch` 的 `pre_batch` 与 `post_batch` checkpoint（保留 shutdown） | ① W1.insert json-pipeline A/B/B/A（4 条独立栈 + 全新同数据卷，2 轮 × 1 warmup + 3 timed/腿）：基线 40.56 / 40.94ms → 探针 32.10 / 31.47ms（**−20.9% / −23.1%**，4 轮逐轮中位同向，−8.46 / −9.47ms）。② X1 json-pipeline（4 条腿，100 请求/级）：Gate 0 `head_checkpoint_attempts_total` **54→0**（1.1447s→0，fsync 512→567）；c4/c8 p99 多数下降但 c16 B1 +36%、4 级 elapsed 合计 B1 −2.0% / B2 +6.8%，单级跨度 82–557ms，方差大于效应 | 不合入：W1 上限 21–23% 指向「意图排在延迟会话记录之后」，但改的是耐久提交时点/顺序，需用户显式授权；X1 checkpoint 被否证，不是尾部限速器（请求在 checkpoint 前已回复）。第一版 checkpoint 探针只跳 `post_batch`，Gate 0 发现 56 次 `pre_batch` 仍在，已作废并重跑 |
 | R62 | `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`（不合入，留证） | 延后耐久账户待办上限 256→4096，与审计队列自身的 4096 条 / 8 MiB 准入上限对齐；新增 `/v1/metrics` 的 `deferred_durability`（pending / pending_max / maximum / enqueued_total / inline_total） | Gate 0：100 请求/级时候选把固定 500 rps 桶耗尽（16 次 `rate_limit` vs 基线 0），拒绝记录排在延后积压之后约 500ms；成功请求 p99 仅 20.37ms。改用 50 请求/级（配额不变）后两侧干净。A/B：2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 c8/c16 p95/p99 两轮四单元全部 −31.1%~−79.3%（合并 −33.1% / −67.6% / −62.1% / −49.2%）；护栏 c1 p95 0.973→6.370ms（**+554.9%**）失败，c1 p50 −3.2%、c1 p99 −22.1%、c4 p50 −23.6%、c4 p95 −93.0%；8 腿 0 错误 / 0×429 / `inline_total=0` / clean stop | 不合入：主指标通过，但 A/B 前冻结的 c1 p95 护栏失败。分支与两份提交保留作证据；下一轮在 c1 上做请求级相位归因（open/statement/close 的 journal/audit/native 分段），先确认 5–9ms 尖峰归属，再决定修实现还是修测量方式 |
+| R63 | 无代码改动（归因轮） | R62 c1 尾部归因：观察器腿 o1–o8（X1 1/4/8/16，相位观察器）+ c1-only 腿 p1–p6（harness 补丁 `concurrency_levels=(1,)`，无观察器），两侧仍是 R62 的两个平台二进制 | c1-only 腿：A/B 腿中位 p95 **0.56 / 0.55ms**、p50 0.44 / 0.46、>2ms 3/150 vs 6/150，只有 p5 一条腿越过 2ms（4.65ms）；两侧 max 同为 7.7–16.7ms 量级。观察器腿：**每条腿两侧都有 ≥1 条 >5ms 的 c1 样本**（A 4/200、B 9/200 >2ms；max 18.56 / 19.51ms），形态为 `terminal` 6.2–11.1ms、handler 外层帧自身时间 6.9–14.3ms、内层记录间空档 4.0–18.0ms。机制：c1-only 腿 `pending_max` 200–243 < 基线冻结上限 256、`inline_total=0`，且 c1 是观察器腿的第一级 ⇒ 256→4096 在 c1 结构性不可见；同腿 journal 等待 max 8.1–12.3ms、audit fsync max 7.2–9.8ms，与尖峰同量级；c1-only 组 `head_checkpoint_attempts` 两侧都是 4 | 仅记录，无代码改动：c1 尖峰是两侧共有的宿主屏障抖动，与 R62 候选无因果关系；**不推翻 R62 冻结判决、不重跑洗判据、不合入该分支**。R64 须用新冻结的、c1 抖动无法触发的判据重新评估同一候选 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2620,6 +2621,49 @@ clean stop 均通过；候选 `pending_max` 645–770，基线无该指标。
 
 **证据**：`docs/performance-review/2026-11-04-r62-deferred-bound/`（`README.md`、`legs/`、
 `legs-diag/`、`gate0/`、`run_leg.sh`、`aggregate.py`）。
+
+#### R63：R62 c1 尾部的归因（2026-11-04，测量轮，无生产代码改动）
+
+**问题**：R62 的冻结护栏 c1 p95 合并中位 0.973→6.370ms（+554.9%）判 FAIL，而 c1 p50/p99 都不
+差于基线；同一候选在反序诊断里 c1 p95 = 0.54ms。需要回答尖峰是否候选独有、落在哪一段、
+256→4096 在 c1 上是否可能生效。
+
+**方法**（两侧仍是 R62 的两个平台二进制，worker 相同，每腿独立栈 + 重新 seed）：
+- 观察器腿 o1–o8：X1 1/4/8/16、50 请求/级，开启请求相位观察器（阈值 0、采样 1000‰），
+  顺序 B A A B B A A B；只用于 span 归因，绝对值不进性能结论。
+- c1-only 腿 p1–p6：harness 副本 `concurrency_levels=(1,)`（补丁随记录提交），只跑 c1、50 请求、
+  **不开观察器**，顺序 B A A B B A。
+- 全部 14 条腿 `errors=0`、`status_429=0`、`rejection_reasons={}`、`rows=1`、
+  `stop: clean unresolved: False`。
+
+**结果**：
+- c1-only：A/B 腿中位 p50 **0.44 / 0.46ms**、p95 **0.56 / 0.55ms**、>2ms **3/150 vs 6/150**；
+  只有 p5 一条腿 p95 越过 2ms（4.65ms，4 条 >2ms 样本）。两侧最大值同为 7.7–16.7ms 量级。
+- 观察器腿：**八条腿每一条都有 ≥1 条 >5ms 的 c1 样本，两侧都有**（A 4/200、B 9/200 >2ms；
+  max 18.56 / 19.51ms）。13 条慢样本的形态：`terminal`（延后耐久结算）6.20–11.08ms、
+  handler 外层帧（`admission`，包到 handler 结束）自身时间 6.92–14.27ms、
+  内层记录之间的空档 4.05–17.95ms；尖峰在腿内分散（o5 在 +7 / +28 / +45ms），不是一次全局停顿。
+- 宿主屏障：每条腿（两组、两侧）journal 等待 max **8.1–12.3ms**、audit fsync 均值 4.1–4.7ms、
+  max **7.2–9.8ms**，与尖峰同量级。c1-only 组 `head_checkpoint_attempts` 两侧都是 4，
+  否掉检查点差异解释 p5（R61 已独立否证检查点是尾部限速器）。
+
+**机制核对（决定性）**：c1-only 腿 `deferred_durability.pending_max` = **243 / 215 / 200**，
+低于基线冻结上限 **256**，`inline_total=0` ⇒ 内联回退从未触发；且观察器腿里 c1 是每条腿的
+第一级，账户从空开始（`pending_max` 696–780 来自后面的 c4/c8/c16）。因此
+`deferredDurabilityMaximum` 的 256→4096 差异在 c1 单元上**结构性不可见**。
+
+**判决**：仅记录，无代码改动。c1 尖峰是两侧共有的宿主屏障抖动，与 R62 候选无因果关系；
+**不推翻 R62 的冻结判决、不重跑 R62 洗判据、不合入 `perf/r62-deferred-bound`**。
+R64 若要重新评估该候选，必须在 A/B 前冻结一个 c1 宿主抖动无法触发的判据
+（例如尖峰计数/形态，或换掉"50 样本第 3 高值"这种对单次抖动敏感的口径），
+并且仍需重新跑完整 A/B，不能引用本轮数字。
+
+**未闭合**：`terminal` 与 handler 外层帧内部没有更细 span，"第 X 次 fsync 造成第 Y 条样本"
+未被证明；宿主的 fsync 抖动也没有用 io 限速或独立磁盘做受控复现。
+
+**证据**：`docs/performance-review/2026-11-04-r63-c1-spike-attribution/`（`README.md`、
+`legs/`、`legs-c1/`、`observer/`、`run_leg_observer.sh`、`run_leg_c1_only.sh`、
+`harness-c1-only.patch`、`aggregate.py`、`observer_spikes.py`、`observer-spikes.md`）。
 
 ## 代码约定
 
