@@ -487,22 +487,41 @@ merge `fffd305`（已合入 `main`）。
 - **对照**：同机 sqld 在 8 路并发即 1,510 qps（loom 的 10.6 倍），32 路 2,168 qps（19 倍）且零失败。
   loom 的串行成本 65% 是 fsync（100 次串行：journal 5.94ms + audit 4.69ms = 10.63ms / 平台侧 14.32ms），
   并发下这部分只能排队，所以吞吐上限 ≈ 1 条 fsync 链（约 143 qps）而非 CPU 上限。
-- **同期发现的缺陷（未修）**：worker 在**执行前**拒绝 `open_session`（`database session capacity exceeded`，
-  `src/runtime.rs:196`）时，回复不携带 `execution_completed` 证据，平台按 `sqlWorkerFailureFromReply`
-  只能判为 ambiguous，于是 `/v1/sql/open` 返回 **502 `outcome_unknown`**（日志证据：
-  `SQL outcome unknown: ... action=open stage=open_session ... observation=database session capacity exceeded`）。
-  客户端无法区分「可能已提交」与「明确未执行」。修复点在 Rust：让该拒绝携带 rejected/not-executed 证据；
+- **同期发现的缺陷（2026-11-05 已修复）**：worker 在**执行前**拒绝 `open_session`
+  （`database session capacity exceeded`，`src/runtime.rs:196`）时，回复不携带 `execution_completed`
+  证据，平台按 `sqlWorkerFailureFromReply` 只能判为 ambiguous，于是 `/v1/sql/open` 返回
+  **502 `outcome_unknown`**（日志证据：
+  `SQL outcome unknown: ... action=open stage=open_session ... observation=database session capacity exceeded`）；
+  客户端无法区分「可能已提交」与「明确未执行」。
+  **修复**：分支 `fix/r9-pre-execution-evidence` / `d4ef13d`，PR #33，merge commit
+  **`d1d1b7d`**。worker 的 `open_until` 与 dispatch prelude 补 `SqlEvidence::NotExecuted`，
+  复用既有 `WorkerResponse.execution_completed` 字段（**未新增字段、未改命令、未改状态码集合**）；
+  平台短语表加两条容量文本 → **503 `sql_unavailable`**。执行前拒绝现在给出确定性「未执行」
+  （`execution_completed=false`、`may_have_committed=false`），记录为 `terminal/not_executed`，
+  不再 `holdOperation`。**明确未改**：`CloseSession`（close 失败仍 502 `outcome_unknown` 并隔离）、
+  配额 16/128/16、耐久时点、隔离规则、Turso gitlink `24a3a460…`。
+  CI：PR runs `41843969071`（baseline）、`41843968853`（Issue 8）、`41843932858`（push），
+  post-merge `41847588930`、`41847588721`，全部 success（Issue 8 的 `quick-native`/`formal-native`
+  是 manual-only，PR 上 skip 属设计行为）。
+  **保留的已知缺口**：① worker 侧 **close 没有回归测试覆盖**——把 `CloseSession` 也包上证据后，
+  68 个 `worker_rpc` 测试与新增的 Go 负向用例**都不会转红**，当前 close 安全只靠「分支 diff 为空」
+  这一结构事实；② `not_executed` helper 会覆盖内层 `SqlEvidence::Settled`（实测
+  `downcast=Some(NotExecuted)`），当前所有包装点都在执行之前、`Settled` 不可达，因此不是现存缺陷，
+  但后续若在 fetch/cursor 之后复用它，会制造「已执行却报未执行」的错误，必须先加固；
+  ③ `OpenOwnedSession` 的 binding 失败会按「未执行」释放配额，而 worker 已插入会话——极小概率
+  孤儿会话，实际不可达。
   另需注意网关 `max_sessions` 配额可以高于 worker 每库上限（默认都是 16，属一致；本次把网关提到 256
-  才暴露不一致）。
+  才暴露不一致）——现在这类拒绝被如实分类为 503 `sql_unavailable`，但配额本身的不一致仍未消除。
 - **逐 action 分解**（串行 100 次，v1.1.26）：`open` 5.276ms、`close` 4.596ms、`cursor_start` 2.044ms、
   `statement` 1.868ms、`describe` 0.391ms，合计 14.32ms。`open`+`close` 占 69%，几乎全由 fsync 决定。
 - **待观察**：同期串行 100 次查询的延迟从 11.5ms 漂到 30.4ms；journal compaction 2 次（19.3ms）、
   audit head checkpoint 13 次（79.3ms，0.79ms/查询）不足以解释全部漂移，未归因。
-- **候选方向（需授权，均未实施）**：
+- **候选方向（需授权）**：
   1. 把屏障移出命名空间 fence，使同库 commit 可共享一次 fsync。预期：journal 5.94ms/查询 → 约 1.5ms，
      并发吞吐数倍提升。代价：改变 fencing 语义（后续同库操作可能早于前一条记录 durable 就被 dispatch），
      仓库文档已明确列为「需评审」。
   2. 仅修上述 502 误分类（Rust 证据携带），风险低，不改变任何耐久时点。
+     **已于 2026-11-05 实施**（`d4ef13d` / PR #33 / merge `d1d1b7d`，见上一条「已修复」）。
 
 #### R10：SQL 提交在屏障前释放命名空间 fence（2026-11-01，已合入 `main`）
 
@@ -542,7 +561,9 @@ A/B 交替 3 轮（conc=64 为 2 轮），每档 320 次查询，`connect → al
 **顺带发现**：`dev.py` 的 `experimental_environment` 只转发固定名单的 `PERI_*`，`PERI_WORKER_MAX_DB_SESSIONS`
 不在其中，因此 worker 每库会话上限固定 16，而网关 `max_sessions` 配额可被调到更高——本次压测为了
 conc=32/64 干净可比，仅在 bench 侧挂载了改过的 `dev.py` 副本（未进仓库）。产品侧的「配额可高于 worker
-上限 → 执行前拒绝被记为 502 outcome_unknown」仍是待修项。
+上限 → 执行前拒绝被记为 502 outcome_unknown」已于 2026-11-05 修复（`d4ef13d` / PR #33 /
+merge `d1d1b7d`，现为确定性 503 `sql_unavailable` 且 `may_have_committed=false`）；但
+「`dev.py` 不转发 `PERI_WORKER_MAX_DB_SESSIONS`、网关配额可高于 worker 每库上限」这个不一致本身仍是待修项。
 
 **环境事件（2026-11-01 23:03，不归因任何轮次）**：宿主磁盘耗尽（曾低至 473 MiB / 228 GB），
 OrbStack VM 出现 BTRFS 写 I/O error（`Transaction 19922 aborted`）并被强制停机。
