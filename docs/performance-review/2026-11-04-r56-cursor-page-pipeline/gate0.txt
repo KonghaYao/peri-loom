@@ -63,8 +63,28 @@ H1 每查询 8,625 行、每页 256 行，共 **34 页**。预取只允许发生
 - 候选：`/tmp/peri-perf/bin/peri-platform-r56-cand2`，由 `perf/r56-cursor-page-pipeline`
   @ `20d8db5`（探针已 checkout 移除）构建，sha256
   `611fa2d8455688691cc65739c7d6d2c75156ffa6bf49f2b6dc37a96a94e358ae`；连续两次构建哈希相同。
-- 14:15 生成的 `/tmp/peri-perf/bin/peri-platform-r56-cand`（`c95d9efc…`）无法从分支提交复现，
-  判定为中间工作树产物，**不用于 A/B**。
+- 14:15 生成的 `/tmp/peri-perf/bin/peri-platform-r56-cand`（`c95d9efc…`）当时无法从分支提交复现，
+  判定为中间工作树产物，**不用于 A/B**。该判定已被事后复核更正，见下节。
+
+## 二进制来源复核（2026-11-04 事后，结论：A/B 使用的二进制与提交源码一致）
+
+`go version -m` 显示 A/B 候选 `611fa2d8…` 内嵌 `vcs.revision=20d8db5`、`vcs.modified=true`，
+与「干净树」表述不一致，故做复现核对：
+
+| 构建条件（均在 `/Users/kk/code/peri-loom`，同一 20d8db5 提交） | sha256 | `vcs.modified` |
+|---|---|---|
+| 干净树 | `c95d9efc86c075e782dcfb3a910d8b44a88d3cd7c5c0c996387743c65951882f` | false |
+| 干净树 + 一个未跟踪文件（非代码） | `611fa2d8455688691cc65739c7d6d2c75156ffa6bf49f2b6dc37a96a94e358ae` | true |
+
+- 第二行与 A/B 使用的 `peri-platform-r56-cand2` **逐字节相同**，说明该二进制就是 20d8db5
+  的提交代码；`vcs.modified=true` 来自构建时工作树里的非代码脏状态（未跟踪/已修改文档），
+  只翻转一个布尔标记，不改变编译产物。
+- 因此先前记为「中间工作树产物」的 `c95d9efc…` 实际是同一提交的干净树构建，两者代码相同，
+  只是脏标记不同。**A/B 结论不受影响**。
+- 方法教训：Go 二进制默认嵌入**绝对源码路径**与 `vcs.modified`，跨目录或脏树构建的 sha
+  必然不同；「两个 sha 不同」不能推出「源码不同」，复现核对必须在同一路径、并记录脏标记。
+- 复现产物保留：`/tmp/peri-perf/bin/peri-platform-r56-repro-clean`（`c95d9efc…`）、
+  `peri-platform-r56-repro-dirty`（`611fa2d8…`）。
 
 ## fixture 调整（A/B 前）
 
