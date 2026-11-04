@@ -160,6 +160,23 @@ fn arg_bytes(arg: &StatementArg) -> u64 {
     }
 }
 
+/// Marks a refusal that provably happened before any SQL ran. The reply then carries
+/// `execution_completed = false`, which the platform answers as a definite rejection
+/// instead of an unknown outcome.
+fn not_executed<T>(result: Result<T>) -> Result<T> {
+    result.map_err(|error| error.context(SqlEvidence::NotExecuted))
+}
+
+/// The `ensure!` form of [`not_executed`]: a failed check returns from the enclosing
+/// function, so it cannot be wrapped in an expression.
+fn ensure_not_executed(condition: bool, message: &'static str) -> Result<()> {
+    not_executed(if condition {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(message))
+    })
+}
+
 impl State {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch(
@@ -293,28 +310,29 @@ impl State {
                 database,
                 owner_incarnation,
             } => {
-                crate::ownership::types::validate_label(&owner_incarnation)?;
-                let (mut result, snapshot) = self.sessions.open(
+                not_executed(crate::ownership::types::validate_label(&owner_incarnation))?;
+                let (mut result, snapshot) = not_executed(self.sessions.open(
                     &database,
                     version,
                     deadline,
                     Some(owner_incarnation),
                     request_id,
+                ))?;
+                let binding = not_executed(
+                    result["session"]
+                        .as_str()
+                        .context("missing session identity")
+                        .and_then(|session| self.sessions.binding(session)),
                 )?;
-                result["binding"] = serde_json::to_value(
-                    self.sessions.binding(
-                        result["session"]
-                            .as_str()
-                            .context("missing session identity")?,
-                    )?,
-                )?;
+                result["binding"] = serde_json::to_value(binding)?;
                 *terminal = snapshot;
                 Ok(result)
             }
             WorkerCommand::OpenSession { database } => {
-                let (result, snapshot) = self
-                    .sessions
-                    .open(&database, version, deadline, None, request_id)?;
+                let (result, snapshot) = not_executed(
+                    self.sessions
+                        .open(&database, version, deadline, None, request_id),
+                )?;
                 *terminal = snapshot;
                 Ok(result)
             }
@@ -328,32 +346,37 @@ impl State {
             } => {
                 // The fused command is v1-only, like the guarded block: a v2
                 // caller carries writer state this answer does not describe.
-                ensure!(version == 1, "open guarded statement requires protocol v1");
-                ensure!(
+                ensure_not_executed(version == 1, "open guarded statement requires protocol v1")?;
+                ensure_not_executed(
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
+                    "SQL byte budget exceeded",
+                )?;
                 // Arguments are bound before the session exists, so a malformed
                 // request cannot leave a session the caller never learns about.
-                let args = args
-                    .into_iter()
-                    .map(native_arg)
-                    .collect::<Result<Vec<_>>>()?;
-                let named_args = named_args
-                    .into_iter()
-                    .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-                    .collect::<Result<Vec<_>>>()?;
-                let (opened, snapshot) = self
-                    .sessions
-                    .open(&database, version, deadline, None, request_id)?;
+                let args =
+                    not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+                let named_args = not_executed(
+                    named_args
+                        .into_iter()
+                        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                        .collect::<Result<Vec<_>>>(),
+                )?;
+                let (opened, snapshot) = not_executed(
+                    self.sessions
+                        .open(&database, version, deadline, None, request_id),
+                )?;
                 *terminal = snapshot;
-                let session = opened["session"]
-                    .as_str()
-                    .context("missing session identity")?
-                    .to_owned();
-                let readonly = opened["readonly"]
-                    .as_bool()
-                    .context("missing readonly verdict")?;
+                let session = not_executed(
+                    opened["session"]
+                        .as_str()
+                        .context("missing session identity"),
+                )?
+                .to_owned();
+                let readonly = not_executed(
+                    opened["readonly"]
+                        .as_bool()
+                        .context("missing readonly verdict"),
+                )?;
                 // `begin` only pins the image and takes the session call; it never
                 // runs SQL. A failure here is therefore a proof the statement was
                 // not executed, and the opened session is still returned so the
@@ -428,11 +451,11 @@ impl State {
                 Ok(json!({"closed": true}))
             }
             WorkerCommand::Execute { sql, .. } => {
-                ensure!(
+                ensure_not_executed(
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let call = call.context("worker session RPC guard absent")?;
+                    "SQL byte budget exceeded",
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result =
                     crate::slow_diagnostics::native("execute", || call.handle().execute(&sql));
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
@@ -444,11 +467,11 @@ impl State {
                 result.map(|_| json!({"executed": true}))
             }
             WorkerCommand::Query { sql, .. } => {
-                ensure!(
+                ensure_not_executed(
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let call = call.context("worker session RPC guard absent")?;
+                    "SQL byte budget exceeded",
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result = crate::slow_diagnostics::native("query", || call.handle().query(&sql))
                     .map(rows);
                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
@@ -460,11 +483,11 @@ impl State {
                 result
             }
             WorkerCommand::Describe { sql, .. } => {
-                ensure!(
+                ensure_not_executed(
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let call = call.context("worker session RPC guard absent")?;
+                    "SQL byte budget exceeded",
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result = call.handle().describe(&sql).map(|result| json!({
                     "params": result.params.into_iter().map(|name| json!({"name": name})).collect::<Vec<_>>(),
                     "cols": result.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
@@ -500,19 +523,19 @@ impl State {
                 want_rows,
                 ..
             } => {
-                ensure!(
+                ensure_not_executed(
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let args = args
-                    .into_iter()
-                    .map(native_arg)
-                    .collect::<Result<Vec<_>>>()?;
-                let named_args = named_args
-                    .into_iter()
-                    .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-                    .collect::<Result<Vec<_>>>()?;
-                let call = call.context("worker session RPC guard absent")?;
+                    "SQL byte budget exceeded",
+                )?;
+                let args =
+                    not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+                let named_args = not_executed(
+                    named_args
+                        .into_iter()
+                        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                        .collect::<Result<Vec<_>>>(),
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result = crate::slow_diagnostics::native("statement", || {
                     call.handle()
                         .statement_with_named_args(&sql, &args, &named_args, want_rows)
@@ -533,19 +556,19 @@ impl State {
                 want_rows,
                 ..
             } => {
-                ensure!(
+                ensure_not_executed(
                     sql.len() <= Budget::trusted_default().max_sql_bytes,
-                    "SQL byte budget exceeded"
-                );
-                let args = args
-                    .into_iter()
-                    .map(native_arg)
-                    .collect::<Result<Vec<_>>>()?;
-                let named_args = named_args
-                    .into_iter()
-                    .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-                    .collect::<Result<Vec<_>>>()?;
-                let call = call.context("worker session RPC guard absent")?;
+                    "SQL byte budget exceeded",
+                )?;
+                let args =
+                    not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+                let named_args = not_executed(
+                    named_args
+                        .into_iter()
+                        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                        .collect::<Result<Vec<_>>>(),
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result = crate::slow_diagnostics::native("guarded_readonly_statement", || {
                     call.handle()
                         .guarded_readonly_statement(&sql, &args, &named_args, want_rows)
@@ -578,7 +601,7 @@ impl State {
                     return Err(anyhow::Error::new(AdmissionError::Deadline)
                         .context(SqlEvidence::NotExecuted));
                 }
-                let call = call.context("worker session RPC guard absent")?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let items = crate::slow_diagnostics::native("guarded_readonly_batch", || {
                     run_guarded_batch(&prepared, max_result_bytes, deadline, |statement| {
                         call.handle().guarded_readonly_statement(
@@ -597,15 +620,15 @@ impl State {
                 named_args,
                 ..
             } => {
-                let args = args
-                    .into_iter()
-                    .map(native_arg)
-                    .collect::<Result<Vec<_>>>()?;
-                let named_args = named_args
-                    .into_iter()
-                    .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-                    .collect::<Result<Vec<_>>>()?;
-                let call = call.context("worker session RPC guard absent")?;
+                let args =
+                    not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+                let named_args = not_executed(
+                    named_args
+                        .into_iter()
+                        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                        .collect::<Result<Vec<_>>>(),
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result = call.handle().open_read_cursor(&sql, &args, &named_args).map(|cols| {
                     json!({"cols": cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>()})
                 });
@@ -673,15 +696,15 @@ impl State {
                 named_args,
                 ..
             } => {
-                let args = args
-                    .into_iter()
-                    .map(native_arg)
-                    .collect::<Result<Vec<_>>>()?;
-                let named_args = named_args
-                    .into_iter()
-                    .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-                    .collect::<Result<Vec<_>>>()?;
-                let call = call.context("worker session RPC guard absent")?;
+                let args =
+                    not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+                let named_args = not_executed(
+                    named_args
+                        .into_iter()
+                        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+                        .collect::<Result<Vec<_>>>(),
+                )?;
+                let call = not_executed(call.context("worker session RPC guard absent"))?;
                 let result = call.handle().open_write_cursor(&sql, &args, &named_args).map(|cols| {
                     json!({"cols": cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>()})
                 });
@@ -942,15 +965,14 @@ fn dispatch_read_cursor_first(
         return Err(anyhow::anyhow!("cursor page size exceeds limit")
             .context(crate::session::SqlEvidence::NotExecuted));
     }
-    let args = args
-        .into_iter()
-        .map(native_arg)
-        .collect::<Result<Vec<_>>>()?;
-    let named_args = named_args
-        .into_iter()
-        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-        .collect::<Result<Vec<_>>>()?;
-    let call = call.context("worker session RPC guard absent")?;
+    let args = not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+    let named_args = not_executed(
+        named_args
+            .into_iter()
+            .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+            .collect::<Result<Vec<_>>>(),
+    )?;
+    let call = not_executed(call.context("worker session RPC guard absent"))?;
     let outcome = call
         .handle()
         .open_cursor_first(&sql, &args, &named_args, max_rows, false);
@@ -981,15 +1003,14 @@ fn dispatch_write_cursor_first(
         return Err(anyhow::anyhow!("cursor page size exceeds limit")
             .context(crate::session::SqlEvidence::NotExecuted));
     }
-    let args = args
-        .into_iter()
-        .map(native_arg)
-        .collect::<Result<Vec<_>>>()?;
-    let named_args = named_args
-        .into_iter()
-        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
-        .collect::<Result<Vec<_>>>()?;
-    let call = call.context("worker session RPC guard absent")?;
+    let args = not_executed(args.into_iter().map(native_arg).collect::<Result<Vec<_>>>())?;
+    let named_args = not_executed(
+        named_args
+            .into_iter()
+            .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+            .collect::<Result<Vec<_>>>(),
+    )?;
+    let call = not_executed(call.context("worker session RPC guard absent"))?;
     let result = call
         .handle()
         .open_cursor_first(&sql, &args, &named_args, max_rows, true)
@@ -1108,10 +1129,11 @@ mod batch_tests {
     use turso_core::Value;
 
     use super::{
-        go_html_escaped_json_len, prepare_guarded_batch, run_guarded_batch, BatchStatement,
-        GuardedIntentReason, GuardedStatementOutcome, StatementResult,
+        ensure_not_executed, go_html_escaped_json_len, not_executed, prepare_guarded_batch,
+        run_guarded_batch, BatchStatement, GuardedIntentReason, GuardedStatementOutcome,
+        StatementResult,
     };
-    use crate::session::{SqlEvidence, UnsettledSqlOutcome};
+    use crate::session::{AdmissionError, SqlEvidence, UnsettledSqlOutcome};
 
     fn statement(sql: &str) -> BatchStatement {
         BatchStatement {
@@ -1142,6 +1164,39 @@ mod batch_tests {
                 .collect(),
         )
         .expect("valid batch")
+    }
+
+    #[test]
+    fn a_pre_execution_refusal_is_proven_not_executed() {
+        let error = not_executed::<()>(Err(anyhow!("database session capacity exceeded")))
+            .expect_err("the refusal must propagate");
+        assert!(error.downcast_ref::<UnsettledSqlOutcome>().is_none());
+        assert_eq!(
+            error.downcast_ref::<SqlEvidence>(),
+            Some(&SqlEvidence::NotExecuted)
+        );
+        assert!(format!("{error:#}").contains("database session capacity exceeded"));
+    }
+
+    /// A lost outcome outranks the local proof: wrapping it must not turn an
+    /// unsettled failure into a definite rejection.
+    #[test]
+    fn an_unsettled_outcome_keeps_its_ambiguity_after_the_wrapper() {
+        let unsettled = anyhow::Error::new(AdmissionError::Quarantine).context(UnsettledSqlOutcome);
+        let error = not_executed::<()>(Err(unsettled)).expect_err("the refusal must propagate");
+        assert!(error.downcast_ref::<UnsettledSqlOutcome>().is_some());
+    }
+
+    #[test]
+    fn the_ensure_form_carries_the_same_evidence() {
+        assert!(ensure_not_executed(true, "unreachable").is_ok());
+        let error = ensure_not_executed(false, "SQL byte budget exceeded")
+            .expect_err("a failed check refuses");
+        assert_eq!(
+            error.downcast_ref::<SqlEvidence>(),
+            Some(&SqlEvidence::NotExecuted)
+        );
+        assert!(format!("{error:#}").contains("SQL byte budget exceeded"));
     }
 
     #[test]

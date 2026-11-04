@@ -217,12 +217,17 @@ fn actual_reclaimed_native_instance_remains_counted_and_cannot_reopen() -> Resul
     assert!(status.databases[0].resources.is_none());
     assert!(handle.query("SELECT 1").is_err());
     assert!(runtime.open(first.clone(), 11).is_err());
-    assert!(runtime
-        .open(second, 11)
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("worker database capacity exceeded"));
+    let refused = match runtime.open(second, 11) {
+        Ok(_) => panic!("a quarantined resident still occupies the open budget"),
+        Err(error) => error,
+    };
+    assert!(
+        refused
+            .root_cause()
+            .to_string()
+            .contains("worker database capacity exceeded"),
+        "{refused:#}"
+    );
     assert!(runtime.drain(&first).is_err());
     drop(handle);
     let registry = runtime.registry.lock().unwrap();

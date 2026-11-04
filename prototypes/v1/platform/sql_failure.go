@@ -68,6 +68,11 @@ var sqlFailurePhrases = []struct {
 	{"worker execution lane saturated", sqlFailureRefused},
 	{"worker connection limit reached", sqlFailureRefused},
 	{"worker saturated", sqlFailureRefused},
+	// A session limit is admission capacity, not a statement cause: the open or
+	// statement was turned away before it could run, so the caller may retry it
+	// once capacity returns.
+	{"database session capacity exceeded", sqlFailureRefused},
+	{"worker session capacity exceeded", sqlFailureRefused},
 	{"local ownership revoked or detached", sqlFailureRefused},
 	{"local ownership epoch mismatch", sqlFailureRefused},
 	{"scoped store generation revoked", sqlFailureRefused},
