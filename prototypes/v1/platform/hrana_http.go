@@ -343,18 +343,13 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		var fusedMarker *fusedStatementResult
 		if (entry.Type == "execute" || entry.Type == "batch" || entry.Type == "sequence" || entry.Type == "store_sql" || entry.Type == "get_autocommit" || entry.Type == "describe") && stream.session == "" {
 			var candidate *hranaStatement
-			closeAfter := false
 			if entry.Type == "execute" {
 				if entry.Stmt.SQL == "" {
 					entry.Stmt.SQL = stream.storedSQL[entry.Stmt.SQLID]
 				}
 				candidate = &entry.Stmt
-				// Only the exact statement-then-close pipeline can end the
-				// lifecycle in the open: any later entry would need the session
-				// the worker request already retired.
-				closeAfter = len(pipeline.Requests) == 2 && pipeline.Requests[1].Type == "close"
 			}
-			opened, reply := handler.hranaOpen(request, credential, database, candidate, closeAfter)
+			opened, reply := handler.hranaOpen(request, credential, database, candidate)
 			if reply.status != http.StatusOK || reply.code != "" {
 				failPipeline(reply)
 				return
