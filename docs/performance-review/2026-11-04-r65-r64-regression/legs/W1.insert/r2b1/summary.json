@@ -1,0 +1,140 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:20306",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "a46afa22c07ea4ad694692d533e224aab7594d80",
+    "connection_file": "provided (redacted)",
+    "platform_label": "HEAD a46afa2 / rust unknown",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T09:50:42.675648+00:00",
+    "ended_utc": "2026-11-04T09:50:44.111310+00:00",
+    "duration_seconds": 1.436,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 5,
+    "concurrency_requests": 50,
+    "resource_before": {},
+    "resource_after": {},
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 5,
+      "median_ms": 41.275458,
+      "p95_ms": 47.348834,
+      "min_ms": 35.917083,
+      "max_ms": 47.348834,
+      "round_medians_ms": [
+        41.275458
+      ],
+      "rows": 0,
+      "response_bytes": 252,
+      "query_ms": 16.959917,
+      "status_counts": {
+        "200": 5
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 5
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "protobuf-pipeline",
+      "kind": "write",
+      "samples": 5,
+      "median_ms": 40.135334,
+      "p95_ms": 41.871625,
+      "min_ms": 34.971541,
+      "max_ms": 41.871625,
+      "round_medians_ms": [
+        40.135334
+      ],
+      "rows": 0,
+      "response_bytes": 31,
+      "query_ms": 17.486542,
+      "status_counts": {
+        "200": 5
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 5
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}

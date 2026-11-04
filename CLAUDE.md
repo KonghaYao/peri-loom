@@ -259,6 +259,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R62 | `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`（不合入，留证） | 延后耐久账户待办上限 256→4096，与审计队列自身的 4096 条 / 8 MiB 准入上限对齐；新增 `/v1/metrics` 的 `deferred_durability`（pending / pending_max / maximum / enqueued_total / inline_total） | Gate 0：100 请求/级时候选把固定 500 rps 桶耗尽（16 次 `rate_limit` vs 基线 0），拒绝记录排在延后积压之后约 500ms；成功请求 p99 仅 20.37ms。改用 50 请求/级（配额不变）后两侧干净。A/B：2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 c8/c16 p95/p99 两轮四单元全部 −31.1%~−79.3%（合并 −33.1% / −67.6% / −62.1% / −49.2%）；护栏 c1 p95 0.973→6.370ms（**+554.9%**）失败，c1 p50 −3.2%、c1 p99 −22.1%、c4 p50 −23.6%、c4 p95 −93.0%；8 腿 0 错误 / 0×429 / `inline_total=0` / clean stop | 不合入：主指标通过，但 A/B 前冻结的 c1 p95 护栏失败。分支与两份提交保留作证据；下一轮在 c1 上做请求级相位归因（open/statement/close 的 journal/audit/native 分段），先确认 5–9ms 尖峰归属，再决定修实现还是修测量方式 |
 | R63 | 无代码改动（归因轮） | R62 c1 尾部归因：观察器腿 o1–o8（X1 1/4/8/16，相位观察器）+ c1-only 腿 p1–p6（harness 补丁 `concurrency_levels=(1,)`，无观察器），两侧仍是 R62 的两个平台二进制 | c1-only 腿：A/B 腿中位 p95 **0.56 / 0.55ms**、p50 0.44 / 0.46、>2ms 3/150 vs 6/150，只有 p5 一条腿越过 2ms（4.65ms）；两侧 max 同为 7.7–16.7ms 量级。观察器腿：**每条腿两侧都有 ≥1 条 >5ms 的 c1 样本**（A 4/200、B 9/200 >2ms；max 18.56 / 19.51ms），形态为 `terminal` 6.2–11.1ms、handler 外层帧自身时间 6.9–14.3ms、内层记录间空档 4.0–18.0ms。机制：c1-only 腿 `pending_max` 200–243 < 基线冻结上限 256、`inline_total=0`，且 c1 是观察器腿的第一级 ⇒ 256→4096 在 c1 结构性不可见；同腿 journal 等待 max 8.1–12.3ms、audit fsync max 7.2–9.8ms，与尖峰同量级；c1-only 组 `head_checkpoint_attempts` 两侧都是 4 | 仅记录，无代码改动：c1 尖峰是两侧共有的宿主屏障抖动，与 R62 候选无因果关系；**不推翻 R62 冻结判决、不重跑洗判据、不合入该分支**。R64 须用新冻结的、c1 抖动无法触发的判据重新评估同一候选 |
 | R64 | 测量轮（无代码改动；候选仍为 `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`，merge `8500b5a`） | 在新冻结判据下重新评估 R62 候选：c1 尾部（p95/p99/max/>2ms）按 R63 的归因降级为报告项，c1 中位数保留护栏；其余主指标与护栏沿用 R62 口径；判据在首条腿之前提交并推送（`ad1d113`） | Gate 0：四条候选腿 `maximum=4096`、`pending_max` 741/770/661/800（>256）、`inline_total=0`；基线腿无该指标。A/B（2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 50 请求/级，无观测器）：主指标 8 个轮内比较全部 ≤90%，合并 c8 p95 **0.108** / c8 p99 **0.076** / c16 p95 **0.320** / c16 p99 **0.314**；护栏 c1 p50 0.983（R1）/1.040（R2）/1.014（合并）、c4 p50 0.754/0.737/0.709、c4 p95 0.067/0.037/0.038，全部 ≤110%；c1 尾部报告项 A 6/200、B 8/200 >2ms，两侧最大值 16.60 / 16.38ms；8 腿 0 错误 / 0×429 / 无拒绝 / `rows=1` / clean stop；掩码 `query_duration_ms` 后原始响应体逐字节相同。机制（解释变量）：journal appends 8 腿均为 404，候选 audit fsync 17–20 次 vs 基线 30–32，同步 head checkpoint B 8–10 次 vs A 19–20 次 | **合入 main**（merge `8500b5a`）：新冻结判据下主指标与全部护栏通过；R62 的原冻结判决不变（当时不合入）。候选扩大的只是回复后待办上限，耐久时点、审计链顺序、隔离与 fail-closed 未改 |
+| R65 | 测量轮（无生产代码改动；A `main`@`1399f15` sha256 `fd959df7…`，B `main`@`1a6b9dd` sha256 `9214cd0c…`，worker 两侧 `a648ecd9…`） | R64 合入后的回归门：W1/F1/H1 主协议（W1/F1 `json-pipeline`、H1 `json-cursor`），确认延后耐久待办上限 256→4096 未造成 >10% 退化；2 轮 × A/B/B/A，每场景 8 腿，共 24 腿 | 24/24 腿有效：fixture complete、352/352 请求 `ok`/HTTP 200、warnings/fatal 空、F1 rows=1、H1 rows=8625、samples 5/5/3、clean stop 且 `unresolved_operations=false`、无 429/expected_limit/audit_unavailable。主指标（候选/基线）：W1 1.101（33.705→37.125ms；round1 0.972、round2 1.153）、F1 0.987（0.532→0.525ms；两轮均 0.987）、H1 1.022（53.171→54.357ms；0.950/1.078）。**W1 边界 PASS**：round2 1.153 与合并 1.101 均 >1.10，仅因 round1 0.972 未超阈值；W1 round2 `query_ms` 从 9–11ms 阶跃到 16.96/20.41/16.14ms（A `r2a2` 同样受影响），`duration_ms − query_ms` 比值 round1 0.977 / round2 1.031 / 合并 0.977 ⇒ 平台侧无回归信号。机制快照：12 条 B 腿 `deferred_durability.maximum=4096`、`inline_total=0`，`pending_max` W1=4 / F1=91 / H1=18–21，远低于 4096，未逼近新上限；12 条 A 腿无该指标 | 无代码改动：冻结判据下三场景均无回归 PASS；W1 为边界 PASS，不是稳健无回归。后续 R43 adapter 级 fused close 撤销会改变 F1 绝对延迟，本轮判决仅代表 `a46afa2` 上的 R64 变更 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2715,6 +2716,59 @@ v1.2.5 worker）**全绿**（`peri-loom/platform` 176.9s，其余包 ok，退出
 **证据**：`docs/performance-review/2026-11-04-r64-r62-reeval/`（`protocol.md`、`README.md`、
 `legs/`、`launcher-stop.json`、`invariants/`、`legs.txt`、`aggregate.py`、`run_leg.sh`、
 `run_all.sh`、`seed_fixture.py`、`snap_metrics.py`）。
+
+#### R65：R64 合入后的回归门（2026-11-04，测量轮，无代码改动）
+
+**目的**：R64 的冻结协议只覆盖 X1；W1、F1、H1 在合入判决时没有复测，合入记录已写明这是缺口。
+本轮确认延后耐久账户待办上限 256→4096 没有让任何主场景的端到端中位数退化 >10%。判据在第一条腿之前
+冻结（`protocol.md`）：同一场景两轮比值都 >1.10 且合并（4 腿中位）>1.10 才判回归；否则记「无回归」。
+
+**方法**：A = `main` @ `1399f15`（sha256 `fd959df7…`），B = `main` @ `1a6b9dd` 重新构建
+（sha256 `9214cd0c…`）；worker 两侧相同（`a648ecd9…`，v1.2.5）。2 轮 × A/B/B/A，每场景 8 腿，
+共 24 腿，端口 20301–20308。主协议 W1/F1 `json-pipeline`、H1 `json-cursor`；每腿 1 warmup +
+5 timed（H1 为 3 timed）。每条腿独立栈 + 全新 run dir + 重新导入同一 fixture
+（threads=201、messages=8625、chars=20177069）；默认配额、无 TLS、无观测器，
+`/v1/metrics` 只在计时窗口之外各取一次快照。
+
+**结果**：
+- **有效性**：24/24 腿有效；fixture `complete=true`、352/352 请求 `ok`/HTTP 200、
+  warnings/fatal 空、F1 rows=1、H1 rows=8625、samples 5/5/3、clean stop 且
+  `unresolved_operations=false`、无 429/`expected_limit`/`audit_unavailable`；
+  窗口后 `dropped_total`、`head_checkpoint_failures_total`、compaction failures、
+  queue/in_flight/session_seats/active_permits/rejected 均为 0。`aggregate.py` 退出码 0、
+  三次输出 sha256 一致；独立 verifier 重算 64 个协议行，0 mismatch。
+- **主指标**（候选/基线）：W1 round1 **0.972**（33.657→32.708ms）、round2 **1.153**
+  （36.178→41.696ms）、合并 **1.101**（33.705→37.125ms）；F1 两轮均 **0.987**、
+  合并 **0.987**（0.532→0.525ms）；H1 round1 **0.950**、round2 **1.078**、
+  合并 **1.022**（53.171→54.357ms）。按冻结判据，三场景均判**无回归 PASS**。
+- **W1 边界 PASS**：round2 1.153 与合并 1.101 都超过 1.10，只因 round1 0.972 未超阈值
+  才判 PASS；**不是稳健无回归**。W1 round2 的 `query_ms` 从约 9–11ms 阶跃到
+  16.96 / 20.41 / 16.14ms（A 侧最后一条腿 `r2a2` 同样受影响）；用
+  `duration_ms − query_ms` 的腿中位再取中位，round1 **0.977**、round2 **1.031**、
+  合并 **0.977** ⇒ 平台侧没有回归信号，W1 边界由 worker SQL 时间抬升主导。
+- **p95（报告项）**：F1 出现 A/B 两侧 8–18ms 单样本离群（A `r1a1` 17.819、`r1a2` 8.513、
+  `r2a1` 13.578、`r2a2` 12.946/8.659；B `r1b1` 15.480），中位数稳定；
+  F1 p95 比值 0.064 / 0.095 不能解读为真实 p95 改善。
+
+**机制快照 caveat**：12 条 B 腿 `deferred_durability.maximum=4096`、`inline_total=0`；
+`pending_max` W1 **4**、F1 **91**、H1 **18–21**，远低于 4096，说明本轮没有逼近/验证新上限的
+饱和行为；12 条 A 腿无该指标。二进制 `go version -m` 的 `vcs.revision` 为 `1399f15` /
+`1a6b9dd`、均 `vcs.modified=false`；两侧 `metadata.platform_label` 都是 `a46afa2`，
+不能用于区分 A/B，身份判定依赖 sha256 与机制指标。
+
+**数据质量限制**：① `run_all.sh` 只在全部腿开始前复核一次 sha256，而协议措辞是「每次运行前」；
+② `aggregate.py` 在某一侧缺一条腿时会静默少用一条腿仍计算比值（本轮 24 腿齐全，不影响结论）；
+③ 审计链连续性没有直接的链头/连续性 artifact，间接证据是 24/24 clean stop 与
+checkpoint failures=0；④ 未做观测器，`concurrency_requests=50` 只属于 X1，本场景为串行。
+
+**结论**：冻结判据下 W1/F1/H1 均无 >10% 回归；W1 为边界 PASS；无代码改动。R65 测于 `a46afa2`
+（即 `main` @ `1a6b9dd` 的生产代码）；之后为修复 CI 回归，R43 的 adapter 级 fused close 被撤销
+（保留 fused open），这会改变 F1 的绝对延迟。本轮判决只代表 R64 的 deferred durability
+256→4096 变更在 `a46afa2` 上的表现，不代表修复后的 F1 绝对值。
+
+**证据**：`docs/performance-review/2026-11-04-r65-r64-regression/`（`protocol.md`、`README.md`、
+`legs/`、`legs.txt`、`aggregate.py`、`run_leg.sh`、`run_all.sh`、`seed_fixture.py`、
+`snap_metrics.py`）。
 
 ## 代码约定
 
