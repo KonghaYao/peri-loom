@@ -1,0 +1,22 @@
+[
+ {
+  "status": 200,
+  "body": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.059625,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n"
+ },
+ {
+  "status": 200,
+  "body": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.033042,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n"
+ },
+ {
+  "status": 200,
+  "body": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.012374999999999999,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n"
+ },
+ {
+  "status": 200,
+  "body": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.025667,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n"
+ },
+ {
+  "status": 200,
+  "body": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.01425,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n"
+ }
+]

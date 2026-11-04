@@ -1,0 +1,20 @@
+{
+ "status_a": [
+  200,
+  200,
+  200,
+  200,
+  200
+ ],
+ "status_b": [
+  200,
+  200,
+  200,
+  200,
+  200
+ ],
+ "normalized_equal_all": true,
+ "sample_normalized": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":N,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n",
+ "raw_a_first": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.059625,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n",
+ "raw_b_first": "{\"baton\":null,\"results\":[{\"response\":{\"result\":{\"affected_row_count\":0,\"cols\":[{\"decltype\":null,\"name\":\"1\"}],\"last_insert_rowid\":null,\"query_duration_ms\":0.07216700000000001,\"rows\":[[{\"type\":\"integer\",\"value\":\"1\"}]],\"rows_read\":0,\"rows_written\":0},\"type\":\"execute\"},\"type\":\"ok\"},{\"response\":{\"type\":\"close\"},\"type\":\"ok\"}]}\n"
+}
