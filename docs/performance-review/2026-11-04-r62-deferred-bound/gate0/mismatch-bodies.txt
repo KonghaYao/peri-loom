@@ -1,0 +1,20 @@
+Captured from the g0dump leg (candidate binary, 100 requests/level).
+
+The debug harness is a copy of scripts/perf-reliability/issue28 with one change:
+when a pipeline reply has fewer rows than expected it also prints the raw
+response body. Nothing else is patched, and the leg uses the same stack, seed
+and CLI arguments as the frozen protocol.
+
+Example body (HTTP 200, 147 bytes, c16, ~500 ms):
+
+  {"baton":null,"results":[
+    {"error":{"code":"quota_exceeded","message":"quota_exceeded"},"type":"error"},
+    {"response":{"type":"close"},"type":"ok"}]}
+
+So the "200 with 0 rows" records are rate-limit refusals delivered as a
+per-step Hrana error (the close step still succeeds), not empty query results.
+The harness counts them as row_count_mismatch because parse_pipeline_json only
+inspects `response` entries.
+
+Raw records for the same leg: gate0/g0dump/results/raw.jsonl
+(status 200 + error_code row_count_mismatch; status 429 + quota_exceeded).

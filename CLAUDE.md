@@ -256,6 +256,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R59 | 探针 `probe/r59-deferred-workers` / `fbf7b98`（不合入） | 延迟耐久账户 worker 8→64，验证 X1 并发档尾部是否由该池饱和导致；不改耐久时点、审计链语义与配额 | 归因（基线 + `PERI_DURABILITY_OBSERVER=1` + `--sql-open-observer`，独立栈）：`audit_batch` 506 批中 466 批 `count=1`、`sync_ns` p50 3.84ms；`audit_checkpoint` 55 次 p50 **21.0** / p90 31.2 / max 38.1ms，合计 1.204s；`audit_member_wait` 排队 p50 46.7ms、屏障等待 p99 115.8ms；慢 open/close 148ms = `audit` 126.2 + `terminal` 21.7。上限 A/B/B/A（X1 json-pipeline，4 档 × 100 请求，1 warmup + 3 samples/腿）：c16 中位基线 3.75 / 16.56ms → 探针 **165.62 / 124.39ms**（回归 33–44×，两条 B 腿同向），c4 p95 97.6→29.6–34.7ms 但被 c16 抵消；0 错误 / 0×429 / verdict 全 PASS | 不合入；分支与提交保留作证据：账户宽度不是限速器，加并发只让串行写者的屏障更碎（与 R29/R31 同构） |
 | R60 | 测量轮（无性能改动；harness protobuf `Error` 字段修正单独提交） | W1 写路径归因：用请求相位 + 耐久观察器拆解单条写请求（open→statement→close）的 40ms 构成，并复核 R1 smoke | 窗口 1.89s、48 statement（16 测量 + 32 harness setup/cleanup）：statement p50 **37.85ms** = native 17.59 + **intent 12.63** + audit 3.81 + terminal 3.79（open 1.08、close 0.45）；native 仅 1.3–1.6ms 的 4 条语句 intent 仍 10.9–12.8ms（p50 11.27）；open→statement 间隔 5–39µs（p50 13µs，n=48）；44/48 intent 与 audit+journal 批重叠、4 条与 checkpoint 重叠，三类 intent 均值 12.78/12.48/12.38ms ⇒ 等待不是 checkpoint CPU。窗口耐久：`audit_batch` 143（142×count=1，sync p50 3.87ms，合计 669ms）、`journal_batch` 145（98×count=1，sync p50 6.64ms，合计 867ms）、两链合计 1.54s/1.89s；`audit_checkpoint` 全run 18 次 p50 **21.0ms**（4 次 fsync：state+floor 两个 `atomicPrivate`，每 32 条审计记录一次） | 仅记录，不合入：W1 成本 = worker 写执行（native 17.6ms）+ 耐久屏障（≈20ms），intent 是上一条请求延迟会话记录的排队；两条 ≥10% 方向（提交意图/延迟记录的屏障顺序、checkpoint 频率与成本）属耐久提交时点与审计链语义，需用户显式授权 |
 | R61 | 探针 `probe/r61-w1-intent-ceiling` / `9cf4911`、`probe/r61-x1-checkpoint-ceiling` / `c59e917`（均不合入） | 两项不安全上限探针：① W1 提交意图不等自己的屏障就 dispatch；② 跳过 `appendBatch` 的 `pre_batch` 与 `post_batch` checkpoint（保留 shutdown） | ① W1.insert json-pipeline A/B/B/A（4 条独立栈 + 全新同数据卷，2 轮 × 1 warmup + 3 timed/腿）：基线 40.56 / 40.94ms → 探针 32.10 / 31.47ms（**−20.9% / −23.1%**，4 轮逐轮中位同向，−8.46 / −9.47ms）。② X1 json-pipeline（4 条腿，100 请求/级）：Gate 0 `head_checkpoint_attempts_total` **54→0**（1.1447s→0，fsync 512→567）；c4/c8 p99 多数下降但 c16 B1 +36%、4 级 elapsed 合计 B1 −2.0% / B2 +6.8%，单级跨度 82–557ms，方差大于效应 | 不合入：W1 上限 21–23% 指向「意图排在延迟会话记录之后」，但改的是耐久提交时点/顺序，需用户显式授权；X1 checkpoint 被否证，不是尾部限速器（请求在 checkpoint 前已回复）。第一版 checkpoint 探针只跳 `post_batch`，Gate 0 发现 56 次 `pre_batch` 仍在，已作废并重跑 |
+| R62 | `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`（不合入，留证） | 延后耐久账户待办上限 256→4096，与审计队列自身的 4096 条 / 8 MiB 准入上限对齐；新增 `/v1/metrics` 的 `deferred_durability`（pending / pending_max / maximum / enqueued_total / inline_total） | Gate 0：100 请求/级时候选把固定 500 rps 桶耗尽（16 次 `rate_limit` vs 基线 0），拒绝记录排在延后积压之后约 500ms；成功请求 p99 仅 20.37ms。改用 50 请求/级（配额不变）后两侧干净。A/B：2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 c8/c16 p95/p99 两轮四单元全部 −31.1%~−79.3%（合并 −33.1% / −67.6% / −62.1% / −49.2%）；护栏 c1 p95 0.973→6.370ms（**+554.9%**）失败，c1 p50 −3.2%、c1 p99 −22.1%、c4 p50 −23.6%、c4 p95 −93.0%；8 腿 0 错误 / 0×429 / `inline_total=0` / clean stop | 不合入：主指标通过，但 A/B 前冻结的 c1 p95 护栏失败。分支与两份提交保留作证据；下一轮在 c1 上做请求级相位归因（open/statement/close 的 journal/audit/native 分段），先确认 5–9ms 尖峰归属，再决定修实现还是修测量方式 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2584,6 +2585,41 @@ worker 会话 open/close 与 platform admission/deferred queue 之间做单窗�
 
 **证据**：`docs/performance-review/2026-11-04-r61-durability-ceiling-probes/`（`README.md`、`legs/`、
 `legs-probe-v1/`、`gate0/`、`run_leg.sh`、`gate0.sh`、`aggregate.py`）。
+
+#### R62：延后耐久账户待办上限 256→4096（2026-11-04，主指标通过、c1 p95 护栏失败，不合入）
+
+**机制**：R37 的 `deferredDurability` 账户按 FIFO 支付非提交操作的 completion/audit 屏障。上限
+256 时，第 257 条待办会在回复刷出之前**内联**支付屏障，账户饱和直接变成客户端时延。R59 排除
+池宽，R61 排除周期 checkpoint；本轮把上限对齐审计队列自身的准入上限（4096 条 / 8 MiB），内联
+路径保留为账户停止时的 fail-closed 守卫。
+
+**改动**（`861eb8a`、`530fcf7`）：`deferredDurabilityMaximum` 256→4096；`/v1/metrics` 增加
+`deferred_durability`（`pending`、`pending_max`、`maximum`、`enqueued_total`、`inline_total`）；
+新增 X1 尾部时间线探针。顺序、`outcome_unknown`、关闭排空语义未改。
+
+**Gate 0 与令牌桶混杂**：100 请求/级（X1 合同值）时候选 c16 出现 16 次拒绝（13×429 + 3× pipeline
+内 `quota_exceeded`），基线 0 次。原因是候选在 c1–c8 快约一个数量级，把固定 **500 rps** 令牌桶
+提前耗尽；拒绝路径的审计记录又排在延后积压之后，单条约 500ms。同一次 c16 的成功请求 p50
+6.46ms / p99 20.37ms，证明不是查询执行问题。改用 50 请求/级（配额不变，只让窗口落在桶的突发
+预算内）后两侧都干净；100/级下的拒绝行为作为**配额边界副作用**单独记录，不进入时延判决。
+
+**A/B**：2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 `json-pipeline`，50 请求/级。主指标
+c8/c16 p95、p99 两轮四单元全部改善 −31.1%~−79.3%；合并中位 c8 p95 −33.1%、c8 p99 −67.6%、
+c16 p95 −62.1%、c16 p99 −49.2%。运行性护栏全过：0 错误、0×429、`inline_total=0`、fixture 与
+clean stop 均通过；候选 `pending_max` 645–770，基线无该指标。
+
+**护栏失败**：冻结的 c1 p95 合并中位 0.973→6.370ms（**+554.9%**）。c1 p50 −3.2%、c1 p99 −22.1%；
+5–9ms 尖峰出现在 3/4 候选腿、1/4 基线腿，合并原始样本 >2ms 为 8/200（基线）与 13/200（候选）。
+反序诊断（候选先跑）c1 p95=0.54ms，说明候选在干净宿主状态下可与基线一致，尖峰是间歇性的，
+尚未归因。
+
+**判决**：按 A/B 前冻结的判据，**主指标 PASS、护栏 FAIL，不合入**。分支
+`perf/r62-deferred-bound` 与两份提交保留作证据；下一轮在 c1 上做请求级相位归因
+（open/statement/close 的 journal/audit/native 分段），先确认 5–9ms 尖峰归属，再决定修实现
+还是修测量方式。
+
+**证据**：`docs/performance-review/2026-11-04-r62-deferred-bound/`（`README.md`、`legs/`、
+`legs-diag/`、`gate0/`、`run_leg.sh`、`aggregate.py`）。
 
 ## 代码约定
 
