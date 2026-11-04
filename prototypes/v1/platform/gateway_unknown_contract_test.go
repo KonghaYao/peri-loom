@@ -80,6 +80,9 @@ func TestGatewayUnknownContractOpenFailureMatrix(test *testing.T) {
 		{"wrapped_ambiguous_completed_rejected", fmt.Errorf("synthetic wrapper: %w", testRPCError(true, true, SQLRPCError{Ambiguous: true})), 502, "outcome_unknown", noProof, true},
 		{"wrapped_completed", fmt.Errorf("synthetic wrapper: %w", testRPCError(true, false, SQLRPCError{})), 400, "sql_error", provenCompleted, false},
 		{"wrapped_rejected", fmt.Errorf("synthetic wrapper: %w", testRPCError(false, true, SQLRPCError{})), 502, "upstream_rejected", provenRejected, false},
+		// A pre-execution refusal the worker now proves: the open never ran, so the
+		// caller gets a capacity refusal instead of an unknown outcome.
+		{"session_capacity", sqlWorkerFailureFromReply(true, false, "database session capacity exceeded"), 503, "sql_unavailable", provenRejected, false},
 		{"wrapped_unavailable", fmt.Errorf("synthetic wrapper: %w", &SQLRPCError{}), 503, "upstream_unavailable", noProof, false},
 	} {
 		test.Run(scenario.name, func(test *testing.T) {
@@ -146,6 +149,35 @@ func TestGatewayUnknownContractOpenFailureMatrix(test *testing.T) {
 				test.Fatal("request ID changed or private cause leaked")
 			}
 		})
+	}
+}
+
+// A close failure must stay an unknown outcome. The worker's close command is
+// deliberately left without non-execution evidence, because a reply that is lost
+// can still have retired the session; this pins that the pre-execution proof added
+// to Open did not leak into close.
+func TestGatewayUnknownContractCloseFailureStaysAmbiguous(test *testing.T) {
+	fixture := newGatewayFixture(test)
+	public := gatewayOpen(test, fixture, fixture.tokenA, fixture.first)
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		if command["command"] == "close_session" {
+			return nil, &SQLRPCError{Ambiguous: true}
+		}
+		return nil, nil
+	})
+	response := gatewayHTTP(test, fixture.gateway, fixture.tokenA, "/v1/sql/close", map[string]any{"session": public, "request_id": "contract_close"})
+	if response.Code != 502 {
+		test.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	unknownContractResponse(test, response, "contract_close", "outcome_unknown", noProof)
+	fixture.gateway.mu.Lock()
+	session := fixture.gateway.sessions[public]
+	fixture.gateway.mu.Unlock()
+	session.mu.Lock()
+	poisoned, closed := session.poisoned, session.closed
+	session.mu.Unlock()
+	if !poisoned || closed {
+		test.Fatal("an unproven close released the session instead of isolating it")
 	}
 }
 

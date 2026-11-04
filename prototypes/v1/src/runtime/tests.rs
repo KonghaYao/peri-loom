@@ -167,6 +167,38 @@ fn the_session_budget_is_anchored_after_the_load() -> Result<()> {
     Ok(())
 }
 
+/// An open refused by admission never ran SQL, so the refusal must carry the same
+/// non-execution evidence as a statement that was turned away. Without it the platform
+/// can only report an unknown outcome, which a caller cannot tell from work that may
+/// have been committed (R9).
+#[test]
+fn a_session_capacity_refusal_is_proven_not_executed() -> Result<()> {
+    let cache = tempfile::tempdir()?;
+    let store = Arc::new(SlowStore::new(Duration::from_millis(1)));
+    let runtime = WorkerRuntime::new(
+        Arc::new(LocalAuthorityProvider::new(store)),
+        cache.path(),
+        WorkerLimits {
+            max_sessions_per_database: 1,
+            ..WorkerLimits::default()
+        },
+    )?;
+    let database = identifier("session_capacity")?;
+    let first = runtime.open(database.clone(), 1)?;
+    let error = match runtime.open(database.clone(), 1) {
+        Ok(_) => panic!("a second session exceeded the per-database limit"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:#}").contains("database session capacity exceeded"),
+        "{error:#}"
+    );
+    assert!(proven_not_executed(&error), "{error:#}");
+    drop(first);
+    runtime.close(&database)?;
+    Ok(())
+}
+
 #[test]
 fn a_load_that_overruns_its_budget_fails_honestly_and_keeps_the_instance() -> Result<()> {
     let (_cache, store, mut runtime) = fixture(Duration::from_millis(60))?;

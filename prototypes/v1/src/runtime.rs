@@ -151,13 +151,21 @@ impl WorkerRuntime {
         epoch: u64,
         waiter_deadline: Option<Instant>,
     ) -> Result<DatabaseHandle> {
-        identifier.validate()?;
-        let activated = self.activate(identifier.clone(), epoch, waiter_deadline)?;
-        // The session phase is anchored after the load returns, so neither phase inherits a
-        // deadline the other one has already spent.
-        let _session_budget =
-            RequestDeadline::scope(Instant::now() + Budget::trusted_default().wall_duration());
-        self.make_handle(identifier, activated, waiter_deadline)
+        // An open never runs SQL, so every failure below is a refusal proven to happen
+        // before execution: capacity, epoch, drain, load budget, waiter deadline or the
+        // native session. Attaching the evidence here lets the RPC reply say
+        // `execution_completed = false` instead of leaving the platform with an unknown
+        // outcome.
+        let opened = (|| -> Result<DatabaseHandle> {
+            identifier.validate()?;
+            let activated = self.activate(identifier.clone(), epoch, waiter_deadline)?;
+            // The session phase is anchored after the load returns, so neither phase inherits a
+            // deadline the other one has already spent.
+            let _session_budget =
+                RequestDeadline::scope(Instant::now() + Budget::trusted_default().wall_duration());
+            self.make_handle(identifier, activated, waiter_deadline)
+        })();
+        opened.map_err(|error| error.context(SqlEvidence::NotExecuted))
     }
 
     /// Finds or starts the shared activation for one database.
