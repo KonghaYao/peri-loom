@@ -1096,6 +1096,16 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
 			}
 		}
 	}
+	if hranaProtoExecuteRequested(request.Context()) {
+		if fused, ok := fusedStatementResultFrom(request.Context()); ok && fused.Session == session && fused.SQL == statement.SQL {
+			switch encoded, status := encodeHranaProtoStatementResult(reply.result, resultLimit); status {
+			case hranaProtoEncodeComplete:
+				return encoded, hranaReply{}
+			case hranaProtoEncodeOverBudget:
+				return hranaEncodedStatementResult{overBudget: true}, hranaReply{}
+			}
+		}
+	}
 	var native hranaNativeStatement
 	decoder := json.NewDecoder(bytes.NewReader(reply.result))
 	decoder.UseNumber()

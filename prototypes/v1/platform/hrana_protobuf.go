@@ -1291,6 +1291,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 	if fused := hranaFusedStatementResult(session, statement, opened); fused != nil {
 		statementRequest = request.WithContext(withFusedStatementResult(request.Context(), *fused))
 	}
+	statementRequest = statementRequest.WithContext(withHranaProtoExecute(statementRequest.Context()))
 	value, executeReply := handler.executeWithin(statementRequest, credential, session, statement, resultLimit)
 	if executeReply.code != "" {
 		results := []any{map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(executeReply), "code": executeReply.code}}}
@@ -1312,6 +1313,19 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 		return true
 	}
 	closed = true
+	if encoded, ok := value.(hranaEncodedStatementResult); ok {
+		if encoded.overBudget {
+			http.Error(writer, "pipeline_result_limit", http.StatusRequestEntityTooLarge)
+			return true
+		}
+		output := assembleHranaProtoSingleExecute(encoded.bytes)
+		if resultLimit > 0 && len(output) > resultLimit {
+			http.Error(writer, "pipeline_result_limit", http.StatusRequestEntityTooLarge)
+			return true
+		}
+		writeHranaProtoResponse(writer, output)
+		return true
+	}
 	response := map[string]any{
 		"results": []any{
 			map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}},
