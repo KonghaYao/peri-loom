@@ -1,0 +1,114 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:19494",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "f73aa1c78ecd41b0b83ebba8d6fead755a6799ed",
+    "connection_file": "provided (redacted)",
+    "platform_label": "HEAD f73aa1c / rust unknown",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T04:12:33.564804+00:00",
+    "ended_utc": "2026-11-04T04:12:33.570341+00:00",
+    "duration_seconds": 0.006,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 5,
+    "concurrency_requests": 100,
+    "resource_before": {},
+    "resource_after": {},
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 100,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "F1.select-1",
+      "title": "固定开销 select 1（返回 1 行）",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 5,
+      "median_ms": 0.530792,
+      "p95_ms": 0.7365,
+      "min_ms": 0.468417,
+      "max_ms": 0.7365,
+      "round_medians_ms": [
+        0.530792
+      ],
+      "rows": 1,
+      "response_bytes": 312,
+      "query_ms": 0.010125,
+      "status_counts": {
+        "200": 5
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 5
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}

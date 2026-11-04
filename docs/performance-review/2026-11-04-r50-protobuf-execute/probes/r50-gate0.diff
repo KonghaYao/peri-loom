@@ -1,0 +1,177 @@
+diff --git a/prototypes/v1/platform/dev.py b/prototypes/v1/platform/dev.py
+index b80aa74..89d8147 100755
+--- a/prototypes/v1/platform/dev.py
++++ b/prototypes/v1/platform/dev.py
+@@ -877,6 +877,9 @@ def free_address():
+ 
+ def safe_environment(capacity_trace=False):
+     environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
++    for name in ("PERI_R50_GATE0_LOG",):
++        if name in os.environ:
++            environment[name] = os.environ[name]
+     if capacity_trace:
+         environment["PERI_CAPACITY_TRACE"] = "1" if os.environ.get("PERI_CAPACITY_TRACE") == "1" else "0"
+         environment["PERI_NATIVE_GATE_TRACE"] = "1" if os.environ.get("PERI_NATIVE_GATE_TRACE") == "1" else "0"
+diff --git a/prototypes/v1/platform/hrana_http.go b/prototypes/v1/platform/hrana_http.go
+index cd5c541..a834701 100644
+--- a/prototypes/v1/platform/hrana_http.go
++++ b/prototypes/v1/platform/hrana_http.go
+@@ -1098,7 +1098,9 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
+ 	}
+ 	if hranaProtoExecuteRequested(request.Context()) {
+ 		if fused, ok := fusedStatementResultFrom(request.Context()); ok && fused.Session == session && fused.SQL == statement.SQL {
+-			switch encoded, status := encodeHranaProtoStatementResult(reply.result, resultLimit); status {
++			encoded, status := encodeHranaProtoStatementResult(reply.result, resultLimit)
++			r50GateRecord(reply.result, encoded, status, resultLimit)
++			switch status {
+ 			case hranaProtoEncodeComplete:
+ 				return encoded, hranaReply{}
+ 			case hranaProtoEncodeOverBudget:
+diff --git a/prototypes/v1/platform/perf_gate0_r50.go b/prototypes/v1/platform/perf_gate0_r50.go
+new file mode 100644
+index 0000000..e4b3752
+--- /dev/null
++++ b/prototypes/v1/platform/perf_gate0_r50.go
+@@ -0,0 +1,142 @@
++package platform
++
++// R50 Gate 0: proves the direct protobuf encoder is byte-identical to the
++// legacy decode-and-encode path on live traffic. The file exists only in the
++// gate worktree and is not part of the measured binary.
++
++import (
++	"bytes"
++	"encoding/json"
++	"log"
++	"os"
++	"strconv"
++	"sync"
++	"sync/atomic"
++)
++
++var (
++	r50GateOnce      sync.Once
++	r50GateLogPath   string
++	r50GateActive    bool
++	r50GateMu        sync.Mutex
++	r50GateAttempt   atomic.Int64
++	r50GateComplete  atomic.Int64
++	r50GateLimit     atomic.Int64
++	r50GateUnsupport atomic.Int64
++	r50GateEqual     atomic.Int64
++	r50GateMismatch  atomic.Int64
++	r50GateLegacyBad atomic.Int64
++)
++
++func r50GateLoad() {
++	r50GateLogPath = os.Getenv("PERI_R50_GATE0_LOG")
++	if r50GateLogPath == "" {
++		return
++	}
++	r50GateActive = true
++}
++
++func r50GateEnabled() bool {
++	r50GateOnce.Do(r50GateLoad)
++	return r50GateActive
++}
++
++func r50GateRecord(raw json.RawMessage, encoded hranaEncodedStatementResult, status hranaProtoEncodeStatus, budget int) {
++	if !r50GateEnabled() {
++		return
++	}
++	r50GateAttempt.Add(1)
++	switch status {
++	case hranaProtoEncodeComplete:
++		r50GateComplete.Add(1)
++		legacy, err := r50GateLegacyStatement(raw)
++		if err != nil {
++			r50GateLegacyBad.Add(1)
++			break
++		}
++		if bytes.Equal(legacy, encoded.bytes) {
++			r50GateEqual.Add(1)
++		} else {
++			r50GateMismatch.Add(1)
++			offset := 0
++			for offset < len(legacy) && offset < len(encoded.bytes) && legacy[offset] == encoded.bytes[offset] {
++				offset++
++			}
++			log.Printf("r50 gate mismatch offset=%d direct=%d legacy=%d", offset, len(encoded.bytes), len(legacy))
++		}
++		r50GateWrite(strconv.Itoa(len(encoded.bytes)))
++	case hranaProtoEncodeOverBudget:
++		r50GateLimit.Add(1)
++		r50GateWrite("limit")
++	case hranaProtoEncodeUnsupported:
++		r50GateUnsupport.Add(1)
++		r50GateWrite("unsupported")
++	}
++}
++
++func r50GateWrite(detail string) {
++	r50GateMu.Lock()
++	defer r50GateMu.Unlock()
++	file, err := os.OpenFile(r50GateLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
++	if err != nil {
++		log.Printf("r50 gate log: %v", err)
++		return
++	}
++	defer file.Close()
++	line := "r50gate attempt=" + strconv.FormatInt(r50GateAttempt.Load(), 10) +
++		" complete=" + strconv.FormatInt(r50GateComplete.Load(), 10) +
++		" limit=" + strconv.FormatInt(r50GateLimit.Load(), 10) +
++		" unsupported=" + strconv.FormatInt(r50GateUnsupport.Load(), 10) +
++		" equal=" + strconv.FormatInt(r50GateEqual.Load(), 10) +
++		" mismatch=" + strconv.FormatInt(r50GateMismatch.Load(), 10) +
++		" legacy_bad=" + strconv.FormatInt(r50GateLegacyBad.Load(), 10) +
++		" detail=" + detail + "\n"
++	_, _ = file.WriteString(line)
++}
++
++// r50GateLegacyStatement is the legacy conversion from executeWithin followed
++// by the legacy statement encoder, with no result budget.
++func r50GateLegacyStatement(raw json.RawMessage) ([]byte, error) {
++	var native hranaNativeStatement
++	decoder := json.NewDecoder(bytes.NewReader(raw))
++	decoder.UseNumber()
++	if err := decoder.Decode(&native); err != nil || native.Cols == nil || native.Rows == nil {
++		return nil, errR50LegacyShape
++	}
++	metrics, ok := hranaNativeStatementMetrics(native.RowsRead, native.RowsWritten, native.QueryDurationMS)
++	if !ok {
++		return nil, errR50LegacyShape
++	}
++	cols := make([]any, len(native.Cols))
++	for index, column := range native.Cols {
++		cols[index] = map[string]any{"name": column.Name, "decltype": column.Decltype}
++	}
++	converted := make([][]any, 0, len(native.Rows))
++	for _, row := range native.Rows {
++		values := make([]any, 0, len(row))
++		for _, value := range row {
++			convertedValue, ok := hranaOutputValue(value)
++			if !ok {
++				return nil, errR50LegacyShape
++			}
++			values = append(values, convertedValue)
++		}
++		converted = append(converted, values)
++	}
++	var rowid *string
++	if native.LastInsertRowid != nil {
++		encoded := strconv.FormatInt(*native.LastInsertRowid, 10)
++		rowid = &encoded
++	}
++	result := map[string]any{"cols": cols, "rows": converted, "affected_row_count": native.AffectedRowCount, "last_insert_rowid": rowid}
++	for name, value := range metrics {
++		result[name] = value
++	}
++	return hranaProtoStatementResultWithin(result, 0)
++}
++
++var errR50LegacyShape = &r50GateError{"legacy shape refused"}
++
++type r50GateError struct{ message string }
++
++func (err *r50GateError) Error() string { return err.message }

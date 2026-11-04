@@ -1,0 +1,4 @@
+r50gate attempt=1 complete=1 limit=0 unsupported=0 equal=1 mismatch=0 legacy_bad=0 detail=2349027
+r50gate attempt=2 complete=2 limit=0 unsupported=0 equal=2 mismatch=0 legacy_bad=0 detail=2349027
+r50gate attempt=3 complete=3 limit=0 unsupported=0 equal=3 mismatch=0 legacy_bad=0 detail=2349027
+r50gate attempt=4 complete=4 limit=0 unsupported=0 equal=4 mismatch=0 legacy_bad=0 detail=2349027
