@@ -1,7 +1,12 @@
+use serde::de::Deserializer;
+use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
+
+use turso_core::{Numeric, Value as SqlValue};
 
 use crate::ownership::types::{LeaseBinding, OwnershipCommand};
 use crate::runtime::DatabaseId;
+use crate::session::StatementColumn;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -258,11 +263,277 @@ pub struct WorkerResponse {
     pub version: u32,
     pub request_id: String,
     pub ok: bool,
-    pub result: Option<serde_json::Value>,
+    pub result: Option<WorkerResult>,
     pub error: Option<String>,
     // 失败时 true 表示执行已收束（不保证回滚），false 表示未进入执行；缺失表示无证据。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_completed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_state: Option<SessionState>,
+}
+
+/// One row-bearing worker answer. Cursor pages keep the engine rows and let the
+/// reply serializer walk them directly: building a `serde_json::Value` tree first
+/// copies every cell (a whole page of text) one extra time before it is encoded.
+#[derive(Clone, Debug)]
+pub enum WorkerResult {
+    Json(serde_json::Value),
+    ReadCursorPage(ReadCursorPage),
+}
+
+impl WorkerResult {
+    /// Whether this answer closes a cursor. Only the write-cursor path consults it,
+    /// where a lost reply must be settled by a delivered done page.
+    pub fn done(&self) -> bool {
+        match self {
+            WorkerResult::Json(value) => {
+                value.get("done").and_then(|done| done.as_bool()) == Some(true)
+            }
+            WorkerResult::ReadCursorPage(page) => page.done,
+        }
+    }
+}
+
+impl Serialize for WorkerResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            WorkerResult::Json(value) => value.serialize(serializer),
+            WorkerResult::ReadCursorPage(page) => page.serialize(serializer),
+        }
+    }
+}
+
+/// Responses are only decoded by tests and control tooling, which read the page
+/// shape as a plain JSON value; the borrowed page exists only on the encode side.
+impl<'de> Deserialize<'de> for WorkerResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        serde_json::Value::deserialize(deserializer).map(WorkerResult::Json)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReadCursorPage {
+    /// Present on the first page only, matching the fused open answer.
+    pub cols: Option<Vec<StatementColumn>>,
+    pub rows: Vec<Vec<SqlValue>>,
+    pub done: bool,
+    pub autocommit: Option<bool>,
+}
+
+impl Serialize for ReadCursorPage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Same key order as the tree it replaces: `json!` objects are sorted, and
+        // keeping the reply byte-compatible makes the two shapes interchangeable
+        // for every decoder in tests and tooling.
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(autocommit) = self.autocommit {
+            map.serialize_entry("autocommit", &autocommit)?;
+        }
+        if let Some(cols) = &self.cols {
+            map.serialize_entry("cols", &Columns(cols))?;
+        }
+        map.serialize_entry("done", &self.done)?;
+        map.serialize_entry("rows", &Rows(&self.rows))?;
+        map.end()
+    }
+}
+
+struct Columns<'a>(&'a [StatementColumn]);
+
+impl Serialize for Columns<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for column in self.0 {
+            seq.serialize_element(&Column {
+                name: column.name.as_str(),
+                decltype: column.decltype.as_deref(),
+            })?;
+        }
+        seq.end()
+    }
+}
+
+struct Column<'a> {
+    name: &'a str,
+    decltype: Option<&'a str>,
+}
+
+impl Serialize for Column<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("decltype", &self.decltype)?;
+        map.serialize_entry("name", &self.name)?;
+        map.end()
+    }
+}
+
+struct Rows<'a>(&'a [Vec<SqlValue>]);
+
+impl Serialize for Rows<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for row in self.0 {
+            seq.serialize_element(&Row(row))?;
+        }
+        seq.end()
+    }
+}
+
+struct Row<'a>(&'a [SqlValue]);
+
+impl Serialize for Row<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for value in self.0 {
+            seq.serialize_element(&Cell(value))?;
+        }
+        seq.end()
+    }
+}
+
+struct Cell<'a>(&'a SqlValue);
+
+impl Serialize for Cell<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Exactly the mapping of `sessions::value`, but written straight into the
+        // encoder instead of materializing one `serde_json::Value` per cell.
+        match self.0 {
+            SqlValue::Null => serializer.serialize_unit(),
+            SqlValue::Numeric(Numeric::Integer(integer)) => serializer.serialize_i64(*integer),
+            SqlValue::Numeric(Numeric::Float(float)) => {
+                let value = f64::from(*float);
+                if value.is_finite() {
+                    serializer.serialize_f64(value)
+                } else {
+                    serializer.serialize_unit()
+                }
+            }
+            SqlValue::Text(text) => serializer.serialize_str(text.as_str()),
+            SqlValue::Blob(bytes) => serializer.collect_seq(bytes.iter()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn reference_rows(rows: &[Vec<SqlValue>], done: bool) -> serde_json::Value {
+        json!({
+            "rows": rows
+                .iter()
+                .map(|row| row.iter().map(super::super::sessions::value).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            "done": done,
+        })
+    }
+
+    fn sample_rows() -> Vec<Vec<SqlValue>> {
+        vec![
+            vec![
+                SqlValue::Null,
+                SqlValue::from_i64(-7),
+                SqlValue::from_f64(1.5),
+                SqlValue::from_f64(f64::INFINITY),
+                SqlValue::build_text("quote \" backslash \\ newline \n tab \t unicode 中文"),
+                SqlValue::build_text(""),
+                SqlValue::Blob(vec![0, 1, 127, 255]),
+            ],
+            vec![SqlValue::from_i64(0), SqlValue::build_text("plain")],
+        ]
+    }
+
+    #[test]
+    fn borrowed_page_encodes_exactly_like_the_value_tree() {
+        let rows = sample_rows();
+        let page = ReadCursorPage {
+            cols: None,
+            rows: rows.clone(),
+            done: true,
+            autocommit: None,
+        };
+        let borrowed = serde_json::to_vec(&page).expect("borrowed page encodes");
+        let tree = serde_json::to_vec(&reference_rows(&rows, true)).expect("tree encodes");
+        assert_eq!(borrowed, tree);
+    }
+
+    #[test]
+    fn borrowed_first_page_encodes_exactly_like_the_value_tree() {
+        let rows = sample_rows();
+        let columns = vec![
+            crate::session::StatementColumn {
+                name: "id".to_string(),
+                decltype: Some("INTEGER".to_string()),
+            },
+            crate::session::StatementColumn {
+                name: "body".to_string(),
+                decltype: None,
+            },
+        ];
+        let page = ReadCursorPage {
+            cols: Some(columns.clone()),
+            rows: rows.clone(),
+            done: false,
+            autocommit: Some(true),
+        };
+        let borrowed = serde_json::to_vec(&page).expect("borrowed page encodes");
+        let tree = serde_json::to_vec(&json!({
+            "cols": columns
+                .iter()
+                .map(|column| json!({"name": column.name, "decltype": column.decltype}))
+                .collect::<Vec<_>>(),
+            "rows": rows
+                .iter()
+                .map(|row| row.iter().map(super::super::sessions::value).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            "done": false,
+            "autocommit": true,
+        }))
+        .expect("tree encodes");
+        assert_eq!(borrowed, tree);
+    }
+
+    #[test]
+    fn worker_result_decodes_and_reports_done() {
+        let decoded: WorkerResult =
+            serde_json::from_str(r#"{"rows":[],"done":true}"#).expect("decode");
+        assert!(decoded.done());
+        assert!(matches!(decoded, WorkerResult::Json(_)));
+        let page = WorkerResult::ReadCursorPage(ReadCursorPage {
+            cols: None,
+            rows: vec![vec![SqlValue::Null]],
+            done: false,
+            autocommit: None,
+        });
+        assert!(!page.done());
+        assert_eq!(
+            serde_json::to_vec(&page).expect("encode"),
+            br#"{"done":false,"rows":[[null]]}"#
+        );
+    }
 }

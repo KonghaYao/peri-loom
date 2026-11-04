@@ -1,0 +1,88 @@
+# R57 Gate 0：worker 只读 cursor 页借用序列化命中与「关掉」对照（先于 A/B）
+
+## 探针
+
+- 二进制：`/tmp/peri-perf/bin/peri-loom-v1-r57-gate0b`
+  （sha256 `90a5773c87768ba8fd475a30d21af587d0383c3205f47216ca7ccdb2d761536a`，
+  macOS arm64 release）。
+- 源码：`perf/r57-worker-cursor-borrow` @ `1daea98` + 本目录 `probes/gate0-probe.diff`
+  （1 个文件、+14 行：在 `impl Serialize for ReadCursorPage` 里按 `cols.is_some()` 区分
+  `first`/`fetch` 打印行；探针不进入测量二进制）。
+- 计数点选在**实际序列化点**，不是命令分发点：任何页只要走借用序列化就会打一行，
+  因此「没有行」等价于「该页没有走借用路径」。
+- 探针**不采样**：每页无条件 `eprintln!`。早先按每 25 页采样一行的版本
+  （`peri-loom-v1-r57-gate0`，sha256 `144052ce…`）读数不可分解（`first=1 fetch=125`），作废；
+  带探针的二进制也因 stderr 输出而**不用于任何延迟测量**。
+- 环境：本地栈 `127.0.0.1:19634`，无 TLS，默认配额
+  （`max_sessions=16`、`max_concurrent=100`、`requests_per_second=500`、
+  `max_result_bytes=4,194,304`、`max_sql_bytes=65,536`）。
+- 平台：`/tmp/peri-perf/bin/peri-platform-r56-cand2`
+  （sha256 `611fa2d8455688691cc65739c7d6d2c75156ffa6bf49f2b6dc37a96a94e358ae`，
+  即 R56 候选，保证 R57 的页在生产链路上被真正消费）。
+- fixture：`verify threads=201 messages=8625 chars=20177069 focus=8625`、
+  `list_threads=40`（重建脚本见 R56 目录 `fixture/seed_fixture.py`，
+  sha256 `092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210`）。
+- 运行：每个场景 1 warmup + 1 timed（harness `--rounds 1 --warmup 1 --samples 1`）。
+  本文件只作机制核验；带探针、n=1 的延迟数字不可作为验收结论。
+
+## 命中计数
+
+H1 每查询 8,625 行、每页 256 行，共 **34 页**；两种协议的每条只读页都由
+`WorkerResult::ReadCursorPage` 产生。两次独立批次（原始三次场景运行 + 复测三步运行）
+读数完全一致。
+
+| 场景 | 协议 | 每查询页数 | 每条查询 `first` | 每条查询 `fetch` | 判定 |
+|---|---|---:|---:|---:|---|
+| H1.content-20mb | json-cursor | 34 | 1 | 33 | OK |
+| H1.content-20mb | protobuf-cursor | 34 | 0 | 34 | OK |
+| L2.list-empty（单页 0 行） | json-cursor | 1 | 1 | 0 | OK（关掉对照） |
+
+- json-cursor 走 v3 JSON cursor 的**融合首页**（`open_read_cursor_first`，`cols=Some`），
+  之后 33 页是 `fetch_read_cursor`（`cols=None`）——`1 + 33 = 34` 页全部命中借用序列化。
+- protobuf-cursor 走 native HTTP cursor：先 `/v1/sql/cursor/open` 取列元数据，再逐页
+  `/v1/sql/cursor/fetch`，因此**每页 `cols` 都是 `None`**，34 页都记作 `fetch`。
+  这是既有协议差异（见 `hrana_http_cursor.go` 的 open/fetch 分支），不是本轮引入；
+  两种协议下每查询的借用序列化次数都是 34。
+- 全局计数（两次批次一致）：json `first+1 fetch+33`，pb `fetch+34`，
+  L2 `first+1 fetch+0`。
+
+## 「关掉」对照
+
+- **单页 cursor**：`L2.list-empty`（0 行、1 页）`fetch=0`——没有下一页就没有额外页序列化。
+- **写 cursor**：用同一 gate 二进制经 `/v3/cursor` 发
+  `UPDATE threads SET title = title WHERE id = '__r57_gate_none__' RETURNING id`：
+  返回 `200`、`step_begin` 带 `cols=[{"decltype":"TEXT","name":"id"}]`、
+  `step_end affected_row_count=0`，**探针行数为 0**（276 → 276）。
+  说明写 cursor 的回复仍由 `serde_json::Value` 树产生、不经过借用序列化；
+  行的确由 worker 执行（`step_begin`/`step_end` 都在），不是「命令没到 worker」。
+  数据未被修改（`WHERE id = '__r57_gate_none__'` 不匹配任何行）。
+- 写 cursor 的窗口形状不变另由 `TestHranaV3JSONWriteCursorKeepsPageFetchesSequential`
+  等 Go 平台用例与 `worker_rpc` 单元测试覆盖。
+
+## 不变量（同窗口）
+
+- wire 字节与冻结值逐字节一致：H1 json `20,608,525`、H1 protobuf `20,272,006`
+  （平台侧严格扫描 `validCursorFetchResponse` 接受借用页；行数 8,625）。
+- L2：`rows=0`、`bytes=663`、`status=200`。
+- 借用序列化与 `sessions::value` 的 Value 树逐字节相等由 pinned 单元测试保证：
+  `borrowed_page_encodes_exactly_like_the_value_tree`、
+  `borrowed_first_page_encodes_exactly_like_the_value_tree`
+  （覆盖转义、空串、unicode、blob、±inf、null）。
+
+## 二进制来源（A/B 使用）
+
+- 基线 worker：`/tmp/peri-perf/bin/peri-loom-v1-r53-clean`，sha256
+  `27d8dd4682128ff7668999254e068144c878b5fa972357d7dd22a5aac50ce3a4`（与 R56 基线同一文件）。
+- 候选 worker：`/tmp/peri-perf/bin/peri-loom-v1-r57`，由 `perf/r57-worker-cursor-borrow`
+  @ `1daea98`（探针已 `git checkout --` 移除的干净树）`cargo build --release --locked` 构建，
+  sha256 `a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594`；
+  两次从干净树重建哈希相同。宿主工具链 `cargo 1.98.1`（仓库 `rust-toolchain.toml` 锁定），
+  默认 release profile（`prototypes/v1/Cargo.toml` 无 `[profile.release]` 覆盖）。
+- 平台两侧同用 `peri-platform-r56-base2`（基线，`9e003707…`）与
+  `peri-platform-r56-cand2`（候选，`611fa2d8…`），见 R56 目录 `gate0.txt`。
+
+## 结论
+
+借用序列化在两种协议的**每一页**上都被真实执行（H1 每查询 34 页全部命中），
+单页场景没有多余页，写 cursor 仍走 Value 树且行为不变；wire 字节、行数与状态码与基线一致。
+机制成立，可以进入批级 A/B。

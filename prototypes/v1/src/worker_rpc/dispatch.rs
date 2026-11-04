@@ -16,7 +16,8 @@ use crate::session::{
 use super::diagnostics::Action;
 use super::outcome::{execution_completed, execution_rejected};
 use super::protocol::{
-    BatchStatement, NamedStatementArg, SessionState, StatementArg, WorkerCommand,
+    BatchStatement, NamedStatementArg, ReadCursorPage, SessionState, StatementArg, WorkerCommand,
+    WorkerResult,
 };
 use super::server::State;
 use super::session_entry::SessionCall;
@@ -170,7 +171,7 @@ impl State {
         call: Option<&SessionCall>,
         terminal: &mut Option<SessionState>,
         deadline: Instant,
-    ) -> Result<Value> {
+    ) -> Result<WorkerResult> {
         let _diagnostic_request = crate::slow_diagnostics::enter(request_id);
         // Charge before the match that can execute SQL. The token lives until `dispatch`
         // returns, so every result and error path returns the bytes; a refusal carries
@@ -181,7 +182,10 @@ impl State {
             .runtime
             .reserve_inflight(request_memory.lane, request_bytes)
             .context("worker request memory admission")?;
-        match command {
+        // A read-cursor page leaves through `page_result`, so the reply is encoded
+        // straight from the engine rows instead of an intermediate value tree.
+        let mut page_result: Option<ReadCursorPage> = None;
+        let result: Result<Value> = match command {
             WorkerCommand::GetCapacityTrace {
                 stream_id,
                 after_sequence,
@@ -616,8 +620,15 @@ impl State {
                 named_args,
                 max_rows,
                 ..
-            } => dispatch_cursor_first(
-                call, sql, args, named_args, max_rows, false, version, terminal,
+            } => dispatch_read_cursor_first(
+                call,
+                sql,
+                args,
+                named_args,
+                max_rows,
+                version,
+                terminal,
+                &mut page_result,
             ),
             WorkerCommand::OpenWriteCursorFirst {
                 sql,
@@ -625,18 +636,25 @@ impl State {
                 named_args,
                 max_rows,
                 ..
-            } => dispatch_cursor_first(
-                call, sql, args, named_args, max_rows, true, version, terminal,
+            } => dispatch_write_cursor_first(
+                call, sql, args, named_args, max_rows, version, terminal,
             ),
             WorkerCommand::FetchReadCursor { max_rows, .. } => {
                 let call = call.context("worker session RPC guard absent")?;
-                let result = crate::slow_diagnostics::native("cursor_fetch_read", || call.handle().fetch_read_cursor(max_rows)).map(|(rows, done)| {
-                    json!({"rows": rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(), "done": done})
+                let outcome = crate::slow_diagnostics::native("cursor_fetch_read", || {
+                    call.handle().fetch_read_cursor(max_rows)
                 });
-                if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
+                if version == 2 && outcome.as_ref().err().is_none_or(execution_completed) {
                     *terminal = call.terminal_state().unwrap_or(None);
                 }
-                result
+                let (rows, done) = outcome?;
+                page_result = Some(ReadCursorPage {
+                    cols: None,
+                    rows,
+                    done,
+                    autocommit: None,
+                });
+                Ok(Value::Null)
             }
             WorkerCommand::CloseReadCursor { .. } => {
                 let call = call.context("worker session RPC guard absent")?;
@@ -737,6 +755,10 @@ impl State {
                 .context("worker session RPC guard absent")?
                 .handle()
                 .diagnostics(),
+        };
+        match page_result {
+            Some(page) => Ok(WorkerResult::ReadCursorPage(page)),
+            None => result.map(WorkerResult::Json),
         }
     }
 }
@@ -906,13 +928,52 @@ fn guarded_intent_reason(reason: GuardedIntentReason) -> &'static str {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dispatch_cursor_first(
+fn dispatch_read_cursor_first(
     call: Option<&SessionCall>,
     sql: String,
     args: Vec<StatementArg>,
     named_args: Vec<NamedStatementArg>,
     max_rows: usize,
-    writing: bool,
+    version: u32,
+    terminal: &mut Option<SessionState>,
+    page_result: &mut Option<ReadCursorPage>,
+) -> Result<Value> {
+    if !(1..=256).contains(&max_rows) {
+        return Err(anyhow::anyhow!("cursor page size exceeds limit")
+            .context(crate::session::SqlEvidence::NotExecuted));
+    }
+    let args = args
+        .into_iter()
+        .map(native_arg)
+        .collect::<Result<Vec<_>>>()?;
+    let named_args = named_args
+        .into_iter()
+        .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let call = call.context("worker session RPC guard absent")?;
+    let outcome = call
+        .handle()
+        .open_cursor_first(&sql, &args, &named_args, max_rows, false);
+    if version == 2 && outcome.as_ref().err().is_none_or(execution_completed) {
+        *terminal = call.terminal_state().unwrap_or(None);
+    }
+    let first = outcome?;
+    *page_result = Some(ReadCursorPage {
+        cols: Some(first.cols),
+        rows: first.page.rows,
+        done: first.page.done,
+        autocommit: first.autocommit,
+    });
+    Ok(Value::Null)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_write_cursor_first(
+    call: Option<&SessionCall>,
+    sql: String,
+    args: Vec<StatementArg>,
+    named_args: Vec<NamedStatementArg>,
+    max_rows: usize,
     version: u32,
     terminal: &mut Option<SessionState>,
 ) -> Result<Value> {
@@ -929,19 +990,18 @@ fn dispatch_cursor_first(
         .map(|arg| Ok((arg.name, native_arg(arg.value)?)))
         .collect::<Result<Vec<_>>>()?;
     let call = call.context("worker session RPC guard absent")?;
-    let result = call.handle().open_cursor_first(&sql, &args, &named_args, max_rows, writing)
+    let result = call
+        .handle()
+        .open_cursor_first(&sql, &args, &named_args, max_rows, true)
         .map(|first| {
-            let mut result = json!({
+            json!({
                 "cols": first.cols.into_iter().map(|column| json!({"name": column.name, "decltype": column.decltype})).collect::<Vec<_>>(),
                 "rows": first.page.rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "done": first.page.done,
                 "autocommit": first.autocommit,
-            });
-            if writing {
-                result["affected_row_count"] = json!(first.page.affected_row_count);
-                result["last_insert_rowid"] = json!(first.page.last_insert_rowid);
-            }
-            result
+                "affected_row_count": first.page.affected_row_count,
+                "last_insert_rowid": first.page.last_insert_rowid,
+            })
         });
     if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
         *terminal = call.terminal_state().unwrap_or(None);

@@ -1,0 +1,61 @@
+R57 验收判据（实现与 A/B 前冻结，2026-11-04）
+
+批次：按 R56 判据中的批次声明，R56（平台只读 cursor 页预取 + 按声明长度预分配）与
+R57（worker 只读 cursor 页借用序列化）组成一个发布批次，批级门槛为主指标端到端
+A/B ≥10% 且无回归；每轮各自做 Gate 0。
+
+基线：main @ fbc0e3d
+- 平台 build `/tmp/peri-perf/bin/peri-platform-r56-base2`（sha256 9e003707…，与 r56-base 逐字节一致）
+- worker build `/tmp/peri-perf/bin/peri-loom-v1-r53-clean`（sha256 27d8dd46…，macOS arm64 release）
+
+候选：R56 @ d5cf31f + R57 @ 1daea98
+- 平台 `/tmp/peri-perf/bin/peri-platform-r56-cand2`（sha256 611fa2d8…，从 d5cf31f 干净树两次重建一致）
+- worker 宿主 release build（sha256 由 Gate 0 记录；须与基线 worker 同工具链、同 profile）
+
+方向：worker 的只读 cursor 页不再先构造 `serde_json::Value` 树（每格一次 Value 分配、文本整页
+再复制一次），改为把引擎行直接序列化进响应；映射逐条对齐 `sessions::value`：
+Null→null、Integer→i64、Float→有限 f64/非有限 null、Text→字符串（同一 serde_json 转义）、
+Blob→u8 数组。只读首帧另带 `cols`/`autocommit`，其余命令与写 cursor 保持原 Value 树路径。
+
+上限依据（已测）：
+- R53 探针：每页 `json!` 树 36–71µs、`to_vec` 129–206µs（34 页/查询）。
+- 借用序列化可省树 ≈1.2–2.4ms/查询（2–4%）；本轮不引入自定义 memchr 转义，优先保证与基线
+  逐字节等价。
+- R56 单独实测（本轮 A/B，4 轮同向）：json 9.23%/9.73%/8.99%/8.87%，pb 9.60%/8.87%/9.27%/9.11%，
+  均略低于 10% 硬门。按批次声明进入 R57；批级预期 ≈12–13%。
+
+主指标（硬门）：
+- H1.content-20mb json-cursor 与 protobuf-cursor。
+- 每轮 A/B/B/A 4 条腿、每条腿 1 warmup + 5 samples；每轮取该侧 2 条腿的 median_ms 中位数。
+- 通过条件：两个协议各自的候选轮中位数 ≤ 0.90 × 同轮基线中位数（≥10% 改善），且 2 轮同向。
+  任一项不满足即不合入（两侧都不合入）。
+
+同路径证据（非主指标）：
+- H3.content-projection json-cursor / protobuf-cursor 预期同向；>10% 且可复现退化按失败处理。
+
+回归门（批级 A/B 后单独跑，4 条腿 A/B/B/A，5 samples/腿）：
+- R1.limit-1000 json-pipeline、protobuf-pipeline
+- F1.select-1 json-pipeline、protobuf-pipeline
+- L1.list-20 json-pipeline、json-cursor
+- B1.batch-20 json-pipeline、protobuf-pipeline
+- C1.baton-10 json-pipeline
+- H3.content-projection json-cursor、protobuf-cursor
+- X1.concurrency json-pipeline
+任一项 >10% 且两轮/多腿可复现即判回归；单腿抖动需高样本复测。
+
+不变量：
+- response_bytes 与基线逐字节一致：H1 json 20,608,525；H1 pb 20,272,006；
+  H3 json 20,746,565；H3 pb 20,306,526；R1 json 2,369,290；R1 pb 2,349,053；
+  F1 json 312；F1 pb 40。
+- 全部样本 warnings=[]、非 200 = 0、fails=0；fixture 校验通过（本批 fixture 用重建 seed，
+  list cwd 40 线程，L1 预期行数 40）。
+- worker 回复可被平台严格扫描解析；写 cursor 路径仍走 Value 树，行为与响应形状不变。
+
+Gate 0（A/B 前完成）：
+- 探针计数：H1 读 cursor 每查询 first=1、fetch=33（借用页数 = 页数），json 与 protobuf 均命中；
+  计数来自 `ReadCursorPage` 的实际序列化点，不是命令分发点。
+- 「关掉」对照：单页 cursor 的 fetch 计数为 0；写 cursor 不进入借用序列化（其回复仍由
+  Value 树产生，由 Go 平台写 cursor 测试与单元测试覆盖）。
+- 借用序列化与 `sessions::value` 树的字节逐字节相等（pinned 单元测试，含转义、空串、
+  unicode、blob、非有限浮点）。
+- 探针只存在于 gate 构建，不进入测量二进制；测量二进制由干净树重建且可复现。

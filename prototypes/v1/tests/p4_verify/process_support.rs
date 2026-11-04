@@ -183,7 +183,8 @@ impl Process {
             response.error,
             self.diagnostics()
         );
-        response.result.context("worker result missing")
+        let result = response.result.context("worker result missing")?;
+        Ok(serde_json::to_value(result)?)
     }
 }
 

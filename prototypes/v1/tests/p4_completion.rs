@@ -1427,7 +1427,8 @@ fn worker_call(address: &str, command: WorkerCommand) -> Result<Value> {
         }
         .into());
     }
-    response.result.context("worker result missing")
+    let result = response.result.context("worker result missing")?;
+    Ok(serde_json::to_value(result)?)
 }
 
 #[derive(Debug)]

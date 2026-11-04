@@ -1,0 +1,30 @@
+diff --git a/prototypes/v1/src/worker_rpc/protocol.rs b/prototypes/v1/src/worker_rpc/protocol.rs
+index cfd630b..dd0b53a 100644
+--- a/prototypes/v1/src/worker_rpc/protocol.rs
++++ b/prototypes/v1/src/worker_rpc/protocol.rs
+@@ -326,11 +326,25 @@ pub struct ReadCursorPage {
+     pub autocommit: Option<bool>,
+ }
+ 
++// R57GATE: probe-only counters, stripped before measurement.
++static R57GATE_FIRST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++static R57GATE_FETCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++fn r57gate(count: &std::sync::atomic::AtomicU64, label: &str) {
++    let value = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++    eprintln!("R57GATE {label}={value}");
++}
++
+ impl Serialize for ReadCursorPage {
+     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+     where
+         S: Serializer,
+     {
++        if self.cols.is_some() {
++            r57gate(&R57GATE_FIRST, "first");
++        } else {
++            r57gate(&R57GATE_FETCH, "fetch");
++        }
+         // Same key order as the tree it replaces: `json!` objects are sorted, and
+         // keeping the reply byte-compatible makes the two shapes interchangeable
+         // for every decoder in tests and tooling.
