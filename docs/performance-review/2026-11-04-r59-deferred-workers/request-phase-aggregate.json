@@ -1,0 +1,198 @@
+{
+ "by_action": {
+  "query": {
+   "n": 436,
+   "total_ms_p50": 28.22,
+   "total_ms_p95": 32.94,
+   "total_ms_max": 73.61,
+   "phases": {
+    "admission": {
+     "p50_ms": 0.18,
+     "p95_ms": 0.26,
+     "max_ms": 3.72
+    },
+    "audit": {
+     "p50_ms": 3.92,
+     "p95_ms": 4.98,
+     "max_ms": 8.04
+    },
+    "auth": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.01,
+     "max_ms": 0.01
+    },
+    "classify": {
+     "p50_ms": 0.42,
+     "p95_ms": 0.77,
+     "max_ms": 3.83
+    },
+    "decode": {
+     "p50_ms": 0.35,
+     "p95_ms": 0.42,
+     "max_ms": 0.98
+    },
+    "entry": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.02,
+     "max_ms": 0.03
+    },
+    "intent": {
+     "p50_ms": 4.24,
+     "p95_ms": 5.31,
+     "max_ms": 16.17
+    },
+    "native": {
+     "p50_ms": 15.36,
+     "p95_ms": 18.6,
+     "max_ms": 50.2
+    },
+    "respond": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.04,
+     "max_ms": 0.05
+    },
+    "session": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.02
+    },
+    "state_read": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.02,
+     "max_ms": 0.03
+    },
+    "terminal": {
+     "p50_ms": 3.74,
+     "p95_ms": 4.66,
+     "max_ms": 8.39
+    },
+    "worker": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.01
+    }
+   }
+  },
+  "close": {
+   "n": 14,
+   "total_ms_p50": 102.04,
+   "total_ms_p95": 148.17,
+   "total_ms_max": 148.21,
+   "phases": {
+    "admission": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.01,
+     "max_ms": 0.02
+    },
+    "audit": {
+     "p50_ms": 0.02,
+     "p95_ms": 126.29,
+     "max_ms": 126.3
+    },
+    "auth": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.0
+    },
+    "decode": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.01
+    },
+    "entry": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.01,
+     "max_ms": 0.01
+    },
+    "intent": {
+     "p50_ms": 0.11,
+     "p95_ms": 14.84,
+     "max_ms": 14.94
+    },
+    "respond": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.04,
+     "max_ms": 0.04
+    },
+    "session": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.0
+    },
+    "state_read": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.0
+    },
+    "terminal": {
+     "p50_ms": 7.94,
+     "p95_ms": 22.2,
+     "max_ms": 22.85
+    }
+   }
+  },
+  "open": {
+   "n": 46,
+   "total_ms_p50": 32.09,
+   "total_ms_p95": 148.21,
+   "total_ms_max": 148.95,
+   "phases": {
+    "admission": {
+     "p50_ms": 0.16,
+     "p95_ms": 23.88,
+     "max_ms": 23.93
+    },
+    "audit": {
+     "p50_ms": 0.01,
+     "p95_ms": 126.2,
+     "max_ms": 126.24
+    },
+    "auth": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.0
+    },
+    "decode": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.03,
+     "max_ms": 0.03
+    },
+    "entry": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.01,
+     "max_ms": 0.03
+    },
+    "intent": {
+     "p50_ms": 0.08,
+     "p95_ms": 14.0,
+     "max_ms": 14.9
+    },
+    "native": {
+     "p50_ms": 0.62,
+     "p95_ms": 1.03,
+     "max_ms": 1.23
+    },
+    "respond": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.01,
+     "max_ms": 0.01
+    },
+    "state_read": {
+     "p50_ms": 0.0,
+     "p95_ms": 0.0,
+     "max_ms": 0.0
+    },
+    "terminal": {
+     "p50_ms": 16.56,
+     "p95_ms": 31.12,
+     "max_ms": 36.65
+    },
+    "worker": {
+     "p50_ms": 0.01,
+     "p95_ms": 0.02,
+     "max_ms": 0.04
+    }
+   }
+  }
+ }
+}

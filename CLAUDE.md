@@ -253,6 +253,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R56 | `perf/r56-cursor-page-pipeline` / `d5cf31f`（merge `ee9d553`） | 只读 cursor 页预取 + worker 响应按声明长度预分配：当前页扫描通过后、写出前发出下一页 fetch（`context.WithoutCancel` + 30s 超时，缓冲 `chan`），非首页消费在途回复；`readWorkerReply` 在 `Content-Length` 合法时 `make` + `io.ReadFull`，否则有界回退；写 cursor 不预取 | Gate 0：H1 每查询 issued=33 consumed=33（json/native 同），单页 L2 0/0。单独 A/B（2 轮 × A/B/B/A × 5 samples/leg，两侧独立栈 + 各自全新同数据卷）：H1 json **−9.23% / −8.99%**、protobuf **−9.60% / −8.87%**，4/4 同向但**均低于 10% 硬门**，不单独合入 | 与 R57 作为同一批次合入 main（merge `ee9d553`）；单独轮次按判据记为未达门槛 |
 | R57 | `perf/r57-worker-cursor-borrow` / `1daea98`（merge `5492e05`） | worker 只读 cursor 页直接借用序列化：`WorkerResult::ReadCursorPage` 把引擎行直接写进响应编码器（手写 `Serialize`），去掉每格 `serde_json::Value` 分配与整页 `to_vec`；映射逐条对齐 `sessions::value`（Null/Integer/有限 Float/Text 转义/Blob；非有限浮点→null），写 cursor 与 execute 保持 Value 树 | Gate 0：H1 json 每查询 34 页 = 1 first + 33 fetch；protobuf 34 页全部走 fetch 形状（native cursor 无融合首页）；L2 单页 fetch=0；写 cursor `UPDATE … RETURNING` 返回 200 且探针 0 命中。**批次 A/B（R56+R57 vs main，2 轮 × A/B/B/A × 5 samples，两侧全新卷）**：H1 json **−10.33% / −17.55%**、protobuf **−12.52% / −16.14%**，4/4 过 10% 硬门；H3 json −16.63%、pb −11.10% | 合入 main（与 R56 同批验收、同批合入） |
 | R58 | 测量轮（探针分支 `probe/r58-cursor-page-timing` @ `da2d8c1`、`probe/r58b-row-checks` @ `14aef4e`，均不合入） | H1 20MB cursor 剩余成本归因 + 行级检查上限探针：平台侧页等待/转码/upstream/dispatch 分段，worker 侧 turso/序列化/行级检查分段；再把 `run_steps` 的每行 budget 检查、操作读守卫与 step 时钟整体移出循环测端到端上限 | 归因（H1 json ≈53ms）：worker ≈31ms（turso VM stepping ≈17–18ms、页序列化 ≈6.6ms、行级检查 ≈4.3–5.9ms 且被探针 `Instant::now` 放大）、平台自身 ≈6.9ms，其余为客户端读取 20MB。上限 A/B（A/B/B/A × 5 samples，两侧独立栈 + 同批 fixture）：json 52.00→48.20ms（**7.3%**）、protobuf 51.94→48.03ms（**7.5%**），两条腿同向，响应字节/行数（8,625）/`warnings` 不变 | 仅记录，不实施：行级检查上限 7.3–7.5% < 10% 硬门；剩余 H1 大头（turso VM stepping、页序列化/协议帧）属 worker 引擎与协议层，需用户显式授权 |
+| R59 | 探针 `probe/r59-deferred-workers` / `fbf7b98`（不合入） | 延迟耐久账户 worker 8→64，验证 X1 并发档尾部是否由该池饱和导致；不改耐久时点、审计链语义与配额 | 归因（基线 + `PERI_DURABILITY_OBSERVER=1` + `--sql-open-observer`，独立栈）：`audit_batch` 506 批中 466 批 `count=1`、`sync_ns` p50 3.84ms；`audit_checkpoint` 55 次 p50 **21.0** / p90 31.2 / max 38.1ms，合计 1.204s；`audit_member_wait` 排队 p50 46.7ms、屏障等待 p99 115.8ms；慢 open/close 148ms = `audit` 126.2 + `terminal` 21.7。上限 A/B/B/A（X1 json-pipeline，4 档 × 100 请求，1 warmup + 3 samples/腿）：c16 中位基线 3.75 / 16.56ms → 探针 **165.62 / 124.39ms**（回归 33–44×，两条 B 腿同向），c4 p95 97.6→29.6–34.7ms 但被 c16 抵消；0 错误 / 0×429 / verdict 全 PASS | 不合入；分支与提交保留作证据：账户宽度不是限速器，加并发只让串行写者的屏障更碎（与 R29/R31 同构） |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2406,6 +2407,65 @@ worker 的页执行或减少协议帧数；两条都需用户显式授权。
 
 **下一轮提示**：H1 的两条剩余路径都在授权边界外。若继续在授权内迭代，应先对其它场景做
 smoke 剖面（F1/L1/B1/X1/W1）找新的限速器，而不是继续在 20MB cursor 上做 <10% 的局部优化。
+
+#### R59：延迟耐久账户 worker 8→64 的上限探针（2026-11-04，否证，不合入）
+
+**动机**：R58 的下一轮提示要求先找新限速器。X1.concurrency 在 c16 的 p95 长期停在
+144–190ms，而中位只有 2–4ms——尾部是突发停顿。先用观测器把停顿归因，再用最小探针验证
+「延迟耐久账户（`deferredDurabilityWorkers=8`、队列 256）饱和后内联回退」是否就是尾部成因。
+
+**归因**（独立栈 `127.0.0.1:19671`，基线二进制 `f4210c08…`，`PERI_DURABILITY_OBSERVER=1` +
+`--sql-open-observer`，相位阈值 20ms、采样 0；同一 fixture、同一 X1 json-pipeline）：
+
+- 审计写者是单线程串行段：`audit_batch` 506 批中 **466 批 `count=1`**（92.1%），34 批
+  `count=32`；`total_ns` p50 3.90 / p99 8.06 / max 42.19ms，`sync_ns` p50 3.84 / p99 7.23ms，
+  写者忙 2.114s。
+- `audit_checkpoint` 55 次，p50 **21.01** / p90 31.19 / p99 37.08 / max 38.12ms，合计
+  **1.204s**（≈ 审计写者忙时的 57%）。
+- `audit_member_wait` 1,661 次：总等待 p50 56.9 / p99 119.5 / max 126.3ms，其中排队
+  p50 46.7 / p99 115.5ms；`journal_batch` 965 批中 924 批 `count=1`、`sync_ns` p50 3.90ms，
+  写者忙 4.121s。
+- 请求相位（只记录 >20ms）：慢 open/close 148ms = `audit` 126.0–126.3 + `terminal` 20.6–21.7，
+  `native` 仅 0.5–0.8ms；慢查询 73.6ms = `native` 50.2 + `intent` 16.2；快查询 p50 28.2ms
+  中 `native` 15.4ms（纯 worker 成本）。慢请求成**突发**出现，不是长尾分布。
+
+机制假设：突发时延迟耐久账户饱和 → `settle` 内联等待 → 请求侧看到 126ms `audit` 相位。
+若账户宽度是限速器，把 worker 从 8 提到 64 应显著改善 c16。
+
+**探针**（`probe/r59-deferred-workers` @ `fbf7b98`，二进制 `56aa4aba…`）：只改
+`deferredDurabilityWorkers = 8 → 64`（`durability_deferred.go`，两行探针注释），
+`deferredDurabilityMaximum` 保持 256；不改耐久时点、审计链语义、配额。基线二进制
+`f4210c08…`（`main` @ `0a51ab9` 干净树；`main` 其后只有文档提交 `325207c`），worker 两侧同为
+`a648ecd9…`。两侧独立栈、各自全新 run dir 与同批 fixture；腿序 A1→B1→B2→A2，
+每腿 1 warmup + 3 samples/档、每档 100 请求，无观测器。
+
+| 腿 | 二进制 | c1 中位/p95 | c4 | c8 | c16 |
+|---|---|---:|---:|---:|---:|
+| A1 | 基线 | 0.53 / 7.56 | 0.70 / 97.59 | 2.08 / 156.02 | 3.75 / 186.96 |
+| B1 | 探针 | 0.51 / 7.58 | 0.86 / 34.71 | 8.96 / 142.09 | **165.62** / 250.42 |
+| B2 | 探针 | 0.50 / 7.87 | 1.65 / 29.56 | 3.04 / 146.54 | **124.39** / 231.37 |
+| A2 | 基线 | 0.46 / 7.37 | 0.64 / 97.77 | 1.98 / 144.31 | 16.56 / 180.02 |
+
+- c16 中位反向崩坏：基线 3.75 / 16.56ms → 探针 165.62 / 124.39ms（相对较快基线腿回归
+  33–44×，相对较慢基线腿 7.5–10×），两条 B 腿同向变差，没有任何档位出现 ≥10% 改善。
+- c4 的 p95 确有改善（97.6–97.8 → 29.6–34.7ms），但同档 c16 崩塌，不能算收益；
+  c1 不变；c8 探针 8.96 / 3.04ms 对基线 1.98–2.08ms。
+- 全部腿 `errors=0`、`status_429=0`、verdict 全 PASS，fixture `complete=true`，响应字节 312。
+
+**判决：方向否证，不合入**。账户宽度不是限速器；限速器是**单线程审计写者的屏障与 checkpoint
+停顿**。64 个 worker 让更多记录同时涌向同一写者，屏障被拆得更碎。两栈累计计数器因工作量不等
+（基线栈另承接一次未计分的预备运行）不能直接相比；按 session-open 归一后
+`operation_journal_syncs_total / open` 从 0.93 升到 1.57，方向与「屏障碎片化」一致，仅作方向性证据。
+这与 R29/R31 同构：屏障合并依赖串行化，增加并发只会让批更碎。
+
+**下一轮提示**：要继续压 X1 尾部只剩两条路——降低 `audit_checkpoint` 的单次成本/频率，
+或合并每条记录的独立屏障；两者分别触及审计链语义与耐久提交时点，需用户显式授权，本轮不实施。
+授权前优先转向授权内场景（H1 平台页路径、W1 写路径归因）。
+
+**证据**：`docs/performance-review/2026-11-04-r59-deferred-workers/`
+（`README.md`、4 腿 `summary.json`、`durability-aggregate.json`、
+`durability-observation.jsonl.gz`、`request-phase-aggregate.json`、`request-phase-observation.jsonl`、
+`probe.txt`、`r59run.py`/`r59sum.py`/`metrics.py`）。
 
 ## 代码约定
 

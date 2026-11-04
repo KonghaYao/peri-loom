@@ -1,0 +1,21 @@
+commit fbf7b9847b5e9b58c4f1c62371e0f3b9083a2c82
+probe(v1)：R59 延迟耐久账户 worker 8→64 的上限探针
+
+
+ prototypes/v1/platform/durability_deferred.go | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+diff --git a/prototypes/v1/platform/durability_deferred.go b/prototypes/v1/platform/durability_deferred.go
+index 6c8b911..7569969 100644
+--- a/prototypes/v1/platform/durability_deferred.go
++++ b/prototypes/v1/platform/durability_deferred.go
+@@ -11,7 +11,9 @@ const (
+ 	// limit, never a refusal: the reply keeps the barrier in front of it exactly
+ 	// as it did before the deferral existed.
+ 	deferredDurabilityMaximum = 256
+-	deferredDurabilityWorkers = 8
++	// R59 probe: 8 -> 64. More barriers in flight let the audit and operation
++	// writers coalesce records into one fsync instead of one per record.
++	deferredDurabilityWorkers = 64
+ )
+ 
+ type deferredWait struct {
