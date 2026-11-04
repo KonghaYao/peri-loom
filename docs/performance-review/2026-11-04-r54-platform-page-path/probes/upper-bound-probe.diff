@@ -1,0 +1,143 @@
+diff --git a/prototypes/v1/platform/hrana_v3_json_cursor.go b/prototypes/v1/platform/hrana_v3_json_cursor.go
+index 2a8b559..208ca45 100644
+--- a/prototypes/v1/platform/hrana_v3_json_cursor.go
++++ b/prototypes/v1/platform/hrana_v3_json_cursor.go
+@@ -718,6 +718,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 					fatal("invalid cursor page")
+ 					return
+ 				}
++				transcodeStarted := time.Now()
+ 				for rowIndex := 0; rowIndex < page.rows; rowIndex++ {
+ 					if request.Context().Err() != nil {
+ 						clientStopped = true
+@@ -732,11 +733,14 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 						return
+ 					}
+ 				}
++				r54Measure(&r54TranscodeNS, transcodeStarted)
+ 				done = page.done
+ 			}
++			flushStarted := time.Now()
+ 			if !flushRows() {
+ 				return
+ 			}
++			r54Measure(&r54FlushNS, flushStarted)
+ 			if flusher != nil {
+ 				flusher.Flush()
+ 			}
+@@ -749,6 +753,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 				if metadata.Done {
+ 					nextAutocommit = metadata.Autocommit
+ 				}
++				if !writing {
++					r54Report()
++				}
+ 				break
+ 			}
+ 		}
+diff --git a/prototypes/v1/platform/perf_probe_r54.go b/prototypes/v1/platform/perf_probe_r54.go
+new file mode 100644
+index 0000000..a1af64d
+--- /dev/null
++++ b/prototypes/v1/platform/perf_probe_r54.go
+@@ -0,0 +1,39 @@
++package platform
++
++import (
++	"fmt"
++	"os"
++	"sync/atomic"
++	"time"
++)
++
++// Temporary R54 upper-bound probe. Not for merge.
++
++var (
++	r54Pages       atomic.Int64
++	r54ReadallNS   atomic.Int64
++	r54SpansNS     atomic.Int64
++	r54SkeletonNS  atomic.Int64
++	r54ScanNS      atomic.Int64
++	r54TranscodeNS atomic.Int64
++	r54FlushNS     atomic.Int64
++)
++
++func r54Measure(slot *atomic.Int64, started time.Time) {
++	slot.Add(int64(time.Since(started)))
++}
++
++func r54Report() {
++	if r54Pages.Load() == 0 {
++		return
++	}
++	fmt.Fprintf(os.Stderr, "R54PROBE pages=%d readall_us=%d spans_us=%d skeleton_us=%d scan_us=%d transcode_us=%d flush_us=%d\n",
++		r54Pages.Load(),
++		r54ReadallNS.Load()/1000,
++		r54SpansNS.Load()/1000,
++		r54SkeletonNS.Load()/1000,
++		r54ScanNS.Load()/1000,
++		r54TranscodeNS.Load()/1000,
++		r54FlushNS.Load()/1000,
++	)
++}
+diff --git a/prototypes/v1/platform/sql_upstream.go b/prototypes/v1/platform/sql_upstream.go
+index 43b40e4..5682ae0 100644
+--- a/prototypes/v1/platform/sql_upstream.go
++++ b/prototypes/v1/platform/sql_upstream.go
+@@ -268,7 +268,9 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
+ 	if response.ContentLength > sqlWireLimit {
+ 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenBody, &SQLRPCError{Ambiguous: true})
+ 	}
++	readallStarted := time.Now()
+ 	body, err = io.ReadAll(io.LimitReader(response.Body, sqlWireLimit+1))
++	r54Measure(&r54ReadallNS, readallStarted)
+ 	if err != nil || len(body) > sqlWireLimit {
+ 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenBody, &SQLRPCError{Ambiguous: true, cause: ctx.Err()})
+ 	}
+diff --git a/prototypes/v1/platform/sql_upstream_codec.go b/prototypes/v1/platform/sql_upstream_codec.go
+index d5003ab..fcbd27e 100644
+--- a/prototypes/v1/platform/sql_upstream_codec.go
++++ b/prototypes/v1/platform/sql_upstream_codec.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"reflect"
++	"time"
+ 	"unicode/utf8"
+ )
+ 
+@@ -332,7 +333,9 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
+ 		// Locate the span structurally, then prove the envelope around it and
+ 		// the page itself separately, instead of checking the whole body once
+ 		// with json.Valid and the page again with the page scanner.
++		spansStarted := time.Now()
+ 		fields, err = sqlJSONFieldSpans(ctx, body)
++		r54Measure(&r54SpansNS, spansStarted)
+ 	} else {
+ 		fields, err = sqlJSONFields(ctx, body)
+ 	}
+@@ -354,7 +357,10 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
+ 		// exactly when every byte around the result does. The page scan below
+ 		// proves the elided span, and sqlJSONFieldSpans already rejected the
+ 		// duplicate keys and deep nesting the old token walk refused.
+-		if !json.Valid(sqlJSONEnvelopeSkeleton(body, fields["result"])) {
++		skeletonStarted := time.Now()
++		skeletonValid := json.Valid(sqlJSONEnvelopeSkeleton(body, fields["result"]))
++		r54Measure(&r54SkeletonNS, skeletonStarted)
++		if !skeletonValid {
+ 			return invalid()
+ 		}
+ 	}
+@@ -382,7 +388,11 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
+ 	}
+ 	if output != nil {
+ 		if pageOutput {
+-			return sqlDecodeCursorPage(ctx, body, fields["result"], pageReply, invalid)
++			scanStarted := time.Now()
++			scanErr := sqlDecodeCursorPage(ctx, body, fields["result"], pageReply, invalid)
++			r54Measure(&r54ScanNS, scanStarted)
++			r54Pages.Add(1)
++			return scanErr
+ 		}
+ 		// sqlJSONFields above already accepted result as exactly one JSON
+ 		// value, so a RawMessage output needs only an owned copy of its span;

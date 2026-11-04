@@ -1,0 +1,152 @@
+diff --git a/prototypes/v1/src/session/execution.rs b/prototypes/v1/src/session/execution.rs
+index b07944d..0259f37 100644
+--- a/prototypes/v1/src/session/execution.rs
++++ b/prototypes/v1/src/session/execution.rs
+@@ -1023,13 +1023,17 @@ fn run_steps(
+     let store = database.storage().store();
+     store.validate_transaction(!connection.get_auto_commit())?;
+     let mut rows = Vec::new();
++    let probe = collect && page_size.is_some();
+     loop {
++        let probe_pre = probe.then(std::time::Instant::now);
+         guard.check()?;
+         deadline.check()?;
+         let mut paused = false;
++        let probe_gate = probe.then(std::time::Instant::now);
+         let result = {
+             let _operation = database.operation_until(deadline, false)?;
+             let step_clock = guard.enter_step()?;
++            let probe_step = probe.then(std::time::Instant::now);
+             let result = statement.step_with_admission_check(|readonly| {
+                 if readonly || permit.is_some() {
+                     deadline.evidence.enter();
+@@ -1040,8 +1044,16 @@ fn run_steps(
+                 }
+             });
+             step_clock.finish()?;
++            if let (Some(gate), Some(step)) = (probe_gate, probe_step) {
++                crate::worker_rpc::r55_probe::add_gate(step.duration_since(gate));
++                crate::worker_rpc::r55_probe::add_step(step.elapsed());
++            }
+             result?
+         };
++        if let (Some(pre), Some(gate)) = (probe_pre, probe_gate) {
++            crate::worker_rpc::r55_probe::add_pre(gate.duration_since(pre));
++        }
++        let probe_post = probe.then(std::time::Instant::now);
+         if paused {
+             let pager = connection.get_pager();
+             let promote = pager.holds_read_lock() && !writer(connection);
+@@ -1063,6 +1075,10 @@ fn run_steps(
+                         guard.account_steps(
+                             prior_steps.saturating_add(statement.metrics().vm_steps),
+                         )?;
++                        if let Some(post) = probe_post {
++                            crate::worker_rpc::r55_probe::add_post(post.elapsed());
++                            crate::worker_rpc::r55_probe::add_page(rows.len());
++                        }
+                         return Ok((rows, false));
+                     }
+                 }
+@@ -1072,6 +1088,10 @@ fn run_steps(
+                 #[cfg(test)]
+                 tests::after_done();
+                 guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
++                if let Some(post) = probe_post {
++                    crate::worker_rpc::r55_probe::add_post(post.elapsed());
++                    crate::worker_rpc::r55_probe::add_page(rows.len());
++                }
+                 return Ok((rows, true));
+             }
+             StepResult::Busy => return Err(LimboError::Busy.into()),
+@@ -1092,5 +1112,8 @@ fn run_steps(
+             StepResult::Sleep { duration } => super::drive::sleep(duration, store.as_ref(), guard)?,
+         }
+         guard.account_steps(prior_steps.saturating_add(statement.metrics().vm_steps))?;
++        if let Some(post) = probe_post {
++            crate::worker_rpc::r55_probe::add_post(post.elapsed());
++        }
+     }
+ }
+diff --git a/prototypes/v1/src/worker_rpc.rs b/prototypes/v1/src/worker_rpc.rs
+index 4b45db3..5951ffc 100644
+--- a/prototypes/v1/src/worker_rpc.rs
++++ b/prototypes/v1/src/worker_rpc.rs
+@@ -3,6 +3,7 @@ mod diagnostics;
+ mod dispatch;
+ mod outcome;
+ pub mod protocol;
++pub(crate) mod r55_probe;
+ pub mod server;
+ mod session_entry;
+ mod sessions;
+diff --git a/prototypes/v1/src/worker_rpc/dispatch.rs b/prototypes/v1/src/worker_rpc/dispatch.rs
+index 2e8f40d..6c0f502 100644
+--- a/prototypes/v1/src/worker_rpc/dispatch.rs
++++ b/prototypes/v1/src/worker_rpc/dispatch.rs
+@@ -631,6 +631,9 @@ impl State {
+             WorkerCommand::FetchReadCursor { max_rows, .. } => {
+                 let call = call.context("worker session RPC guard absent")?;
+                 let result = crate::slow_diagnostics::native("cursor_fetch_read", || call.handle().fetch_read_cursor(max_rows)).map(|(rows, done)| {
++                    if done {
++                        crate::worker_rpc::r55_probe::report_and_reset();
++                    }
+                     json!({"rows": rows.iter().map(|row| row.iter().map(value).collect::<Vec<_>>()).collect::<Vec<_>>(), "done": done})
+                 });
+                 if version == 2 && result.as_ref().err().is_none_or(execution_completed) {
+diff --git a/prototypes/v1/src/worker_rpc/r55_probe.rs b/prototypes/v1/src/worker_rpc/r55_probe.rs
+new file mode 100644
+index 0000000..0d87698
+--- /dev/null
++++ b/prototypes/v1/src/worker_rpc/r55_probe.rs
+@@ -0,0 +1,50 @@
++//! Temporary R55 upper-bound probe. Not for merge.
++
++use std::sync::atomic::{AtomicU64, Ordering};
++
++pub(crate) static PRE_NS: AtomicU64 = AtomicU64::new(0);
++pub(crate) static GATE_NS: AtomicU64 = AtomicU64::new(0);
++pub(crate) static STEP_NS: AtomicU64 = AtomicU64::new(0);
++pub(crate) static POST_NS: AtomicU64 = AtomicU64::new(0);
++pub(crate) static ROWS: AtomicU64 = AtomicU64::new(0);
++pub(crate) static PAGES: AtomicU64 = AtomicU64::new(0);
++
++pub(crate) fn add_pre(elapsed: std::time::Duration) {
++    PRE_NS.fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
++}
++
++pub(crate) fn add_gate(elapsed: std::time::Duration) {
++    GATE_NS.fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
++}
++
++pub(crate) fn add_step(elapsed: std::time::Duration) {
++    STEP_NS.fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
++}
++
++pub(crate) fn add_post(elapsed: std::time::Duration) {
++    POST_NS.fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
++}
++
++pub(crate) fn add_page(rows: usize) {
++    PAGES.fetch_add(1, Ordering::Relaxed);
++    ROWS.fetch_add(rows as u64, Ordering::Relaxed);
++}
++
++pub(crate) fn report_and_reset() {
++    let pre = PRE_NS.swap(0, Ordering::Relaxed);
++    let gate = GATE_NS.swap(0, Ordering::Relaxed);
++    let step = STEP_NS.swap(0, Ordering::Relaxed);
++    let post = POST_NS.swap(0, Ordering::Relaxed);
++    let rows = ROWS.swap(0, Ordering::Relaxed);
++    let pages = PAGES.swap(0, Ordering::Relaxed);
++    if pages == 0 {
++        return;
++    }
++    eprintln!(
++        "R55PROBE pages={pages} rows={rows} pre_us={} gate_us={} step_us={} post_us={}",
++        pre / 1000,
++        gate / 1000,
++        step / 1000,
++        post / 1000,
++    );
++}

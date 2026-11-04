@@ -2183,6 +2183,49 @@ native 700–870µs、克隆 24–35µs、树 36–71µs、序列化 129–206µ
 「边校验边编码、整页通过后才放行」的融合 + 文本 span 的 `memchr` 定位可能省 5–9ms（8–14%），
 须先做 Go-only 上限探针，不改协议。
 
+#### R54：平台只读 cursor 页路径的上限探针（2026-11-04，未实施）
+
+**假设（R53 的下一轮提示）**：R52 之后平台侧仍有两趟 20MB 走查（严格页校验 ≈7.9ms、Hrana 转码
+3–6ms），融合或 `memchr` 化可省 5–9ms。**直接测量否证了 7.9ms 这个推算。**
+
+**方法**：平台探针（`peri-platform-r54-probe`，sha256 `8d7c0a7c…`，基于 `1a2d2e0`，仅计时）在
+`ReadAll`、`sqlJSONFieldSpans`、信封 skeleton `json.Valid`、`sqlDecodeCursorPage`、页转码
+（`appendPageRow`/`rowBuffer`）与分页 flush 上计时；worker 为干净构建 `27d8dd46…`（与 `r43-cand`
+逐字节相同）；新卷 + 标准 fixture，H1 json-cursor 1 warmup + 2 samples。探针每查询输出一行累计值，
+逐行相减得到单次查询：readall 8.53–8.83、spans 0.70–1.45、skeleton 0.016–0.026、**scan 2.42**、
+transcode 4.18–4.21、flush 1.54–1.57ms，合计 17.3–18.4ms（同栈 H1 64.73ms 的 27–28%）。
+
+**判定**：融合扫描+转码最多省扫描这一趟 **2.42ms**，`ReadAll` 预分配估算 ≤2ms，spans 0.7ms，
+转码/flush 已接近内存带宽；合计上限 **≤5ms ≈7.7%** < 10%（6.5ms）⇒ **不实施**。注意 readall 只含
+body 传输，worker 计算与响应头等待在 `client.Do`，因此 8.5ms 不能当作可省空间。平台页路径已无
+≥10% 的单一杠杆。
+
+**证据**：`docs/performance-review/2026-11-04-r54-platform-page-path/probes/`
+（`upper-bound.md`、`upper-bound-probe.diff`、`platform-probe.log`、`harness/`）。
+
+#### R55：worker 只读 cursor 行循环的上限探针（2026-11-04，未实施）
+
+**假设**：R53 测得 worker 每页 ~1.0ms（34 页 ≈35ms），其中 `native` 含行循环约 0.8ms/页；把
+fencing/预算/克隆拆开，看是否有 ≥10% 的可移除成本。
+
+**方法**：worker 探针（`peri-loom-v1-r55-probe`，sha256 `f447547c…`）在 `run_steps`
+（仅 `collect && page_size.is_some()`）记录 `pre`（guard/deadline 检查）、`gate`（`operation_until`
++ `enter_step`）、`step`（`step_with_admission_check` + `step_clock.finish`）、`post`（行取值、
+预算计账、`Value` 克隆）；原子计数只在 `done=true` 打印一行并清零。H1 json-cursor 1 warmup +
+2 samples，34 页 / 8,625 行：pre 0.40、gate 1.63–1.64、**step 14.70–15.87**、post 0.92–1.02ms。
+
+**判定**：除 turso `step` 外全部空间 ≈3.0–3.1ms（4.7%）；`gate` 是每行 fencing/隔离校验与 step 额度，
+`pre` 是 deadline/预算检查，均不能去除；`post` 里唯一可省的是克隆（≈1ms，属 R53 已否证方向）。
+**不实施**。剩余主体是 turso VM（14.7–15.9ms，23–25%），动它属存储引擎/SQL 兼容面，不在性能轮范围。
+
+**证据**：`docs/performance-review/2026-11-04-r55-worker-row-loop/probes/`
+（`upper-bound.md`、`upper-bound-probe.diff`、`worker-probe.log`、`harness/`）。
+
+**下一轮提示**：worker 与平台两侧的页处理都已到带宽/VM 下限。继续要 ≥10% 只剩「只读 cursor 页
+一页流水线」：平台在转码/发送第 N 页时已把第 N+1 页的 fetch 发出（worker 会话在同一时刻仍只有
+一个在途 RPC，不需改协议），重叠 worker 执行与平台本地处理，估算省 0.25ms/页 × 33 ≈ 8ms（13%）。
+该方向属预取类，需用户显式授权后才能开轮。
+
 ## 代码约定
 
 - 提交信息用中文全角冒号：`feat(v1)：…`、`fix(authority)：…`、`docs(capacity)：…`。
