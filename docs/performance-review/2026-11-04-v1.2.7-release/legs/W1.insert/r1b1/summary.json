@@ -1,0 +1,172 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:20402",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "271e0962ec12b230bc28aa29774e602aa5a46ed5",
+    "connection_file": "provided (redacted)",
+    "container": "peri-loom-release-v127-b-w1-insert-r1b1",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "peri_image_version": "v1.2.7",
+    "peri_image_revision": "640ae7e3ce035f1d2b02d9367dc6aa755a018789",
+    "platform_label": "HEAD 271e096 / rust v1.2.7",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T13:01:27.287463+00:00",
+    "ended_utc": "2026-11-04T13:01:27.937508+00:00",
+    "duration_seconds": 0.65,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 5,
+    "concurrency_requests": 50,
+    "resource_before": {
+      "mem_usage": "179.4MiB / 11.73GiB",
+      "cpu_percent": "1.15%",
+      "memory_stat": {
+        "anon": 159547392,
+        "file": 173641728,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 146694144,
+        "active_file": 26951680,
+        "slab": 0,
+        "pgfault": 54316,
+        "pgmajfault": 231
+      }
+    },
+    "resource_after": {
+      "mem_usage": "180.5MiB / 11.73GiB",
+      "cpu_percent": "0.96%",
+      "memory_stat": {
+        "anon": 160428032,
+        "file": 179523584,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 152576000,
+        "active_file": 26951680,
+        "slab": 0,
+        "pgfault": 55636,
+        "pgmajfault": 231
+      }
+    },
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 5,
+      "median_ms": 20.970791,
+      "p95_ms": 34.153541,
+      "min_ms": 11.115292,
+      "max_ms": 34.153541,
+      "round_medians_ms": [
+        20.970791
+      ],
+      "rows": 0,
+      "response_bytes": 252,
+      "query_ms": 14.315908,
+      "status_counts": {
+        "200": 5
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 5
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "protobuf-pipeline",
+      "kind": "write",
+      "samples": 5,
+      "median_ms": 14.066708,
+      "p95_ms": 17.945875,
+      "min_ms": 11.296959,
+      "max_ms": 17.945875,
+      "round_medians_ms": [
+        14.066708
+      ],
+      "rows": 0,
+      "response_bytes": 31,
+      "query_ms": 9.196157999999999,
+      "status_counts": {
+        "200": 5
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 5
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}

@@ -1,0 +1,13 @@
+legs=32 binary_sha_ok=32 image_digest_ok=32 fixture_ok=32 stop_clean=32
+summary_rows=96 timed_samples=288 status_429=0 problems=0
+
+| 场景 | 侧 | 腿数 | audit fsync 增量中位 | journal appends 增量中位 | journal syncs 增量中位 | coalesced 增量中位 | batch_max 中位 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| F1.select-1 | A | 4 | 34.0 | 50.0 | 38.0 | 12.0 | 3.5 |
+| F1.select-1 | B | 4 | 37.0 | 50.0 | 40.0 | 10.0 | 3.0 |
+| H1.content-20mb | A | 4 | 293.0 | 18.0 | 18.0 | 0.0 | 1.0 |
+| H1.content-20mb | B | 4 | 271.5 | 18.0 | 18.0 | 0.0 | 1.0 |
+| W1.insert | A | 4 | 113.0 | 146.0 | 143.0 | 3.0 | 2.0 |
+| W1.insert | B | 4 | 113.5 | 146.0 | 118.0 | 28.0 | 2.0 |
+| X1.concurrency | A | 4 | 119.5 | 404.0 | 184.5 | 219.5 | 15.5 |
+| X1.concurrency | B | 4 | 94.0 | 404.0 | 139.0 | 265.0 | 23.0 |

@@ -1,0 +1,202 @@
+
+## 1. 逐腿（全部协议 / 并发档）
+
+| 场景 | leg | 侧 | 协议/档 | 样本 | median | p95 | p99 | min | max | outcomes | rows |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|
+| W1.insert | r1a1 | A | json-pipeline | 5 | 23.755 | 40.469 | 40.469 | 18.978 | 40.469 | ok=5 | 0 |
+| W1.insert | r1a1 | A | protobuf-pipeline | 5 | 15.492 | 21.930 | 21.930 | 12.919 | 21.930 | ok=5 | 0 |
+| W1.insert | r1a2 | A | json-pipeline | 5 | 16.130 | 37.479 | 37.479 | 14.018 | 37.479 | ok=5 | 0 |
+| W1.insert | r1a2 | A | protobuf-pipeline | 5 | 19.358 | 26.752 | 26.752 | 16.742 | 26.752 | ok=5 | 0 |
+| W1.insert | r1b1 | B | json-pipeline | 5 | 20.971 | 34.154 | 34.154 | 11.115 | 34.154 | ok=5 | 0 |
+| W1.insert | r1b1 | B | protobuf-pipeline | 5 | 14.067 | 17.946 | 17.946 | 11.297 | 17.946 | ok=5 | 0 |
+| W1.insert | r1b2 | B | json-pipeline | 5 | 20.559 | 28.856 | 28.856 | 12.368 | 28.856 | ok=5 | 0 |
+| W1.insert | r1b2 | B | protobuf-pipeline | 5 | 15.436 | 20.194 | 20.194 | 11.776 | 20.194 | ok=5 | 0 |
+| W1.insert | r2a1 | A | json-pipeline | 5 | 23.897 | 31.437 | 31.437 | 13.429 | 31.437 | ok=5 | 0 |
+| W1.insert | r2a1 | A | protobuf-pipeline | 5 | 18.728 | 20.359 | 20.359 | 16.442 | 20.359 | ok=5 | 0 |
+| W1.insert | r2a2 | A | json-pipeline | 5 | 20.158 | 27.831 | 27.831 | 12.264 | 27.831 | ok=5 | 0 |
+| W1.insert | r2a2 | A | protobuf-pipeline | 5 | 17.475 | 18.513 | 18.513 | 15.413 | 18.513 | ok=5 | 0 |
+| W1.insert | r2b1 | B | json-pipeline | 5 | 21.453 | 37.297 | 37.297 | 15.924 | 37.297 | ok=5 | 0 |
+| W1.insert | r2b1 | B | protobuf-pipeline | 5 | 16.788 | 20.021 | 20.021 | 13.433 | 20.021 | ok=5 | 0 |
+| W1.insert | r2b2 | B | json-pipeline | 5 | 18.383 | 36.303 | 36.303 | 15.195 | 36.303 | ok=5 | 0 |
+| W1.insert | r2b2 | B | protobuf-pipeline | 5 | 12.870 | 14.429 | 14.429 | 11.166 | 14.429 | ok=5 | 0 |
+| F1.select-1 | r1a1 | A | json-pipeline | 5 | 3.486 | 8.010 | 8.010 | 1.827 | 8.010 | ok=5 | 1 |
+| F1.select-1 | r1a1 | A | protobuf-pipeline | 5 | 2.855 | 6.325 | 6.325 | 1.284 | 6.325 | ok=5 | 1 |
+| F1.select-1 | r1a1 | A | json-cursor | 5 | 5.289 | 6.379 | 6.379 | 3.523 | 6.379 | ok=5 | 1 |
+| F1.select-1 | r1a1 | A | protobuf-cursor | 5 | 1.171 | 4.186 | 4.186 | 1.108 | 4.186 | ok=5 | 1 |
+| F1.select-1 | r1a2 | A | json-pipeline | 5 | 2.832 | 4.891 | 4.891 | 1.145 | 4.891 | ok=5 | 1 |
+| F1.select-1 | r1a2 | A | protobuf-pipeline | 5 | 1.221 | 5.063 | 5.063 | 1.123 | 5.063 | ok=5 | 1 |
+| F1.select-1 | r1a2 | A | json-cursor | 5 | 0.889 | 6.061 | 6.061 | 0.782 | 6.061 | ok=5 | 1 |
+| F1.select-1 | r1a2 | A | protobuf-cursor | 5 | 1.663 | 3.194 | 3.194 | 0.938 | 3.194 | ok=5 | 1 |
+| F1.select-1 | r1b1 | B | json-pipeline | 5 | 2.784 | 7.626 | 7.626 | 0.816 | 7.626 | ok=5 | 1 |
+| F1.select-1 | r1b1 | B | protobuf-pipeline | 5 | 2.438 | 3.844 | 3.844 | 0.961 | 3.844 | ok=5 | 1 |
+| F1.select-1 | r1b1 | B | json-cursor | 5 | 0.895 | 2.904 | 2.904 | 0.831 | 2.904 | ok=5 | 1 |
+| F1.select-1 | r1b1 | B | protobuf-cursor | 5 | 1.008 | 3.791 | 3.791 | 0.847 | 3.791 | ok=5 | 1 |
+| F1.select-1 | r1b2 | B | json-pipeline | 5 | 4.976 | 5.661 | 5.661 | 1.105 | 5.661 | ok=5 | 1 |
+| F1.select-1 | r1b2 | B | protobuf-pipeline | 5 | 2.475 | 7.667 | 7.667 | 1.126 | 7.667 | ok=5 | 1 |
+| F1.select-1 | r1b2 | B | json-cursor | 5 | 2.446 | 3.647 | 3.647 | 0.970 | 3.647 | ok=5 | 1 |
+| F1.select-1 | r1b2 | B | protobuf-cursor | 5 | 2.583 | 2.874 | 2.874 | 0.826 | 2.874 | ok=5 | 1 |
+| F1.select-1 | r2a1 | A | json-pipeline | 5 | 2.034 | 7.969 | 7.969 | 1.194 | 7.969 | ok=5 | 1 |
+| F1.select-1 | r2a1 | A | protobuf-pipeline | 5 | 3.090 | 3.536 | 3.536 | 1.046 | 3.536 | ok=5 | 1 |
+| F1.select-1 | r2a1 | A | json-cursor | 5 | 0.856 | 5.760 | 5.760 | 0.847 | 5.760 | ok=5 | 1 |
+| F1.select-1 | r2a1 | A | protobuf-cursor | 5 | 2.133 | 3.566 | 3.566 | 0.857 | 3.566 | ok=5 | 1 |
+| F1.select-1 | r2a2 | A | json-pipeline | 5 | 1.378 | 4.541 | 4.541 | 1.097 | 4.541 | ok=5 | 1 |
+| F1.select-1 | r2a2 | A | protobuf-pipeline | 5 | 1.010 | 4.448 | 4.448 | 0.994 | 4.448 | ok=5 | 1 |
+| F1.select-1 | r2a2 | A | json-cursor | 5 | 2.787 | 4.002 | 4.002 | 0.832 | 4.002 | ok=5 | 1 |
+| F1.select-1 | r2a2 | A | protobuf-cursor | 5 | 2.162 | 3.197 | 3.197 | 0.923 | 3.197 | ok=5 | 1 |
+| F1.select-1 | r2b1 | B | json-pipeline | 5 | 2.260 | 3.495 | 3.495 | 1.131 | 3.495 | ok=5 | 1 |
+| F1.select-1 | r2b1 | B | protobuf-pipeline | 5 | 2.807 | 3.554 | 3.554 | 0.944 | 3.554 | ok=5 | 1 |
+| F1.select-1 | r2b1 | B | json-cursor | 5 | 3.022 | 5.162 | 5.162 | 1.104 | 5.162 | ok=5 | 1 |
+| F1.select-1 | r2b1 | B | protobuf-cursor | 5 | 1.276 | 2.802 | 2.802 | 0.971 | 2.802 | ok=5 | 1 |
+| F1.select-1 | r2b2 | B | json-pipeline | 5 | 2.999 | 7.879 | 7.879 | 1.350 | 7.879 | ok=5 | 1 |
+| F1.select-1 | r2b2 | B | protobuf-pipeline | 5 | 3.808 | 4.024 | 4.024 | 1.224 | 4.024 | ok=5 | 1 |
+| F1.select-1 | r2b2 | B | json-cursor | 5 | 4.269 | 6.137 | 6.137 | 1.187 | 6.137 | ok=5 | 1 |
+| F1.select-1 | r2b2 | B | protobuf-cursor | 5 | 1.577 | 4.240 | 4.240 | 1.180 | 4.240 | ok=5 | 1 |
+| X1.concurrency | r1a1 | A | c1 | 50 | 2.033 | 5.423 | 5.589 | 0.811 | 5.589 | 429=0 | — |
+| X1.concurrency | r1a1 | A | c4 | 50 | 4.612 | 7.303 | 8.382 | 1.026 | 8.382 | 429=0 | — |
+| X1.concurrency | r1a1 | A | c8 | 50 | 5.629 | 11.276 | 12.178 | 1.289 | 12.178 | 429=0 | — |
+| X1.concurrency | r1a1 | A | c16 | 50 | 8.209 | 10.450 | 11.131 | 2.229 | 11.131 | 429=0 | — |
+| X1.concurrency | r1a2 | A | c1 | 50 | 2.345 | 5.322 | 5.994 | 0.806 | 5.994 | 429=0 | — |
+| X1.concurrency | r1a2 | A | c4 | 50 | 4.132 | 6.781 | 9.315 | 1.222 | 9.315 | 429=0 | — |
+| X1.concurrency | r1a2 | A | c8 | 50 | 4.282 | 9.400 | 11.026 | 1.775 | 11.026 | 429=0 | — |
+| X1.concurrency | r1a2 | A | c16 | 50 | 9.500 | 13.362 | 19.197 | 2.872 | 19.197 | 429=0 | — |
+| X1.concurrency | r1b1 | B | c1 | 50 | 2.020 | 5.323 | 6.444 | 0.662 | 6.444 | 429=0 | — |
+| X1.concurrency | r1b1 | B | c4 | 50 | 2.078 | 9.377 | 11.440 | 0.793 | 11.440 | 429=0 | — |
+| X1.concurrency | r1b1 | B | c8 | 50 | 2.164 | 9.295 | 9.640 | 1.103 | 9.640 | 429=0 | — |
+| X1.concurrency | r1b1 | B | c16 | 50 | 5.346 | 9.119 | 10.535 | 1.601 | 10.535 | 429=0 | — |
+| X1.concurrency | r1b2 | B | c1 | 50 | 1.687 | 4.893 | 6.234 | 0.627 | 6.234 | 429=0 | — |
+| X1.concurrency | r1b2 | B | c4 | 50 | 3.061 | 6.214 | 6.356 | 0.758 | 6.356 | 429=0 | — |
+| X1.concurrency | r1b2 | B | c8 | 50 | 5.713 | 11.433 | 11.619 | 1.339 | 11.619 | 429=0 | — |
+| X1.concurrency | r1b2 | B | c16 | 50 | 4.796 | 10.573 | 11.548 | 2.057 | 11.548 | 429=0 | — |
+| X1.concurrency | r2a1 | A | c1 | 50 | 2.207 | 6.279 | 7.101 | 0.847 | 7.101 | 429=0 | — |
+| X1.concurrency | r2a1 | A | c4 | 50 | 3.803 | 9.843 | 11.274 | 1.219 | 11.274 | 429=0 | — |
+| X1.concurrency | r2a1 | A | c8 | 50 | 6.529 | 11.776 | 13.409 | 1.323 | 13.409 | 429=0 | — |
+| X1.concurrency | r2a1 | A | c16 | 50 | 10.770 | 14.836 | 16.696 | 2.418 | 16.696 | 429=0 | — |
+| X1.concurrency | r2a2 | A | c1 | 50 | 1.763 | 3.801 | 4.812 | 0.834 | 4.812 | 429=0 | — |
+| X1.concurrency | r2a2 | A | c4 | 50 | 2.213 | 5.409 | 5.524 | 1.141 | 5.524 | 429=0 | — |
+| X1.concurrency | r2a2 | A | c8 | 50 | 7.338 | 10.987 | 12.860 | 3.055 | 12.860 | 429=0 | — |
+| X1.concurrency | r2a2 | A | c16 | 50 | 8.594 | 13.232 | 16.643 | 4.829 | 16.643 | 429=0 | — |
+| X1.concurrency | r2b1 | B | c1 | 50 | 1.805 | 5.406 | 6.070 | 0.679 | 6.070 | 429=0 | — |
+| X1.concurrency | r2b1 | B | c4 | 50 | 1.902 | 6.891 | 7.549 | 0.763 | 7.549 | 429=0 | — |
+| X1.concurrency | r2b1 | B | c8 | 50 | 3.744 | 6.307 | 9.332 | 1.327 | 9.332 | 429=0 | — |
+| X1.concurrency | r2b1 | B | c16 | 50 | 4.193 | 13.757 | 14.867 | 2.277 | 14.867 | 429=0 | — |
+| X1.concurrency | r2b2 | B | c1 | 50 | 2.027 | 6.654 | 7.237 | 0.710 | 7.237 | 429=0 | — |
+| X1.concurrency | r2b2 | B | c4 | 50 | 4.073 | 10.704 | 11.680 | 1.053 | 11.680 | 429=0 | — |
+| X1.concurrency | r2b2 | B | c8 | 50 | 3.916 | 9.805 | 12.450 | 1.126 | 12.450 | 429=0 | — |
+| X1.concurrency | r2b2 | B | c16 | 50 | 4.413 | 9.711 | 10.063 | 1.587 | 10.063 | 429=0 | — |
+| H1.content-20mb | r1a1 | A | json-cursor | 3 | 150.632 | 153.419 | 153.419 | 147.883 | 153.419 | ok=3 | 8625 |
+| H1.content-20mb | r1a1 | A | protobuf-cursor | 3 | 116.440 | 124.534 | 124.534 | 110.667 | 124.534 | ok=3 | 8625 |
+| H1.content-20mb | r1a2 | A | json-cursor | 3 | 146.632 | 155.273 | 155.273 | 146.123 | 155.273 | ok=3 | 8625 |
+| H1.content-20mb | r1a2 | A | protobuf-cursor | 3 | 120.588 | 128.734 | 128.734 | 116.176 | 128.734 | ok=3 | 8625 |
+| H1.content-20mb | r1b1 | B | json-cursor | 3 | 61.366 | 76.562 | 76.562 | 56.990 | 76.562 | ok=3 | 8625 |
+| H1.content-20mb | r1b1 | B | protobuf-cursor | 3 | 55.418 | 57.953 | 57.953 | 54.621 | 57.953 | ok=3 | 8625 |
+| H1.content-20mb | r1b2 | B | json-cursor | 3 | 61.472 | 68.284 | 68.284 | 61.454 | 68.284 | ok=3 | 8625 |
+| H1.content-20mb | r1b2 | B | protobuf-cursor | 3 | 57.917 | 66.555 | 66.555 | 57.142 | 66.555 | ok=3 | 8625 |
+| H1.content-20mb | r2a1 | A | json-cursor | 3 | 152.885 | 156.807 | 156.807 | 149.136 | 156.807 | ok=3 | 8625 |
+| H1.content-20mb | r2a1 | A | protobuf-cursor | 3 | 118.996 | 123.130 | 123.130 | 112.911 | 123.130 | ok=3 | 8625 |
+| H1.content-20mb | r2a2 | A | json-cursor | 3 | 152.218 | 157.198 | 157.198 | 151.802 | 157.198 | ok=3 | 8625 |
+| H1.content-20mb | r2a2 | A | protobuf-cursor | 3 | 122.309 | 128.821 | 128.821 | 121.735 | 128.821 | ok=3 | 8625 |
+| H1.content-20mb | r2b1 | B | json-cursor | 3 | 60.991 | 65.391 | 65.391 | 60.815 | 65.391 | ok=3 | 8625 |
+| H1.content-20mb | r2b1 | B | protobuf-cursor | 3 | 54.584 | 57.060 | 57.060 | 53.488 | 57.060 | ok=3 | 8625 |
+| H1.content-20mb | r2b2 | B | json-cursor | 3 | 66.238 | 68.274 | 68.274 | 61.336 | 68.274 | ok=3 | 8625 |
+| H1.content-20mb | r2b2 | B | protobuf-cursor | 3 | 56.129 | 57.780 | 57.780 | 54.770 | 57.780 | ok=3 | 8625 |
+
+## 2. 腿有效性（冻结规则）
+
+- W1.insert/r1a1: OK
+- W1.insert/r1a2: OK
+- W1.insert/r1b1: OK
+- W1.insert/r1b2: OK
+- W1.insert/r2a1: OK
+- W1.insert/r2a2: OK
+- W1.insert/r2b1: OK
+- W1.insert/r2b2: OK
+- F1.select-1/r1a1: OK
+- F1.select-1/r1a2: OK
+- F1.select-1/r1b1: OK
+- F1.select-1/r1b2: OK
+- F1.select-1/r2a1: OK
+- F1.select-1/r2a2: OK
+- F1.select-1/r2b1: OK
+- F1.select-1/r2b2: OK
+- X1.concurrency/r1a1: OK
+- X1.concurrency/r1a2: OK
+- X1.concurrency/r1b1: OK
+- X1.concurrency/r1b2: OK
+- X1.concurrency/r2a1: OK
+- X1.concurrency/r2a2: OK
+- X1.concurrency/r2b1: OK
+- X1.concurrency/r2b2: OK
+- H1.content-20mb/r1a1: OK
+- H1.content-20mb/r1a2: OK
+- H1.content-20mb/r1b1: OK
+- H1.content-20mb/r1b2: OK
+- H1.content-20mb/r2a1: OK
+- H1.content-20mb/r2a2: OK
+- H1.content-20mb/r2b1: OK
+- H1.content-20mb/r2b2: OK
+
+## 3. 主指标（冻结判据：两轮比值都 >1.10 且合并 >1.10 才判 FAIL；两轮都 <0.90 且合并 <0.90 才判 IMPROVED）
+
+| 场景 | 指标 | 轮 | 基线中位(ms) | 候选中位(ms) | 比值(候选/基线) |
+|---|---|---|---:|---:|---:|
+| W1.insert | json-pipeline | round1 | 19.942 | 20.765 | 1.041 |
+| W1.insert | json-pipeline | round2 | 22.027 | 19.918 | 0.904 |
+| W1.insert | json-pipeline | 合并 | 21.956 | 20.765 | 0.946 |
+| F1.select-1 | json-pipeline | round1 | 3.159 | 3.880 | 1.228 |
+| F1.select-1 | json-pipeline | round2 | 1.706 | 2.629 | 1.541 |
+| F1.select-1 | json-pipeline | 合并 | 2.433 | 2.891 | 1.188 |
+| X1.concurrency | c8 | round1 | 4.955 | 3.939 | 0.795 |
+| X1.concurrency | c8 | round2 | 6.933 | 3.830 | 0.552 |
+| X1.concurrency | c8 | 合并 | 6.079 | 3.830 | 0.630 |
+| X1.concurrency | c16 | round1 | 8.855 | 5.071 | 0.573 |
+| X1.concurrency | c16 | round2 | 9.682 | 4.303 | 0.444 |
+| X1.concurrency | c16 | 合并 | 9.047 | 4.604 | 0.509 |
+| H1.content-20mb | json-cursor | round1 | 148.632 | 61.419 | 0.413 |
+| H1.content-20mb | json-cursor | round2 | 152.552 | 63.614 | 0.417 |
+| H1.content-20mb | json-cursor | 合并 | 151.425 | 61.419 | 0.406 |
+
+## 4. p95 / p99（报告项，不判）
+
+| 场景 | 指标 | 轮 | 基线 p95 | 候选 p95 | 比值 | 基线 p99 | 候选 p99 | 比值 |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| W1.insert | json-pipeline | round1 | 38.974 | 31.505 | 0.808 | 40.469 | 34.154 | 0.844 |
+| W1.insert | json-pipeline | round2 | 29.634 | 36.800 | 1.242 | 31.437 | 37.297 | 1.186 |
+| F1.select-1 | json-pipeline | round1 | 6.450 | 6.644 | 1.030 | 8.010 | 7.626 | 0.952 |
+| F1.select-1 | json-pipeline | round2 | 6.255 | 5.687 | 0.909 | 7.969 | 7.879 | 0.989 |
+| X1.concurrency | c8 | round1 | 10.338 | 10.364 | 1.003 | 11.938 | 11.579 | 0.970 |
+| X1.concurrency | c8 | round2 | 11.382 | 8.056 | 0.708 | 12.860 | 11.618 | 0.903 |
+| X1.concurrency | c16 | round1 | 11.906 | 9.846 | 0.827 | 13.495 | 11.464 | 0.850 |
+| X1.concurrency | c16 | round2 | 14.034 | 11.734 | 0.836 | 16.643 | 13.865 | 0.833 |
+| H1.content-20mb | json-cursor | round1 | 154.346 | 72.423 | 0.469 | 155.273 | 76.562 | 0.493 |
+| H1.content-20mb | json-cursor | round2 | 157.003 | 66.833 | 0.426 | 157.198 | 68.274 | 0.434 |
+
+## 5. 次协议与字节（报告项，不判）
+
+| 场景 | 协议 | 轮 | 基线中位 | 候选中位 | 比值 | 基线 p95 | 候选 p95 | 基线字节 | 候选字节 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| W1.insert | json-pipeline | round1 | 19.942 | 20.765 | 1.041 | 38.974 | 31.505 | 252.000 | 252.000 |
+| W1.insert | json-pipeline | round2 | 22.027 | 19.918 | 0.904 | 29.634 | 36.800 | 252.000 | 252.000 |
+| W1.insert | protobuf-pipeline | round1 | 17.425 | 14.751 | 0.847 | 24.341 | 19.070 | 31.000 | 31.000 |
+| W1.insert | protobuf-pipeline | round2 | 18.101 | 14.829 | 0.819 | 19.436 | 17.225 | 31.000 | 31.000 |
+| F1.select-1 | json-pipeline | round1 | 3.159 | 3.880 | 1.228 | 6.450 | 6.644 | 312.000 | 312.000 |
+| F1.select-1 | json-pipeline | round2 | 1.706 | 2.629 | 1.541 | 6.255 | 5.687 | 312.000 | 318.000 |
+| F1.select-1 | protobuf-pipeline | round1 | 2.038 | 2.456 | 1.205 | 5.694 | 5.755 | 40.000 | 40.000 |
+| F1.select-1 | protobuf-pipeline | round2 | 2.050 | 3.307 | 1.613 | 3.992 | 3.789 | 40.000 | 40.000 |
+| F1.select-1 | json-cursor | round1 | 3.089 | 1.670 | 0.541 | 6.220 | 3.275 | 252.000 | 252.000 |
+| F1.select-1 | json-cursor | round2 | 1.822 | 3.646 | 2.001 | 4.881 | 5.650 | 252.000 | 252.000 |
+| F1.select-1 | protobuf-cursor | round1 | 1.417 | 1.795 | 1.267 | 3.690 | 3.333 | 57.000 | 57.000 |
+| F1.select-1 | protobuf-cursor | round2 | 2.147 | 1.427 | 0.664 | 3.381 | 3.521 | 57.000 | 57.000 |
+| H1.content-20mb | json-cursor | round1 | 148.632 | 61.419 | 0.413 | 154.346 | 72.423 | 20608525.000 | 20608525.000 |
+| H1.content-20mb | json-cursor | round2 | 152.552 | 63.614 | 0.417 | 157.003 | 66.833 | 20608525.000 | 20608525.000 |
+| H1.content-20mb | protobuf-cursor | round1 | 118.514 | 56.668 | 0.478 | 126.634 | 62.254 | 20272006.000 | 20272006.000 |
+| H1.content-20mb | protobuf-cursor | round2 | 120.652 | 55.356 | 0.459 | 125.975 | 57.420 | 20272006.000 | 20272006.000 |
+
+## 6. 判决
+
+- W1.insert / json-pipeline: **PASS**
+- F1.select-1 / json-pipeline: **FAIL**
+- X1.concurrency / c8: **IMPROVED**
+- X1.concurrency / c16: **IMPROVED**
+- H1.content-20mb / json-cursor: **IMPROVED**
+
+未通过/不可确认：[('F1.select-1', 'json-pipeline')]

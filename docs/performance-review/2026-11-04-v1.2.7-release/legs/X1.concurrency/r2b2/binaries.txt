@@ -1,0 +1,2 @@
+95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912  /usr/local/bin/peri-platform
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /usr/local/bin/peri-loom-v1

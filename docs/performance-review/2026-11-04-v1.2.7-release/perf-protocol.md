@@ -77,6 +77,9 @@ PASS/FAIL/IMPROVED，确认本版合入的性能改动没有带来 >10% 的可�
 
 ## 腿有效性
 
+- 每条腿在启动后、seed 前执行容器内
+  `sha256sum /usr/local/bin/peri-platform /usr/local/bin/peri-loom-v1`，与该侧预期
+  sha256 比对；不匹配则该腿无效。同时记录容器 image id 与镜像 RepoDigest。
 - 每腿 0 错误、0×429、HTTP 200、fixture `complete=true`、`warnings`/`fatal` 为空。
 - `launcher-stop.json` 为 `outcome=clean`、`unresolved_operations=false`，
   `stop-exit.txt=0`。
@@ -89,7 +92,8 @@ PASS/FAIL/IMPROVED，确认本版合入的性能改动没有带来 >10% 的可�
 
 `legs/<scenario>/<leg>/`：`summary.json`、`summary.md`、`raw.jsonl`、
 `metrics-before.json`、`metrics-after.json`、`launcher-stop.json`、`stop-exit.txt`、
-`harness.log`、`seed.log`、`container.log`。
+`binaries.txt`、`image-id.txt`、`image-digest.txt`、`harness.log`、`seed.log`、
+`container.log`。
 
 `legs.txt`（完整运行日志）、`aggregate.py`、`run_leg.sh`、`run_all.sh`、
 `seed_fixture.py`、`snap_metrics.py`、`perf-protocol.md`、`README.md`。

@@ -1,0 +1,196 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:20405",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "271e0962ec12b230bc28aa29774e602aa5a46ed5",
+    "connection_file": "provided (redacted)",
+    "container": "peri-loom-release-v127-x1-concurrency-r2a1",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "peri_image_version": "v1.2.7",
+    "peri_image_revision": "640ae7e3ce035f1d2b02d9367dc6aa755a018789",
+    "platform_label": "HEAD 271e096 / rust v1.2.7",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T12:56:49.078785+00:00",
+    "ended_utc": "2026-11-04T12:56:49.440777+00:00",
+    "duration_seconds": 0.362,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 1,
+    "concurrency_requests": 50,
+    "resource_before": {
+      "mem_usage": "152.1MiB / 11.73GiB",
+      "cpu_percent": "0.64%",
+      "memory_stat": {
+        "anon": 157782016,
+        "file": 126738432,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 126738432,
+        "active_file": 4096,
+        "slab": 0,
+        "pgfault": 50549,
+        "pgmajfault": 0
+      }
+    },
+    "resource_after": {
+      "mem_usage": "161.2MiB / 11.73GiB",
+      "cpu_percent": "1.08%",
+      "memory_stat": {
+        "anon": 167624704,
+        "file": 127586304,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 127586304,
+        "active_file": 4096,
+        "slab": 0,
+        "pgfault": 52711,
+        "pgmajfault": 0
+      }
+    },
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [],
+  "concurrency": [
+    {
+      "level": 1,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 2.4034375,
+      "p95_ms": 5.37725,
+      "p99_ms": 7.05225,
+      "min_ms": 0.804334,
+      "max_ms": 7.05225,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 2.7807909063994884,
+      "verdict": "PASS"
+    },
+    {
+      "level": 4,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 5.8064374999999995,
+      "p95_ms": 9.054125,
+      "p99_ms": 9.997042,
+      "min_ms": 2.32,
+      "max_ms": 9.997042,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 4.912542179226875,
+      "verdict": "PASS"
+    },
+    {
+      "level": 8,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 8.247271,
+      "p95_ms": 12.080542,
+      "p99_ms": 13.330333,
+      "min_ms": 4.219833,
+      "max_ms": 13.330333,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 3.1886249780654907,
+      "verdict": "PASS"
+    },
+    {
+      "level": 16,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 7.239583,
+      "p95_ms": 10.553625,
+      "p99_ms": 12.272458,
+      "min_ms": 4.674125,
+      "max_ms": 12.272458,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 7.667707744985819,
+      "verdict": "PASS"
+    }
+  ],
+  "warnings": [],
+  "fatal": ""
+}

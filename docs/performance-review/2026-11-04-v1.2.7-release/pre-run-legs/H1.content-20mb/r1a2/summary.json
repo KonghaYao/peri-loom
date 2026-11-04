@@ -1,0 +1,172 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:20404",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "271e0962ec12b230bc28aa29774e602aa5a46ed5",
+    "connection_file": "provided (redacted)",
+    "container": "peri-loom-release-v127-h1-content-20mb-r1a2",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "peri_image_version": "v1.2.7",
+    "peri_image_revision": "640ae7e3ce035f1d2b02d9367dc6aa755a018789",
+    "platform_label": "HEAD 271e096 / rust v1.2.7",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T12:58:30.092116+00:00",
+    "ended_utc": "2026-11-04T12:58:31.515306+00:00",
+    "duration_seconds": 1.423,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 3,
+    "concurrency_requests": 50,
+    "resource_before": {
+      "mem_usage": "162.2MiB / 11.73GiB",
+      "cpu_percent": "1.01%",
+      "memory_stat": {
+        "anon": 159518720,
+        "file": 135360512,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 126795776,
+        "active_file": 8568832,
+        "slab": 0,
+        "pgfault": 52215,
+        "pgmajfault": 81
+      }
+    },
+    "resource_after": {
+      "mem_usage": "173.5MiB / 11.73GiB",
+      "cpu_percent": "0.93%",
+      "memory_stat": {
+        "anon": 170852352,
+        "file": 135569408,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 126939136,
+        "active_file": 8634368,
+        "slab": 0,
+        "pgfault": 60619,
+        "pgmajfault": 82
+      }
+    },
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "H1.content-20mb",
+      "title": "20.2MB 历史内容（8,625 行）",
+      "protocol": "json-cursor",
+      "kind": "read",
+      "samples": 3,
+      "median_ms": 149.998583,
+      "p95_ms": 162.261459,
+      "min_ms": 148.490042,
+      "max_ms": 162.261459,
+      "round_medians_ms": [
+        149.998583
+      ],
+      "rows": 8625,
+      "response_bytes": 20608525,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "H1.content-20mb",
+      "title": "20.2MB 历史内容（8,625 行）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 3,
+      "median_ms": 117.919667,
+      "p95_ms": 119.83175,
+      "min_ms": 111.720125,
+      "max_ms": 119.83175,
+      "round_medians_ms": [
+        117.919667
+      ],
+      "rows": 8625,
+      "response_bytes": 20272006,
+      "query_ms": null,
+      "status_counts": {
+        "200": 3
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 3
+      },
+      "verdict": "PASS",
+      "verdict_detail": "protobuf vs JSON -21.4% (within noise)"
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}

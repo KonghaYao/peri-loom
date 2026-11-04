@@ -2,17 +2,19 @@
 # v1.2.7 release A/B leg: fresh volume + fresh stack -> seed fixture -> frozen
 # scenario run -> metrics snapshots -> clean stop. One leg runs one side.
 #
-# Usage: run_leg.sh <scenario> <leg> <port> <side> <platform-binary> <worker-binary> <samples>
+# Usage: run_leg.sh <scenario> <leg> <port> <side> <platform-binary> <worker-binary> <samples> <platform-sha256> <worker-sha256>
 set -euo pipefail
 scenario=$1; leg=$2; port=$3; side=$4; platform=$5; worker=$6; samples=$7
+expected_platform=${8:?expected platform sha256}; expected_worker=${9:?expected worker sha256}
 here=$(cd "$(dirname "$0")" && pwd)
 legdir=$here/legs/$scenario/$leg
 key=$(printf '%s' "$scenario" | tr '[:upper:].' '[:lower:]-')
-volume=peri-loom-release-v127-$key-$leg
-container=peri-loom-release-v127-$key-$leg
+window=${WINDOW:-b}
+volume=peri-loom-release-v127-$window-$key-$leg
+container=peri-loom-release-v127-$window-$key-$leg
 image=${IMAGE:-ghcr.io/konghayao/peri-loom:v1.2.7}
 # The connection file carries a private API key. Keep it outside the repository.
-conn=/tmp/peri-release-ab/conn-$key-$leg.json
+conn=/tmp/peri-release-ab/conn-$window-$key-$leg.json
 mkdir -p /tmp/peri-release-ab
 
 case "$scenario" in
@@ -63,6 +65,19 @@ if ! docker exec "$container" test -f /data/peri/connection.json 2>/dev/null; th
 fi
 docker cp "$container":/data/peri/connection.json "$conn" >/dev/null
 chmod 600 "$conn"
+
+docker exec "$container" sha256sum /usr/local/bin/peri-platform /usr/local/bin/peri-loom-v1 \
+  > "$legdir/binaries.txt"
+actual_platform=$(awk '$2=="/usr/local/bin/peri-platform"{print $1}' "$legdir/binaries.txt")
+actual_worker=$(awk '$2=="/usr/local/bin/peri-loom-v1"{print $1}' "$legdir/binaries.txt")
+if [ "$actual_platform" != "$expected_platform" ] || [ "$actual_worker" != "$expected_worker" ]; then
+  echo "binary sha mismatch for $scenario/$leg side=$side" >&2
+  echo "platform expected=$expected_platform actual=$actual_platform" >&2
+  echo "worker   expected=$expected_worker actual=$actual_worker" >&2
+  exit 1
+fi
+docker inspect "$container" --format '{{.Image}}' > "$legdir/image-id.txt"
+docker image inspect "$image" --format '{{index .RepoDigests 0}}' > "$legdir/image-digest.txt"
 
 python3 "$here/seed_fixture.py" "$conn" > "$legdir/seed.log" 2>&1
 tail -1 "$legdir/seed.log"
