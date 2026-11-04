@@ -1,0 +1,80 @@
+# R56 Gate 0：只读 cursor 页预取命中与「关掉」对照（先于 A/B）
+
+## 探针
+
+- 二进制：`/tmp/peri-perf/bin/peri-platform-r56-gate0c`
+  （sha256 `6a49d992908eff98f57906892932082f86a963fddf47d6484d78184737ae10cd`）。
+- 源码：`perf/r56-cursor-page-pipeline` @ `d5cf31f` + 本目录 `probes/gate0-probe.diff`
+  （3 个文件、+11 行：`cursorFetchAheadIssued/Consumed` 两个原子计数器；每个 cursor 请求结束
+  打印一行 `R56GATE path=json|native issued=… consumed=…`；探针不进入测量二进制）。
+- 环境：本地栈 `127.0.0.1:19614`，无 TLS，默认配额
+  （`max_sessions=16`、`max_concurrent=100`、`requests_per_second=500`、
+  `max_result_bytes=4,194,304`、`max_sql_bytes=65,536`）。
+- fixture：`threads=201 messages=8625 content_chars=20177069 focus_messages=8625`；
+  重建脚本见 `fixture/seed_fixture.py`（sha256 `092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210`）。
+- worker：`/tmp/peri-perf/bin/peri-loom-v1-r53-clean`
+  （sha256 `27d8dd4682128ff7668999254e068144c878b5fa972357d7dd22a5aac50ce3a4`，两侧相同）。
+- 运行：每个场景 1 warmup + 1 timed（harness `--rounds 1 --warmup 1 --samples 1`）。
+  本文件只作机制核验；带探针、n=1 的延迟数字不可作为验收结论。
+
+## 命中计数
+
+H1 每查询 8,625 行、每页 256 行，共 **34 页**。预取只允许发生在「还有下一页」时，
+因此每次查询的 fetch 调用数应为 **33 = 页数 − 1**。
+
+| 场景 | 协议 | 路径标签 | 页数 | issued | consumed | 判定 |
+|---|---|---|---:|---:|---:|---|
+| H1.content-20mb | json-cursor | `path=json` | 34 | 33 | 33 | OK |
+| H1.content-20mb | protobuf-cursor | `path=native` | 34 | 33 | 33 | OK |
+| L2.list-empty（单页 0 行） | json-cursor | `path=json` | 1 | 0 | 0 | OK（关掉对照） |
+
+- 每个场景的日志出现两行（warmup + timed 各一行），两行数值相同。
+- `consumed == issued`：每个发出的预取都在下一页分支（或中止清理前）被取走，没有遗留 goroutine。
+
+## 「关掉」对照
+
+- **单页 cursor**：`L2.list-empty`（0 行、1 页）`issued=0 consumed=0`——没有下一页就不预取。
+- **写 cursor**：预取只存在于只读分支；`TestHranaV3JSONWriteCursorKeepsPageFetchesSequential`
+  在干净树上通过，断言写 cursor 的页 fetch 严格串行、从不进入预取路径。
+- 早期一次 `L1.list-20` 单页对照也得到 `issued=0 consumed=0`，但该样本同时报
+  `row_count_mismatch`（fixture 的 list cwd 有 100 个线程，契约 `LIMIT 40` 期望
+  `fixture.list_threads=100`），与预取无关；因此正式关掉对照改用 `L2.list-empty`。
+  该 fixture 偏差已在 A/B 前修正（见下）。
+
+## 不变量（同窗口）
+
+- wire 字节与冻结值逐字节一致：H1 json `20,608,525`、H1 protobuf `20,272,006`。
+- `rows=8,625`；`status_counts={"200": 1}`；`warnings=[]`；`fatal=""`；无 SQL 错误。
+- L2：`rows=0`、`bytes=663`、`outcomes={"ok":1}`。
+
+## 探针缺陷与修正（留档）
+
+| 探针二进制 | sha256 前缀 | 现象 | 处置 |
+|---|---|---|---|
+| `peri-platform-r56-gate0` | `e8eeb2b4…` | 消费点漏计数，`issued=33 consumed=0` | 作废 |
+| `peri-platform-r56-gate0b` | `64ae7996…` | native 消费分支把 `Add(1)` 写了两遍，`issued=33 consumed=66` | 作废 |
+| `peri-platform-r56-gate0c` | `6a49d992…` | 修正后 json/native 均 `33/33` | 采用 |
+
+## 二进制来源（A/B 使用）
+
+- 基线：`/tmp/peri-perf/bin/peri-platform-r56-base2`，由 worktree `/tmp/peri-r56-base`
+  @ `fbc0e3d`（干净树）构建，sha256 `9e003707aeb9ba846f60b7f569a867016226834f2520af68a54ed7b3994c3052`；
+  连续两次构建哈希相同，且与 `peri-platform-r56-base` 相同。
+- 候选：`/tmp/peri-perf/bin/peri-platform-r56-cand2`，由 `perf/r56-cursor-page-pipeline`
+  @ `20d8db5`（探针已 checkout 移除）构建，sha256
+  `611fa2d8455688691cc65739c7d6d2c75156ffa6bf49f2b6dc37a96a94e358ae`；连续两次构建哈希相同。
+- 14:15 生成的 `/tmp/peri-perf/bin/peri-platform-r56-cand`（`c95d9efc…`）无法从分支提交复现，
+  判定为中间工作树产物，**不用于 A/B**。
+
+## fixture 调整（A/B 前）
+
+- 重建脚本原先把 100 个线程放进 `/workspace/issue28`，导致 L1 的 `LIMIT 40` 与契约
+  `expected_rows=list_threads(=100)` 不符，每个 L1 样本都会 `row_count_mismatch`。
+- A/B 前改为 39 个普通线程 + focus 线程（共 40）落在 list cwd，其余 161 个在另一个 cwd；
+  线程/消息/字节总数与 focus 内容不变，H1/H3/R1/F1/B1/C1/X1 的行数与字节不变。
+- 该偏差在两侧同等存在，但为使回归门的 `fails=0` 不变量成立，仍需在冻结判据的环境项里记录。
+
+## 结论
+
+只读 cursor 预取在两种协议下都被真实执行：H1 每查询恰好发出并消费 33 次下一页 fetch，
+单页场景为 0；wire 字节、行数与状态码与基线一致。机制成立，可以进入 A/B。
