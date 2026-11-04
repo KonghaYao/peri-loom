@@ -213,8 +213,37 @@ func TestHranaPipelineExecuteCloseKeepsTheSessionForTheCursorFallback(t *testing
 	fixture.upstream.setHook(worker.hook)
 	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, fusedOpenPipelineRequests())
 	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, `"rows":[["cursor-row"]]`) {
+	if response.Code != http.StatusOK {
 		t.Fatalf("the fused result budget did not use the cursor fallback: %d %s", response.Code, body)
+	}
+	// Hrana v3 JSON encodes every cell as a typed object, so the fallback row
+	// must arrive as {type,value} rather than a bare cell. Assert the decoded
+	// cell: a string match on the row shape would pin the encoding instead of
+	// the row the cursor returned.
+	document := hranaV3JSONDocument(t, response)
+	results, ok := document["results"].([]any)
+	if !ok || len(results) != 2 {
+		t.Fatalf("pipeline results: %v", document["results"])
+	}
+	execute, ok := results[0].(map[string]any)["response"].(map[string]any)
+	if !ok || execute["type"] != "execute" {
+		t.Fatalf("the first entry is not the execute answer: %v", results[0])
+	}
+	result, ok := execute["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("the execute answer carries no result: %v", execute)
+	}
+	rows, ok := result["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("the cursor fallback did not return one row: %v", result["rows"])
+	}
+	row, ok := rows[0].([]any)
+	if !ok || len(row) != 1 {
+		t.Fatalf("the cursor fallback row is malformed: %v", rows[0])
+	}
+	cell, ok := row[0].(map[string]any)
+	if !ok || cell["type"] != "text" || cell["value"] != "cursor-row" {
+		t.Fatalf("the pipeline did not publish the cursor row: %v", row[0])
 	}
 	if strings.Contains(body, `"code":"result_limit"`) {
 		t.Fatalf("the pipeline published result_limit instead of the cursor rows: %s", body)
