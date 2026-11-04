@@ -445,6 +445,10 @@ func (scanner *hranaCursorPageScanner) string(position int) (int, error) {
 	body := scanner.body
 	position++
 	for position < len(body) {
+		position += hranaCursorPageIndexSpecial(body[position:])
+		if position >= len(body) {
+			return 0, errHranaCursorPage
+		}
 		switch character := body[position]; {
 		case character == '"':
 			return position + 1, nil
@@ -570,12 +574,13 @@ func hranaCursorPageHex4(token []byte) uint32 {
 // escapes, without allocating the intermediate string.
 func hranaCursorPageAppendText(destination, token []byte) []byte {
 	for position := 1; position < len(token)-1; {
-		character := token[position]
-		if character != '\\' {
-			destination = append(destination, character)
-			position++
-			continue
+		next := hranaCursorPageIndexBackslash(token, position)
+		if next < 0 {
+			destination = append(destination, token[position:len(token)-1]...)
+			break
 		}
+		destination = append(destination, token[position:position+next]...)
+		position += next
 		switch escape := token[position+1]; escape {
 		case '"', '\\', '/':
 			destination = append(destination, escape)
@@ -627,6 +632,13 @@ func hranaJSONAppendPageText(destination, token []byte) []byte {
 	const hex = "0123456789abcdef"
 	destination = append(destination, '"')
 	for position := 1; position < len(token)-1; {
+		next := hranaCursorPageIndexJSONSpecial(token[position : len(token)-1])
+		if next >= len(token)-1-position {
+			destination = append(destination, token[position:len(token)-1]...)
+			break
+		}
+		destination = append(destination, token[position:position+next]...)
+		position += next
 		character := token[position]
 		if character != '\\' {
 			switch character {
