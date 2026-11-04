@@ -72,6 +72,9 @@ func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, da
 	if reply.status != http.StatusOK || reply.code != "" {
 		return hranaOpenResult{}, reply
 	}
+	if reply.open != nil {
+		return handler.hranaOpenFromGateway(reply.open, candidate)
+	}
 	var opened struct {
 		Session        string          `json:"session"`
 		FusedStatement json.RawMessage `json:"fused_statement"`
@@ -103,6 +106,28 @@ func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, da
 		return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 	}
 	return hranaOpenResult{Session: opened.Session, FusedStatement: opened.FusedStatement, FusedClose: opened.FusedClose, FusedAnswer: fusedAnswer, fusedAnswerValid: fusedAnswerValid}, hranaReply{status: http.StatusOK}
+}
+
+// hranaOpenFromGateway keeps the same acceptance rules for the typed answer the
+// gateway already validated. The adapter still refuses a fused payload it did
+// not ask for and a close that has no statement to follow; it does not repeat
+// the validation the gateway performed on the very same bytes.
+func (handler *hranaHTTP) hranaOpenFromGateway(opened *hranaOpenReply, candidate bool) (hranaOpenResult, hranaReply) {
+	if opened.FusedStatement == nil {
+		if opened.FusedClose {
+			handler.cleanupRetiredSession(opened.Session, 0)
+			return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
+		}
+		return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusOK}
+	}
+	// The gateway only publishes a fused statement after validating it, so a
+	// handoff without that proof means the two sides disagree about the
+	// protocol; fail closed instead of resending the statement.
+	if !candidate || !opened.AnswerValid {
+		handler.cleanupRetiredSession(opened.Session, 0)
+		return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
+	}
+	return hranaOpenResult{Session: opened.Session, FusedStatement: opened.FusedStatement, FusedClose: opened.FusedClose, FusedAnswer: opened.Answer, fusedAnswerValid: true}, hranaReply{status: http.StatusOK}
 }
 
 // hranaFusedStatementResult is the marker the next statement call consumes. It

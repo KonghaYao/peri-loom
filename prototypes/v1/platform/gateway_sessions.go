@@ -219,6 +219,8 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	}
 	var fusedReply json.RawMessage
 	fusedClose := false
+	var fusedAnswer fusedStatementAnswer
+	fusedAnswerValid := false
 	if fusedAttempt {
 		// The statement already ran, so an answer this platform cannot read is
 		// not a reason to send it again. It is also not a reason to isolate the
@@ -229,6 +231,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 			return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
 		}
 		fusedReply = reply.Statement
+		fusedAnswer, fusedAnswerValid = answer, true
 		// A close is only usable next to a settled statement answer, and an
 		// answer this platform cannot read leaves the session for the ordinary
 		// close entry instead of guessing that the worker retired it.
@@ -267,7 +270,16 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 		// but it knows the worker session is already gone.
 		value["fused_close"] = true
 	}
-	return gatewayResult{value: value, dispatched: true, session: session, finish: func() {
+	// Only the fused-open request carries a typed consumer on the other side:
+	// the pipeline adapter asked for the statement to ride along and consumes
+	// this answer directly instead of decoding the envelope it would otherwise
+	// have re-encoded. The cursor and websocket adapters still decode the
+	// envelope, so they keep the encoded reply.
+	var hranaOpen *hranaOpenReply
+	if _, requested := fusedOpenStatementFrom(ctx); requested {
+		hranaOpen = &hranaOpenReply{Session: identifier, FusedStatement: fusedReply, FusedClose: fusedClose, Answer: fusedAnswer, AnswerValid: fusedAnswerValid}
+	}
+	return gatewayResult{value: value, hranaOpen: hranaOpen, dispatched: true, session: session, finish: func() {
 		session.lastUsed = time.Now()
 		session.mu.Unlock()
 	}}

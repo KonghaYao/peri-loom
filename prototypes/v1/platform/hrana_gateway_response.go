@@ -14,10 +14,24 @@ import (
 type hranaGatewayResponse struct {
 	*httptest.ResponseRecorder
 	result json.RawMessage
+	open   *hranaOpenReply
 }
 
 func newHranaGatewayResponse() *hranaGatewayResponse {
 	return &hranaGatewayResponse{ResponseRecorder: httptest.NewRecorder()}
+}
+
+// captureOpen keeps the fused open answer in the gateway's already-parsed form.
+// Only the in-process adapter that asked for the fusion ever sees this
+// recorder, so the public open envelope is never affected.
+func (response *hranaGatewayResponse) captureOpen(reply *hranaOpenReply) bool {
+	if reply == nil {
+		return false
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusOK)
+	response.open = reply
+	return true
 }
 
 func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
@@ -115,6 +129,9 @@ func hranaJSONCompact(raw []byte) bool {
 }
 
 func (response *hranaGatewayResponse) reply(path string) hranaReply {
+	if response.open != nil {
+		return hranaReply{status: http.StatusOK, open: response.open}
+	}
 	if response.result != nil {
 		return hranaReply{status: http.StatusOK, result: response.result}
 	}

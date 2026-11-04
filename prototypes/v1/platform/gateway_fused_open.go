@@ -216,6 +216,19 @@ type fusedStatementReply struct {
 	ExecutionCompleted *bool                `json:"execution_completed"`
 }
 
+// hranaOpenReply carries the open answer the gateway already decoded and
+// validated to the in-process Hrana adapter that asked for the fused open.
+// The adapter consumes it directly: re-encoding the statement result into the
+// internal envelope and parsing it again would scan the same multi-megabyte
+// payload twice without learning anything the gateway did not already prove.
+type hranaOpenReply struct {
+	Session        string
+	FusedStatement json.RawMessage
+	FusedClose     bool
+	Answer         fusedStatementAnswer
+	AnswerValid    bool
+}
+
 // parseFusedStatementAnswer accepts only the complete shapes the worker emits.
 // A partial answer is not evidence, so it is rejected rather than repaired.
 func parseFusedStatementAnswer(reply json.RawMessage) (fusedStatementAnswer, bool) {

@@ -93,7 +93,11 @@ type gatewayResult struct {
 	// as exactly one JSON value and copied into an owned span. The in-process
 	// Hrana response may retain that span without a second compact-validation
 	// parse. Only the SQL reply decoders set it; a hand-built value must not.
-	validatedResult         bool
+	validatedResult bool
+	// hranaOpen is the fused open answer in the typed form the in-process
+	// Hrana adapter consumes. writeResponse hands it to an adapter recorder
+	// instead of encoding value into the internal envelope.
+	hranaOpen               *hranaOpenReply
 	dispatched              bool
 	session                 *gatewaySession
 	finish                  func()
