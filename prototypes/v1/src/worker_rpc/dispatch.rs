@@ -163,8 +163,19 @@ fn arg_bytes(arg: &StatementArg) -> u64 {
 /// Marks a refusal that provably happened before any SQL ran. The reply then carries
 /// `execution_completed = false`, which the platform answers as a definite rejection
 /// instead of an unknown outcome.
+///
+/// An error that already carries [`SqlEvidence`] keeps its own verdict: every call
+/// site runs before SQL today, but an unconditional wrap would turn a later
+/// `Settled` failure into "not executed" and make the platform report an executed
+/// statement as a definite rejection. This mirrors the conservative rule in
+/// `session::ExecutionEvidence::failure`.
 fn not_executed<T>(result: Result<T>) -> Result<T> {
-    result.map_err(|error| error.context(SqlEvidence::NotExecuted))
+    result.map_err(|error| {
+        if error.downcast_ref::<SqlEvidence>().is_some() {
+            return error;
+        }
+        error.context(SqlEvidence::NotExecuted)
+    })
 }
 
 /// The `ensure!` form of [`not_executed`]: a failed check returns from the enclosing
@@ -855,7 +866,7 @@ fn prepare_guarded_batch(statements: Vec<BatchStatement>) -> Result<Vec<Prepared
         }
         Ok(prepared)
     })();
-    prepared.map_err(|error| error.context(SqlEvidence::NotExecuted))
+    not_executed(prepared)
 }
 
 /// Runs one guarded statement per entry and stops at the first entry that is not
@@ -1185,6 +1196,40 @@ mod batch_tests {
         let unsettled = anyhow::Error::new(AdmissionError::Quarantine).context(UnsettledSqlOutcome);
         let error = not_executed::<()>(Err(unsettled)).expect_err("the refusal must propagate");
         assert!(error.downcast_ref::<UnsettledSqlOutcome>().is_some());
+    }
+
+    /// The wrapper runs before SQL today, but a later call site could sit after
+    /// execution. Overwriting a `Settled` failure with `NotExecuted` would let the
+    /// platform call an executed statement a definite rejection, so the inner
+    /// verdict must win.
+    #[test]
+    fn a_wrapped_settled_failure_keeps_its_execution_evidence() {
+        let settled = anyhow!("private syntax failure").context(SqlEvidence::Settled);
+        let error = not_executed::<()>(Err(settled)).expect_err("the failure must propagate");
+        assert!(error.downcast_ref::<UnsettledSqlOutcome>().is_none());
+        assert_eq!(
+            error.downcast_ref::<SqlEvidence>(),
+            Some(&SqlEvidence::Settled)
+        );
+    }
+
+    /// An inner proof is kept as-is, so the reply text carries the pre-execution
+    /// prefix exactly once instead of once per wrapper.
+    #[test]
+    fn a_wrapped_refusal_keeps_a_single_proof_prefix() {
+        let refusal = anyhow!("SQL byte budget exceeded").context(SqlEvidence::NotExecuted);
+        let error = not_executed::<()>(Err(refusal)).expect_err("the refusal must propagate");
+        assert_eq!(
+            error.downcast_ref::<SqlEvidence>(),
+            Some(&SqlEvidence::NotExecuted)
+        );
+        let rendered = format!("{error:#}");
+        assert_eq!(
+            rendered.matches("SQL execution not entered:").count(),
+            1,
+            "{rendered}"
+        );
+        assert!(rendered.ends_with("SQL byte budget exceeded"), "{rendered}");
     }
 
     #[test]
