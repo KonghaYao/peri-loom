@@ -1,0 +1,12 @@
+scan_calls=1 scan_ok=1 scan_ns=787542 reply_bytes=2345220 legacy_calls=0
+scan_calls=2 scan_ok=1 scan_ns=539000 reply_bytes=2345210 legacy_calls=0
+scan_calls=3 scan_ok=1 scan_ns=545833 reply_bytes=2345209 legacy_calls=0
+scan_calls=4 scan_ok=1 scan_ns=540292 reply_bytes=2345210 legacy_calls=0
+scan_calls=5 scan_ok=1 scan_ns=540292 reply_bytes=2345220 legacy_calls=0
+scan_calls=6 scan_ok=1 scan_ns=537875 reply_bytes=2345210 legacy_calls=0
+scan_calls=7 scan_ok=1 scan_ns=538542 reply_bytes=2345210 legacy_calls=0
+scan_calls=8 scan_ok=1 scan_ns=692417 reply_bytes=2345210 legacy_calls=0
+scan_calls=9 scan_ok=1 scan_ns=538083 reply_bytes=2345210 legacy_calls=0
+scan_calls=10 scan_ok=1 scan_ns=539708 reply_bytes=2345220 legacy_calls=0
+scan_calls=11 scan_ok=1 scan_ns=540750 reply_bytes=2345210 legacy_calls=0
+scan_calls=12 scan_ok=1 scan_ns=538959 reply_bytes=2345210 legacy_calls=0

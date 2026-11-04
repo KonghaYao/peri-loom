@@ -1,0 +1,236 @@
+diff --git a/prototypes/v1/platform/dev.py b/prototypes/v1/platform/dev.py
+index b80aa74..44c543c 100755
+--- a/prototypes/v1/platform/dev.py
++++ b/prototypes/v1/platform/dev.py
+@@ -877,6 +877,9 @@ def free_address():
+ 
+ def safe_environment(capacity_trace=False):
+     environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
++    for name in ("PERI_R48_PROBE_LOG", "PERI_R48_PROBE_PROXY", "PERI_R48_PROBE_DUMP"):
++        if name in os.environ:
++            environment[name] = os.environ[name]
+     if capacity_trace:
+         environment["PERI_CAPACITY_TRACE"] = "1" if os.environ.get("PERI_CAPACITY_TRACE") == "1" else "0"
+         environment["PERI_NATIVE_GATE_TRACE"] = "1" if os.environ.get("PERI_NATIVE_GATE_TRACE") == "1" else "0"
+diff --git a/prototypes/v1/platform/gateway_fused_open.go b/prototypes/v1/platform/gateway_fused_open.go
+index 429cf80..fd5eaf1 100644
+--- a/prototypes/v1/platform/gateway_fused_open.go
++++ b/prototypes/v1/platform/gateway_fused_open.go
+@@ -231,7 +231,14 @@ type hranaOpenReply struct {
+ 
+ // parseFusedStatementAnswer accepts only the complete shapes the worker emits.
+ // A partial answer is not evidence, so it is rejected rather than repaired.
+-func parseFusedStatementAnswer(reply json.RawMessage) (fusedStatementAnswer, bool) {
++func parseFusedStatementAnswer(reply json.RawMessage, probes ...*r48Probe) (fusedStatementAnswer, bool) {
++	var probe *r48Probe
++	for _, candidate := range probes {
++		if candidate != nil {
++			probe = candidate
++			break
++		}
++	}
+ 	var parsed fusedStatementReply
+ 	decoder := json.NewDecoder(bytes.NewReader(reply))
+ 	decoder.UseNumber()
+@@ -242,7 +249,7 @@ func parseFusedStatementAnswer(reply json.RawMessage) (fusedStatementAnswer, boo
+ 	switch parsed.Status {
+ 	case "ok":
+ 		if parsed.Reason != nil || parsed.Error != nil || parsed.ExecutionCompleted != nil ||
+-			!validStatementResult(parsed.Result) {
++			!r48ValidStatementResult(parsed.Result, probe) {
+ 			return fusedStatementAnswer{}, false
+ 		}
+ 		return fusedStatementAnswer{kind: fusedStatementOK, result: parsed.Result}, true
+diff --git a/prototypes/v1/platform/gateway_sessions.go b/prototypes/v1/platform/gateway_sessions.go
+index a330f6c..9fea5ba 100644
+--- a/prototypes/v1/platform/gateway_sessions.go
++++ b/prototypes/v1/platform/gateway_sessions.go
+@@ -226,7 +226,15 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database
+ 		// not a reason to send it again. It is also not a reason to isolate the
+ 		// namespace: the worker only runs statements its engine proved read-only
+ 		// in this request, so the lost answer cannot hide a commit.
+-		answer, valid := parseFusedStatementAnswer(reply.Statement)
++		probe := r48ProbeFromContext(ctx)
++		var parseStart time.Time
++		if probe != nil {
++			parseStart = time.Now()
++		}
++		answer, valid := parseFusedStatementAnswer(reply.Statement, probe)
++		if probe != nil {
++			probe.parseNS = time.Since(parseStart).Nanoseconds()
++		}
+ 		if !valid {
+ 			return observeSQLOpenResult(ctx, requestID, sqlOpenReply, gateway.unknown(nil, permit), nil)
+ 		}
+diff --git a/prototypes/v1/platform/hrana_gateway_response.go b/prototypes/v1/platform/hrana_gateway_response.go
+index b16aae3..3868426 100644
+--- a/prototypes/v1/platform/hrana_gateway_response.go
++++ b/prototypes/v1/platform/hrana_gateway_response.go
+@@ -5,6 +5,7 @@ import (
+ 	"encoding/json"
+ 	"net/http"
+ 	"net/http/httptest"
++	"time"
+ )
+ 
+ // hranaGatewayResponse is private to in-process Hrana calls. The gateway may
+@@ -15,6 +16,7 @@ type hranaGatewayResponse struct {
+ 	*httptest.ResponseRecorder
+ 	result json.RawMessage
+ 	open   *hranaOpenReply
++	probe  *r48Probe
+ }
+ 
+ func newHranaGatewayResponse() *hranaGatewayResponse {
+@@ -39,28 +41,55 @@ func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
+ 	if !ok || raw == nil {
+ 		return false
+ 	}
++	probe := response.probe
+ 	// sqlDecode has already accepted a validated result as exactly one JSON
+ 	// value and given the output its own copy of that span. A compact span is
+ 	// therefore safe to retain as-is; only a spaced one still needs json.Compact
+ 	// to keep the historical result bytes and budget length. Without the marker
+ 	// the old compact-validate pass remains the only proof the bytes are JSON.
+-	if validated && len(raw) > 0 && hranaJSONCompact(raw) {
++	compact := false
++	if validated && len(raw) > 0 {
++		if probe == nil {
++			compact = hranaJSONCompact(raw)
++		} else {
++			start := time.Now()
++			compact = hranaJSONCompact(raw)
++			probe.compactNS = time.Since(start).Nanoseconds()
++		}
++	}
++	if probe != nil {
++		probe.resultBytes = int64(len(raw))
++		probe.dump(raw)
++	}
++	if compact {
+ 		response.Header().Set("Content-Type", "application/json")
+ 		response.WriteHeader(http.StatusOK)
+-		response.result = hranaEscapeJSONLineSeparators(raw)
++		if probe == nil {
++			response.result = hranaEscapeJSONLineSeparators(raw)
++		} else {
++			start := time.Now()
++			response.result = hranaEscapeJSONLineSeparators(raw)
++			probe.escapeNS = time.Since(start).Nanoseconds()
++		}
+ 		return true
+ 	}
+ 	// Encoder.SetEscapeHTML(false) compacts RawMessage without changing its
+ 	// string or number spelling. Keep those exact bytes, including the length
+ 	// used by executeCursor's result budget, and own them beyond this request.
+ 	// Invalid JSON falls back to the old encoding/invalid-reply behavior.
+-	var compact bytes.Buffer
+-	if json.Compact(&compact, raw) != nil {
++	var compacted bytes.Buffer
++	if json.Compact(&compacted, raw) != nil {
+ 		return false
+ 	}
+ 	response.Header().Set("Content-Type", "application/json")
+ 	response.WriteHeader(http.StatusOK)
+-	response.result = hranaEscapeJSONLineSeparators(compact.Bytes())
++	if probe == nil {
++		response.result = hranaEscapeJSONLineSeparators(compacted.Bytes())
++	} else {
++		start := time.Now()
++		response.result = hranaEscapeJSONLineSeparators(compacted.Bytes())
++		probe.escapeNS = time.Since(start).Nanoseconds()
++	}
+ 	return true
+ }
+ 
+diff --git a/prototypes/v1/platform/hrana_http.go b/prototypes/v1/platform/hrana_http.go
+index 304cc3d..ba7f390 100644
+--- a/prototypes/v1/platform/hrana_http.go
++++ b/prototypes/v1/platform/hrana_http.go
+@@ -166,6 +166,11 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 		http.Error(writer, "invalid pipeline", 400)
+ 		return
+ 	}
++	// R48 probe: sample only a well-formed JSON pipeline request. With the
++	// log unset newR48Probe returns nil and the context is untouched.
++	if probe := newR48Probe(); probe != nil {
++		request = request.WithContext(withR48Probe(request.Context(), probe))
++	}
+ 	digest := sha256.Sum256([]byte(credential))
+ 	stream := &hranaStream{database: database, credential: digest}
+ 	newStream := pipeline.Baton == ""
+@@ -572,7 +577,20 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "batch", "result": map[string]any{"step_results": results, "step_errors": errors}}})
+ 			}
+ 			if len(response.Results) > previousResults {
++				probe := r48ProbeFromContext(request.Context())
++				timed := probe != nil && entry.Type == "execute"
++				var budgetStart time.Time
++				if timed {
++					budgetStart = time.Now()
++				}
+ 				encoded, err := json.Marshal(response.Results[len(response.Results)-1])
++				if timed {
++					probe.budgetMarshalNS = time.Since(budgetStart).Nanoseconds()
++					probe.budgetBytes = int64(len(encoded))
++					if err == nil {
++						probe.measureProxy(encoded)
++					}
++				}
+ 				if err != nil || len(encoded) > resultLimit-resultBytes-resultReserve {
+ 					limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+ 					return
+@@ -628,7 +646,16 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 			stream.timer.Stop()
+ 		}
+ 	}
++	probe := r48ProbeFromContext(request.Context())
++	var finalStart time.Time
++	if probe != nil {
++		finalStart = time.Now()
++	}
+ 	encoded, err := json.Marshal(response)
++	if probe != nil {
++		probe.finalMarshalNS = time.Since(finalStart).Nanoseconds()
++		probe.finalBytes = int64(len(encoded))
++	}
+ 	if err != nil || len(encoded) > resultLimit {
+ 		limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+ 		return
+@@ -641,6 +668,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 	}
+ 	batonDelivered = true
+ 	_, _ = writer.Write([]byte("\n"))
++	probe.finish()
+ }
+ 
+ // detachStream removes a registered stream whose baton never reached the client
+@@ -957,6 +985,7 @@ func (handler *hranaHTTP) dispatch(request *http.Request, credential, path strin
+ 	internal := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded)).WithContext(ctx)
+ 	internal.Header.Set("Authorization", "Bearer "+credential)
+ 	recorder := newHranaGatewayResponse()
++	recorder.probe = r48ProbeFromContext(ctx)
+ 	handler.gateway.ServeHTTP(recorder, internal)
+ 	return recorder.reply(path)
+ }
+@@ -1051,11 +1080,20 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
+ 		return nil, reply
+ 	}
+ 	var native hranaNativeStatement
++	probe := r48ProbeFromContext(request.Context())
++	var decodeStart time.Time
++	if probe != nil {
++		decodeStart = time.Now()
++	}
+ 	decoder := json.NewDecoder(bytes.NewReader(reply.result))
+ 	decoder.UseNumber()
+ 	if decoder.Decode(&native) != nil || native.Cols == nil || native.Rows == nil {
+ 		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_statement", unknown: true}
+ 	}
++	if probe != nil {
++		probe.adapterDecodeNS = time.Since(decodeStart).Nanoseconds()
++		probe.rows = int64(len(native.Rows))
++	}
+ 	metrics, ok := hranaNativeStatementMetrics(native.RowsRead, native.RowsWritten, native.QueryDurationMS)
+ 	if !ok {
+ 		return nil, hranaReply{status: http.StatusBadGateway, code: "invalid_native_statement", unknown: true}
