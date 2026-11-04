@@ -263,6 +263,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 	defer cancel()
 	request = request.WithContext(ctx)
 	resultBytes := 0
+	var entryBytes [][]byte
 	dispatched := false
 	var firstFailure *hranaReply
 	firstFailureLocal := false
@@ -395,6 +396,11 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			if fusedMarker != nil && offset == 0 {
 				entryRequest = entryRequest.WithContext(withFusedStatementResult(entryRequest.Context(), *fusedMarker))
+				if entry.Type == "execute" {
+					// Only this branch publishes the entry verbatim; every other
+					// adapter that shares executeWithin keeps the decoded value.
+					entryRequest = entryRequest.WithContext(withHranaExecuteEntry(entryRequest.Context()))
+				}
 				fusedMarker = nil
 			}
 			previousResults := len(response.Results)
@@ -511,6 +517,10 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				if reply.code != "" {
 					rememberFailure(reply)
 					response.Results = append(response.Results, map[string]any{"type": "error", "error": map[string]any{"message": hranaErrorMessage(reply), "code": reply.code}})
+				} else if encoded, ok := value.(hranaEncodedEntry); ok {
+					// The entry is already the bytes the result budget and the
+					// response publish; wrapping it again would encode it twice.
+					response.Results = append(response.Results, encoded)
 				} else {
 					response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "execute", "result": value}})
 				}
@@ -572,12 +582,28 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 				response.Results = append(response.Results, map[string]any{"type": "ok", "response": map[string]any{"type": "batch", "result": map[string]any{"step_results": results, "step_errors": errors}}})
 			}
 			if len(response.Results) > previousResults {
-				encoded, err := json.Marshal(response.Results[len(response.Results)-1])
-				if err != nil || len(encoded) > resultLimit-resultBytes-resultReserve {
+				// entryBytes mirrors response.Results so the final reply can be
+				// assembled instead of re-encoding every entry. An execute entry
+				// the adapter already encoded contributes its bytes directly; any
+				// other entry keeps the encoding the budget check always used.
+				last := response.Results[len(response.Results)-1]
+				var encoded []byte
+				if preencoded, ok := last.(hranaEncodedEntry); ok {
+					encoded = preencoded
+				} else {
+					marshaled, err := json.Marshal(last)
+					if err != nil {
+						limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+						return
+					}
+					encoded = marshaled
+				}
+				if len(encoded) > resultLimit-resultBytes-resultReserve {
 					limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
 					return
 				}
 				resultBytes += len(encoded)
+				entryBytes = append(entryBytes, encoded)
 			}
 			if !flushIfFull() {
 				return
@@ -628,7 +654,16 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			stream.timer.Stop()
 		}
 	}
-	encoded, err := json.Marshal(response)
+	// A pipeline whose every entry already carries its bytes is assembled
+	// directly. Any entry the loop skipped (a local validation result that
+	// returned before the budget block) leaves the counts unequal, and the
+	// struct marshal encodes the whole reply from the values instead.
+	var encoded []byte
+	if len(entryBytes) == len(response.Results) {
+		encoded, err = assembleHranaResponse(response.Baton, entryBytes)
+	} else {
+		encoded, err = json.Marshal(response)
+	}
 	if err != nil || len(encoded) > resultLimit {
 		limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
 		return
@@ -1049,6 +1084,17 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
 			}
 		}
 		return nil, reply
+	}
+	// A pipeline execute entry that consumed the fused open already publishes
+	// this answer; encoding the entry here saves decoding the result and then
+	// encoding it twice. The gate keeps the protobuf adapter, which consumes the
+	// same fused answer, on the decoded value.
+	if hranaExecuteEntryRequested(request.Context()) {
+		if fused, ok := fusedStatementResultFrom(request.Context()); ok && fused.Session == session && fused.SQL == statement.SQL {
+			if encoded, ok := encodeHranaExecuteEntry(reply.result); ok {
+				return encoded, hranaReply{}
+			}
+		}
 	}
 	var native hranaNativeStatement
 	decoder := json.NewDecoder(bytes.NewReader(reply.result))
