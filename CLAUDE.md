@@ -241,6 +241,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 
 | R43 | `perf/r43-fused-lifecycle` / `6d5c9da`（merge `99a2361`；含 R42 cherry-pick `d41ca9d`） | Hrana `[execute, close]` 融合会话关闭：worker `open_guarded_statement` capability 1→2，level≥2 在同一请求/租约窗口内关闭会话（仅在语句已结算时）；平台 close 入口仍走原 handler（准入、记录、R37 回复后异步耐久），仅跳过 worker close RPC；旧 worker/`requires_intent`/close 失败全部回退普通 close | 上限探针（零代码形状探针，基线栈）：`[execute, close]` 0.752ms vs `[execute]` 0.608ms，close 入口 ≈0.143ms，投影 −20%~−24%。Gate 0（临时平台探针 + authority diag）：20 条 pipeline → `open_guarded_statement` **20**、`close_session` **0**（R42 级 worker 对照 20+20；`validate_session` 20 vs 基线 40）。配对 A/B（3 轮 A/B/B/A，两侧独立预热栈，samples 20/30/50）：F1 json 中位 **0.794→0.510ms（−35.7%，配对中位 −39.3/−34.6/−30.2%，6/6 同向）**、pb **0.768→0.513ms（−33.3%，配对 −32.6/−33.5/−33.8%，6/6 同向）**；响应字节 312/40 不变、warnings=[]、无 429 | 合入 main：F1 <10ms 场景 ≥20% 门槛双协议达标。回归门无 >10% 可复现退化（L1 −11.3%、B1 json +3.9%/pb −3.2%、C1 −3.2%、H1 cursor json 149.59 vs 145.13ms/pb −4.5%；X1 c1 候选更快、c8/c16 宿主瞬态不可确认；全程 429=0、errors=0、seats/permits 归零）。未做崩溃恢复 E2E 与真实 close 失败 Rust 集成测试 |
 | R44 | 测量轮（探针分支 `probe/r44-validate` @ `0a65f65`、`probe/r44-rpc-cost` @ `a576fb8`，均不合入） | 在 R43 之后的 0.50ms 底上找剩余方向：D1 close 每次线程 spawn、D3 pipeline 每 entry 内部 HTTP 跳转、authority lease 校验往返 | D1 零代码微基准 `spawn+condvar+join` 0.021ms/次（F1 的 4%）；D3 每 entry 可省 **2.6µs**（marshal 0.61 + NewRequest 1.16 + reply 0.69 + 响应编码 0.16；F1 ≈1%、B1 ≈2.4%）；lease 校验：R41 部分本地校验 0.50→0.46/0.49ms（−2~−8%），全量本地校验 **0.50→0.34/0.36ms（−28%~−32%）**；成本拆分 worker 侧 RPC **207µs/次**、authority 侧 `check_binding` **≈84µs/次**（其中 `ownership_view()` = `store.get(authority/root)`+解码 ≈85µs，两次 `live()` 合计 ≈2µs） | 仅记录，不合入：D1/D3 远低于 20% 门槛；lease 校验是唯一过门槛的方向，但去掉它等于放宽安全语义（读路径再无其它 authority 交互），需用户明确授权，本轮询问被拒绝；authority 侧只缓存 root 视图可省 ≈85µs ≈17%，仍不够 |
+| R45 | `perf/r45-cursor-page-buffer` / `2a52f46`（merge `a69b51e`） | Hrana 流式游标（JSON NDJSON 与 protobuf）不再逐行 `writer.Write`：页内累积、页尾一次写出；帧编码、`fatal`/错误路径前先冲刷缓冲，页面 `Flush` 边界与字节流不变 | Gate 0（临时计数 writer，`ad8def88…`，测前已移除）：H1 8,625 行 json **34** 次写出 / protobuf **37** 次，整包 20,608,525 / 20,272,006 字节与基线逐字节一致。配对 A/B（2 轮 × A/B/B/A，两侧独立栈 + 各自全新同数据卷，1 warmup + 5 timed/leg）：H1 json **154.23→123.20ms（−20.12%）**，逐轮 −20.37% / −20.94%（2/2 同向）；protobuf **126.44→102.03ms（−19.31%）**，−20.34% / −19.72%（2/2）；每样本 rows=8,625、响应字节一致、0 错误 | 合入 main：>10ms 场景 10% 门槛双协议达标（约 2×）。回归门 H3（同机制 cursor）**−14.86%**、F1 −2.9%/+0.3%、C1 +5.3%、B1 json −0.2%、R1 复测 −5.6%；L1 两侧均 `row_count_mismatch`（合成 fixture 主导 cwd 超过 SQL `LIMIT 40`，与候选无关）；X1 两轮方向互换、宿主瞬态不可确认，未见可复现 >10% 退化；warnings=[] / fatal=[] / 429=0 / 非 200=0，两侧结束 seats/permits 归零 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1625,6 +1626,55 @@ SHA256 与端口区分。
 **下一轮提示**：`<10ms` 场景（F1/B1）在安全边界内已无 ≥20% 的空间。下一轮转向门槛 10% 的更大场景
 （H1 约 145ms、R1-1000 约 70ms 的大结果路径），或 c64 容量路径（R37 之后的 completion 槽位、
 deferred durability 池饱和）；若用户授权放宽 lease 校验，可直接实现 −28%~−32% 的候选。
+
+#### R45：Hrana cursor 行按页缓冲（2026-11-04，合入）
+
+**背景**：R44 后 `<10ms` 场景已到结构下限，转向 >10ms 的大结果路径。R45 归因（临时探针
+`probe-e`，相对干净二进制 +1.1–3.5%）把 H1 json-cursor 154.6ms 拆为：worker RPC 46.5ms（30.1%）、
+平台 `sql_decode` 复制 13.5ms（8.8%）、gateway 页校验 17.9ms（11.6%）、adapter `pageScanner.scan`
+12.9ms（8.3%）、行编码 + `writer.Write` **58.3ms（37.7%）**，其中逐行写约占 27ms。上限探针
+（只改读路径、页级缓冲）152.09→127.30ms（−16.3%），响应字节逐样本一致。
+
+**改动**（`2a52f46`）：`hrana_v3_json_cursor.go` 与 `hrana_http_cursor.go` 的流式写路径不再对每行
+调用 `writer.Write`，改为页内累积、页尾一次写出；所有帧编码（start/step_begin/results/step_end/
+error）与 `fatal`、写游标错误路径之前先冲刷缓冲，行顺序与「已写出的行不回滚」语义不变；页面
+`flusher.Flush()` 边界不变。写游标的 `maxWrites` 测试改为按页粒度（第 2 页中断，语义不变），新增
+`TestHranaV3JSONCursorPageBufferKeepsRowBytes` 固定缓冲后的行字节与 step 顺序。
+
+**Gate 0**：临时计数 writer（`r45_probe.go`，测前删除；探针二进制 `ad8def88…`）：H1 json 8,625 行
+→ **34** 次响应写出，protobuf **37** 次；整包 20,608,525 / 20,272,006 字节与基线逐字节一致，
+rows=8,625。移除探针后重建候选 `549f0f68…`。
+
+**配对 A/B**（2 轮 × A/B/B/A，每 leg 1 warmup + 5 timed；base `peri-platform-r43-cand`
+`dfc4ae16…` = main，cand `peri-platform-r45-cand` `549f0f68…`，两侧同一 worker `27d8dd46…`，
+各自全新卷 + 同一合成 fixture：8,625 行 / 20,177,069 字符）：
+
+| 协议 | 第 1 轮 | 第 2 轮 | 合并 |
+|---|---:|---:|---:|
+| json-cursor | 152.88→121.74ms（−20.37%） | 158.74→125.50ms（−20.94%） | **154.23→123.20ms（−20.12%）** |
+| protobuf-cursor | 125.57→100.04ms（−20.34%） | 127.74→102.55ms（−19.72%） | **126.44→102.03ms（−19.31%）** |
+
+两协议各 20 样本/侧、2/2 轮同向；每样本 rows=8,625、响应字节逐样本一致、fails=0。按 >10ms 场景
+10% 门槛双协议达标，约为门槛的 2 倍。
+
+**回归门禁**（4 legs A/B/B/A，5 timed/leg）：H3.content-projection json-cursor
+148.77→126.66ms（**−14.86%**，同一机制）；F1 json −2.86% / pb +0.30%；C1 baton-10 +5.29%；
+B1 json −0.20% / pb −63.90%（基线腿含 8.97/15.27ms 瞬态，方向为改善）；R1-1000 首轮 +10.16%，
+复测 46.92→44.30ms（−5.60%）不复现。L1 两侧 4 条腿均 `row_count_mismatch`：合成 fixture 主导
+cwd 的线程数超过 SQL `LIMIT 40`，而 harness 期望恰好 `list_threads` 行，与候选无关。X1 两轮
+（各 4 legs）在 c4/c8/c16 上方向互换、腿内中位跨 1.4–39.7ms，属宿主瞬态，不可确认。全程
+`warnings=[]`、`fatal=[]`、429=0、非 200=0，两侧结束 `session_seats=0`、`active_permits=0`。
+
+**测试**：`gofmt`、`go vet ./...`、`go build ./cmd/peri-platform ./cmd/peri` 干净；
+`PERI_RUST_BINARY=…/target/debug/peri-loom-v1 go test -count=1 .` 全包 **ok 183.2s**。
+
+**证据**：`docs/performance-review/2026-11-04-r45-cursor-page-buffer/`（`results.md`、`gate0.txt`、
+`r45-ab.sh`、`r45-reg.sh`、`ab-raw/` 逐样本 raw + summary）。原始日志仍在 `/tmp/peri-perf/`（非持久）。
+
+**下一轮提示**：H1 剩余 123ms 中行编码仍约 31ms；gateway `validCursorFetchResponse`（17.9ms）与
+adapter `pageScanner.scan`（12.9ms）重复校验同一页，合计约 25ms（16%），但单独任一项都 <10%，
+需合并归属才过门槛。R1-A（融合语句答案解析 3 次 → 1 次，上限 13.1ms / 27.6%）是下一条明确
+过门槛的方向。
 
 ## 代码约定
 

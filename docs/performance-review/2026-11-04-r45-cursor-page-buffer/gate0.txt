@@ -1,0 +1,17 @@
+# R45 Gate 0 — cursor page buffer mechanism check
+
+Temporary counting response writer (`r45_probe.go`, removed before measurement) wrapped the
+streaming cursor writers and logged one line per request. Binary
+`peri-platform-r45-gate0` = `ad8def88cde8ce9c…`; stack `run-r45gate`, worker
+`peri-loom-v1-r43-cand` (`27d8dd4682128ff766899925…`), fixture seeded to
+`threads=201 messages=8625 chars=20177069 focus=8625`.
+
+| Request | response writes | rows | response bytes |
+|---|---:|---:|---:|
+| `H1.content-20mb` json-cursor | 34 | 8,625 | 20,608,525 |
+| `H1.content-20mb` protobuf-cursor | 37 | 8,625 | 20,272,006 |
+
+Baseline (R45 attribution, same fixture): json body 20,608,525 bytes, protobuf 20,272,006 bytes.
+The write count falls from one per row to one per page (34 pages + start/step frames), and the
+whole-body bytes are unchanged. The clean candidate binary rebuilt after removing the probe is
+`549f0f68f32aef90…`.
