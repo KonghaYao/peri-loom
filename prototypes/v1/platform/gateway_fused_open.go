@@ -208,14 +208,6 @@ type fusedStatementAnswer struct {
 	executionCompleted *bool
 }
 
-type fusedStatementReply struct {
-	Status             string               `json:"status"`
-	Reason             *guardedIntentReason `json:"reason"`
-	Result             json.RawMessage      `json:"result"`
-	Error              *string              `json:"error"`
-	ExecutionCompleted *bool                `json:"execution_completed"`
-}
-
 // hranaOpenReply carries the open answer the gateway already decoded and
 // validated to the in-process Hrana adapter that asked for the fused open.
 // The adapter consumes it directly: re-encoding the statement result into the
@@ -231,43 +223,10 @@ type hranaOpenReply struct {
 
 // parseFusedStatementAnswer accepts only the complete shapes the worker emits.
 // A partial answer is not evidence, so it is rejected rather than repaired.
+// The reply is walked once (see scanFusedStatementReply): the statement result
+// is handed on as a subslice instead of being decoded into a copy first.
 func parseFusedStatementAnswer(reply json.RawMessage) (fusedStatementAnswer, bool) {
-	var parsed fusedStatementReply
-	decoder := json.NewDecoder(bytes.NewReader(reply))
-	decoder.UseNumber()
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&parsed) != nil || decoder.Decode(new(any)) != io.EOF {
-		return fusedStatementAnswer{}, false
-	}
-	switch parsed.Status {
-	case "ok":
-		if parsed.Reason != nil || parsed.Error != nil || parsed.ExecutionCompleted != nil ||
-			!validStatementResult(parsed.Result) {
-			return fusedStatementAnswer{}, false
-		}
-		return fusedStatementAnswer{kind: fusedStatementOK, result: parsed.Result}, true
-	case "requires_intent":
-		if parsed.Reason == nil || parsed.Result != nil || parsed.Error != nil || parsed.ExecutionCompleted != nil {
-			return fusedStatementAnswer{}, false
-		}
-		switch *parsed.Reason {
-		case guardedEngineWritable, guardedTransactionContext, guardedConnectionControl:
-		default:
-			return fusedStatementAnswer{}, false
-		}
-		return fusedStatementAnswer{kind: fusedStatementRequiresIntent, reason: *parsed.Reason}, true
-	case "error":
-		if parsed.Error == nil || *parsed.Error == "" || parsed.Result != nil || parsed.Reason != nil {
-			return fusedStatementAnswer{}, false
-		}
-		return fusedStatementAnswer{
-			kind:               fusedStatementError,
-			message:            *parsed.Error,
-			executionCompleted: parsed.ExecutionCompleted,
-		}, true
-	default:
-		return fusedStatementAnswer{}, false
-	}
+	return scanFusedStatementReply(reply)
 }
 
 // fusedCloseReply is the close half of a fused open reply. `ok` is the only
