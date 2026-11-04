@@ -25,6 +25,12 @@ use serde_json::{json, Value};
 const CONTROL: &str = "statement_control_credential______________";
 const SQL: &str = "statement_sql_credential__________________";
 
+/// Result budget a guarded block is tested with. The worker reserves the block
+/// budget plus one statement's worth of result before dispatch, so an unbounded
+/// value would overflow that reservation and every block would be refused by
+/// memory admission instead of exercising the block. The platform sends 4 MiB.
+const BATCH_RESULT_BUDGET: usize = 4 * 1024 * 1024;
+
 struct Worker {
     fixture: remote::Fixture,
     address: SocketAddr,
@@ -1676,7 +1682,7 @@ fn guarded_batch_matches_the_single_statement_results_field_by_field() -> Result
     let repeated = (0..3)
         .map(|_| batch_bound_statement(select, vec![StatementArg::Integer { value: "1".into() }]))
         .collect::<Vec<_>>();
-    let batch = worker.guarded_batch(&session, repeated, usize::MAX)?;
+    let batch = worker.guarded_batch(&session, repeated, BATCH_RESULT_BUDGET)?;
     assert_eq!(batch["ok"], true, "{batch}");
     let items = batch["result"]["items"].as_array().expect("batch items");
     assert_eq!(batch["result"]["next"], 3);
@@ -1709,7 +1715,7 @@ fn guarded_batch_stops_before_a_write_and_proves_it_did_not_run() -> Result<()> 
             batch_statement("INSERT INTO batch_writes VALUES (1)"),
             batch_statement("SELECT 3"),
         ],
-        usize::MAX,
+        BATCH_RESULT_BUDGET,
     )?;
     assert_eq!(batch["ok"], true, "{batch}");
     let items = batch["result"]["items"].as_array().expect("batch items");
@@ -1746,7 +1752,7 @@ fn guarded_batch_reports_a_sql_error_and_keeps_the_session_usable() -> Result<()
             batch_statement("SELECT 1 UNION ALL SELECT abs(-9223372036854775808)"),
             batch_statement("SELECT 3"),
         ],
-        usize::MAX,
+        BATCH_RESULT_BUDGET,
     )?;
     assert_eq!(batch["ok"], true, "{batch}");
     let items = batch["result"]["items"].as_array().expect("batch items");
@@ -1763,7 +1769,7 @@ fn guarded_batch_reports_a_sql_error_and_keeps_the_session_usable() -> Result<()
             batch_statement("SELECT 1"),
             batch_statement("SELECT * FROM batch_missing_table"),
         ],
-        usize::MAX,
+        BATCH_RESULT_BUDGET,
     )?;
     assert_eq!(rejected["ok"], true, "{rejected}");
     assert_eq!(
@@ -1799,22 +1805,40 @@ fn guarded_batch_validation_refuses_the_whole_block_before_any_statement_runs() 
         named_args: vec![],
         want_rows: true,
     };
-    for (name, statements) in [
-        ("empty", vec![]),
+    for (name, statements, expected) in [
+        (
+            "empty",
+            vec![],
+            "SQL execution not entered: empty guarded readonly batch",
+        ),
         (
             "too many",
             (0..9)
                 .map(|index| batch_statement(&format!("SELECT {index}")))
                 .collect(),
+            "SQL execution not entered: guarded readonly batch limit exceeded",
         ),
         (
             "invalid argument",
             vec![batch_statement("SELECT 1"), invalid_argument],
+            "SQL execution not entered: Invalid symbol",
         ),
     ] {
-        let batch = worker.guarded_batch(&session, statements, usize::MAX)?;
+        let batch = worker.guarded_batch(&session, statements, BATCH_RESULT_BUDGET)?;
         assert_eq!(batch["ok"], false, "{name}: {batch}");
         assert_eq!(batch["execution_completed"], false, "{name}: {batch}");
+        // A memory admission refusal also reports execution_completed=false, so
+        // the verdict alone cannot prove parameter validation ran. The dispatch
+        // context names the admission lane; prepare_guarded_batch errors start
+        // with the not-executed evidence instead.
+        let error = batch["error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name}: no error text: {batch}"));
+        assert!(error.starts_with(expected), "{name}: {batch}");
+        assert!(
+            !error.contains("worker request memory admission"),
+            "{name}: the block failed on admission, not parameter validation: {batch}"
+        );
     }
     assert_eq!(
         worker.statement(&session, "SELECT count(*) FROM batch_refused", vec![])?["result"]["rows"],
@@ -1847,7 +1871,7 @@ fn guarded_batch_returns_the_statement_that_crosses_the_result_budget_and_stops(
     let resumed = worker.guarded_batch(
         &session,
         vec![batch_statement("SELECT 2"), batch_statement("SELECT 3")],
-        usize::MAX,
+        BATCH_RESULT_BUDGET,
     )?;
     assert_eq!(resumed["result"]["next"], 2);
     Ok(())
@@ -1881,7 +1905,7 @@ fn guarded_batch_projects_rows_but_still_reports_counters() -> Result<()> {
             named_args: vec![],
             want_rows: false,
         }],
-        usize::MAX,
+        BATCH_RESULT_BUDGET,
     )?;
     assert_eq!(batch["ok"], true, "{batch}");
     let result = &batch["result"]["items"][0]["result"];

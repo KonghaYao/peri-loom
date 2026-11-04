@@ -1270,7 +1270,7 @@ func (handler *hranaHTTP) serveHranaProtoSingleExecute(writer http.ResponseWrite
 	if resultLimit <= resultReserve {
 		return false
 	}
-	opened, reply := handler.hranaOpen(request, credential, database, &statement, true)
+	opened, reply := handler.hranaOpen(request, credential, database, &statement)
 	if reply.status != http.StatusOK || reply.code != "" {
 		return false
 	}

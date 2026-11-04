@@ -54,16 +54,15 @@ type hranaOpenResult struct {
 // candidate. A worker that does not fuse the statement answers with the usual
 // session-only result and the entry takes the ordinary statement path.
 //
-// closeAfter says the adapter's very next entry is the session's close, so the
-// gateway may ask the worker to retire the session in the same request. That
-// answer is still the gateway's decision: a worker that does not advertise the
-// close level keeps the session.
-func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, database controller.DatabaseID, statement *hranaStatement, closeAfter bool) (hranaOpenResult, hranaReply) {
+// The close is never fused into this open. A statement that overruns the result
+// budget can still be served by the cursor fallback, which needs the session
+// after the first answer; retiring it here would turn a bounded read into a
+// result_limit. The adapter therefore always sends close as its own entry.
+func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, database controller.DatabaseID, statement *hranaStatement) (hranaOpenResult, hranaReply) {
 	openRequest := request
 	candidate := false
 	if statement != nil {
 		if fused, ok := hranaFusionCandidate(*statement); ok {
-			fused.CloseAfter = closeAfter
 			candidate = true
 			openRequest = request.WithContext(withFusedOpenStatement(request.Context(), fused))
 		}

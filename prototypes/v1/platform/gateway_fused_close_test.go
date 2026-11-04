@@ -14,6 +14,11 @@ import (
 // TestFusedCloseAnswerShapes pins the only two payloads that count as a close
 // answer and rejects every partial shape: an unreadable close is not evidence,
 // so the caller must fall back to the ordinary close entry.
+//
+// The gateway keeps this machinery, but the Hrana adapters no longer ask the
+// open to retire the session: a statement that overruns its result budget may
+// still need the session for the cursor fallback. These shapes stay pinned so a
+// future request cannot silently accept a partial close as proof.
 func TestFusedCloseAnswerShapes(t *testing.T) {
 	if closed, valid := parseFusedCloseAnswer(json.RawMessage(`{"status":"ok"}`)); !closed || !valid {
 		t.Fatalf("ok close: closed=%t valid=%t", closed, valid)
@@ -49,48 +54,6 @@ func TestFusedCloseAnswerShapes(t *testing.T) {
 	}
 }
 
-// fusedCloseHook answers a worker that advertises the fused-open close level.
-// closeReply decides the close half of the open; nil answers a successful close
-// whenever the caller asked for one.
-func fusedCloseHook(closeReply func(map[string]any) any) func(context.Context, controller.Worker, map[string]any) (any, error) {
-	return func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		switch command["command"] {
-		case "capabilities":
-			return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
-		case "open_guarded_statement":
-			result := map[string]any{
-				"session":   fusedOpenSession,
-				"readonly":  false,
-				"statement": map[string]any{"status": "ok", "result": guardedBatchReadResult(42)},
-			}
-			if command["close_after_statement"] == true {
-				if closeReply != nil {
-					result["close"] = closeReply(command)
-				} else {
-					result["close"] = map[string]any{"status": "ok"}
-				}
-			}
-			return result, nil
-		case "open_session":
-			return map[string]any{"session": fusedOpenSession, "readonly": false}, nil
-		case "guarded_readonly_statement":
-			return guardedBatchReadResult(9), nil
-		case "guarded_readonly_batch":
-			raw, _ := command["statements"].([]any)
-			items := make([]any, len(raw))
-			for index := range raw {
-				items[index] = map[string]any{"index": index, "status": "ok", "result": guardedBatchReadResult(index + 1)}
-			}
-			return map[string]any{"items": items, "next": len(raw)}, nil
-		case "statement":
-			return guardedBatchWriteResult(), nil
-		case "close_session":
-			return map[string]bool{"closed": true}, nil
-		}
-		return nil, errors.New("unknown fixture action")
-	}
-}
-
 func fusedOpenCommandCalls(fixture *gatewayFixture) []map[string]any {
 	fixture.upstream.mu.Lock()
 	defer fixture.upstream.mu.Unlock()
@@ -103,12 +66,36 @@ func fusedOpenCommandCalls(fixture *gatewayFixture) []map[string]any {
 	return calls
 }
 
-func TestHranaPipelineFusedCloseSkipsTheWorkerClose(t *testing.T) {
+// TestHranaPipelineExecuteCloseKeepsTheWorkerClose pins the contract that
+// replaced the fused close: even when the worker advertises the fused-close
+// level, the implicit open fuses only the statement and the close entry still
+// reaches the worker. The platform's own open/statement/close records are
+// unchanged, so the lifecycle fusion and its audit trail stay separate.
+func TestHranaPipelineExecuteCloseKeepsTheWorkerClose(t *testing.T) {
 	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(fusedCloseHook(nil))
+	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+		switch command["command"] {
+		case "capabilities":
+			// Level 2 is what a fused-close capable worker advertises. The adapter
+			// must not ask for the close even though the worker would accept it.
+			return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
+		case "open_guarded_statement":
+			if _, exists := command["close_after_statement"]; exists {
+				return nil, errors.New("the adapter fused the close into the open")
+			}
+			return map[string]any{
+				"session":   fusedOpenSession,
+				"readonly":  false,
+				"statement": map[string]any{"status": "ok", "result": guardedBatchReadResult(42)},
+			}, nil
+		case "close_session":
+			return map[string]bool{"closed": true}, nil
+		}
+		return nil, errors.New("unknown fixture action")
+	})
 	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, fusedOpenPipelineRequests())
 	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"ok"`) != 2 {
-		t.Fatalf("fused close pipeline: %d %s", response.Code, response.Body.String())
+		t.Fatalf("execute+close pipeline: %d %s", response.Code, response.Body.String())
 	}
 	if fixture.upstream.count("open_guarded_statement") != 1 {
 		t.Fatalf("fused opens: %d", fixture.upstream.count("open_guarded_statement"))
@@ -117,18 +104,18 @@ func TestHranaPipelineFusedCloseSkipsTheWorkerClose(t *testing.T) {
 		fixture.upstream.count("guarded_readonly_statement") != 0 {
 		t.Fatal("the fused entry was dispatched a second time")
 	}
-	// The worker already closed the session: the close entry must not name it
-	// again, because the command would answer "unknown worker session".
-	if closes := fixture.upstream.count("close_session"); closes != 0 {
-		t.Fatalf("a fused close still called close_session: %d", closes)
+	// The close entry must reach the worker: only a fused close would have
+	// retired the session inside the open.
+	if closes := fixture.upstream.count("close_session"); closes != 1 {
+		t.Fatalf("the close entry did not reach the worker: %d", closes)
 	}
 	for _, command := range fusedOpenCommandCalls(fixture) {
-		if command["close_after_statement"] != true {
-			t.Fatalf("fused open did not ask for the close: %v", command)
+		if _, exists := command["close_after_statement"]; exists {
+			t.Fatalf("a fused open asked the worker to retire the session: %v", command)
 		}
 	}
 	// The platform's own facts are unchanged: open, statement and close records
-	// all exist even though the worker round trips were fused.
+	// all exist even though the open and the statement were fused.
 	if len(fixture.audit.outcomesOf("open")) != 1 || len(fixture.audit.outcomesOf("statement")) != 1 || len(fixture.audit.outcomesOf("close")) != 1 {
 		t.Fatalf("audit outcomes: open=%v statement=%v close=%v",
 			fixture.audit.outcomesOf("open"), fixture.audit.outcomesOf("statement"), fixture.audit.outcomesOf("close"))
@@ -137,7 +124,7 @@ func TestHranaPipelineFusedCloseSkipsTheWorkerClose(t *testing.T) {
 	registered := len(fixture.gateway.sessions)
 	fixture.gateway.mu.Unlock()
 	if registered != 0 {
-		t.Fatalf("a fused close left %d sessions registered", registered)
+		t.Fatalf("the close left %d sessions registered", registered)
 	}
 	fixture.gateway.deferred.wait()
 	state, err := fixture.state.Snapshot()
@@ -168,78 +155,125 @@ func TestHranaPipelineFusedCloseSkipsTheWorkerClose(t *testing.T) {
 	}
 }
 
-func TestHranaPipelineFusedCloseFallsBackWhenTheWorkerReportsACloseError(t *testing.T) {
+// fusedBudgetWorker models a worker that advertises the fused-close level and
+// answers an implicit open with a statement result over the tenant budget. Its
+// describe and cursor pages answer the read-only fallback. The hook refuses an
+// open that asks the worker to retire the session: that fusion is what removed
+// the session the fallback needs.
+type fusedBudgetWorker struct {
+	large   map[string]any
+	fetched int
+}
+
+func (worker *fusedBudgetWorker) hook(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+	switch command["command"] {
+	case "capabilities":
+		return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
+	case "open_guarded_statement":
+		if _, exists := command["close_after_statement"]; exists {
+			return nil, errors.New("the adapter retired the session before the cursor fallback")
+		}
+		return map[string]any{
+			"session":   fusedOpenSession,
+			"readonly":  false,
+			"statement": map[string]any{"status": "ok", "result": worker.large},
+		}, nil
+	case "describe":
+		return map[string]any{
+			"params":      []any{},
+			"cols":        []any{map[string]any{"name": "body", "decltype": "TEXT"}},
+			"is_explain":  false,
+			"is_readonly": true,
+		}, nil
+	case "open_read_cursor":
+		return map[string]any{"cols": []any{map[string]any{"name": "body", "decltype": "TEXT"}}}, nil
+	case "fetch_read_cursor":
+		worker.fetched++
+		return map[string]any{"rows": [][]any{{"cursor-row"}}, "done": true}, nil
+	case "close_session":
+		return map[string]bool{"closed": true}, nil
+	}
+	return nil, errors.New("unknown fixture action")
+}
+
+// TestHranaPipelineExecuteCloseKeepsTheSessionForTheCursorFallback covers the
+// R43 regression that made the official client fail a 12,000-row HTTP execute:
+// the fused open ran the statement, the fused close retired the session, and a
+// statement over the result budget was then published as result_limit because
+// the describe/cursor fallback had no session left to address.
+//
+// The fixture needs one over-budget fused answer and one successful describe,
+// so the body stays small; it does not reproduce the row count. The assertion
+// is on the path, not on the volume: the fallback must run and the close entry
+// must still reach the worker.
+func TestHranaPipelineExecuteCloseKeepsTheSessionForTheCursorFallback(t *testing.T) {
 	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(fusedCloseHook(func(map[string]any) any {
-		return map[string]any{"status": "error", "error": "session cleanup quarantined"}
-	}))
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 512 })
+	worker := &fusedBudgetWorker{large: guardedBatchReadResult(strings.Repeat("x", 512))}
+	fixture.upstream.setHook(worker.hook)
 	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, fusedOpenPipelineRequests())
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"ok"`) != 2 {
-		t.Fatalf("close fallback pipeline: %d %s", response.Code, response.Body.String())
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `"rows":[["cursor-row"]]`) {
+		t.Fatalf("the fused result budget did not use the cursor fallback: %d %s", response.Code, body)
 	}
-	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("close_session") != 1 {
-		t.Fatalf("fused=%d close=%d", fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("close_session"))
+	if strings.Contains(body, `"code":"result_limit"`) {
+		t.Fatalf("the pipeline published result_limit instead of the cursor rows: %s", body)
 	}
-	// A close the worker could not prove must not be recorded as the session's
-	// retirement; the ordinary close entry is the one that finishes it.
-	fixture.gateway.mu.Lock()
-	registered := len(fixture.gateway.sessions)
-	fixture.gateway.mu.Unlock()
-	if registered != 0 {
-		t.Fatalf("the fallback close left %d sessions registered", registered)
+	if fixture.upstream.count("describe") != 1 || fixture.upstream.count("open_read_cursor") != 1 || worker.fetched != 1 {
+		t.Fatalf("fallback calls: describe=%d open=%d fetches=%d",
+			fixture.upstream.count("describe"), fixture.upstream.count("open_read_cursor"), worker.fetched)
 	}
-	if len(fixture.audit.outcomesOf("close")) != 1 {
-		t.Fatalf("close outcomes: %v", fixture.audit.outcomesOf("close"))
+	// The fallback needs the session the fused close would have retired, and the
+	// close entry that follows the statement still retires it normally.
+	if fixture.upstream.count("close_session") != 1 {
+		t.Fatalf("the close entry did not reach the worker: %d", fixture.upstream.count("close_session"))
+	}
+	for _, command := range fusedOpenCommandCalls(fixture) {
+		if _, exists := command["close_after_statement"]; exists {
+			t.Fatalf("the open retired the session before the fallback: %v", command)
+		}
 	}
 }
 
-func TestHranaPipelineFusedCloseLeavesARefusedWriteSession(t *testing.T) {
+// TestHranaProtoSingleExecuteKeepsTheSessionForTheCursorFallback applies the
+// same path to the protobuf single-execute fast path used by the HTTP clients.
+func TestHranaProtoSingleExecuteKeepsTheSessionForTheCursorFallback(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	gatewayQuota(t, fixture, "project-a", func(quota *Quotas) { quota.MaxResultBytes = 512 })
+	worker := &fusedBudgetWorker{large: guardedBatchReadResult(strings.Repeat("x", 512))}
+	fixture.upstream.setHook(worker.hook)
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	request := append(hranaProtoBytes(2, testHranaV3Statement()), hranaProtoBytes(2, hranaProtoBytes(1, nil))...)
+	response := testHranaV3Call(t, handler, fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/pipeline", request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/x-protobuf" {
+		t.Fatalf("protobuf fused result budget did not use the cursor fallback: %d %s", response.Code, response.Body.String())
+	}
+	if fixture.upstream.count("describe") != 1 || fixture.upstream.count("open_read_cursor") != 1 || worker.fetched != 1 {
+		t.Fatalf("fallback calls: describe=%d open=%d fetches=%d",
+			fixture.upstream.count("describe"), fixture.upstream.count("open_read_cursor"), worker.fetched)
+	}
+	if fixture.upstream.count("close_session") != 1 {
+		t.Fatalf("the close entry did not reach the worker: %d", fixture.upstream.count("close_session"))
+	}
+	for _, command := range fusedOpenCommandCalls(fixture) {
+		if _, exists := command["close_after_statement"]; exists {
+			t.Fatalf("the protobuf open retired the session before the fallback: %v", command)
+		}
+	}
+}
+
+// TestHranaProtoSingleExecuteKeepsTheWorkerClose applies the same contract to
+// the protobuf fast path: it still fuses the implicit open with the first
+// statement, but the close is a separate worker call.
+func TestHranaProtoSingleExecuteKeepsTheWorkerClose(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
 		switch command["command"] {
 		case "capabilities":
 			return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
 		case "open_guarded_statement":
-			if command["close_after_statement"] != true {
-				return nil, errors.New("the adapter did not ask for the fused close")
-			}
-			return map[string]any{
-				"session":   fusedOpenSession,
-				"readonly":  false,
-				"statement": map[string]any{"status": "requires_intent", "reason": "engine_writable"},
-			}, nil
-		case "statement":
-			return guardedBatchWriteResult(), nil
-		case "close_session":
-			return map[string]bool{"closed": true}, nil
-		}
-		return nil, errors.New("unknown fixture action")
-	})
-	requests := []any{
-		map[string]any{"type": "execute", "stmt": map[string]any{"sql": "INSERT INTO records(id) VALUES(1)", "want_rows": false}},
-		map[string]any{"type": "close"},
-	}
-	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, requests)
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"ok"`) != 2 {
-		t.Fatalf("fused write pipeline: %d %s", response.Code, response.Body.String())
-	}
-	// The worker keeps a session it may still write on and close normally.
-	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("statement") != 1 || fixture.upstream.count("close_session") != 1 {
-		t.Fatalf("fused=%d statement=%d close=%d",
-			fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("statement"), fixture.upstream.count("close_session"))
-	}
-}
-
-func TestHranaPipelineFusedCloseRequiresTheSecondCapabilityLevel(t *testing.T) {
-	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		switch command["command"] {
-		case "capabilities":
-			// An R42 worker: it fuses the statement and nothing else.
-			return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 1}, nil
-		case "open_guarded_statement":
 			if _, exists := command["close_after_statement"]; exists {
-				return nil, errors.New("a level-1 worker was asked to close")
+				return nil, errors.New("the protobuf adapter fused the close into the open")
 			}
 			return map[string]any{
 				"session":   fusedOpenSession,
@@ -251,127 +285,19 @@ func TestHranaPipelineFusedCloseRequiresTheSecondCapabilityLevel(t *testing.T) {
 		}
 		return nil, errors.New("unknown fixture action")
 	})
-	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, fusedOpenPipelineRequests())
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"ok"`) != 2 {
-		t.Fatalf("level-1 pipeline: %d %s", response.Code, response.Body.String())
-	}
-	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("close_session") != 1 {
-		t.Fatalf("fused=%d close=%d", fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("close_session"))
-	}
-}
-
-func TestHranaPipelineFusedCloseOnlyForTheExecuteCloseShape(t *testing.T) {
-	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(fusedCloseHook(nil))
-	requests := []any{
-		map[string]any{"type": "execute", "stmt": map[string]any{"sql": "SELECT 1", "want_rows": true}},
-		map[string]any{"type": "execute", "stmt": map[string]any{"sql": "SELECT 2", "want_rows": true}},
-		map[string]any{"type": "close"},
-	}
-	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, requests)
-	if response.Code != http.StatusOK || strings.Count(response.Body.String(), `"type":"execute"`) != 2 {
-		t.Fatalf("two-execute pipeline: %d %s", response.Code, response.Body.String())
-	}
-	for _, command := range fusedOpenCommandCalls(fixture) {
-		if _, exists := command["close_after_statement"]; exists {
-			t.Fatalf("a later entry needs the session: %v", command)
-		}
-	}
-	if closes := fixture.upstream.count("close_session"); closes != 1 {
-		t.Fatalf("the ordinary close ran %d times", closes)
-	}
-}
-
-func TestHranaProtoSingleExecuteFusesTheClose(t *testing.T) {
-	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(fusedCloseHook(nil))
 	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
 	request := append(hranaProtoBytes(2, testHranaV3Statement()), hranaProtoBytes(2, hranaProtoBytes(1, nil))...)
 	response := testHranaV3Call(t, handler, fixture.tokenA, "/db/tenant-a/db-a/main/v3-protobuf/pipeline", request)
 	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/x-protobuf" {
-		t.Fatalf("protobuf fused close: %d %s", response.Code, response.Body.String())
+		t.Fatalf("protobuf execute+close: %d %s", response.Code, response.Body.String())
 	}
-	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("close_session") != 0 {
-		t.Fatalf("fused=%d close=%d", fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("close_session"))
+	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("close_session") != 1 {
+		t.Fatalf("fused=%d close=%d",
+			fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("close_session"))
 	}
 	for _, command := range fusedOpenCommandCalls(fixture) {
-		if command["close_after_statement"] != true {
-			t.Fatalf("protobuf open did not ask for the close: %v", command)
+		if _, exists := command["close_after_statement"]; exists {
+			t.Fatalf("protobuf open asked the worker to retire the session: %v", command)
 		}
-	}
-}
-
-func TestHranaFusedCloseDoesNotReProbeTheRetiredSession(t *testing.T) {
-	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		switch command["command"] {
-		case "capabilities":
-			return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
-		case "open_guarded_statement":
-			return map[string]any{
-				"session":   fusedOpenSession,
-				"readonly":  false,
-				"statement": map[string]any{"status": "error", "error": "no such table: missing", "execution_completed": false},
-				"close":     map[string]any{"status": "ok"},
-			}, nil
-		case "describe":
-			return nil, errors.New("the adapter re-probed a retired session")
-		case "close_session":
-			return nil, errors.New("the adapter closed a session the worker already retired")
-		}
-		return nil, errors.New("unknown fixture action")
-	})
-	response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, fusedOpenPipelineRequests())
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"error"`) ||
-		!strings.Contains(response.Body.String(), `"code":"sql_error"`) {
-		t.Fatalf("fused statement error: %d %s", response.Code, response.Body.String())
-	}
-	// A settled statement error is answer data: the describe fallback would
-	// report an unknown session instead of the error the statement produced.
-	if fixture.upstream.count("describe") != 0 || fixture.upstream.count("statement") != 0 || fixture.upstream.count("close_session") != 0 {
-		t.Fatalf("describe=%d statement=%d close=%d",
-			fixture.upstream.count("describe"), fixture.upstream.count("statement"), fixture.upstream.count("close_session"))
-	}
-}
-
-func TestHranaFusedCloseFallsBackWhenTheWorkerRefusesTheCommand(t *testing.T) {
-	fixture := newGatewayFixture(t)
-	fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
-		switch command["command"] {
-		case "capabilities":
-			return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
-		case "open_guarded_statement":
-			// A stale positive cache in front of an older binary: the whole body
-			// is refused, so neither the statement nor the close ran.
-			return nil, &SQLRPCError{StatusCode: http.StatusBadRequest, unsupportedCommand: true}
-		case "open_session":
-			return map[string]any{"session": fusedOpenSession, "readonly": false}, nil
-		case "guarded_readonly_statement":
-			return guardedBatchReadResult(7), nil
-		case "close_session":
-			return map[string]bool{"closed": true}, nil
-		}
-		return nil, errors.New("unknown fixture action")
-	})
-	handler := newHranaHTTP(fixture.gateway)
-	response := runPipelineAuditRequest(t, handler, fixture, fusedOpenPipelineRequests())
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"execute"`) {
-		t.Fatalf("stale capability fallback: %d %s", response.Code, response.Body.String())
-	}
-	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("open_session") != 1 ||
-		fixture.upstream.count("guarded_readonly_statement") != 1 || fixture.upstream.count("close_session") != 1 {
-		t.Fatalf("fused=%d open=%d statement=%d close=%d",
-			fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("open_session"),
-			fixture.upstream.count("guarded_readonly_statement"), fixture.upstream.count("close_session"))
-	}
-	// The refusal downgrades the capability: the next open is plain and pays no
-	// second refused fused request.
-	response = runPipelineAuditRequest(t, handler, fixture, fusedOpenPipelineRequests())
-	if response.Code != http.StatusOK {
-		t.Fatalf("second pipeline: %d %s", response.Code, response.Body.String())
-	}
-	if fixture.upstream.count("open_guarded_statement") != 1 || fixture.upstream.count("open_session") != 2 {
-		t.Fatalf("negative capability cache did not hold: fused=%d open=%d",
-			fixture.upstream.count("open_guarded_statement"), fixture.upstream.count("open_session"))
 	}
 }
