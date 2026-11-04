@@ -268,7 +268,7 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 	if response.ContentLength > sqlWireLimit {
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenBody, &SQLRPCError{Ambiguous: true})
 	}
-	body, err = io.ReadAll(io.LimitReader(response.Body, sqlWireLimit+1))
+	body, err = readWorkerReply(response)
 	if err != nil || len(body) > sqlWireLimit {
 		return observeSQLOpenError(ctx, requestID, sqlOpenTransport, sqlOpenBody, &SQLRPCError{Ambiguous: true, cause: ctx.Err()})
 	}
@@ -281,6 +281,26 @@ func (upstream *sqlHTTPUpstream) callVersionInto(ctx context.Context, worker con
 		return err
 	}
 	return sqlDecode(ctx, body, requestID, output)
+}
+
+// readWorkerReply reads one worker reply into a buffer sized from the reply's
+// Content-Length, which the worker sets on every response. io.ReadAll grows a
+// buffer in 1.25x steps and copies every earlier buffer, so a 600 KB cursor page
+// paid roughly four extra copies plus the intermediate allocations; a page is
+// now read straight into its final size. Replies without a usable declared
+// length keep the growable path.
+func readWorkerReply(response *http.Response) ([]byte, error) {
+	limit := int64(sqlWireLimit) + 1
+	if response.ContentLength < 0 || response.ContentLength > limit {
+		return io.ReadAll(io.LimitReader(response.Body, limit))
+	}
+	buffer := make([]byte, int(response.ContentLength))
+	if _, err := io.ReadFull(response.Body, buffer); err != nil {
+		// A body shorter than the declared length stays the ambiguous transport
+		// failure io.ReadAll reported before.
+		return nil, err
+	}
+	return buffer, nil
 }
 
 // unsupportedWorkerCommandBody is the worker's parse refusal for a request body
