@@ -1,0 +1,188 @@
+diff --git a/prototypes/v1/platform/dev.py b/prototypes/v1/platform/dev.py
+index b80aa74..6003d36 100755
+--- a/prototypes/v1/platform/dev.py
++++ b/prototypes/v1/platform/dev.py
+@@ -877,6 +877,9 @@ def free_address():
+ 
+ def safe_environment(capacity_trace=False):
+     environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
++    for name in ("PERI_R52_PROBE_LOG",):
++        if name in os.environ:
++            environment[name] = os.environ[name]
+     if capacity_trace:
+         environment["PERI_CAPACITY_TRACE"] = "1" if os.environ.get("PERI_CAPACITY_TRACE") == "1" else "0"
+         environment["PERI_NATIVE_GATE_TRACE"] = "1" if os.environ.get("PERI_NATIVE_GATE_TRACE") == "1" else "0"
+diff --git a/prototypes/v1/platform/gateway_cursor.go b/prototypes/v1/platform/gateway_cursor.go
+index 3b37556..fef7563 100644
+--- a/prototypes/v1/platform/gateway_cursor.go
++++ b/prototypes/v1/platform/gateway_cursor.go
+@@ -1,6 +1,9 @@
+ package platform
+ 
+-import "encoding/json"
++import (
++	"encoding/json"
++	"time"
++)
+ 
+ func validCursorOpenResult(encoded json.RawMessage) bool {
+ 	var fields map[string]json.RawMessage
+@@ -37,6 +40,10 @@ func validCursorFetchResult(encoded json.RawMessage, maxRows int) bool {
+ }
+ 
+ func validCursorFetchResponse(encoded json.RawMessage, maxRows int, writing bool) bool {
++	if r52ProbeEnabled() {
++		start := time.Now()
++		defer func() { r52GatewayFetch.add(time.Since(start), len(encoded)) }()
++	}
+ 	if !writing {
+ 		return validCursorFetchResult(encoded, maxRows)
+ 	}
+diff --git a/prototypes/v1/platform/hrana_cursor_start.go b/prototypes/v1/platform/hrana_cursor_start.go
+index 99d77cb..323745f 100644
+--- a/prototypes/v1/platform/hrana_cursor_start.go
++++ b/prototypes/v1/platform/hrana_cursor_start.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/json"
+ 	"io"
+ 	"net/http"
++	"time"
+ )
+ 
+ // Only a Go caller can set this marker. The public cursor/open contract still
+@@ -21,6 +22,10 @@ func (handler *hranaHTTP) startCursor(request *http.Request, credential string,
+ // both before the gateway acknowledges the write; partial or old-worker replies
+ // remain unknown and are never retried as an open followed by a fetch.
+ func validCursorFirstResponse(encoded json.RawMessage, maxRows int, writing bool) bool {
++	if r52ProbeEnabled() {
++		start := time.Now()
++		defer func() { r52GatewayFirst.add(time.Since(start), len(encoded)) }()
++	}
+ 	decoder := json.NewDecoder(bytes.NewReader(encoded))
+ 	if sqlJSONValue(context.Background(), decoder, 0) != nil {
+ 		return false
+diff --git a/prototypes/v1/platform/hrana_gateway_response.go b/prototypes/v1/platform/hrana_gateway_response.go
+index b16aae3..d2c8d06 100644
+--- a/prototypes/v1/platform/hrana_gateway_response.go
++++ b/prototypes/v1/platform/hrana_gateway_response.go
+@@ -5,6 +5,7 @@ import (
+ 	"encoding/json"
+ 	"net/http"
+ 	"net/http/httptest"
++	"time"
+ )
+ 
+ // hranaGatewayResponse is private to in-process Hrana calls. The gateway may
+@@ -72,6 +73,10 @@ func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
+ // bytes than writeResponse produces for the same value. Every other byte,
+ // including <, > and &, stays exactly as written.
+ func hranaEscapeJSONLineSeparators(raw []byte) []byte {
++	if r52ProbeEnabled() {
++		start := time.Now()
++		defer func() { r52CaptureEscape.add(time.Since(start), len(raw)) }()
++	}
+ 	if !bytes.Contains(raw, []byte("\u2028")) && !bytes.Contains(raw, []byte("\u2029")) {
+ 		return raw
+ 	}
+@@ -100,6 +105,10 @@ func hranaEscapeJSONLineSeparators(raw []byte) []byte {
+ // values sqlDecode validated; it still treats an unterminated string as not
+ // compact so a malformed input falls back to the compacting validator.
+ func hranaJSONCompact(raw []byte) bool {
++	if r52ProbeEnabled() {
++		start := time.Now()
++		defer func() { r52CaptureCompact.add(time.Since(start), len(raw)) }()
++	}
+ 	for position := 0; position < len(raw); {
+ 		switch raw[position] {
+ 		case ' ', '\t', '\n', '\r':
+diff --git a/prototypes/v1/platform/hrana_http_cursor.go b/prototypes/v1/platform/hrana_http_cursor.go
+index d551a89..ee13457 100644
+--- a/prototypes/v1/platform/hrana_http_cursor.go
++++ b/prototypes/v1/platform/hrana_http_cursor.go
+@@ -446,7 +446,11 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter,
+ 			} else {
+ 				// A read cursor page is written straight from its token spans;
+ 				// the scanner already proved the shape the old decode relied on.
++				r52ScanStart := time.Now()
+ 				page, err := pageScanner.scan(reply.result, true, false)
++				if r52ProbeEnabled() {
++					r52AdapterScan.add(time.Since(r52ScanStart), len(reply.result))
++				}
+ 				if err != nil {
+ 					log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
+ 					failed = true
+diff --git a/prototypes/v1/platform/hrana_v3_json_cursor.go b/prototypes/v1/platform/hrana_v3_json_cursor.go
+index c16bef7..91ef655 100644
+--- a/prototypes/v1/platform/hrana_v3_json_cursor.go
++++ b/prototypes/v1/platform/hrana_v3_json_cursor.go
+@@ -704,7 +704,11 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 			} else {
+ 				// A read cursor page is written straight from its token spans;
+ 				// the scanner already proved the shape the old decode relied on.
++				r52ScanStart := time.Now()
+ 				page, err := pageScanner.scan(reply.result, true, fused)
++				if r52ProbeEnabled() {
++					r52AdapterScan.add(time.Since(r52ScanStart), len(reply.result))
++				}
+ 				if err != nil || page.rows > 256 || page.rows == 0 && !page.done {
+ 					fatal("invalid cursor page")
+ 					return
+diff --git a/prototypes/v1/platform/sql_upstream_codec.go b/prototypes/v1/platform/sql_upstream_codec.go
+index 9a59046..7d02014 100644
+--- a/prototypes/v1/platform/sql_upstream_codec.go
++++ b/prototypes/v1/platform/sql_upstream_codec.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"reflect"
++	"time"
+ 	"unicode/utf8"
+ )
+ 
+@@ -50,7 +51,12 @@ func sqlJSONFields(ctx context.Context, body []byte) (map[string]sqlJSONSpan, er
+ 	if ctx.Err() != nil {
+ 		return nil, ctx.Err()
+ 	}
+-	if !json.Valid(body) {
++	r52ValidStart := time.Now()
++	valid := json.Valid(body)
++	if r52ProbeEnabled() {
++		r52JSONValid.add(time.Since(r52ValidStart), len(body))
++	}
++	if !valid {
+ 		return nil, errors.New("invalid JSON")
+ 	}
+ 	position, err := sqlJSONWhitespace(body, 0)
+@@ -304,10 +310,19 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
+ 	invalid := func() error {
+ 		return observeSQLOpenError(ctx, requestID, sqlOpenCodecV1, sqlOpenStrictDecode, &SQLRPCError{Ambiguous: true, cause: ctx.Err()})
+ 	}
+-	if !utf8.Valid(body) {
++	r52UTF8Start := time.Now()
++	utf8OK := utf8.Valid(body)
++	if r52ProbeEnabled() {
++		r52UTF8.add(time.Since(r52UTF8Start), len(body))
++	}
++	if !utf8OK {
+ 		return invalid()
+ 	}
++	r52FieldsStart := time.Now()
+ 	fields, err := sqlJSONFields(ctx, body)
++	if r52ProbeEnabled() {
++		r52Fields.add(time.Since(r52FieldsStart), len(body))
++	}
+ 	if err != nil || (len(fields) != 5 && len(fields) != 6) {
+ 		return invalid()
+ 	}
+@@ -349,7 +364,11 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
+ 		// keeps the reply independent of the read buffer that sqlDecodeWriter
+ 		// and its callers may still reuse.
+ 		if raw, ok := output.(*json.RawMessage); ok {
++			r52CopyStart := time.Now()
+ 			copied := append([]byte(nil), fields["result"].bytes(body)...)
++			if r52ProbeEnabled() {
++				r52ResultCopy.add(time.Since(r52CopyStart), len(copied))
++			}
+ 			if ctx.Err() != nil {
+ 				return invalid()
+ 			}

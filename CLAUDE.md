@@ -248,6 +248,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R49 | `perf/r49-json-entry` / `d84924d`（merge `d40c1f3`） | Hrana JSON pipeline 的 execute entry 单遍直转码：扫描 worker statement 结果 span 直接产出完整 entry 字节（等价复刻 `hranaNativeStatement` + `hranaOutputValue` + metrics 校验：重复键 last-wins、`cols:[null]`/`rows:[null]`、整数保留原始字面量、float 按 encoding/json、blob base64、字符串 HTML 转义/U+2028/U+2029/非法 UTF-8），并让最终响应按 entry 字节拼装（`assembleHranaResponse`），不再二次 `json.Marshal`；仅融合标记命中的 HTTP JSON pipeline，其余路径与 protobuf/cursor/WS 不变 | 上限探针（`c5d2997`，n=18，R1 中位 26.0ms）：解码 3.04ms、转换 0.064ms、entry 预算 marshal 1.51ms、最终 marshal 1.91ms、拼装 0.119ms ⇒ C3' 单独 1.79ms（6.9%）低于门槛不立项；D1 3.10–4.61ms、D1+C3' 4.89–6.40ms（18.8–24.6%）。Gate 0（`d84924d` + 计数/现场对拍，测前移除，12 请求）：`fast_attempt/ok/fallback` **1/1/0**、`entry_reused` 1、`assemble_ok` 1、`assemble_fallback` 0、**`legacy_equal` 每请求 1**。配对 A/B（2 轮 × A/B/B/A，两侧独立栈 + 全新同数据卷）：R1 json-pipeline 逐轮中位 **21.04→17.10ms（−18.71%）/ 21.34→16.39ms（−23.19%）**，4 腿整体 −23.2%（3/4 配对同向）；对照 H1 json −1.2%/−3.4%、H1 pb −3.7%/−2.8%、F1 +7.9%/−8.4%（亚毫秒）。回归门 B1 +3.31%/−1.99%、C1 +3.55%、H3 −0.86%/−2.41%；L1 两侧 fixture mismatch、X1 不可确认。微基准 4.53→2.49ms、4 allocs；全量 Go 测试 ok 176.6s | 合入 main |
 | R50 | `perf/r50-protobuf-execute` / `f73aa1c`（merge `f902721`） | Hrana protobuf pipeline 的 execute entry 单遍直转码：复用 R48 扫描器在 worker statement 结果 span 上直接产出 protobuf 结果（等价复刻 `hranaNativeStatement` + `hranaProtoStatementResultWithin`：重复键 last-wins、`cols`/`rows` 必填非 null、整数保留原始字面量、float/字符串/null 语义；`decltype` 与 `last_insert_rowid` 在旧路径因 `*string` 断言不匹配从不输出，故只校验不输出），`assembleHranaProtoSingleExecute` 直接拼装 `[execute, close]` 两 entry；仅融合标记命中的 HTTP protobuf 单执行 pipeline，JSON/cursor/WS/公开 API 不变 | 上限探针（`4784413`，n=6，客户端中位 26.25ms）：解码 2.99ms + 转换 0.07ms + protobuf 编码 12.02ms = **16.36ms（64%）**。Gate 0（`f73aa1c` + 探针，测前移除，4 请求）：`complete=4 unsupported=0 limit=0 equal=4 mismatch=0`，与旧路径逐字节一致（2,349,027 字节）。配对 A/B（两侧独立栈 + 各自全新同数据卷、同一 worker）：R1 protobuf-pipeline 第 1 批逐轮 **20.13→17.13ms（−14.86%）/ 22.87→16.64ms（−27.24%）**、4 腿整体 −16.36%；第 2 批 3 轮 **−26.67% / −19.13% / −35.58%**（5/5 同向，6 腿整体 19.94→15.26）。对照 H1 pb +1.4~1.6%、H1 json −0.5~−1.7%、F1 亚毫秒 ±15%；R1 json 第 1 批 +12.56% 经 3 轮复核 −11.09%（噪声）。回归门 B1 pb 单腿 +113.94%、L1 json +16.13% 经 15 样本/腿复核为 −6.9%/−4.1%（宿主瞬态），其余 ≤8%；L1 两侧 `row_count_mismatch`（fixture 项）、X1 不可确认。全量 Go 测试 ok 174.556s | 合入 main |
 | R51 | `perf/r51-cursor-page-bulk` / `9ad2c43`（merge `3b4b9cb`） | cursor 页文本扫描与转码改为批量定位：`scanner.string()` 用 SWAR 跳过普通字节、只在引号/反斜杠/控制字节处逐字节判定；protobuf 的 `hranaCursorPageAppendText` 与 JSON 的 `hranaJSONAppendPageText` 用 `bytes.IndexByte`/SWAR 批量拷贝普通段；新增 83 行 helper 与随机化差分测试，pipeline/write 路径不变 | Gate 0（探针 `7ba35a7e…`，测前移除）：H1 json/protobuf 各 1 样本，`string_calls=34,779 string_bytes=80,778,969 string_mismatch=0`、`text_calls=8,625 text_bytes=20,177,069 text_mismatch=0`、`json_calls=8,625 json_bytes=20,194,319 json_mismatch=0`，52,029 行全 0，wire 字节不变。配对 A/B（2 轮 × A/B/B/A，两侧独立栈 + 各自全新同数据卷，1 warmup + 5 timed/leg）：H1 json **124.14→74.65ms（−39.87%）/ 123.77→75.84ms（−38.73%）**，protobuf **101.26→69.84ms（−31.03%）/ 104.70→68.81ms（−34.28%）**，两协议两轮 4/4 同向；同路径 H3 json −35.78%/−37.92%、pb −34.19%/−30.27%；对照 R1 json −4.47%/−9.78%、R1 pb −24.66%/−4.55%、F1 亚毫秒 | 合入 main：主指标两协议两轮均远超 10% 门槛（约 1.6×）。回归门 B1 json −11.22%、B1 pb −0.35%、C1 −6.43%、H3 json −38.19%、H3 pb −30.82%、L1 cursor −2.70%、L1 pipeline −0.64%；F1 json 单批 +14.02%（0.07ms）经 4 腿×15 样本 +12.98% 与 8 腿×15 样本 +2.14% 两批复测方向不一致，机制上 pipeline 不经过本轮 diff，判噪声；F1 pb +19.73% 复测 +0.17% 不复现；X1 不可确认。warnings=[]、fatal 无、非 200=0，wire 字节一致；全量 Go 测试 ok 179.642s |
+| R52 | `perf/r52-cursor-page-single-pass` / `8967ae8`（merge `cbf99f5`） | 只读 cursor 页单趟严格解码与 span 交接：结构定位结果 span → 信封骨架 `json.Valid` → 结果 span 严格页扫描，页体零拷贝交给 Hrana 适配器；去掉整页 `json.Valid`、结果复制、gateway 页校验、fused 首页二次校验、adapter 二次扫描与 compact/escape 重写；写 cursor/pipeline 路径不变 | 上限探针（基线路径阶段计时）：可移除 20.70ms = H1 json 单查询 75.01ms 的 27.6%，远高于 7.57ms 门槛。Gate 0（探针 `f9dff879…`）：H1 json 每查询 `pagedecode=34/20.22MB`、`pagescan=34`、`fallback=0`，`json.Valid` 只剩约 0.12MB 小回复，wire 字节不变。配对 A/B（2 轮 × A/B/B/A × 5 samples/leg，两侧独立栈 + 各自全新同数据卷）：H1 json **75.04→62.17（−17.15%）/ 75.01→61.69（−17.76%）**、protobuf **71.65→57.29（−20.04%）/ 69.68→58.90（−15.48%）**，4/4 同向；同路径 H3 json −18.29%/−18.43%、pb −16.26%/−14.62% | 合入 main：主指标两协议两轮均过 10% 硬门。回归门 11 组：H3 json −17.93%、H3 pb −16.53%、C1 +4.87%、F1 json −5.55%、F1 pb +2.52%、R1 pb +1.24%、L1 cursor −2.66%/pipeline −8.06%（L1 verdict 为夹具 `LIMIT 40` vs 99 行的既有不符，四腿全 FAIL，只记录时间）；B1 json 首轮 +24.11% 经 8 腿×15 样本复测 −2.04% 翻转；R1 json 首轮 +14.74%、复测 +13.32%，但全新卷换位为 +6.58%/+4.11%，且**同二进制对照**（两台相同基线二进制、全新卷）腿中位相差 −8.11%，判「不可确认（栈/窗口效应）」；机制上 pipeline 只多一次类型断言与 nil 检查。140 份 summary 全 `warnings=[]`、非 200=0；全量 Go 测试 ok 175.1s ×2 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2076,6 +2077,81 @@ F1 pb 单批 +19.73% 在 15 样本复测为 +0.17%，不复现。X1 c16 两腿 4
 **下一轮提示**：R51 之后 H1 json 约 75ms，剩余主要是 worker RPC（R45 归因约 46.5ms）
 与响应写出；继续在网关侧扫描/转义里找零头已接近噪声。若要再拿双位数，需要 worker 侧
 cursor 页生成的 span/计时，或评估 cursor 响应的 `Content-Length` 预分配（D2，需先探针）。
+
+#### R52：只读 cursor 页单趟严格解码与 span 交接（2026-11-04，合入）
+
+**背景**：R51 之后 H1 json 约 75ms。基线路径对每个只读 cursor 页要付出：整页 `json.Valid`
+（20MB 页体）、结果 span 复制、gateway 页校验、fused 首页校验、adapter 二次扫描与
+compact/escape 重写。
+
+**上限探针**（`bf743deb…`，测前移除；基线路径阶段计时，H1 json 单查询 75.01ms）：
+整页 `json.Valid` 8.04ms、结果复制 1.32、gateway 页校验 2.20、fused 首页 5.61、
+adapter 二次扫描 2.40、compact+escape 0.80、`utf8.Valid` 0.32 ⇒ **可移除 20.70ms
+（27.6%）**；结构定位 `sqlJSONFields` 8.70ms 不属可移除（新路径仍要一次结构扫描）。
+门槛 7.57ms（10%），方向成立后实现。
+
+**改动**（`8967ae8`，13 文件 +903/−40）：新增 `hranaCursorPageReply`（`allowMetadata` + 页
+span）；`sqlDecode` 对页回复改为 `sqlJSONFieldSpans` 结构定位 → `sqlJSONEnvelopeSkeleton`
+后的小体 `json.Valid` → 结果 span 严格页扫描 → 零拷贝交接（body 是每请求独立
+`io.ReadAll` 缓冲，永不复用）；`gateway_sessions.go` 只读 cursor 走 `pageReply`，首页另用
+`validCursorFirstPage`；`capture`/`hranaReply` 只在字节同一性成立时保留页（compact/escape
+复制即丢弃，回退 adapter 自扫）；写 cursor 与 pipeline 路径不变。
+
+**Gate 0**（`f9dff879…`，栈 19496）：H1 json 连测 3 次，每次 `pagedecode=34 calls/20.22MB`、
+`pagescan=34`（每页恰好一次严格扫描）、`fallback=0`；`json.Valid` 只覆盖小回复
+（895–922 次、约 0.12MB），`skeleton=34`；wire 字节 20,608,525 / 20,272,006 与基线一致。
+
+**配对 A/B**（base `028abd15…` = `5327333`，cand `a54c9b91…` = `8967ae8`，同一 worker
+`27d8dd46…`；两侧独立 run 目录与全新同数据卷，1 warmup + 5 samples/leg）：
+
+| 场景 | 协议 | 轮 | base 两腿 ms | cand 两腿 ms | 中位变化 |
+|---|---|---|---|---|---|
+| H1.content-20mb | json-cursor | 1 / 2 | 75.04 / 75.01 | 62.17 / 61.69 | **−17.15% / −17.76%** |
+| H1.content-20mb | protobuf-cursor | 1 / 2 | 71.65 / 69.68 | 57.29 / 58.90 | **−20.04% / −15.48%** |
+| H3.content-projection | json-cursor | 1 / 2 | 78.24 / 74.77 | 63.93 / 60.99 | −18.29% / −18.43% |
+| H3.content-projection | protobuf-cursor | 1 / 2 | 69.73 / 69.69 | 58.39 / 59.50 | −16.26% / −14.62% |
+| R1.limit-1000 | json-pipeline | 1 / 2 | 15.11 / 14.41 | 15.46 / 17.53 | +2.29% / +21.71% |
+| R1.limit-1000 | protobuf-pipeline | 1 / 2 | 16.12 / 17.34 | 18.72 / 16.97 | +16.12% / −2.12% |
+| F1.select-1 | json-pipeline | 1 / 2 | 0.57 / 0.62 | 0.58 / 0.61 | +2.66% / −2.46% |
+| F1.select-1 | protobuf-pipeline | 1 / 2 | 0.58 / 0.57 | 0.59 / 0.61 | +1.73% / +7.63% |
+
+主指标两协议两轮 4/4 同向且均超 10%（硬门满足）。R1/F1 是 pipeline 路径，机制上不经过
+游标页函数；R1 的单轮 +16.12% / +21.71% 进入回归门复测。
+
+**回归门**（11 组 × 4 腿 × 5 samples）：H3 json −17.93%、H3 pb −16.53%、C1 +4.87%、
+F1 json −5.55%、F1 pb +2.52%、R1 pb +1.24%、L1 cursor −2.66%、L1 pipeline −8.06%。
+三处需要说明：
+
+- **L1 verdict 为既有夹具偏差**：本 fixture 最忙 cwd 有 99 线程而场景 SQL 为 `LIMIT 40`，
+  四腿均 `row_count_mismatch`（base/cand 一致），R51 回归门同样四腿 FAIL；只记录时间，
+  不参与回归判定。
+- **B1 json +24.11%**（2.29→2.85，绝对 +0.55ms，p95 重叠）：8 腿 × 15 samples 复测
+  2.205→2.160（**−2.04%**），方向翻转，判噪声。
+- **R1 json +14.74%**：8 腿 × 15 samples 在长历史栈上复测 +13.32%（合并 60 样本/侧
+  均值 +6.45%）；改用**全新卷换位**后为 +6.58%（n=2/侧）与 +4.11%（n=4/侧）；再做
+  **同二进制对照**（两台全新卷都跑基线二进制）得腿中位 **−8.11%**、合并均值 −3.23%
+  ——即该场景的栈间方差下限。候选差异落在该范围内，且 diff 对 pipeline 的全部影响
+  只是一次 `output.(*hranaCursorPageReply)` 断言与一次 `page != nil` 检查（不进入新分支、
+  不产生分配），**判「不可确认（栈/窗口效应），不构成回归」**。
+
+**正确性**：新增 `hrana_cursor_page_decode_test.go`（603 行）：6,000 条合法页差分、
+8,000 条信封变异、5,000 条任意字节、嵌套深度 1–129；`validCursorFirstPage` 接受超
+float64 数字（worker 的 int64/有限 f64 不会产生，属防御）。`gofmt`/`go vet`/
+`go build ./cmd/peri-platform ./cmd/peri` 干净；全量 `go test -count=1 .` **ok 175.1s**
+（连续两次）；定向 `-race` 14.0s 通过；无 `platform.test` 残留。
+
+**证据**：`docs/performance-review/2026-11-04-r52-cursor-page-single-pass/`（`criteria.txt`、
+`results.md`、`gate0.txt`、`probes/`、`ab-raw/`、`reg-raw/`、`reg-recheck-raw/`、
+`swap-raw/`、`swap2-raw/`、`same-raw/`、`r52-*.sh`、`r52-*-summary.py`）。
+
+**剩余风险与未测量项**：页体零拷贝依赖「每请求独立缓冲」这一上游不变量（若未来引入缓冲池
+必须重审）；未测 X1/c128/容量；未因本轮重跑崩溃恢复 E2E（不改变耐久时点与提交路径）。
+
+**下一轮提示**：R52 之后 H1 json 约 62ms，剩余主要是 worker RPC（R45 归因约 46.5ms）与
+响应写出；网关侧解码/校验的零头已接近噪声。方向 B（worker 直接产出 cursor 页协议）需
+Rust+Go 双侧协议与两个 worker 二进制，是下一轮唯一可能再拿双位数的方向；方向 C（去掉
+`serde_json::Value` 树）预期低于门槛，需先探针。worker 预取下一页会改变审计/日志语义，
+需用户授权。
 
 ## 代码约定
 

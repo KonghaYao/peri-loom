@@ -1,0 +1,82 @@
+diff --git a/prototypes/v1/platform/dev.py b/prototypes/v1/platform/dev.py
+index b80aa74..8cb6122 100755
+--- a/prototypes/v1/platform/dev.py
++++ b/prototypes/v1/platform/dev.py
+@@ -877,6 +877,9 @@ def free_address():
+ 
+ def safe_environment(capacity_trace=False):
+     environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
++    for name in ("PERI_R52_GATE0_LOG",):
++        if name in os.environ:
++            environment[name] = os.environ[name]
+     if capacity_trace:
+         environment["PERI_CAPACITY_TRACE"] = "1" if os.environ.get("PERI_CAPACITY_TRACE") == "1" else "0"
+         environment["PERI_NATIVE_GATE_TRACE"] = "1" if os.environ.get("PERI_NATIVE_GATE_TRACE") == "1" else "0"
+diff --git a/prototypes/v1/platform/hrana_http_cursor.go b/prototypes/v1/platform/hrana_http_cursor.go
+index 300b7d6..543e1ec 100644
+--- a/prototypes/v1/platform/hrana_http_cursor.go
++++ b/prototypes/v1/platform/hrana_http_cursor.go
+@@ -449,6 +449,9 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter,
+ 				// result needs the adapter's own pass.
+ 				page := hranaCursorPageFromReply(reply)
+ 				if page == nil {
++					if r52GateEnabled() {
++						r52GateAdapterFallback.add(len(reply.result))
++					}
+ 					scanned, err := pageScanner.scan(reply.result, true, false)
+ 					if err != nil {
+ 						log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
+diff --git a/prototypes/v1/platform/hrana_v3_json_cursor.go b/prototypes/v1/platform/hrana_v3_json_cursor.go
+index 2a8b559..490225c 100644
+--- a/prototypes/v1/platform/hrana_v3_json_cursor.go
++++ b/prototypes/v1/platform/hrana_v3_json_cursor.go
+@@ -707,6 +707,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 				// result needs the adapter's own pass.
+ 				page := hranaCursorPageFromReply(reply)
+ 				if page == nil {
++					if r52GateEnabled() {
++						r52GateAdapterFallback.add(len(reply.result))
++					}
+ 					scanned, err := pageScanner.scan(reply.result, true, fused)
+ 					if err != nil {
+ 						fatal("invalid cursor page")
+diff --git a/prototypes/v1/platform/sql_upstream_codec.go b/prototypes/v1/platform/sql_upstream_codec.go
+index d5003ab..32e7625 100644
+--- a/prototypes/v1/platform/sql_upstream_codec.go
++++ b/prototypes/v1/platform/sql_upstream_codec.go
+@@ -50,7 +50,11 @@ func sqlJSONFields(ctx context.Context, body []byte) (map[string]sqlJSONSpan, er
+ 	if ctx.Err() != nil {
+ 		return nil, ctx.Err()
+ 	}
+-	if !json.Valid(body) {
++	r52Valid := json.Valid(body)
++	if r52GateEnabled() {
++		r52GateJSONValid.add(len(body))
++	}
++	if !r52Valid {
+ 		return nil, errors.New("invalid JSON")
+ 	}
+ 	return sqlJSONFieldSpans(ctx, body)
+@@ -354,7 +358,11 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
+ 		// exactly when every byte around the result does. The page scan below
+ 		// proves the elided span, and sqlJSONFieldSpans already rejected the
+ 		// duplicate keys and deep nesting the old token walk refused.
+-		if !json.Valid(sqlJSONEnvelopeSkeleton(body, fields["result"])) {
++		skeleton := sqlJSONEnvelopeSkeleton(body, fields["result"])
++		if r52GateEnabled() {
++			r52GateSkeleton.add(len(skeleton))
++		}
++		if !json.Valid(skeleton) {
+ 			return invalid()
+ 		}
+ 	}
+@@ -427,6 +435,9 @@ func sqlJSONEnvelopeSkeleton(body []byte, span sqlJSONSpan) []byte {
+ func sqlDecodeCursorPage(ctx context.Context, body []byte, span sqlJSONSpan, reply *hranaCursorPageReply, invalid func() error) error {
+ 	var scanner hranaCursorPageScanner
+ 	scanner.maxDepth = sqlJSONDecodeMaxDepth
++	if r52GateEnabled() {
++		r52GatePageDecode.add(span.end - span.start)
++	}
+ 	page, err := scanner.scan(body[span.start:span.end], true, reply.allowMetadata)
+ 	if err != nil || ctx.Err() != nil {
+ 		return invalid()

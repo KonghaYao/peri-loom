@@ -1,0 +1,36 @@
+# R52 Gate 0：新路径命中与计数器方向核验（先于 A/B）
+
+## 探针
+
+- 二进制：`/tmp/peri-perf/bin/peri-platform-r52-gate0`
+  （sha256 `f9dff879c0939900044aa6baf4048f5eee3ceb8a5b5ccfa47a454de7694c0f67`）
+- 源码：`perf/r52-cursor-page-single-pass` @ `8967ae8` + 本目录 `probes/gate0-probe.diff`
+  （`perf_probe_r52_gate0.go` 原子计数器 + 1s 脉冲；`hranaCursorPageScanHook` 统计页扫描；
+  仅在探针构建中注册，生产代码不含探针）。
+- 环境：本地栈 `127.0.0.1:19496`，无 TLS，生产配额，fixture
+  `threads=201 messages=8625 content_chars=20177069`。
+- 场景：`H1.content-20mb json-cursor`，连续 3 次单样本查询（每次 1 warmup + 1 timed），
+  每次查询后抓取脉冲快照 `g0-s0/s1/s2.log`。
+
+## 累计计数器（每次查询）
+
+| 样本 | pagedecode | pagedecode bytes | pagescan | fallback | json.Valid calls / bytes | skeleton |
+|---|---:|---:|---:|---:|---:|---:|
+| s0 | 34 | 20,221,039 | 34 | 0 | 895 / 113,973 B | 34 |
+| s1 | 68 | 40,442,078 | 68 | 0 | 908 / 116,465 B | 68 |
+| s2 | 102 | 60,663,053 | 102 | 0 | 922 / 119,098 B | 102 |
+
+- 单查询增量：**pagedecode = 34 次 / 20.22 MB**（H1 共 34 页，每页一次新解码），
+  **pagescan = 34**（每页恰好一次严格扫描），**fallback = 0**（没有回落到通用解码）。
+- `json.Valid` 只作用于小响应（open/describe/statement/close 等，合计约 0.1 MB），
+  不再作用于 20 MB 页体 —— 与「整页 `json.Valid` 被移除」的机制一致。
+- `skeleton` 34 次（每次页解码一次信封骨架校验，KB 级）。
+- 「关掉」对照：探针同时统计 adapter 二次扫描路径，值为 0，说明页交接后 adapter 不再重扫，
+  走的正是新路径（`hranaCursorPageFromReply`）。
+
+## 不变量（同窗口）
+
+- wire 字节与基线逐字节一致：H1 json `20,608,525`、protobuf `20,272,006`；
+  H3 json `20,746,565`、protobuf `20,306,526`。
+- rows=8,625，`warnings=[]`，无 `fatal`，非 200 响应 = 0。
+- A/B 两侧（各 4 腿 × 5 样本）同样断言上述字节数与 rows，无差异。
