@@ -1,0 +1,86 @@
+diff --git a/prototypes/v1/platform/dev.py b/prototypes/v1/platform/dev.py
+index b80aa74..bd6a457 100755
+--- a/prototypes/v1/platform/dev.py
++++ b/prototypes/v1/platform/dev.py
+@@ -877,6 +877,9 @@ def free_address():
+ 
+ def safe_environment(capacity_trace=False):
+     environment = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "TZ") if name in os.environ}
++    for name in ("PERI_R49C_PROBE_LOG",):
++        if name in os.environ:
++            environment[name] = os.environ[name]
+     if capacity_trace:
+         environment["PERI_CAPACITY_TRACE"] = "1" if os.environ.get("PERI_CAPACITY_TRACE") == "1" else "0"
+         environment["PERI_NATIVE_GATE_TRACE"] = "1" if os.environ.get("PERI_NATIVE_GATE_TRACE") == "1" else "0"
+diff --git a/prototypes/v1/platform/hrana_http.go b/prototypes/v1/platform/hrana_http.go
+index 642e61d..6b71859 100644
+--- a/prototypes/v1/platform/hrana_http.go
++++ b/prototypes/v1/platform/hrana_http.go
+@@ -224,6 +224,9 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 		go handler.cleanupRetiredSession(stream.session, 0)
+ 	}()
+ 	response := hranaResponse{Results: make([]any, 0, len(pipeline.Requests))}
++	probe := newR49cProbe()
++	request = request.WithContext(withR49cProbe(request.Context(), probe))
++	defer probe.finish()
+ 	if stream.storedSQL == nil {
+ 		stream.storedSQL = make(map[int]string)
+ 	}
+@@ -590,7 +593,13 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 				var encoded []byte
+ 				if preencoded, ok := last.(hranaEncodedEntry); ok {
+ 					encoded = preencoded
++					if probe != nil {
++						probe.entryReused++
++					}
+ 				} else {
++					if probe != nil {
++						probe.entryMarshaled++
++					}
+ 					marshaled, err := json.Marshal(last)
+ 					if err != nil {
+ 						limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+@@ -661,8 +670,24 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
+ 	var encoded []byte
+ 	if len(entryBytes) == len(response.Results) {
+ 		encoded, err = assembleHranaResponse(response.Baton, entryBytes)
++		if probe != nil {
++			probe.assembleOK++
++		}
+ 	} else {
+ 		encoded, err = json.Marshal(response)
++		if probe != nil {
++			probe.assembleFallback++
++		}
++	}
++	if probe != nil && err == nil {
++		probe.finalBytes = int64(len(encoded))
++		if len(encoded) >= 64<<10 {
++			if legacy, legacyErr := json.Marshal(response); legacyErr == nil && bytes.Equal(encoded, legacy) {
++				probe.legacyEqual++
++			} else {
++				probe.legacyMismatch++
++			}
++		}
+ 	}
+ 	if err != nil || len(encoded) > resultLimit {
+ 		limitFailure(http.StatusRequestEntityTooLarge, "pipeline_result_limit")
+@@ -1091,9 +1116,18 @@ func (handler *hranaHTTP) executeWithin(request *http.Request, credential, sessi
+ 	// same fused answer, on the decoded value.
+ 	if hranaExecuteEntryRequested(request.Context()) {
+ 		if fused, ok := fusedStatementResultFrom(request.Context()); ok && fused.Session == session && fused.SQL == statement.SQL {
++			if probe := r49cProbeFromContext(request.Context()); probe != nil {
++				probe.fastAttempt++
++			}
+ 			if encoded, ok := encodeHranaExecuteEntry(reply.result); ok {
++				if probe := r49cProbeFromContext(request.Context()); probe != nil {
++					probe.fastOK++
++				}
+ 				return encoded, hranaReply{}
+ 			}
++			if probe := r49cProbeFromContext(request.Context()); probe != nil {
++				probe.fastFallback++
++			}
+ 		}
+ 	}
+ 	var native hranaNativeStatement

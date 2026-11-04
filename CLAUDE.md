@@ -245,6 +245,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R46 | `perf/r46-fused-parse-once` / `d79500c`（merge `924f50e`） | Hrana fused open 的 statement 答案只解析一次：适配器发布前已解析的 `fusedStatementAnswer` 随 marker 交给 dispatch，去掉第三次 decode+validate | Gate 0（临时计数，测前移除）：每次 fused statement 的 `parseFusedStatementAnswer` **3.0→2.0**、复用 4/4、回退 0。配对 A/B（R1 json-pipeline，2 轮 × A/B/B/A，两侧独立栈 + 各自全新同数据卷，1 warmup + 5 timed/leg）：逐轮中位 **47.72→39.86ms（−16.48%）/ 45.37→37.89ms（−16.49%）**，4/4 配对腿同向（−12.8%…−19.8%），合并四腿中位 **47.27→38.99ms（−17.51%）**；候选最慢腿 40.02ms 仍低于基线最快腿 43.00ms；H1 json/protobuf 在 ±3% 内、F1 −6.56%/+9.72% 方向相反；响应字节 2,369,290 / 20,608,525 / 20,272,006 不变 | 合入 main：>10ms 场景 10% 门槛达标（约 1.65×）。回归门 B1 json +4.87% / pb +2.57%、C1 −0.13%、H3 json −0.27% / pb −1.66%、L1 +1.71%/+4.26%（两侧均 `row_count_mismatch`）、F1 json 单轮 +14.79% 但 12 腿复跑合并 +0.93% 不复现、X1 宿主瞬态不可确认；warnings=[] / fatal=[] / 429=0 / 非 200=0，两侧结束 seats/permits 归零 |
 | R47 | `perf/r47-fused-open-answer` / `e4b6606`（merge `c0b2ab2`） | 融合 open 的答案解析跨进程内边界直传：网关已解析校验的答案随 `hranaOpenReply` 交给 recorder，适配器跳过内部信封 `json.Unmarshal` 与第二次 `parseFusedStatementAnswer`（仅 `fusedOpenStatementFrom(ctx)` 的 pipeline open；cursor/websocket/公开 open 仍编码信封，字节不变） | Gate 0（计时探针，测前移除，18 请求，次/请求）：fused_parse **2.0→1.0**、validate 2.0→1.0、open_unmarshal 1.0→0、typed_open 0→1。配对 A/B（R1 json-pipeline，2 轮 × A/B/B/A，两侧独立栈 + 各自全新同数据卷，1 warmup + 5 timed/leg）：逐轮中位 **40.10→28.18ms（−29.73%）/ 37.15→26.25ms（−29.34%）**，4/4 配对腿同向，候选最慢腿低于基线最快腿；对照 H1/F1 方向不一（−7.1%~+3.4%）；回归门 B1 pb 单腿 +18.39% 经三批复测（6 腿中位 −0.43%）判噪声，L1 json-pipeline −11.31%（两侧 `row_count_mismatch`）、X1 不可确认 | 合入 `main` |
 | R48 | `perf/r48-statement-scan` / `1b44553`（merge `fca36a6`） | 融合 open 应答改为单遍扫描校验：手写严格 JSON 扫描器直接定位信封字段与 `result` span（零拷贝），等价复刻 `validStatementResult`（cols/rows、重复键 last-wins、`rows:[null]` 零宽行、autocommit 裸布尔、数值字段走 `json.Unmarshal`），去掉信封整体 `Unmarshal` 与顶层 map/`[][]RawMessage` 物化；`validStatementResult` 保留为 oracle | 上限探针（base `a167ace`，n=18）：`parseFusedStatementAnswer` 6.33ms（其中 `validStatementResult` 3.50ms）、单遍扫描下界 0.92ms ⇒ D2 上限 **5.41ms（20.8%）**。Gate 0（`1b44553` + 计数/计时探针，测前移除，12 请求）：`scan_calls` **1.0/请求**、`legacy_calls` **0**、`scan_ns` 0.538–0.788ms。配对 A/B（2 轮 × A/B/B/A，两侧独立栈 + 各自全新同数据卷，1 warmup + 5 timed/leg）：R1 json-pipeline 逐轮中位 **28.24→23.87ms（−15.49%）/ 30.56→24.65ms（−19.35%）**，全体 4 腿中位 −18.05%（3/4 配对同向）；H1 json −1.1%/−3.8%、H1 protobuf −1.2%/+0.3%、F1 −3.5%/+13.9%（亚毫秒）。回归门 B1 json −11.96%、B1 pb +19.92%（2 批复测池化 +1.6%，噪声）、C1 −2.81%、H3 −1.3%/−1.2%；L1 两侧 fixture mismatch、X1 不可确认。微基准 6.5–7.7ms→0.52–0.56ms、分配 −99.8%；3,500 变异 + 20,000 抽样对拍一致；全量 Go 测试 ok 173.7s | 合入 main |
+| R49 | `perf/r49-json-entry` / `d84924d`（merge `d40c1f3`） | Hrana JSON pipeline 的 execute entry 单遍直转码：扫描 worker statement 结果 span 直接产出完整 entry 字节（等价复刻 `hranaNativeStatement` + `hranaOutputValue` + metrics 校验：重复键 last-wins、`cols:[null]`/`rows:[null]`、整数保留原始字面量、float 按 encoding/json、blob base64、字符串 HTML 转义/U+2028/U+2029/非法 UTF-8），并让最终响应按 entry 字节拼装（`assembleHranaResponse`），不再二次 `json.Marshal`；仅融合标记命中的 HTTP JSON pipeline，其余路径与 protobuf/cursor/WS 不变 | 上限探针（`c5d2997`，n=18，R1 中位 26.0ms）：解码 3.04ms、转换 0.064ms、entry 预算 marshal 1.51ms、最终 marshal 1.91ms、拼装 0.119ms ⇒ C3' 单独 1.79ms（6.9%）低于门槛不立项；D1 3.10–4.61ms、D1+C3' 4.89–6.40ms（18.8–24.6%）。Gate 0（`d84924d` + 计数/现场对拍，测前移除，12 请求）：`fast_attempt/ok/fallback` **1/1/0**、`entry_reused` 1、`assemble_ok` 1、`assemble_fallback` 0、**`legacy_equal` 每请求 1**。配对 A/B（2 轮 × A/B/B/A，两侧独立栈 + 全新同数据卷）：R1 json-pipeline 逐轮中位 **21.04→17.10ms（−18.71%）/ 21.34→16.39ms（−23.19%）**，4 腿整体 −23.2%（3/4 配对同向）；对照 H1 json −1.2%/−3.4%、H1 pb −3.7%/−2.8%、F1 +7.9%/−8.4%（亚毫秒）。回归门 B1 +3.31%/−1.99%、C1 +3.55%、H3 −0.86%/−2.41%；L1 两侧 fixture mismatch、X1 不可确认。微基准 4.53→2.49ms、4 allocs；全量 Go 测试 ok 176.6s | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -1867,6 +1868,64 @@ D1 上限 10.29ms 中本轮已吃掉 parse+validate 5.41ms，剩余 adapter 解�
 `json.Marshal` 1.43ms + compact 0.09ms ≈ **4.45ms/请求**。下一步是 adapter JSON 直转码复用
 statement span；上限必须在本轮候选上重新探针，不能沿用本轮数字。之后才是 C3 预算长度核对与
 C2 的非融合路径 span 校验。
+
+#### R49：Hrana JSON execute entry 单遍直转码与响应字节复用（2026-11-04，合入）
+
+**背景**：R48 之后 R1 json-pipeline 仍把 2.35MB 结果完整物化：adapter `json.Decoder` 解码为
+`hranaNativeStatement`（`[][]any`，3.04ms）、转 Hrana 单元格（0.064ms）、entry 预算 marshal
+（1.51ms，字节随即丢弃）、最终响应再 marshal（1.91ms）。按 entry 字节拼装响应只需 0.119ms。
+
+**上限探针**（`main` @ `c5d2997`，n=18，R1 中位 26.0ms）：C3'（只复用 entry 字节）1.79ms
+（6.9%）低于 10% 门槛，不单独立项；D1（解码/转换/entry 编码合并为单遍）3.10–4.61ms；
+D1+C3' 4.89–6.40ms（18.8–24.6%）。据此实施合并方向。
+
+**改动**（`d84924d`，3 文件 +1181/−3）：新增 `hrana_encoded_execute.go`——`hranaEncodedEntry`
+（`MarshalJSON` 原样返回字节，失败路径仍逐字节一致）与 `encodeHranaExecuteEntry`（单遍严格扫描
+worker 结果 span，直接产出 `{"response":{"result":{…},"type":"execute"},"type":"ok"}`；等价复刻
+`hranaNativeStatement`/`hranaOutputValue`/metrics 语义，含重复键 last-wins、`cols:[null]`、
+`rows:[null]`、整数保留原始字面量、float 按 encoding/json 格式化、blob base64、字符串 HTML 转义
+与 U+2028/U+2029/非法 UTF-8；不支持形状返回 false 回退旧路径）；`assembleHranaResponse` 按
+entry 字节拼装最终响应（一次预分配）。`hrana_http.go`：`executeWithin` 在融合标记命中
+（session/SQL 与 gateway 检查一致）且 statement 成功时走直转码，失败回退；预算块直接使用
+entry 字节；全部 entry 有字节时拼装、否则回退 `json.Marshal(response)`。只影响 HTTP JSON
+pipeline，protobuf/cursor/WS/公开 API 不变。
+
+**Gate 0**（探针构建 `2b4fd46674dc…`，测前移除，栈 :19498，12 个 R1 请求）：`fast_attempt`
+1、`fast_ok` 1、`fast_fallback` 0；`entry_reused` 1、`entry_marshaled` 1（close 走旧路径）；
+`assemble_ok` 1、`assemble_fallback` 0；**`legacy_equal` 每请求 1、`legacy_mismatch` 0**——现场
+拼装字节与 `json.Marshal(response)` 逐字节一致；`final_bytes` 2,369,288–2,369,299。
+
+**配对 A/B**（2 轮 × A/B/B/A；base `peri-platform-r49-base` `8c96e7fdab09…` = `main` @
+`c5d2997`，cand `peri-platform-r49-cand` `0bbbe901910b…` = `d84924d` 干净构建；同一 worker
+`27d8dd46…`、各自全新卷 + 同一 fixture）：
+
+| 轮次 | base 两腿 ms | cand 两腿 ms | 中位变化 |
+|---|---|---|---|
+| 1 | 24.266 / 17.806 | 14.848 / 19.353 | **21.04→17.10（−18.71%）** |
+| 2 | 21.739 / 20.931 | 16.822 / 15.951 | **21.34→16.39（−23.19%）** |
+
+逐对配对 −38.81% / +8.68% / −22.62% / −23.79%（3/4 同向），4 腿整体中位 **21.34→16.39ms
+（−23.2%）**；实测降幅约 5.0ms 与上限 4.89–6.40ms 一致。全部 R1 响应 2,369,290 字节
+（一行 2,369,300，`query_duration_ms` 位数差）、1,000 行、仅 200、无 warning。
+
+**对照与回归门**：同窗口 H1 json-cursor −1.23% / −3.45%、H1 protobuf-cursor −3.65% / −2.84%、
+F1 +7.93% / −8.42%（亚毫秒）。回归门 B1 json +3.31%、B1 pb −1.99%、C1 +3.55%、F1 json −22.34%
+（亚毫秒）、F1 pb +0.82%、H3 json −0.86%、H3 pb −2.41%；L1 两侧 `row_count_mismatch`
+（fixture 项）、X1 不可确认。全部样本 `warnings=[]`、非 200=0。
+
+**测试**：差分对拍（约 130 手写用例 + R1 真实结果 + 多类型单元格/重复键/未知键/尾部内容）新旧
+路径逐字节一致；拼装对拍与 `json.Marshal` 一致；不可编码形状回退且错误码不变；微基准
+4.53ms→2.49ms、4 allocs、2.5MB。`gofmt`/`go vet`/`go build` 通过；全量
+`go test -count=1 .` **ok 176.567s**。
+
+**证据**：`docs/performance-review/2026-11-04-r49-json-entry/`（`results.md`、`gate0.txt`、
+`probe-base.log`、`probes/`、`gate0-smoke/`、`ab-raw/`、`reg-raw/`、运行与汇总脚本）。
+原始日志仍在 `/tmp/peri-perf/`（非持久）。
+
+**下一轮提示**：R1 的 2.35MB 结果在 Go 侧已不再整体物化或重复编码（解码、预算 marshal、最终
+marshal 全部消失），剩余是 worker 固定成本与响应写出。protobuf pipeline 的 execute 仍走
+adapter 解码与二次编码，先探针其成本与可复用边界；非融合路径（公开 open、cursor）可复用本轮
+编码器但需先证明收益。任何上限必须在本轮候选上重新探针。
 
 ## 代码约定
 

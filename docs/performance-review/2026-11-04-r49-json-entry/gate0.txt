@@ -1,0 +1,12 @@
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369288 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369299 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369299 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
+fast_attempt=1 fast_ok=1 fast_fallback=0 entry_reused=1 entry_marshaled=1 assemble_ok=1 assemble_fallback=0 final_bytes=2369289 legacy_equal=1 legacy_mismatch=0
