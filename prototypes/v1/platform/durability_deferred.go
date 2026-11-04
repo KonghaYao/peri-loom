@@ -3,6 +3,7 @@ package platform
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -10,7 +11,14 @@ const (
 	// their reply. A saturated account waits inline, so the bound is a latency
 	// limit, never a refusal: the reply keeps the barrier in front of it exactly
 	// as it did before the deferral existed.
-	deferredDurabilityMaximum = 256
+	//
+	// The bound matches the audit queue's own record limit, because that queue is
+	// what a deferred barrier waits on: a tighter bound turns a burst the queue
+	// still accepts into reply latency. Two records per request fit roughly two
+	// thousand concurrent replies, far above any admission limit the gateway
+	// enforces, so the inline path stays the guard against a stopped account
+	// rather than the normal answer to a busy one.
+	deferredDurabilityMaximum = 4096
 	deferredDurabilityWorkers = 8
 )
 
@@ -31,16 +39,19 @@ type deferredWait struct {
 // allowed to add. A nil account pays every barrier inline, which is what every
 // committing step and every outcome_unknown keeps.
 type deferredDurability struct {
-	mutex   sync.Mutex
-	failure error
-	pending int
-	closed  bool
-	maximum int
-	workers int
-	running int
-	jobs    chan deferredWait
-	group   sync.WaitGroup
-	done    sync.WaitGroup
+	mutex    sync.Mutex
+	failure  error
+	pending  int
+	closed   bool
+	maximum  int
+	workers  int
+	running  int
+	jobs     chan deferredWait
+	group    sync.WaitGroup
+	done     sync.WaitGroup
+	enqueued atomic.Int64
+	inline   atomic.Int64
+	peak     atomic.Int64
 }
 
 func newDeferredDurability() *deferredDurability {
@@ -70,9 +81,12 @@ func (latch *deferredDurability) settle(label string, wait func() error) error {
 	latch.mutex.Lock()
 	if latch.closed || latch.pending >= latch.maximum {
 		latch.mutex.Unlock()
+		latch.inline.Add(1)
 		return wait()
 	}
 	latch.pending++
+	latch.observePeakLocked()
+	latch.enqueued.Add(1)
 	latch.done.Add(1)
 	latch.startLocked()
 	select {
@@ -86,7 +100,41 @@ func (latch *deferredDurability) settle(label string, wait func() error) error {
 		latch.pending--
 		latch.done.Done()
 		latch.mutex.Unlock()
+		latch.inline.Add(1)
 		return wait()
+	}
+}
+
+// observePeakLocked records how deep the pending set has ever been, so an
+// operator can tell a small buffer from an account that is permanently against
+// its bound without reading a live gauge that is zero between bursts.
+func (latch *deferredDurability) observePeakLocked() {
+	pending := int64(latch.pending)
+	for {
+		seen := latch.peak.Load()
+		if pending <= seen || latch.peak.CompareAndSwap(seen, pending) {
+			return
+		}
+	}
+}
+
+// Status reports the deferral account's backlog. A record that the account has
+// to pay inline delays the reply it belongs to, so the inline total is the
+// direct measure of how often a saturated account became client latency.
+func (latch *deferredDurability) Status() map[string]any {
+	if latch == nil {
+		return nil
+	}
+	latch.mutex.Lock()
+	pending, maximum := latch.pending, latch.maximum
+	latch.mutex.Unlock()
+	return map[string]any{
+		"pending":        pending,
+		"pending_max":    latch.peak.Load(),
+		"maximum":        maximum,
+		"enqueued_total": latch.enqueued.Load(),
+		"inline_total":   latch.inline.Load(),
+		"semantics":      "completion barriers paid after the reply; a record beyond the bound pays its barrier inline before the reply is flushed",
 	}
 }
 
