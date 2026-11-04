@@ -682,7 +682,7 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 			if result.hranaOpen != nil && response.captureOpen(result.hranaOpen) {
 				return
 			}
-			if response.capture(result.value, result.validatedResult) {
+			if response.capture(result.value, result.validatedResult, result.cursorPage) {
 				return
 			}
 		}

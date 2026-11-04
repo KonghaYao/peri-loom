@@ -444,13 +444,18 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 					}
 				}
 			} else {
-				// A read cursor page is written straight from its token spans;
-				// the scanner already proved the shape the old decode relied on.
-				page, err := pageScanner.scan(reply.result, true, false)
-				if err != nil {
-					log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
-					failed = true
-					return true
+				// A read cursor page is written straight from its token spans. The
+				// gateway already scanned this exact span, so only a re-encoded
+				// result needs the adapter's own pass.
+				page := hranaCursorPageFromReply(reply)
+				if page == nil {
+					scanned, err := pageScanner.scan(reply.result, true, false)
+					if err != nil {
+						log.Printf("Hrana native cursor fetch returned invalid page: step=%d", index)
+						failed = true
+						return true
+					}
+					page = &scanned
 				}
 				for rowIndex := 0; rowIndex < page.rows; rowIndex++ {
 					if request.Context().Err() != nil {
@@ -459,7 +464,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 						return true
 					}
 					rowFrame.begin()
-					if rowFrame.appendPageRow(&page, rowIndex) != nil {
+					if rowFrame.appendPageRow(page, rowIndex) != nil {
 						_ = flushRows()
 						failed = true
 						return true

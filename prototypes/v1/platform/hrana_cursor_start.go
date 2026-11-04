@@ -17,6 +17,43 @@ func (handler *hranaHTTP) startCursor(request *http.Request, credential string, 
 	return handler.call(request.WithContext(ctx), credential, "/v1/sql/cursor/open", input)
 }
 
+// validCursorFirstPage applies the first-page rules to the spans the strict
+// reply scan already indexed, so the fused page is not parsed again: a completed
+// cursor may carry a boolean autocommit snapshot, an active one only null, and
+// every row has exactly one cell per column.
+func validCursorFirstPage(page hranaCursorPage) bool {
+	if !page.hasCols {
+		return false
+	}
+	metadata := make([]byte, 0, len(page.cols)+10)
+	metadata = append(metadata, `{"cols":`...)
+	metadata = append(metadata, page.cols...)
+	metadata = append(metadata, '}')
+	if !validCursorOpenResult(metadata) {
+		return false
+	}
+	if page.hasAutocommit {
+		if page.done {
+			if snapshot := string(page.autocommit); snapshot != "true" && snapshot != "false" {
+				return false
+			}
+		} else if string(page.autocommit) != "null" {
+			return false
+		}
+	}
+	if page.rows == 0 && !page.done {
+		return false
+	}
+	var columns []json.RawMessage
+	_ = json.Unmarshal(page.cols, &columns)
+	for index := 0; index < page.rows; index++ {
+		if len(page.row(index)) != len(columns) {
+			return false
+		}
+	}
+	return true
+}
+
 // A first page has the existing metadata and page contracts, together. Decode
 // both before the gateway acknowledges the write; partial or old-worker replies
 // remain unknown and are never retried as an open followed by a fetch.

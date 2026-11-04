@@ -13,8 +13,9 @@ import (
 // the HTTP envelope and the shared failure decoder.
 type hranaGatewayResponse struct {
 	*httptest.ResponseRecorder
-	result json.RawMessage
-	open   *hranaOpenReply
+	result     json.RawMessage
+	open       *hranaOpenReply
+	cursorPage *hranaCursorPage
 }
 
 func newHranaGatewayResponse() *hranaGatewayResponse {
@@ -34,20 +35,29 @@ func (response *hranaGatewayResponse) captureOpen(reply *hranaOpenReply) bool {
 	return true
 }
 
-func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
+func (response *hranaGatewayResponse) capture(value any, validated bool, page *hranaCursorPage) bool {
 	raw, ok := value.(json.RawMessage)
 	if !ok || raw == nil {
 		return false
 	}
+	// The page indexes this exact span; a different value would leave its
+	// offsets describing bytes the adapter never sees.
+	if page != nil && !hranaCursorPageSameBytes(page.source, raw) {
+		page = nil
+	}
 	// sqlDecode has already accepted a validated result as exactly one JSON
-	// value and given the output its own copy of that span. A compact span is
-	// therefore safe to retain as-is; only a spaced one still needs json.Compact
-	// to keep the historical result bytes and budget length. Without the marker
-	// the old compact-validate pass remains the only proof the bytes are JSON.
-	if validated && len(raw) > 0 && hranaJSONCompact(raw) {
+	// value and, for a read cursor page, indexed that same span in place. A
+	// compact span is therefore safe to retain as-is; only a spaced one still
+	// needs json.Compact to keep the historical result bytes and budget length.
+	// Without the marker the old compact-validate pass remains the only proof
+	// the bytes are JSON.
+	if validated && len(raw) > 0 && (page != nil && page.compact || hranaJSONCompact(raw)) {
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
 		response.result = hranaEscapeJSONLineSeparators(raw)
+		if page != nil && hranaCursorPageSameBytes(page.source, response.result) {
+			response.cursorPage = page
+		}
 		return true
 	}
 	// Encoder.SetEscapeHTML(false) compacts RawMessage without changing its
@@ -60,6 +70,8 @@ func (response *hranaGatewayResponse) capture(value any, validated bool) bool {
 	}
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
+	// Compacting or escaping copies the bytes, so the page's offsets no longer
+	// describe the result and the adapter must scan the new buffer itself.
 	response.result = hranaEscapeJSONLineSeparators(compact.Bytes())
 	return true
 }
@@ -133,7 +145,7 @@ func (response *hranaGatewayResponse) reply(path string) hranaReply {
 		return hranaReply{status: http.StatusOK, open: response.open}
 	}
 	if response.result != nil {
-		return hranaReply{status: http.StatusOK, result: response.result}
+		return hranaReply{status: http.StatusOK, result: response.result, cursorPage: response.cursorPage}
 	}
 	return hranaGatewayReply(response.Code, response.Body.Bytes(), path)
 }

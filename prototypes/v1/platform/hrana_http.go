@@ -910,6 +910,20 @@ type hranaReply struct {
 	// produced for this in-process call. When set it replaces result, which
 	// would otherwise hold the encoded internal envelope.
 	open *hranaOpenReply
+	// cursorPage is the read cursor page the gateway already validated and
+	// indexed. It is only usable while result is that exact span; otherwise the
+	// adapter scans result itself.
+	cursorPage *hranaCursorPage
+}
+
+// hranaCursorPageFromReply returns the page the gateway scanned in place, or nil
+// when the adapter must scan result: a compacted, escaped or re-encoded result
+// no longer shares the page's bytes, so its offsets would be meaningless.
+func hranaCursorPageFromReply(reply hranaReply) *hranaCursorPage {
+	if reply.cursorPage == nil || !hranaCursorPageSameBytes(reply.cursorPage.source, reply.result) {
+		return nil
+	}
+	return reply.cursorPage
 }
 
 // hranaErrorMessage answers a step error with the platform's own text when the

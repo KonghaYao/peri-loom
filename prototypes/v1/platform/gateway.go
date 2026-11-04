@@ -94,6 +94,10 @@ type gatewayResult struct {
 	// Hrana response may retain that span without a second compact-validation
 	// parse. Only the SQL reply decoders set it; a hand-built value must not.
 	validatedResult bool
+	// cursorPage is the read cursor page sqlDecode indexed in place. The
+	// in-process Hrana adapter reuses it instead of scanning the result again;
+	// capture keeps it only while the published result stays the same span.
+	cursorPage *hranaCursorPage
 	// hranaOpen is the fused open answer in the typed form the in-process
 	// Hrana adapter consumes. writeResponse hands it to an adapter recorder
 	// instead of encoding value into the internal envelope.

@@ -496,11 +496,11 @@ func TestHranaCaptureValidatedMatchesLegacy(test *testing.T) {
 			raw = json.RawMessage(strings.ReplaceAll(string(raw), ",", " , "))
 		}
 		legacy := newHranaGatewayResponse()
-		if !legacy.capture(raw, false) {
+		if !legacy.capture(raw, false, nil) {
 			test.Fatalf("legacy capture refused valid result %q", raw)
 		}
 		validated := newHranaGatewayResponse()
-		if !validated.capture(raw, true) {
+		if !validated.capture(raw, true, nil) {
 			test.Fatalf("validated capture refused valid result %q", raw)
 		}
 		if !bytes.Equal(legacy.result, validated.result) {
@@ -566,7 +566,7 @@ func BenchmarkHranaCaptureLegacy(b *testing.B) {
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {
 		response := newHranaGatewayResponse()
-		if !response.capture(json.RawMessage(page), false) {
+		if !response.capture(json.RawMessage(page), false, nil) {
 			b.Fatal("capture refused the page")
 		}
 	}
@@ -578,7 +578,7 @@ func BenchmarkHranaCaptureValidated(b *testing.B) {
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {
 		response := newHranaGatewayResponse()
-		if !response.capture(json.RawMessage(page), true) {
+		if !response.capture(json.RawMessage(page), true, nil) {
 			b.Fatal("capture refused the page")
 		}
 	}

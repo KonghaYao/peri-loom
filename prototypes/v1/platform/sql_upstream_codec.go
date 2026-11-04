@@ -34,8 +34,8 @@ func (span sqlJSONSpan) bytes(body []byte) []byte {
 // check (the same scanner Decoder.Token walks), so the structural pass below
 // only has to find boundaries in JSON it can trust. It then tracks what the
 // token walk used to enforce: object keys are compared after unescaping, so a
-// duplicate is rejected at any depth, and a value nested deeper than 128
-// containers is rejected.
+// duplicate is rejected at any depth, and a value nested deeper than
+// sqlJSONDecodeMaxDepth containers is rejected.
 //
 // Skipping values structurally, instead of asking Decoder.Token for every
 // scalar, avoids unquoting and allocating every string in a 20 MiB result. A
@@ -52,6 +52,16 @@ func sqlJSONFields(ctx context.Context, body []byte) (map[string]sqlJSONSpan, er
 	}
 	if !json.Valid(body) {
 		return nil, errors.New("invalid JSON")
+	}
+	return sqlJSONFieldSpans(ctx, body)
+}
+
+// sqlJSONFieldSpans is the structural half of sqlJSONFields. It assumes nothing
+// about JSON grammar it does not check itself, so a caller that replaces the
+// json.Valid pass with an equivalent proof may use it directly.
+func sqlJSONFieldSpans(ctx context.Context, body []byte) (map[string]sqlJSONSpan, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	position, err := sqlJSONWhitespace(body, 0)
 	if err != nil || position >= len(body) || body[position] != '{' {
@@ -120,11 +130,17 @@ func sqlJSONFields(ctx context.Context, body []byte) (map[string]sqlJSONSpan, er
 	return fields, nil
 }
 
+// sqlJSONDecodeMaxDepth is the strictest nesting the reply decoder accepts. It
+// is lower than encoding/json's own limit and is enforced while the result span
+// is located, so a result nested deeper stays a decode failure exactly as the
+// token walk made it one.
+const sqlJSONDecodeMaxDepth = 128
+
 // sqlJSONSkipValue returns the offset just past the JSON value at position.
 // body is already valid JSON, so it only needs to find the end and to apply
 // the duplicate-key and depth rules to nested objects.
 func sqlJSONSkipValue(ctx context.Context, body []byte, position, depth int) (int, error) {
-	if depth > 128 {
+	if depth > sqlJSONDecodeMaxDepth {
 		return 0, errors.New("JSON depth exceeded")
 	}
 	if ctx.Err() != nil {
@@ -304,10 +320,22 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 	invalid := func() error {
 		return observeSQLOpenError(ctx, requestID, sqlOpenCodecV1, sqlOpenStrictDecode, &SQLRPCError{Ambiguous: true, cause: ctx.Err()})
 	}
+	pageReply, pageOutput := output.(*hranaCursorPageReply)
+	pageOutput = pageOutput && pageReply != nil
 	if !utf8.Valid(body) {
 		return invalid()
 	}
-	fields, err := sqlJSONFields(ctx, body)
+	var fields map[string]sqlJSONSpan
+	var err error
+	if pageOutput {
+		// A read cursor page is the one reply whose result dominates the body.
+		// Locate the span structurally, then prove the envelope around it and
+		// the page itself separately, instead of checking the whole body once
+		// with json.Valid and the page again with the page scanner.
+		fields, err = sqlJSONFieldSpans(ctx, body)
+	} else {
+		fields, err = sqlJSONFields(ctx, body)
+	}
 	if err != nil || (len(fields) != 5 && len(fields) != 6) {
 		return invalid()
 	}
@@ -319,6 +347,16 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 	completedSpan, hasCompleted := fields["execution_completed"]
 	if len(fields) == 6 && !hasCompleted {
 		return invalid()
+	}
+	if pageOutput {
+		// JSON values compose at value positions: replacing the result span
+		// with an empty object leaves a short body that json.Valid accepts
+		// exactly when every byte around the result does. The page scan below
+		// proves the elided span, and sqlJSONFieldSpans already rejected the
+		// duplicate keys and deep nesting the old token walk refused.
+		if !json.Valid(sqlJSONEnvelopeSkeleton(body, fields["result"])) {
+			return invalid()
+		}
 	}
 	var version uint32
 	var identity string
@@ -343,6 +381,9 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 		return invalid()
 	}
 	if output != nil {
+		if pageOutput {
+			return sqlDecodeCursorPage(ctx, body, fields["result"], pageReply, invalid)
+		}
 		// sqlJSONFields above already accepted result as exactly one JSON
 		// value, so a RawMessage output needs only an owned copy of its span;
 		// decoding it again would repeat the same scan and allocation. The copy
@@ -366,6 +407,31 @@ func sqlDecode(ctx context.Context, body []byte, requestID string, output any) e
 		}
 		value.Elem().Set(decoded.Elem())
 	}
+	return nil
+}
+
+// sqlJSONEnvelopeSkeleton rebuilds the reply with the given member value
+// replaced by an empty object, so json.Valid can prove every other byte without
+// reading the page. The result span itself is proven by the strict page scan.
+func sqlJSONEnvelopeSkeleton(body []byte, span sqlJSONSpan) []byte {
+	skeleton := make([]byte, 0, len(body)-(span.end-span.start)+2)
+	skeleton = append(skeleton, body[:span.start]...)
+	skeleton = append(skeleton, '{', '}')
+	skeleton = append(skeleton, body[span.end:]...)
+	return skeleton
+}
+
+// sqlDecodeCursorPage validates the located result as a read cursor page and
+// leaves it in the reply without copying: the page keeps spans into body, which
+// each request owns. The scan is the only pass over the result.
+func sqlDecodeCursorPage(ctx context.Context, body []byte, span sqlJSONSpan, reply *hranaCursorPageReply, invalid func() error) error {
+	var scanner hranaCursorPageScanner
+	scanner.maxDepth = sqlJSONDecodeMaxDepth
+	page, err := scanner.scan(body[span.start:span.end], true, reply.allowMetadata)
+	if err != nil || ctx.Err() != nil {
+		return invalid()
+	}
+	reply.page = page
 	return nil
 }
 
