@@ -255,6 +255,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R58 | 测量轮（探针分支 `probe/r58-cursor-page-timing` @ `da2d8c1`、`probe/r58b-row-checks` @ `14aef4e`，均不合入） | H1 20MB cursor 剩余成本归因 + 行级检查上限探针：平台侧页等待/转码/upstream/dispatch 分段，worker 侧 turso/序列化/行级检查分段；再把 `run_steps` 的每行 budget 检查、操作读守卫与 step 时钟整体移出循环测端到端上限 | 归因（H1 json ≈53ms）：worker ≈31ms（turso VM stepping ≈17–18ms、页序列化 ≈6.6ms、行级检查 ≈4.3–5.9ms 且被探针 `Instant::now` 放大）、平台自身 ≈6.9ms，其余为客户端读取 20MB。上限 A/B（A/B/B/A × 5 samples，两侧独立栈 + 同批 fixture）：json 52.00→48.20ms（**7.3%**）、protobuf 51.94→48.03ms（**7.5%**），两条腿同向，响应字节/行数（8,625）/`warnings` 不变 | 仅记录，不实施：行级检查上限 7.3–7.5% < 10% 硬门；剩余 H1 大头（turso VM stepping、页序列化/协议帧）属 worker 引擎与协议层，需用户显式授权 |
 | R59 | 探针 `probe/r59-deferred-workers` / `fbf7b98`（不合入） | 延迟耐久账户 worker 8→64，验证 X1 并发档尾部是否由该池饱和导致；不改耐久时点、审计链语义与配额 | 归因（基线 + `PERI_DURABILITY_OBSERVER=1` + `--sql-open-observer`，独立栈）：`audit_batch` 506 批中 466 批 `count=1`、`sync_ns` p50 3.84ms；`audit_checkpoint` 55 次 p50 **21.0** / p90 31.2 / max 38.1ms，合计 1.204s；`audit_member_wait` 排队 p50 46.7ms、屏障等待 p99 115.8ms；慢 open/close 148ms = `audit` 126.2 + `terminal` 21.7。上限 A/B/B/A（X1 json-pipeline，4 档 × 100 请求，1 warmup + 3 samples/腿）：c16 中位基线 3.75 / 16.56ms → 探针 **165.62 / 124.39ms**（回归 33–44×，两条 B 腿同向），c4 p95 97.6→29.6–34.7ms 但被 c16 抵消；0 错误 / 0×429 / verdict 全 PASS | 不合入；分支与提交保留作证据：账户宽度不是限速器，加并发只让串行写者的屏障更碎（与 R29/R31 同构） |
 | R60 | 测量轮（无性能改动；harness protobuf `Error` 字段修正单独提交） | W1 写路径归因：用请求相位 + 耐久观察器拆解单条写请求（open→statement→close）的 40ms 构成，并复核 R1 smoke | 窗口 1.89s、48 statement（16 测量 + 32 harness setup/cleanup）：statement p50 **37.85ms** = native 17.59 + **intent 12.63** + audit 3.81 + terminal 3.79（open 1.08、close 0.45）；native 仅 1.3–1.6ms 的 4 条语句 intent 仍 10.9–12.8ms（p50 11.27）；open→statement 间隔 5–39µs（p50 13µs，n=48）；44/48 intent 与 audit+journal 批重叠、4 条与 checkpoint 重叠，三类 intent 均值 12.78/12.48/12.38ms ⇒ 等待不是 checkpoint CPU。窗口耐久：`audit_batch` 143（142×count=1，sync p50 3.87ms，合计 669ms）、`journal_batch` 145（98×count=1，sync p50 6.64ms，合计 867ms）、两链合计 1.54s/1.89s；`audit_checkpoint` 全run 18 次 p50 **21.0ms**（4 次 fsync：state+floor 两个 `atomicPrivate`，每 32 条审计记录一次） | 仅记录，不合入：W1 成本 = worker 写执行（native 17.6ms）+ 耐久屏障（≈20ms），intent 是上一条请求延迟会话记录的排队；两条 ≥10% 方向（提交意图/延迟记录的屏障顺序、checkpoint 频率与成本）属耐久提交时点与审计链语义，需用户显式授权 |
+| R61 | 探针 `probe/r61-w1-intent-ceiling` / `9cf4911`、`probe/r61-x1-checkpoint-ceiling` / `c59e917`（均不合入） | 两项不安全上限探针：① W1 提交意图不等自己的屏障就 dispatch；② 跳过 `appendBatch` 的 `pre_batch` 与 `post_batch` checkpoint（保留 shutdown） | ① W1.insert json-pipeline A/B/B/A（4 条独立栈 + 全新同数据卷，2 轮 × 1 warmup + 3 timed/腿）：基线 40.56 / 40.94ms → 探针 32.10 / 31.47ms（**−20.9% / −23.1%**，4 轮逐轮中位同向，−8.46 / −9.47ms）。② X1 json-pipeline（4 条腿，100 请求/级）：Gate 0 `head_checkpoint_attempts_total` **54→0**（1.1447s→0，fsync 512→567）；c4/c8 p99 多数下降但 c16 B1 +36%、4 级 elapsed 合计 B1 −2.0% / B2 +6.8%，单级跨度 82–557ms，方差大于效应 | 不合入：W1 上限 21–23% 指向「意图排在延迟会话记录之后」，但改的是耐久提交时点/顺序，需用户显式授权；X1 checkpoint 被否证，不是尾部限速器（请求在 checkpoint 前已回复）。第一版 checkpoint 探针只跳 `post_batch`，Gate 0 发现 56 次 `pre_batch` 仍在，已作废并重跑 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2530,6 +2531,59 @@ limit-2000/5000/8625 均 `expected_limit`（4MiB 预算）。
 **证据**：`docs/performance-review/2026-11-04-r60-write-path-attribution/`
 （`README.md`、`summary.json`/`md`、`raw.jsonl`、`durability-observation.jsonl.gz`、
 `request-phase-observation.jsonl.gz`、`aggregate.py`、`smoke-r1-prefix/`、`smoke-r1-postfix/`）。
+
+#### R61：两项耐久上限探针——W1 intent 等待与 X1 周期 checkpoint（2026-11-04，测量轮，不合入）
+
+**目的**：R60 把两条 ≥10% 的方向都指向授权边界（意图/延迟记录的屏障顺序、checkpoint 频率与成本）。
+本轮按 R60 的建议先做两个**不安全上限探针**（只在 probe 分支，绝不合并），用数字决定是否值得申请授权。
+
+**探针 A（W1 intent）**：`beginCorrelatedOperation` 提交意图记录后不再 `wait()`，调用方立即
+dispatch；记录仍入队、仍落盘，只去掉「等它 durable 再派发」。A/B/B/A，4 条独立栈 + 全新同数据卷，
+2 轮 × 1 warmup + 3 timed/腿：
+
+| 腿 | 二进制 | 6 样本中位 |
+|---|---|---:|
+| A1 | 基线 `f4210c08…` | 40.56ms |
+| B1 | 探针 `6010408d…` | 32.10ms |
+| B2 | 探针 | 31.47ms |
+| A2 | 基线 `f4210c08…` | 40.94ms |
+
+配对 A1→B1 **−20.9%**（−8.46ms）、A2→B2 **−23.1%**（−9.47ms），4 轮逐轮中位全部同向；
+响应字节 252–256、0 错误、0×429、`warnings=[]`。
+
+**探针 B（X1 checkpoint）与 Gate 0 事故**：第一版只跳过 `checkpointAfterBatch` 的 `post_batch`；
+Gate 0 读 `/v1/metrics` 发现 `head_checkpoint_attempts_total` 仍 **56**——真正的周期路径是
+`audit.go` `appendBatch` 的 `pre_batch` guard。该版 4 条腿（`legs-probe-v1/`）只作 Gate 0 证据，
+不进入判决。修正版（`c59e917`）的 `commitHead` 只保留 `shutdown`：
+
+| 栈 | `head_checkpoint_attempts_total` | `head_checkpoint_ns_total` | `fsync_count` |
+|---|---:|---:|---:|
+| baseline | 54 | 1.1447s | 512 |
+| 修正探针 | **0** | 0 | 567 |
+
+修正探针 X1 json-pipeline（4 条腿，100 请求/级）：c4/c8 p99 多数下降（c4 −73%/−51%、c8 −14%/−73%），
+但 c16 一条腿 +36%、另一条 −44%；4 级 elapsed 合计 B1 −2.0% / B2 **+6.8%**，单级跨度 82–557ms，
+方差大于效应。
+
+**判决：两项探针均不合入**，分支 `probe/r61-w1-intent-ceiling` @ `9cf4911`、
+`probe/r61-x1-checkpoint-ceiling` @ `c59e917` 保留为证据。
+
+- W1：intent 屏障等待的上限是 **21–23%**，是当前唯一被量化到 ≥10% 的剩余方向；安全实现必须保留
+  「意图先 durable 再派发」，只能把意图排在延迟会话记录之前——属 journal 顺序/耐久提交时点，
+  **需用户显式授权**，本轮不实现。
+- X1：checkpoint 可以被完全跳过却不改变请求路径（请求在审计 append/checkpoint 之前已回复），
+  **不是尾部限速器**；该方向不再申请授权。
+
+**方法与教训**：Gate 0 必须**先于** A/B。第一版 checkpoint 探针跑了完整 A/B 后才核机制，先得到的是
+「无效探针 vs 基线」的噪声；修正后重跑全部 4 条腿。上限探针量化的是「拿掉等待后的单请求延迟」，
+不是安全实现的收益承诺。
+
+**下一轮提示**：X1 的 100–150ms 停顿在 c4/c8/c16 都出现、c1 不出现且与 checkpoint 无关；下一步在
+worker 会话 open/close 与 platform admission/deferred queue 之间做单窗口归因。授权内剩余项
+（worker 页响应缓冲 3–8%、平台页路径 <8%、审计编码 1–2%）均低于 10% 门槛，不再单独开轮。
+
+**证据**：`docs/performance-review/2026-11-04-r61-durability-ceiling-probes/`（`README.md`、`legs/`、
+`legs-probe-v1/`、`gate0/`、`run_leg.sh`、`gate0.sh`、`aggregate.py`）。
 
 ## 代码约定
 

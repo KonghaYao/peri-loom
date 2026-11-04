@@ -1,0 +1,49 @@
+{
+ "admitted_by_class": {
+  "completion": 0,
+  "rejection": 0,
+  "request": 0
+ },
+ "admitted_bytes": 0,
+ "admitted_bytes_by_class": {
+  "completion": 0,
+  "rejection": 0,
+  "request": 0
+ },
+ "admitted_count": 0,
+ "dropped_by_class": {
+  "completion": 0,
+  "rejection": 0,
+  "request": 0
+ },
+ "dropped_semantics": "records refused before admission; accepted records are never dropped",
+ "dropped_total": 0,
+ "durability_source": "audit_file_v1",
+ "fsync_count": 512,
+ "fsync_ns_max": 9601709,
+ "fsync_ns_total": 1869802710,
+ "fsync_scope": "audit_file",
+ "head_checkpoint_attempts_total": 54,
+ "head_checkpoint_failures_total": 0,
+ "head_checkpoint_in_progress": false,
+ "head_checkpoint_ns_total": 1144662128,
+ "in_flight_count": 0,
+ "limits": {
+  "completion_bytes": 4194304,
+  "completion_slot_bytes": 4096,
+  "completion_slots": 1024,
+  "queue_bytes": 8388608,
+  "queue_count": 4096,
+  "rejection_bytes": 524288,
+  "rejection_count": 256,
+  "request_bytes": 2097152,
+  "request_count": 1024
+ },
+ "observed_admitted_bytes_max": 66438,
+ "observed_admitted_max": 19,
+ "queue_age_ms": 0,
+ "queue_bytes": 0,
+ "queue_count": 0,
+ "reserved_completion_bytes": 0,
+ "reserved_completion_slots": 0
+}
