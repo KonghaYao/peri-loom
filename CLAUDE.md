@@ -258,6 +258,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R61 | 探针 `probe/r61-w1-intent-ceiling` / `9cf4911`、`probe/r61-x1-checkpoint-ceiling` / `c59e917`（均不合入） | 两项不安全上限探针：① W1 提交意图不等自己的屏障就 dispatch；② 跳过 `appendBatch` 的 `pre_batch` 与 `post_batch` checkpoint（保留 shutdown） | ① W1.insert json-pipeline A/B/B/A（4 条独立栈 + 全新同数据卷，2 轮 × 1 warmup + 3 timed/腿）：基线 40.56 / 40.94ms → 探针 32.10 / 31.47ms（**−20.9% / −23.1%**，4 轮逐轮中位同向，−8.46 / −9.47ms）。② X1 json-pipeline（4 条腿，100 请求/级）：Gate 0 `head_checkpoint_attempts_total` **54→0**（1.1447s→0，fsync 512→567）；c4/c8 p99 多数下降但 c16 B1 +36%、4 级 elapsed 合计 B1 −2.0% / B2 +6.8%，单级跨度 82–557ms，方差大于效应 | 不合入：W1 上限 21–23% 指向「意图排在延迟会话记录之后」，但改的是耐久提交时点/顺序，需用户显式授权；X1 checkpoint 被否证，不是尾部限速器（请求在 checkpoint 前已回复）。第一版 checkpoint 探针只跳 `post_batch`，Gate 0 发现 56 次 `pre_batch` 仍在，已作废并重跑 |
 | R62 | `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`（不合入，留证） | 延后耐久账户待办上限 256→4096，与审计队列自身的 4096 条 / 8 MiB 准入上限对齐；新增 `/v1/metrics` 的 `deferred_durability`（pending / pending_max / maximum / enqueued_total / inline_total） | Gate 0：100 请求/级时候选把固定 500 rps 桶耗尽（16 次 `rate_limit` vs 基线 0），拒绝记录排在延后积压之后约 500ms；成功请求 p99 仅 20.37ms。改用 50 请求/级（配额不变）后两侧干净。A/B：2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 c8/c16 p95/p99 两轮四单元全部 −31.1%~−79.3%（合并 −33.1% / −67.6% / −62.1% / −49.2%）；护栏 c1 p95 0.973→6.370ms（**+554.9%**）失败，c1 p50 −3.2%、c1 p99 −22.1%、c4 p50 −23.6%、c4 p95 −93.0%；8 腿 0 错误 / 0×429 / `inline_total=0` / clean stop | 不合入：主指标通过，但 A/B 前冻结的 c1 p95 护栏失败。分支与两份提交保留作证据；下一轮在 c1 上做请求级相位归因（open/statement/close 的 journal/audit/native 分段），先确认 5–9ms 尖峰归属，再决定修实现还是修测量方式 |
 | R63 | 无代码改动（归因轮） | R62 c1 尾部归因：观察器腿 o1–o8（X1 1/4/8/16，相位观察器）+ c1-only 腿 p1–p6（harness 补丁 `concurrency_levels=(1,)`，无观察器），两侧仍是 R62 的两个平台二进制 | c1-only 腿：A/B 腿中位 p95 **0.56 / 0.55ms**、p50 0.44 / 0.46、>2ms 3/150 vs 6/150，只有 p5 一条腿越过 2ms（4.65ms）；两侧 max 同为 7.7–16.7ms 量级。观察器腿：**每条腿两侧都有 ≥1 条 >5ms 的 c1 样本**（A 4/200、B 9/200 >2ms；max 18.56 / 19.51ms），形态为 `terminal` 6.2–11.1ms、handler 外层帧自身时间 6.9–14.3ms、内层记录间空档 4.0–18.0ms。机制：c1-only 腿 `pending_max` 200–243 < 基线冻结上限 256、`inline_total=0`，且 c1 是观察器腿的第一级 ⇒ 256→4096 在 c1 结构性不可见；同腿 journal 等待 max 8.1–12.3ms、audit fsync max 7.2–9.8ms，与尖峰同量级；c1-only 组 `head_checkpoint_attempts` 两侧都是 4 | 仅记录，无代码改动：c1 尖峰是两侧共有的宿主屏障抖动，与 R62 候选无因果关系；**不推翻 R62 冻结判决、不重跑洗判据、不合入该分支**。R64 须用新冻结的、c1 抖动无法触发的判据重新评估同一候选 |
+| R64 | 测量轮（无代码改动；候选仍为 `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`，merge `8500b5a`） | 在新冻结判据下重新评估 R62 候选：c1 尾部（p95/p99/max/>2ms）按 R63 的归因降级为报告项，c1 中位数保留护栏；其余主指标与护栏沿用 R62 口径；判据在首条腿之前提交并推送（`ad1d113`） | Gate 0：四条候选腿 `maximum=4096`、`pending_max` 741/770/661/800（>256）、`inline_total=0`；基线腿无该指标。A/B（2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 50 请求/级，无观测器）：主指标 8 个轮内比较全部 ≤90%，合并 c8 p95 **0.108** / c8 p99 **0.076** / c16 p95 **0.320** / c16 p99 **0.314**；护栏 c1 p50 0.983（R1）/1.040（R2）/1.014（合并）、c4 p50 0.754/0.737/0.709、c4 p95 0.067/0.037/0.038，全部 ≤110%；c1 尾部报告项 A 6/200、B 8/200 >2ms，两侧最大值 16.60 / 16.38ms；8 腿 0 错误 / 0×429 / 无拒绝 / `rows=1` / clean stop；掩码 `query_duration_ms` 后原始响应体逐字节相同。机制（解释变量）：journal appends 8 腿均为 404，候选 audit fsync 17–20 次 vs 基线 30–32，同步 head checkpoint B 8–10 次 vs A 19–20 次 | **合入 main**（merge `8500b5a`）：新冻结判据下主指标与全部护栏通过；R62 的原冻结判决不变（当时不合入）。候选扩大的只是回复后待办上限，耐久时点、审计链顺序、隔离与 fail-closed 未改 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2664,6 +2665,56 @@ R64 若要重新评估该候选，必须在 A/B 前冻结一个 c1 宿主抖动�
 **证据**：`docs/performance-review/2026-11-04-r63-c1-spike-attribution/`（`README.md`、
 `legs/`、`legs-c1/`、`observer/`、`run_leg_observer.sh`、`run_leg_c1_only.sh`、
 `harness-c1-only.patch`、`aggregate.py`、`observer_spikes.py`、`observer-spikes.md`）。
+
+#### R64：在新冻结判据下重新评估 R62 候选（2026-11-04，测量轮，合入）
+
+**背景**：R62 主指标通过、c1 p95 护栏失败（0.973→6.370ms）。R63 已证明该护栏度量的是宿主
+fsync 抖动（两侧共有、形态相同），且 256→4096 在 c1 的 50 请求配置下结构性不可见
+（`pending_max` 200–243 < 256、`inline_total=0`）。R64 在**首条腿之前**冻结新判据并推送
+（`ad1d113`）：c1 的尾部（p95/p99/max/>2ms）降为报告项，c1 中位数保留护栏；主指标与其余护栏
+沿用 R62 口径。R62 自己的冻结判决不变。
+
+**方法**：候选与基线仍是 R62 的两个平台二进制（sha256 `fd959df7…` / `98487e5e…`），worker
+两侧相同（`a648ecd9…`，v1.2.5）。2 轮 × A/B/B/A 共 8 条腿，端口 20101–20108；每条腿独立栈 +
+全新 run dir + 重新导入同一 fixture（threads=201 messages=8625 chars=20177069）。场景 X1
+（json-pipeline、`SELECT 1`、`want_rows`），**每级 50 请求**；配额不变（`max_sessions=16`、
+`max_concurrent=100`、`rps=500`、`max_result_bytes=4 MiB`）。A/B 期间不开启任何观测器；
+`/v1/metrics` 只在计时窗口之外各取一次快照。
+
+**结果**：
+- **主指标**（X1 c8/c16 的 p95、p99；每轮四单元 ≤90%，两轮同向）：8 个轮内比较全部一次通过，
+  合并比值 c8 p95 **0.108**、c8 p99 **0.076**、c16 p95 **0.320**、c16 p99 **0.314**。
+  候选侧离散度小（c8 p95 9.52–17.27ms、c16 p95 9.73–20.24ms），基线侧跨轮跨度大
+  （c8 p95 30.83–136.68ms）。
+- **护栏**（≤110%）：c1 p50 0.983（R1）/1.040（R2）/1.014（合并）；c4 p50
+  0.754/0.737/0.709；c4 p95 0.067/0.037/0.038。全部通过。
+- **c1 尾部（报告项）**：A 6/200、B 8/200 >2ms；两侧最大值 16.60 / 16.38ms；候选只有 r2b2
+  一条腿越过 2ms（4 条样本，1 条 15.49ms），形态与 R63 记录的宿主屏障抖动一致。
+
+**Gate 0**：四条候选腿 `maximum=4096`、`pending_max` 741/770/661/800（均 >256，证明窗口内越过
+基线上限）、`inline_total=0`（新上限未被触达，内联回退未走）；四条基线腿不含该指标。
+运行性：8 腿 0 错误、0 ×429、`rejection_reasons={}`、所有样本 `rows=1`、fixture 完整、
+`launcher-stop.json` 全为 `clean` 且 `unresolved_operations=false`。
+
+**机制（解释变量，非合入理由）**：`operation_journal_appends_total` 8 条腿都是 **404**
+（2.02/请求，工作量不变）；候选 audit fsync 17–20 次 vs 基线 30–32，journal syncs 27–36 vs
+36–39；同步 head checkpoint B 8–10 次（191–238ms）vs A 19–20 次（392–423ms）。宿主屏障量级：
+每条腿 audit fsync max 7.84–9.03ms、journal 等待 max 9.19–11.23ms，与 c1 尖峰同量级。
+**不变量**：响应字节 308–325（`query_duration_ms` 浮点位数导致 ±11–12 字节）；掩码该字段后
+5 对原始 pipeline 响应体逐字节相同。
+
+**测试**：候选提交（`530fcf7`）上 `gofmt -l .` 无输出、`go vet ./...` 退出 0、
+`go build ./cmd/peri-platform ./cmd/peri` 通过、`go test ./...`（`PERI_RUST_BINARY` 指向
+v1.2.5 worker）**全绿**（`peri-loom/platform` 176.9s，其余包 ok，退出码 0）。
+
+**剩余风险**：① 待办上限提高意味着掉电时可能丢失的「已确认回复的只读/open/close 记录」更多，
+仍属 R37 用户授权范围，隔离与 fail-closed 规则未变；② 未测 4096 满载时的内存峰值
+（本窗口 `pending_max` 661–800）；③ 只测 X1，未复测 W1/H1/H3/F1/L1；④ 单机 macOS + 本机卷、
+无 TLS，不代表容量或 SLA；⑤ c1 尾部按新判据不设门槛，若要真正降低尾部只能改宿主/屏障成本。
+
+**证据**：`docs/performance-review/2026-11-04-r64-r62-reeval/`（`protocol.md`、`README.md`、
+`legs/`、`launcher-stop.json`、`invariants/`、`legs.txt`、`aggregate.py`、`run_leg.sh`、
+`run_all.sh`、`seed_fixture.py`、`snap_metrics.py`）。
 
 ## 代码约定
 
