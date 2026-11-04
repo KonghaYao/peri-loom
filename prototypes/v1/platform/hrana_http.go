@@ -871,6 +871,10 @@ type hranaReply struct {
 	// the client itself forwards the platform's correlation, stage and commit
 	// risk instead of inventing a transport-specific code.
 	failure *sqlcontract.Failure
+	// open carries a successful open reply in the typed form the gateway
+	// produced for this in-process call. When set it replaces result, which
+	// would otherwise hold the encoded internal envelope.
+	open *hranaOpenReply
 }
 
 // hranaErrorMessage answers a step error with the platform's own text when the

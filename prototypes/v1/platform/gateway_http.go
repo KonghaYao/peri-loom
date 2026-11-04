@@ -678,8 +678,13 @@ func (gateway *Gateway) writeResponse(writer http.ResponseWriter, requestID stri
 		return
 	}
 	if result.code == "" && (result.status == 0 || result.status == http.StatusOK) {
-		if response, ok := writer.(*hranaGatewayResponse); ok && response.capture(result.value, result.validatedResult) {
-			return
+		if response, ok := writer.(*hranaGatewayResponse); ok {
+			if result.hranaOpen != nil && response.captureOpen(result.hranaOpen) {
+				return
+			}
+			if response.capture(result.value, result.validatedResult) {
+				return
+			}
 		}
 	}
 	response := map[string]any{"version": 1, "request_id": requestID, "ok": result.code == "", "result": result.value, "error": nil}

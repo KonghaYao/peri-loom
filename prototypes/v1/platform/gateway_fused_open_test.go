@@ -402,3 +402,63 @@ func TestHranaFusedStatementMarkerCarriesTheParsedAnswer(t *testing.T) {
 		t.Fatalf("marker reply = %s, want the original payload", marker.Reply)
 	}
 }
+
+func TestHranaGatewayResponseTakesTheTypedOpenAnswer(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	open := &hranaOpenReply{
+		Session:        fusedOpenSession,
+		FusedStatement: json.RawMessage(`{"status":"ok","result":{"cols":[],"rows":[]}}`),
+		AnswerValid:    true,
+	}
+	recorder := newHranaGatewayResponse()
+	fixture.gateway.writeResponse(recorder, "request", gatewayResult{
+		value:     map[string]any{"session": fusedOpenSession},
+		hranaOpen: open,
+	})
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("typed open still encoded its envelope: %s", recorder.Body.String())
+	}
+	reply := recorder.reply("/v1/sql/open")
+	if reply.open != open || reply.result != nil || reply.status != http.StatusOK {
+		t.Fatalf("recorder reply = %+v, want the typed answer", reply)
+	}
+}
+
+func TestHranaOpenWithoutFusionStillReturnsTheEnvelope(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	fixture.upstream.setHook(fusedOpenHook(nil))
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	request := httptest.NewRequest(http.MethodPost, "/v1/sql/open", nil)
+	reply := handler.call(request, fixture.tokenA, "/v1/sql/open", map[string]any{"database": fixture.first})
+	if reply.status != http.StatusOK || reply.code != "" {
+		t.Fatalf("plain open failed: %+v", reply)
+	}
+	if reply.open != nil || reply.result == nil {
+		t.Fatalf("plain open reply = %+v, want the encoded envelope", reply)
+	}
+}
+
+func TestHranaOpenFromGatewayKeepsTheParsedAnswer(t *testing.T) {
+	fixture := newGatewayFixture(t)
+	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
+	payload := json.RawMessage(`{"status":"ok","result":{"cols":[{"name":"x","decltype":"INTEGER"}],"rows":[[1]],"affected_row_count":0,"last_insert_rowid":null,"autocommit":true}}`)
+	answer, valid := parseFusedStatementAnswer(payload)
+	if !valid {
+		t.Fatal("fixture answer rejected")
+	}
+	opened, reply := handler.hranaOpenFromGateway(&hranaOpenReply{
+		Session:        fusedOpenSession,
+		FusedStatement: payload,
+		Answer:         answer,
+		AnswerValid:    true,
+	}, true)
+	if reply.status != http.StatusOK || reply.code != "" {
+		t.Fatalf("typed open failed: %+v", reply)
+	}
+	if !opened.fusedAnswerValid || opened.FusedAnswer.kind != fusedStatementOK {
+		t.Fatalf("typed open answer = %+v, want the parsed ok answer", opened.FusedAnswer)
+	}
+	if string(opened.FusedStatement) != string(payload) || string(opened.FusedAnswer.result) != string(answer.result) {
+		t.Fatal("typed open did not keep the validated payload")
+	}
+}
