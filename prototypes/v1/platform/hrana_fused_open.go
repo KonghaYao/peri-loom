@@ -41,6 +41,11 @@ type hranaOpenResult struct {
 	// The adapter still sends its close entry so the platform keeps its own
 	// records; this field only tells it that the worker session is gone.
 	FusedClose bool
+	// FusedAnswer is the parsed form of FusedStatement. The adapter already had
+	// to read the payload before publishing it, so the statement entry consumes
+	// this answer instead of decoding the same result a third time.
+	FusedAnswer      fusedStatementAnswer
+	fusedAnswerValid bool
 }
 
 // hranaOpen is the implicit open of a Hrana pipeline. It asks the gateway to
@@ -75,6 +80,8 @@ func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, da
 	if json.Unmarshal(reply.result, &opened) != nil {
 		return hranaOpenResult{}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 	}
+	var fusedAnswer fusedStatementAnswer
+	fusedAnswerValid := false
 	if opened.FusedStatement != nil {
 		// The gateway validates this payload before publishing it, so a shape
 		// this adapter cannot read is a protocol error, not a statement outcome.
@@ -83,25 +90,28 @@ func (handler *hranaHTTP) hranaOpen(request *http.Request, credential string, da
 			handler.cleanupRetiredSession(opened.Session, 0)
 			return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 		}
-		if _, valid := parseFusedStatementAnswer(opened.FusedStatement); !valid {
+		answer, valid := parseFusedStatementAnswer(opened.FusedStatement)
+		if !valid {
 			handler.cleanupRetiredSession(opened.Session, 0)
 			return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 		}
+		fusedAnswer, fusedAnswerValid = answer, true
 	} else if opened.FusedClose {
 		// A close without the statement it followed cannot be spent: the close
 		// entry would skip the worker call for a session nothing proved closed.
 		handler.cleanupRetiredSession(opened.Session, 0)
 		return hranaOpenResult{Session: opened.Session}, hranaReply{status: http.StatusBadGateway, code: "invalid_native_open", unknown: true}
 	}
-	return hranaOpenResult{Session: opened.Session, FusedStatement: opened.FusedStatement, FusedClose: opened.FusedClose}, hranaReply{status: http.StatusOK}
+	return hranaOpenResult{Session: opened.Session, FusedStatement: opened.FusedStatement, FusedClose: opened.FusedClose, FusedAnswer: fusedAnswer, fusedAnswerValid: fusedAnswerValid}, hranaReply{status: http.StatusOK}
 }
 
 // hranaFusedStatementResult is the marker the next statement call consumes. It
 // carries the statement text so the gateway can prove the answer belongs to
-// this entry before it uses it.
-func hranaFusedStatementResult(session string, statement hranaStatement, reply json.RawMessage, closed bool) *fusedStatementResult {
-	if reply == nil {
+// this entry before it uses it, and the answer the adapter already parsed so
+// the dispatch does not decode the same result again.
+func hranaFusedStatementResult(session string, statement hranaStatement, opened hranaOpenResult) *fusedStatementResult {
+	if opened.FusedStatement == nil {
 		return nil
 	}
-	return &fusedStatementResult{Session: session, SQL: statement.SQL, Reply: reply, Closed: closed}
+	return &fusedStatementResult{Session: session, SQL: statement.SQL, Reply: opened.FusedStatement, Closed: opened.FusedClose, Answer: opened.FusedAnswer, AnswerValid: opened.fusedAnswerValid}
 }

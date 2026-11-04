@@ -382,3 +382,23 @@ func TestHranaOpenWithoutAFusionCandidateKeepsThePublicShape(t *testing.T) {
 		t.Fatal("a non-execute first entry was fused")
 	}
 }
+
+func TestHranaFusedStatementMarkerCarriesTheParsedAnswer(t *testing.T) {
+	reply := json.RawMessage(`{"status":"ok","result":{"cols":[{"name":"x","decltype":"INTEGER"}],"rows":[[1]],"affected_row_count":0,"last_insert_rowid":null,"autocommit":true}}`)
+	answer, valid := parseFusedStatementAnswer(reply)
+	if !valid {
+		t.Fatal("fixture answer rejected")
+	}
+	marker := hranaFusedStatementResult("session", hranaStatement{SQL: "SELECT 1"}, hranaOpenResult{
+		Session: "session", FusedStatement: reply, FusedAnswer: answer, fusedAnswerValid: true,
+	})
+	if marker == nil || !marker.AnswerValid {
+		t.Fatalf("marker did not carry the parsed answer: %+v", marker)
+	}
+	if marker.Answer.kind != fusedStatementOK || string(marker.Answer.result) != string(answer.result) {
+		t.Fatalf("marker answer = %+v, want the parsed ok answer", marker.Answer)
+	}
+	if string(marker.Reply) != string(reply) {
+		t.Fatalf("marker reply = %s, want the original payload", marker.Reply)
+	}
+}

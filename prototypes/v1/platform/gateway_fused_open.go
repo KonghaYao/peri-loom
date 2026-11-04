@@ -52,6 +52,11 @@ type fusedStatementResult struct {
 	Session string
 	SQL     string
 	Reply   json.RawMessage
+	// Answer is the adapter's parsed form of Reply. The adapter reads the
+	// payload to publish it, so dispatch reuses that answer; AnswerValid is
+	// false only for markers built without one, which still parse Reply.
+	Answer      fusedStatementAnswer
+	AnswerValid bool
 	// Closed records that the same worker request already retired the session
 	// this statement ran on. The adapter still runs its close entry, but an
 	// entry served by this open may not make another worker call on the session.
@@ -311,7 +316,10 @@ func (gateway *Gateway) fusedGuardedStatement(ctx context.Context, session *gate
 		return operationAdmissionFailure(err)
 	}
 	pending := pendingDispatchOperation(session, "statement", stage, requestID, frozen)
-	answer, valid := parseFusedStatementAnswer(fused.Reply)
+	answer, valid := fused.Answer, fused.AnswerValid
+	if !valid {
+		answer, valid = parseFusedStatementAnswer(fused.Reply)
+	}
 	if !valid {
 		// The open handler accepted this payload before publishing it, so this
 		// branch is defensive: it still refuses to replay a statement whose

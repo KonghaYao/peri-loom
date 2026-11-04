@@ -370,7 +370,7 @@ func (handler *hranaHTTP) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			}
 			stream.session = opened.Session
 			if candidate != nil {
-				fusedMarker = hranaFusedStatementResult(opened.Session, *candidate, opened.FusedStatement, opened.FusedClose)
+				fusedMarker = hranaFusedStatementResult(opened.Session, *candidate, opened)
 			}
 		}
 		// A contiguous run of top-level executes is sent as one block when the
