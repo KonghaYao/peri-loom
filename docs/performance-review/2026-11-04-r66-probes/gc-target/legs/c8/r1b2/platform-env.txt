@@ -1,0 +1,4 @@
+# macOS ps does not expose another process's environment; this is the command line only.
+# Gate 0 proves the forwarded value by the gctrace goal/live ratio instead.
+GOGC_intended=1000 GODEBUG_intended=unset
+platform_command=/tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r1b2/platform.json

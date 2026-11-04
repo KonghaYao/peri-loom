@@ -1,0 +1,279 @@
+{
+  "actions": {
+    "close": {
+      "count": 50,
+      "latency_ns": 15698253,
+      "mean_ms": 0.31396506,
+      "successful_latency_ns": 15698253
+    },
+    "open": {
+      "count": 50,
+      "latency_ns": 30560125,
+      "mean_ms": 0.6112025,
+      "successful_latency_ns": 30560125
+    },
+    "query": {
+      "count": 0,
+      "latency_ns": 0,
+      "mean_ms": null,
+      "successful_latency_ns": 0
+    },
+    "statement": {
+      "count": 50,
+      "latency_ns": 9317714,
+      "mean_ms": 0.18635428,
+      "successful_latency_ns": 9317714
+    }
+  },
+  "checks": [
+    {
+      "detail": "got 50",
+      "name": "timed_samples_50",
+      "ok": true
+    },
+    {
+      "detail": "{'ok': 50}",
+      "name": "all_outcomes_ok",
+      "ok": true
+    },
+    {
+      "detail": "{'200': 50}",
+      "name": "all_status_200",
+      "ok": true
+    },
+    {
+      "detail": "{}",
+      "name": "no_error_codes",
+      "ok": true
+    },
+    {
+      "detail": "got 1",
+      "name": "rows_one",
+      "ok": true
+    },
+    {
+      "detail": "complete=True",
+      "name": "fixture_complete",
+      "ok": true
+    },
+    {
+      "detail": "[]",
+      "name": "no_warnings",
+      "ok": true
+    },
+    {
+      "detail": "''",
+      "name": "no_fatal",
+      "ok": true
+    },
+    {
+      "detail": "0 -> 0",
+      "name": "errors_delta_zero",
+      "ok": true
+    },
+    {
+      "detail": "0 -> 0",
+      "name": "rejected_delta_zero",
+      "ok": true
+    },
+    {
+      "detail": "got 50",
+      "name": "close_count_50",
+      "ok": true
+    },
+    {
+      "detail": "got 50",
+      "name": "open_count_50",
+      "ok": true
+    },
+    {
+      "detail": "got 0",
+      "name": "session_seats_zero",
+      "ok": true
+    },
+    {
+      "detail": "got 0",
+      "name": "active_permits_zero",
+      "ok": true
+    },
+    {
+      "detail": "got 0",
+      "name": "unknown_permits_zero",
+      "ok": true
+    },
+    {
+      "detail": "ok",
+      "name": "stop_payload_present",
+      "ok": true
+    },
+    {
+      "detail": "outcome='clean'",
+      "name": "stop_clean",
+      "ok": true
+    },
+    {
+      "detail": "unresolved_operations=False",
+      "name": "unresolved_operations_false",
+      "ok": true
+    },
+    {
+      "detail": "[{'name': 'platform', 'exit_code': 0, 'ack': True}, {'name': 'worker-a', 'exit_code': 0, 'ack': True}, {'name': 'worker-b', 'exit_code': 0, 'ack': True}, {'name': 'authority', 'exit_code': 0, 'ack': True}]",
+      "name": "all_stage_exit_zero",
+      "ok": true
+    }
+  ],
+  "f1": {
+    "error_codes": {},
+    "max_ms": 16.791042,
+    "mean_ms": 1.23126582,
+    "median_ms": 0.5475205,
+    "min_ms": 0.466292,
+    "outcomes": {
+      "ok": 50
+    },
+    "p95_ms": 8.515,
+    "query_ms_median": 0.0065,
+    "response_bytes_median": 312,
+    "rows_median": 1,
+    "samples": 50,
+    "status_counts": {
+      "200": 50
+    }
+  },
+  "fatal": "",
+  "means_ms": {
+    "close": 0.31396506,
+    "f1": 1.23126582,
+    "open": 0.6112025,
+    "open_statement_close_sum": 1.11152184,
+    "residual_unaccounted": 0.11974397999999997,
+    "statement": 0.18635428
+  },
+  "metric_semantics": {
+    "action_latency_ns_total": "all_answered_requests_including_refusals",
+    "successful_latency_ns_total": "successful_requests_only_refusals_never_enter_this_account"
+  },
+  "round": "round1",
+  "shares_of_f1_mean": {
+    "close": 0.2549937266998933,
+    "open": 0.49640174369495615,
+    "open_statement_close_sum": 0.9027472556657181,
+    "residual_unaccounted": 0.09725274433428191,
+    "statement": 0.15135178527086865
+  },
+  "state_after": {
+    "active_permits": 0,
+    "audit": {
+      "admitted_by_class": {
+        "completion": 0,
+        "rejection": 0,
+        "request": 0
+      },
+      "admitted_bytes": 0,
+      "admitted_bytes_by_class": {
+        "completion": 0,
+        "rejection": 0,
+        "request": 0
+      },
+      "admitted_count": 0,
+      "dropped_by_class": {
+        "completion": 0,
+        "rejection": 0,
+        "request": 0
+      },
+      "dropped_semantics": "records refused before admission; accepted records are never dropped",
+      "dropped_total": 0,
+      "durability_source": "audit_file_v1",
+      "fsync_count": 461,
+      "fsync_ns_max": 11834208,
+      "fsync_ns_total": 1882267281,
+      "fsync_scope": "audit_file",
+      "head_checkpoint_attempts_total": 15,
+      "head_checkpoint_failures_total": 0,
+      "head_checkpoint_in_progress": true,
+      "head_checkpoint_ns_total": 370038250,
+      "in_flight_count": -79,
+      "limits": {
+        "completion_bytes": 4194304,
+        "completion_slot_bytes": 4096,
+        "completion_slots": 1024,
+        "queue_bytes": 8388608,
+        "queue_count": 4096,
+        "rejection_bytes": 524288,
+        "rejection_count": 256,
+        "request_bytes": 2097152,
+        "request_count": 1024
+      },
+      "observed_admitted_bytes_max": 4547,
+      "observed_admitted_max": 2,
+      "queue_age_ms": 46,
+      "queue_bytes": 35391,
+      "queue_count": 79,
+      "reserved_completion_bytes": 0,
+      "reserved_completion_slots": 0
+    },
+    "deferred_durability": {
+      "enqueued_total": 263,
+      "inline_total": 0,
+      "maximum": 4096,
+      "pending": 180,
+      "pending_max": 205,
+      "semantics": "completion barriers paid after the reply; a record beyond the bound pays its barrier inline before the reply is flushed"
+    },
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "session_seats": 0,
+    "unknown_held_permits": 0
+  },
+  "stop": {
+    "error": "",
+    "outcome": "clean",
+    "reason": "terminal_proof_written",
+    "stages": [
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "platform"
+      },
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "worker-a"
+      },
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "worker-b"
+      },
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "authority"
+      }
+    ],
+    "unresolved_operations": false
+  },
+  "upper_bound": {
+    "close_mean_over_f1_mean": 0.2549937266998933,
+    "close_mean_over_f1_p50": 0.5734306934626193,
+    "open_plus_close_over_f1_mean": 0.7513954703948494
+  },
+  "valid": true,
+  "valid_pending_stop": true,
+  "warnings": [],
+  "window": {
+    "metrics_after_actions": {
+      "close": 52,
+      "open": 52,
+      "query": 444,
+      "statement": 50
+    },
+    "metrics_before_actions": {
+      "close": 2,
+      "open": 2,
+      "query": 444
+    },
+    "timed_requests": 50,
+    "warmup_requests": 0
+  }
+}

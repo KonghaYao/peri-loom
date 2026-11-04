@@ -260,6 +260,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R63 | 无代码改动（归因轮） | R62 c1 尾部归因：观察器腿 o1–o8（X1 1/4/8/16，相位观察器）+ c1-only 腿 p1–p6（harness 补丁 `concurrency_levels=(1,)`，无观察器），两侧仍是 R62 的两个平台二进制 | c1-only 腿：A/B 腿中位 p95 **0.56 / 0.55ms**、p50 0.44 / 0.46、>2ms 3/150 vs 6/150，只有 p5 一条腿越过 2ms（4.65ms）；两侧 max 同为 7.7–16.7ms 量级。观察器腿：**每条腿两侧都有 ≥1 条 >5ms 的 c1 样本**（A 4/200、B 9/200 >2ms；max 18.56 / 19.51ms），形态为 `terminal` 6.2–11.1ms、handler 外层帧自身时间 6.9–14.3ms、内层记录间空档 4.0–18.0ms。机制：c1-only 腿 `pending_max` 200–243 < 基线冻结上限 256、`inline_total=0`，且 c1 是观察器腿的第一级 ⇒ 256→4096 在 c1 结构性不可见；同腿 journal 等待 max 8.1–12.3ms、audit fsync max 7.2–9.8ms，与尖峰同量级；c1-only 组 `head_checkpoint_attempts` 两侧都是 4 | 仅记录，无代码改动：c1 尖峰是两侧共有的宿主屏障抖动，与 R62 候选无因果关系；**不推翻 R62 冻结判决、不重跑洗判据、不合入该分支**。R64 须用新冻结的、c1 抖动无法触发的判据重新评估同一候选 |
 | R64 | 测量轮（无代码改动；候选仍为 `perf/r62-deferred-bound` / `861eb8a`+`530fcf7`，merge `8500b5a`） | 在新冻结判据下重新评估 R62 候选：c1 尾部（p95/p99/max/>2ms）按 R63 的归因降级为报告项，c1 中位数保留护栏；其余主指标与护栏沿用 R62 口径；判据在首条腿之前提交并推送（`ad1d113`） | Gate 0：四条候选腿 `maximum=4096`、`pending_max` 741/770/661/800（>256）、`inline_total=0`；基线腿无该指标。A/B（2 轮 × A/B/B/A，8 条独立栈 + 重新 seed，X1 50 请求/级，无观测器）：主指标 8 个轮内比较全部 ≤90%，合并 c8 p95 **0.108** / c8 p99 **0.076** / c16 p95 **0.320** / c16 p99 **0.314**；护栏 c1 p50 0.983（R1）/1.040（R2）/1.014（合并）、c4 p50 0.754/0.737/0.709、c4 p95 0.067/0.037/0.038，全部 ≤110%；c1 尾部报告项 A 6/200、B 8/200 >2ms，两侧最大值 16.60 / 16.38ms；8 腿 0 错误 / 0×429 / 无拒绝 / `rows=1` / clean stop；掩码 `query_duration_ms` 后原始响应体逐字节相同。机制（解释变量）：journal appends 8 腿均为 404，候选 audit fsync 17–20 次 vs 基线 30–32，同步 head checkpoint B 8–10 次 vs A 19–20 次 | **合入 main**（merge `8500b5a`）：新冻结判据下主指标与全部护栏通过；R62 的原冻结判决不变（当时不合入）。候选扩大的只是回复后待办上限，耐久时点、审计链顺序、隔离与 fail-closed 未改 |
 | R65 | 测量轮（无生产代码改动；A `main`@`1399f15` sha256 `fd959df7…`，B `main`@`1a6b9dd` sha256 `9214cd0c…`，worker 两侧 `a648ecd9…`） | R64 合入后的回归门：W1/F1/H1 主协议（W1/F1 `json-pipeline`、H1 `json-cursor`），确认延后耐久待办上限 256→4096 未造成 >10% 退化；2 轮 × A/B/B/A，每场景 8 腿，共 24 腿 | 24/24 腿有效：fixture complete、352/352 请求 `ok`/HTTP 200、warnings/fatal 空、F1 rows=1、H1 rows=8625、samples 5/5/3、clean stop 且 `unresolved_operations=false`、无 429/expected_limit/audit_unavailable。主指标（候选/基线）：W1 1.101（33.705→37.125ms；round1 0.972、round2 1.153）、F1 0.987（0.532→0.525ms；两轮均 0.987）、H1 1.022（53.171→54.357ms；0.950/1.078）。**W1 边界 PASS**：round2 1.153 与合并 1.101 均 >1.10，仅因 round1 0.972 未超阈值；W1 round2 `query_ms` 从 9–11ms 阶跃到 16.96/20.41/16.14ms（A `r2a2` 同样受影响），`duration_ms − query_ms` 比值 round1 0.977 / round2 1.031 / 合并 0.977 ⇒ 平台侧无回归信号。机制快照：12 条 B 腿 `deferred_durability.maximum=4096`、`inline_total=0`，`pending_max` W1=4 / F1=91 / H1=18–21，远低于 4096，未逼近新上限；12 条 A 腿无该指标 | 无代码改动：冻结判据下三场景均无回归 PASS；W1 为边界 PASS，不是稳健无回归。后续 R43 adapter 级 fused close 撤销会改变 F1 绝对延迟，本轮判决仅代表 `a46afa2` 上的 R64 变更 |
+| R66 | 探针轮（无生产代码）；`probe/r66-legacy-settle-ceiling` @ `066ba9e` 未合入 | legacy settle / GC / fused close 三个上限探针 | legacy settle 移除：c8/c16 尾部无改善（c16 p95/p99 两轮 2.12–3.33×反向）；GOGC=off 仍有同样 15.7–32.9ms 停顿；F1 close 均值 0.248ms 但 fused close 当前仅约 4% 且属红线 | 全部判停，不合入；授权内无可过 ≥10% 门槛的方向 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2769,6 +2770,68 @@ checkpoint failures=0；④ 未做观测器，`concurrency_requests=50` 只属�
 **证据**：`docs/performance-review/2026-11-04-r65-r64-regression/`（`protocol.md`、`README.md`、
 `legs/`、`legs.txt`、`aggregate.py`、`run_leg.sh`、`run_all.sh`、`seed_fixture.py`、
 `snap_metrics.py`）。
+
+#### R66：三个上限探针（2026-11-04，探针轮，无可合入改动）
+
+**目的**：R64 合入、R65 回归门通过后，用三个授权内的上限探针判断 X1 尾部与 F1 close 是否还有
+值得实现安全版本的方向。三个探针的判据都在首条腿之前冻结；全部数字为 **smoke**，
+不构成对外性能结论。**没有合入任何生产代码；唯一代码改动在未 push 的探针分支上。**
+
+**探针 1——legacy 全队列 settle 跳过**（`probe/r66-legacy-settle-ceiling` @ `066ba9e`，
+基线 `main` @ `39e8e6c`；`operation_store.go` +5/−1）：`awaitOperationCommit` 的 legacy
+（`audit_file_v1`）分支不再调用 `settleOperations()`，读路径的 settle 仍在。X1 `json-pipeline`，
+每级 50 请求，2 轮 × A/B/B/A，8 腿，无观测器、默认配额。结果：round1 c8 p95/p99
+**0.160/0.169**、c16 **2.237/2.123**；round2 c8 **2.685/2.692**、c16 **3.333/2.591**；
+c8 两轮方向相反，c16 p95/p99 两轮 2.12–3.33×；c1 p50 护栏 0.934/0.890/合并 0.900 通过。
+机制：`state_lock_wait_ns_total` 每请求 **3.01→1.74ms（−42%）**、c1 尾部 p95
+6.83→0.57 / 7.57→0.64ms，但 `appends=404`、`compactions=0` 不变，c8/c16 无改善——
+等待没有消失，只是推给读路径的 `settleOperations()`。**判决：上限不足，停止；不实现安全版本**
+（探针语义本身不安全，可能留下未确认编辑）。
+
+**探针 2——GOGC 400→1000/off**（零代码，仅平台子进程环境变量；A=400、B=1000、C=off）：
+Gate 0 gctrace 为 **39 / 13 / 0** 次 GC，首个堆目标 16/40/—MB，RSS 42.7/60.2/490.8MiB，
+证明变量到达运行时。正式 2 轮 × A/B/B/A + 每轮一条 C，共 10 腿。B/A：round1 c8 p95
+**2.763**、c8 p99 0.727、c16 p95 **1.947**、c16 p99 **1.826**；round2 c8 1.036/**1.114**、
+c16 **0.339**/**0.393**——四单元两轮方向全部相反，无单元两轮 ≤0.90；c1 护栏 0.973/1.013/
+合并 0.980 通过。绝对上限档 C（GC 次数 0、RSS 490.6/491.1MiB、未 OOM）在 round1 看似改善
+（c16 0.346/0.349），round2 仍为 A 的 **1.809×/1.819×**。慢请求是 **15.7–32.9ms 的连续样本块**，
+A/B/C 随机出现；零 GC 的腿仍出现 17.7–18.5ms 的 c16 台阶。**判决：GC 尾延迟假设否证/不可确认，
+停止**；c8/c16 尾部由宿主级暂停主导，不是 GC assist。
+
+**探针 3——F1 close 成本与 fused close 上限**（零代码，只读 `/v1/metrics`；主协议 19:51 冻结，
+补充诊断 20:05 冻结）：当前 `main` 的 F1 `json-pipeline` 2×50 合并 p50 **0.5449ms**、
+p95 7.6276ms、mean 1.2820ms；close **100 次 / 24.8217ms / 均值 0.2482ms**；
+open/statement/close 占 mean **51.6%/19.9%/19.4%**（residual 9.2%）。若整个 close 入口消失，
+机械上限为 close 均值 / F1 p50 = **45.5%**；补充诊断的稳健 close 中位 0.2330ms、截尾均值
+0.2268ms（42.8%/41.6%）。但 fused close 只把 worker close 工作移入 open，不消除 worker close
+工作与平台 close 入口，外部 HTTP 帧数也不变；R65（fused close 生效）8 条 F1 腿 p50
+0.465–0.602ms 与当前 0.545ms 无系统性差异，可归因部分下限约 0.02ms（≈4%）。
+**判决：不能证明 ≥20% E2E；实现 fused close 属“减少协议帧数”红线，需用户明确授权，
+且先要 close-only 受控 A/B。** 两轮都在第 14 个请求附近出现约 16.7ms 停顿，
+动作均值随停顿落在哪个动作跳动（分轮 close 均值 0.314/0.183ms）。
+
+**交叉结论**：① X1 c8/c16 尾部是宿主级暂停主导（GC=off 仍有同样台阶；legacy settle 移除
+只把等待推给读路径）；n=50 的 p95/p99 被 5–8 个连续样本块决定，单轮方向不能当系统性快慢。
+② F1 close 是真实成本（≈0.248ms/次），但 45.5% 只是“整个入口消失”的机械上限，不能当预期收益。
+③ worker fused open 生命周期去重已被 R24 数据关闭（`begin.entry/image/call` 合计 0.005ms/请求，
+占 X1 c16 p50 1.8–2.6ms 的 0.2–0.3%，远低于 10%）。
+
+**剩余方向与授权边界**：唯一已测到 ≥10% 的剩余方向是 **W1 intent 屏障重排**
+（R61 探针 −20.9%~−23.1%），它改变写语句的耐久提交时点/顺序，**必须用户明确授权**，R66 未实施。
+fused close 未证明 ≥20% 且属红线；legacy settle 安全版本没有 ≥10% 证据；GC 方向停止。
+
+**证据**：`docs/performance-review/2026-11-04-r66-probes/`（`README.md`；`legacy-settle-ceiling/`、
+`gc-target/`、`f1-close/` 下的 `protocol.md`、`report.md`、`aggregate.txt|json`、`legs/`、
+`gate0/`、`round{1,2}/`、`supp/`、`capprobe/`）。复制只含 `.json/.md/.txt`，
+排除 `raw.jsonl`、`*.log`、`per-request/*`、`_raw/`、脚本与二进制；原始证据仍在
+`/tmp/peri-r66-*`。复制后 543 个文件 / 6.40MiB；唯一脱敏是
+`f1-close/capprobe/fused-open-probe.txt` 的 worker session id → `<REDACTED>`，
+全树无 `Authorization`/`Bearer` 头值，6 份 `connection.json` 的凭据精确比对 0 命中。
+
+**限制**：smoke（X1 每级 50 请求；F1 每轮 50/100 请求）；单机 macOS 26/arm64、local backend、
+无 TLS、默认配额；探针 1 用 darwin/arm64（linux 产物仅构建留档）；探针 2 用 `/tmp` 的 `dev.py`
+副本转发 `GOGC`（仓库文件零改动），macOS `ps` 不能读他进程环境，故用 gctrace/RSS 证明；
+探针 3 的补充诊断逐请求抓 metrics 会改变系统状态，其 E2E 中位数 1.18ms 不可作为 F1 基线。
 
 ## 代码约定
 

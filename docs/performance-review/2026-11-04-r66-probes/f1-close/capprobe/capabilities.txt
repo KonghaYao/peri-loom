@@ -1,0 +1,2 @@
+worker-a status=200 reply={"version":1,"request_id":"5770db3957b94aba9b23bdcd950dc33e","ok":true,"result":{"open_guarded_statement":2,"readonly_batch_protocol":1},"error":null}
+worker-b status=200 reply={"version":1,"request_id":"5598f7a55d594d439a3a8314ce79b4ae","ok":true,"result":{"open_guarded_statement":2,"readonly_batch_protocol":1},"error":null}

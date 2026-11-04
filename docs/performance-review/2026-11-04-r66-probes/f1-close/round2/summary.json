@@ -1,0 +1,112 @@
+{
+  "fatal": "",
+  "fixture": {
+    "checks": [
+      {
+        "actual": 201,
+        "expected": 201,
+        "name": "threads",
+        "ok": true
+      },
+      {
+        "actual": 8625,
+        "expected": 8625,
+        "name": "messages",
+        "ok": true
+      },
+      {
+        "actual": 20177069,
+        "expected": 20177069,
+        "name": "content_chars",
+        "ok": true
+      },
+      {
+        "actual": 8625,
+        "expected": 8625,
+        "name": "focus_messages",
+        "ok": true
+      }
+    ],
+    "complete": true,
+    "content_bytes": 20177069,
+    "content_chars": 20177069,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "focus_content_bytes": 20177069,
+    "focus_messages": 8625,
+    "focus_thread": "issue28-focus",
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "messages": 8625,
+    "projection_bytes": 0,
+    "projection_non_null": 0,
+    "quotas": {
+      "max_concurrent": 100,
+      "max_databases": 8,
+      "max_result_bytes": 4194304,
+      "max_sessions": 16,
+      "max_sql_bytes": 65536,
+      "requests_per_second": 500
+    },
+    "threads": 201
+  },
+  "metadata": {
+    "concurrency_requests": 50,
+    "duration_seconds": 0.186,
+    "ended_utc": "2026-11-04T11:57:17.773205+00:00",
+    "git_revision": "39e8e6cf9b41fbb32190c0b414a77edbe17e6535",
+    "platform_binary": "/tmp/peri-perf/bin/peri-platform-r66-main",
+    "platform_sha256": "44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104",
+    "protocol": "json-pipeline",
+    "quota_max_concurrent": 100,
+    "quota_max_result_bytes": 4194304,
+    "quota_max_sessions": 16,
+    "quota_requests_per_second": 500,
+    "rounds": 1,
+    "samples": 50,
+    "scenario": "F1.select-1",
+    "started_utc": "2026-11-04T11:57:17.587583+00:00",
+    "target": {
+      "database": {
+        "branch": "main",
+        "namespace": {
+          "database": "demo",
+          "tenant": "local_default"
+        }
+      },
+      "endpoint": "http://127.0.0.1:20602",
+      "tls": false
+    },
+    "warmup": 0,
+    "worker_binary": "/tmp/peri-perf/bin/peri-loom-v1-r58-main",
+    "worker_sha256": "a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594"
+  },
+  "rows": [
+    {
+      "error_codes": {},
+      "kind": "read",
+      "max_ms": 16.709834,
+      "median_ms": 0.5385835,
+      "min_ms": 0.462917,
+      "outcomes": {
+        "ok": 50
+      },
+      "p95_ms": 7.580917,
+      "protocol": "json-pipeline",
+      "query_ms": 0.006333,
+      "response_bytes": 312,
+      "round_medians_ms": [
+        0.5385835
+      ],
+      "rows": 1,
+      "samples": 50,
+      "scenario": "F1.select-1",
+      "status_counts": {
+        "200": 50
+      },
+      "title": "固定开销 select 1（返回 1 行）",
+      "verdict": "PASS",
+      "verdict_detail": ""
+    }
+  ],
+  "warnings": []
+}

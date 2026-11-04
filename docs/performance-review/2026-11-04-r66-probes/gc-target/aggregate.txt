@@ -1,0 +1,60 @@
+R66 GOGC 上限探针聚合（smoke，不可作为对外性能结论）
+A=GOGC400  B=GOGC1000  C=GOGCoff；同一 platform/worker 二进制；X1 json-pipeline 每级 50 请求
+2 轮 x A/B/B/A + 每轮一条 C（C 非判决）
+
+== Gate 0（gctrace，判据外）==
+A: GC 次数=39 首个目标=16MB 最大目标=24MB 目标中位=16MB 起点存活中位=15MB RSS峰值=42.7MiB
+   verify threads=201 messages=8625 chars=20177069 focus=8625
+B: GC 次数=13 首个目标=40MB 最大目标=40MB 目标中位=40MB 起点存活中位=38MB RSS峰值=60.2MiB
+   verify threads=201 messages=8625 chars=20177069 focus=8625
+C: GC 次数=0 首个目标=NoneMB 最大目标=NoneMB 目标中位=NoneMB 起点存活中位=NoneMB RSS峰值=490.8MiB
+   verify threads=201 messages=8625 chars=20177069 focus=8625
+
+== 逐腿 ==
+r1a1 A r1 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.54/0.81/8.87  c8 1.15/2.08/2.46  c16 2.26/15.66/16.00 | RSS峰值=42.4MiB | lockwait=470.8ms(全腿) syncs=26 appends=404 deferred.pending=561 pending_max=775 durability=audit_file_v1
+r1b1 B r1 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.54/0.61/19.53  c8 1.15/21.53/21.90  c16 2.09/3.73/4.61 | RSS峰值=58.4MiB | lockwait=909.2ms(全腿) syncs=28 appends=404 deferred.pending=523 pending_max=790 durability=audit_file_v1
+r1b2 B r1 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.51/0.74/16.81  c8 1.09/1.52/1.99  c16 2.12/32.52/32.87 | RSS峰值=58.3MiB | lockwait=1153.8ms(全腿) syncs=29 appends=404 deferred.pending=555 pending_max=768 durability=audit_file_v1
+r1a2 A r1 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.53/7.09/8.85  c8 1.14/6.26/30.39  c16 2.02/2.96/4.53 | RSS峰值=40.3MiB | lockwait=469.1ms(全腿) syncs=29 appends=404 deferred.pending=586 pending_max=800 durability=audit_file_v1
+r1c1 C r1 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.49/0.63/8.58  c8 1.18/1.96/2.38  c16 1.96/3.22/3.59 | RSS峰值=490.6MiB | lockwait=416.3ms(全腿) syncs=25 appends=404 deferred.pending=551 pending_max=765 durability=audit_file_v1
+r2a1 A r2 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.50/7.87/8.62  c8 1.16/1.79/2.06  c16 1.72/3.62/4.26 | RSS峰值=41.5MiB | lockwait=821.8ms(全腿) syncs=29 appends=404 deferred.pending=532 pending_max=744 durability=audit_file_v1
+r2b1 B r2 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.50/0.70/16.52  c8 1.15/1.86/2.32  c16 1.75/3.01/3.69 | RSS峰值=58.6MiB | lockwait=556.5ms(全腿) syncs=26 appends=404 deferred.pending=551 pending_max=765 durability=audit_file_v1
+r2b2 B r2 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.52/0.62/16.73  c8 1.11/1.74/2.02  c16 1.72/3.63/4.30 | RSS峰值=59.9MiB | lockwait=523.4ms(全腿) syncs=26 appends=404 deferred.pending=556 pending_max=770 durability=audit_file_v1
+r2a2 A r2 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.52/0.85/8.73  c8 1.16/1.69/1.84  c16 2.59/15.98/16.06 | RSS峰值=45.2MiB | lockwait=677.6ms(全腿) syncs=26 appends=404 deferred.pending=576 pending_max=790 durability=audit_file_v1
+r2c1 C r2 valid=True errors=0 429=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False n(c1,c8,c16)=50/50/50 gctrace_lines=0 warnings=[]
+     p50/p95/p99: c1 0.52/0.63/8.70  c8 1.06/1.86/1.96  c16 2.42/17.73/18.48 | RSS峰值=491.1MiB | lockwait=539.1ms(全腿) syncs=26 appends=404 deferred.pending=556 pending_max=770 durability=audit_file_v1
+
+== 每轮比值（同轮同侧两腿中位，B/A 与 C/A）==
+round 1 c1  B/A p50 0.54->0.52 (0.973)  p95 3.95->0.68 (0.171)  p99 8.86->18.17 (2.050)
+round 1 c8  B/A p50 1.15->1.12 (0.973)  p95 4.17->11.52 (2.763)  p99 16.43->11.94 (0.727)
+round 1 c16 B/A p50 2.14->2.11 (0.985)  p95 9.31->18.13 (1.947)  p99 10.27->18.74 (1.826)
+round 1 c8  C/A（绝对上限，非判决）p95 4.17->1.96 (0.470)  p99 16.43->2.38 (0.145)  C RSS峰值=490.6MiB
+round 1 c16 C/A（绝对上限，非判决）p95 9.31->3.22 (0.346)  p99 10.27->3.59 (0.349)  C RSS峰值=490.6MiB
+round 2 c1  B/A p50 0.51->0.51 (1.013)  p95 4.36->0.66 (0.152)  p99 8.67->16.62 (1.916)
+round 2 c8  B/A p50 1.16->1.13 (0.975)  p95 1.74->1.80 (1.036)  p99 1.95->2.17 (1.114)
+round 2 c16 B/A p50 2.16->1.73 (0.803)  p95 9.80->3.32 (0.339)  p99 10.16->4.00 (0.393)
+round 2 c8  C/A（绝对上限，非判决）p95 1.74->1.86 (1.067)  p99 1.95->1.96 (1.009)  C RSS峰值=491.1MiB
+round 2 c16 C/A（绝对上限，非判决）p95 9.80->17.73 (1.809)  p99 10.16->18.48 (1.819)  C RSS峰值=491.1MiB
+
+== 冻结判据 ==
+单元 c8 p95_ms: round1=2.763 round2=1.036
+单元 c8 p99_ms: round1=0.727 round2=1.114
+单元 c16 p95_ms: round1=1.947 round2=0.339
+单元 c16 p99_ms: round1=1.826 round2=0.393
+c1 p50 护栏 round 1: 0.973 (<=1.10 -> True)
+c1 p50 护栏 round 2: 1.013 (<=1.10 -> True)
+c1 p50 合并护栏: 0.980 (<=1.10 -> True)
+四单元两轮同向（均 <1.0）: False
+至少一个单元两轮都 <=0.90: False
+任一单元任一轮 >1.10 的反向: True
+任一单元两轮方向相反: True
+c16 p95 与 p99 两轮都 >1.00: False
+判决: GC 尾延迟假设否证/不可确认——停止

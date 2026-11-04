@@ -1,0 +1,164 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:20501",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "39e8e6cf9b41fbb32190c0b414a77edbe17e6535",
+    "connection_file": "provided (redacted)",
+    "platform_label": "HEAD 39e8e6c / rust unknown",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T11:44:08.303708+00:00",
+    "ended_utc": "2026-11-04T11:44:08.545731+00:00",
+    "duration_seconds": 0.242,
+    "rounds": 1,
+    "warmup": 0,
+    "samples": 1,
+    "concurrency_requests": 50,
+    "resource_before": {},
+    "resource_after": {},
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [],
+  "concurrency": [
+    {
+      "level": 1,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 0.5384789999999999,
+      "p95_ms": 0.810458,
+      "p99_ms": 8.873542,
+      "min_ms": 0.434833,
+      "max_ms": 8.873542,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 2.284958027303219,
+      "verdict": "PASS"
+    },
+    {
+      "level": 4,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 0.653354,
+      "p95_ms": 1.321791,
+      "p99_ms": 1.569667,
+      "min_ms": 0.5135,
+      "max_ms": 1.569667,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 5.047291982918978,
+      "verdict": "PASS"
+    },
+    {
+      "level": 8,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 1.1510829999999999,
+      "p95_ms": 2.082167,
+      "p99_ms": 2.460417,
+      "min_ms": 0.762291,
+      "max_ms": 2.460417,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 2.5562909431755543,
+      "verdict": "PASS"
+    },
+    {
+      "level": 16,
+      "requests": 50,
+      "planned": 50,
+      "median_ms": 2.2618539999999996,
+      "p95_ms": 15.657333,
+      "p99_ms": 16.00425,
+      "min_ms": 1.194958,
+      "max_ms": 16.00425,
+      "status_429": 0,
+      "errors": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "session_seats": 0,
+      "rejected_delta": 0,
+      "rejection_reasons": {},
+      "drain_ms": 2.184291835874319,
+      "verdict": "PASS"
+    }
+  ],
+  "warnings": [],
+  "fatal": ""
+}

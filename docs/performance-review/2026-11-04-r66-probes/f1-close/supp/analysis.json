@@ -1,0 +1,257 @@
+{
+  "actions": {
+    "close": {
+      "max_ms": 9.328167,
+      "mean_ms": 0.3253062,
+      "median_ms": 0.233021,
+      "min_ms": 0.126125,
+      "p95_ms": 0.341125
+    },
+    "open": {
+      "max_ms": 7.339083,
+      "mean_ms": 0.74096912,
+      "median_ms": 0.6749795000000001,
+      "min_ms": 0.372416,
+      "p95_ms": 0.926083
+    },
+    "statement": {
+      "max_ms": 4.183833,
+      "mean_ms": 0.09204999000000001,
+      "median_ms": 0.050104,
+      "min_ms": 0.024791,
+      "p95_ms": 0.069541
+    }
+  },
+  "checks": [
+    {
+      "detail": "got 100",
+      "name": "timed_samples_100",
+      "ok": true
+    },
+    {
+      "detail": "['ok']",
+      "name": "all_outcomes_ok",
+      "ok": true
+    },
+    {
+      "detail": "[200]",
+      "name": "all_status_200",
+      "ok": true
+    },
+    {
+      "detail": "[1]",
+      "name": "all_rows_one",
+      "ok": true
+    },
+    {
+      "detail": "complete=True",
+      "name": "fixture_complete",
+      "ok": true
+    },
+    {
+      "detail": "[1]",
+      "name": "close_one_per_request",
+      "ok": true
+    },
+    {
+      "detail": "[1]",
+      "name": "open_one_per_request",
+      "ok": true
+    },
+    {
+      "detail": "[]",
+      "name": "no_warnings",
+      "ok": true
+    },
+    {
+      "detail": "''",
+      "name": "no_fatal",
+      "ok": true
+    },
+    {
+      "detail": "got 0",
+      "name": "session_seats_zero",
+      "ok": true
+    },
+    {
+      "detail": "got 0",
+      "name": "active_permits_zero",
+      "ok": true
+    },
+    {
+      "detail": "got 0",
+      "name": "unknown_permits_zero",
+      "ok": true
+    },
+    {
+      "detail": "ok",
+      "name": "stop_payload_present",
+      "ok": true
+    },
+    {
+      "detail": "outcome='clean'",
+      "name": "stop_clean",
+      "ok": true
+    },
+    {
+      "detail": "unresolved_operations=False",
+      "name": "unresolved_operations_false",
+      "ok": true
+    },
+    {
+      "detail": "[{'name': 'platform', 'exit_code': 0, 'ack': True}, {'name': 'worker-a', 'exit_code': 0, 'ack': True}, {'name': 'worker-b', 'exit_code': 0, 'ack': True}, {'name': 'authority', 'exit_code': 0, 'ack': True}]",
+      "name": "all_stage_exit_zero",
+      "ok": true
+    }
+  ],
+  "e2e": {
+    "max_ms": 12.206292,
+    "mean_ms": 1.38815875,
+    "median_ms": 1.1796665000000002,
+    "min_ms": 0.702334,
+    "p95_ms": 1.56075
+  },
+  "fatal": "",
+  "metric_semantics": {
+    "action_latency_ns_total": "all_answered_requests_including_refusals",
+    "successful_latency_ns_total": "successful_requests_only_refusals_never_enter_this_account"
+  },
+  "outliers_gt_5ms": [
+    {
+      "close_ms": 9.328167,
+      "e2e_ms": 10.268583,
+      "index": 17,
+      "open_ms": 0.610542,
+      "statement_ms": 0.052167
+    },
+    {
+      "close_ms": 0.376,
+      "e2e_ms": 12.206292,
+      "index": 42,
+      "open_ms": 7.339083,
+      "statement_ms": 4.183833
+    }
+  ],
+  "samples": 100,
+  "shares": {
+    "median_close_over_median_e2e": 0.19753125141724376,
+    "raw_close_mean_over_e2e_mean": 0.23434365846125305,
+    "trimmed_close_over_trimmed_e2e": 0.19539468690271866,
+    "trimmed_open_over_trimmed_e2e": 0.5703152443766282,
+    "trimmed_statement_over_trimmed_e2e": 0.04278546504905217
+  },
+  "state_after": {
+    "active_permits": 0,
+    "audit": {
+      "admitted_by_class": {
+        "completion": 0,
+        "rejection": 0,
+        "request": 0
+      },
+      "admitted_bytes": 0,
+      "admitted_bytes_by_class": {
+        "completion": 0,
+        "rejection": 0,
+        "request": 0
+      },
+      "admitted_count": 0,
+      "dropped_by_class": {
+        "completion": 0,
+        "rejection": 0,
+        "request": 0
+      },
+      "dropped_semantics": "records refused before admission; accepted records are never dropped",
+      "dropped_total": 0,
+      "durability_source": "audit_file_v1",
+      "fsync_count": 651,
+      "fsync_ns_max": 12160458,
+      "fsync_ns_total": 3070897091,
+      "fsync_scope": "audit_file",
+      "head_checkpoint_attempts_total": 23,
+      "head_checkpoint_failures_total": 0,
+      "head_checkpoint_in_progress": false,
+      "head_checkpoint_ns_total": 549741874,
+      "in_flight_count": -2,
+      "limits": {
+        "completion_bytes": 4194304,
+        "completion_slot_bytes": 4096,
+        "completion_slots": 1024,
+        "queue_bytes": 8388608,
+        "queue_count": 4096,
+        "rejection_bytes": 524288,
+        "rejection_count": 256,
+        "request_bytes": 2097152,
+        "request_count": 1024
+      },
+      "observed_admitted_bytes_max": 4547,
+      "observed_admitted_max": 2,
+      "queue_age_ms": 0,
+      "queue_bytes": 898,
+      "queue_count": 2,
+      "reserved_completion_bytes": 0,
+      "reserved_completion_slots": 0
+    },
+    "deferred_durability": {
+      "enqueued_total": 518,
+      "inline_total": 0,
+      "maximum": 4096,
+      "pending": 5,
+      "pending_max": 7,
+      "semantics": "completion barriers paid after the reply; a record beyond the bound pays its barrier inline before the reply is flushed"
+    },
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "session_seats": 0,
+    "unknown_held_permits": 0
+  },
+  "stop": {
+    "error": "",
+    "outcome": "clean",
+    "reason": "terminal_proof_written",
+    "stages": [
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "platform"
+      },
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "worker-a"
+      },
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "worker-b"
+      },
+      {
+        "ack": true,
+        "exit_code": 0,
+        "name": "authority"
+      }
+    ],
+    "unresolved_operations": false
+  },
+  "trimmed_mean_drop_top_e2e_5": {
+    "close_mean_ms": 0.22679204210526316,
+    "dropped_indices": [
+      42,
+      17,
+      67,
+      28,
+      61
+    ],
+    "e2e_mean_ms": 1.1606868421052632,
+    "open_mean_ms": 0.6619574,
+    "statement_mean_ms": 0.04966052631578947
+  },
+  "upper_bound": {
+    "close_median_over_e2e_p50": 0.19753125141724376,
+    "raw_close_mean_over_e2e_p50": 0.27576115792048,
+    "trimmed_close_mean_over_e2e_p50": 0.1922509811927889
+  },
+  "valid": true,
+  "valid_pending_stop": true,
+  "warmup_requests_outside_window": 1,
+  "warnings": []
+}

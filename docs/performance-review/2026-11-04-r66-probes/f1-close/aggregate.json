@@ -1,0 +1,305 @@
+{
+  "combined": {
+    "actions": {
+      "close": {
+        "count": 100,
+        "latency_ns": 24821707,
+        "mean_ms": 0.24821707
+      },
+      "open": {
+        "count": 100,
+        "latency_ns": 66101540,
+        "mean_ms": 0.6610154
+      },
+      "query": {
+        "count": 0,
+        "latency_ns": 0,
+        "mean_ms": null
+      },
+      "statement": {
+        "count": 100,
+        "latency_ns": 25489635,
+        "mean_ms": 0.25489635
+      }
+    },
+    "max_ms": 16.791042,
+    "mean_ms": 1.2820000000000003,
+    "min_ms": 0.462917,
+    "p50_ms": 0.5449375,
+    "p95_ms": 7.627621149999998,
+    "samples": 100,
+    "shares_of_mean": {
+      "close": 0.19361705928237127,
+      "open": 0.5156126365054602,
+      "residual": 0.09194319812792527,
+      "statement": 0.19882710608424334,
+      "sum": 0.9080568018720747
+    },
+    "upper_bound": {
+      "close_mean_over_mean": 0.19361705928237127,
+      "close_mean_over_p50": 0.45549640096341326
+    }
+  },
+  "cross_window": {
+    "primary_combined_close_mean_ms": 0.24821707,
+    "primary_combined_p50_ms": 0.5449375,
+    "robust_close_over_primary_p50": 0.4161799144035108,
+    "supplementary_close_median_ms": 0.233021,
+    "supplementary_close_median_over_primary_p50": 0.42761050579194865,
+    "supplementary_close_raw_mean_ms": 0.3253062,
+    "supplementary_close_trimmed_mean_ms": 0.22679204210526316
+  },
+  "rounds": [
+    {
+      "actions": {
+        "close": {
+          "count": 50,
+          "latency_ns": 15698253,
+          "mean_ms": 0.31396506,
+          "successful_latency_ns": 15698253
+        },
+        "open": {
+          "count": 50,
+          "latency_ns": 30560125,
+          "mean_ms": 0.6112025,
+          "successful_latency_ns": 30560125
+        },
+        "query": {
+          "count": 0,
+          "latency_ns": 0,
+          "mean_ms": null,
+          "successful_latency_ns": 0
+        },
+        "statement": {
+          "count": 50,
+          "latency_ns": 9317714,
+          "mean_ms": 0.18635428,
+          "successful_latency_ns": 9317714
+        }
+      },
+      "f1": {
+        "error_codes": {},
+        "max_ms": 16.791042,
+        "mean_ms": 1.23126582,
+        "median_ms": 0.5475205,
+        "min_ms": 0.466292,
+        "outcomes": {
+          "ok": 50
+        },
+        "p95_ms": 8.515,
+        "query_ms_median": 0.0065,
+        "response_bytes_median": 312,
+        "rows_median": 1,
+        "samples": 50,
+        "status_counts": {
+          "200": 50
+        }
+      },
+      "name": "round1",
+      "shares": {
+        "close": 0.2549937266998933,
+        "open": 0.49640174369495615,
+        "open_statement_close_sum": 0.9027472556657181,
+        "residual_unaccounted": 0.09725274433428191,
+        "statement": 0.15135178527086865
+      },
+      "stop": {
+        "error": "",
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "stages": [
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "platform"
+          },
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "worker-a"
+          },
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "worker-b"
+          },
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "authority"
+          }
+        ],
+        "unresolved_operations": false
+      },
+      "upper_bound": {
+        "close_mean_over_f1_mean": 0.2549937266998933,
+        "close_mean_over_f1_p50": 0.5734306934626193,
+        "open_plus_close_over_f1_mean": 0.7513954703948494
+      },
+      "valid": true
+    },
+    {
+      "actions": {
+        "close": {
+          "count": 50,
+          "latency_ns": 9123454,
+          "mean_ms": 0.18246907999999998,
+          "successful_latency_ns": 9123454
+        },
+        "open": {
+          "count": 50,
+          "latency_ns": 35541415,
+          "mean_ms": 0.7108283000000001,
+          "successful_latency_ns": 35541415
+        },
+        "query": {
+          "count": 0,
+          "latency_ns": 0,
+          "mean_ms": null,
+          "successful_latency_ns": 0
+        },
+        "statement": {
+          "count": 50,
+          "latency_ns": 16171921,
+          "mean_ms": 0.32343842,
+          "successful_latency_ns": 16171921
+        }
+      },
+      "f1": {
+        "error_codes": {},
+        "max_ms": 16.709834,
+        "mean_ms": 1.3327341799999999,
+        "median_ms": 0.5385835,
+        "min_ms": 0.462917,
+        "outcomes": {
+          "ok": 50
+        },
+        "p95_ms": 7.580917,
+        "query_ms_median": 0.006333,
+        "response_bytes_median": 312,
+        "rows_median": 1,
+        "samples": 50,
+        "status_counts": {
+          "200": 50
+        }
+      },
+      "name": "round2",
+      "shares": {
+        "close": 0.13691333406036002,
+        "open": 0.5333608987202535,
+        "open_statement_close_sum": 0.9129621032155116,
+        "residual_unaccounted": 0.08703789678448837,
+        "statement": 0.242687870434898
+      },
+      "stop": {
+        "error": "",
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "stages": [
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "platform"
+          },
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "worker-a"
+          },
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "worker-b"
+          },
+          {
+            "ack": true,
+            "exit_code": 0,
+            "name": "authority"
+          }
+        ],
+        "unresolved_operations": false
+      },
+      "upper_bound": {
+        "close_mean_over_f1_mean": 0.13691333406036002,
+        "close_mean_over_f1_p50": 0.3387944116371927,
+        "open_plus_close_over_f1_mean": 0.6702742327806135
+      },
+      "valid": true
+    }
+  ],
+  "supplementary": {
+    "actions": {
+      "close": {
+        "max_ms": 9.328167,
+        "mean_ms": 0.3253062,
+        "median_ms": 0.233021,
+        "min_ms": 0.126125,
+        "p95_ms": 0.341125
+      },
+      "open": {
+        "max_ms": 7.339083,
+        "mean_ms": 0.74096912,
+        "median_ms": 0.6749795000000001,
+        "min_ms": 0.372416,
+        "p95_ms": 0.926083
+      },
+      "statement": {
+        "max_ms": 4.183833,
+        "mean_ms": 0.09204999000000001,
+        "median_ms": 0.050104,
+        "min_ms": 0.024791,
+        "p95_ms": 0.069541
+      }
+    },
+    "e2e": {
+      "max_ms": 12.206292,
+      "mean_ms": 1.38815875,
+      "median_ms": 1.1796665000000002,
+      "min_ms": 0.702334,
+      "p95_ms": 1.56075
+    },
+    "note": "per-request metrics snapshots inflate E2E; the E2E denominator here is not comparable to the primary F1 p50. Action medians/trimmed means are reported as a robustness check for the close cost.",
+    "outliers_gt_5ms": [
+      {
+        "close_ms": 9.328167,
+        "e2e_ms": 10.268583,
+        "index": 17,
+        "open_ms": 0.610542,
+        "statement_ms": 0.052167
+      },
+      {
+        "close_ms": 0.376,
+        "e2e_ms": 12.206292,
+        "index": 42,
+        "open_ms": 7.339083,
+        "statement_ms": 4.183833
+      }
+    ],
+    "shares": {
+      "median_close_over_median_e2e": 0.19753125141724376,
+      "raw_close_mean_over_e2e_mean": 0.23434365846125305,
+      "trimmed_close_over_trimmed_e2e": 0.19539468690271866,
+      "trimmed_open_over_trimmed_e2e": 0.5703152443766282,
+      "trimmed_statement_over_trimmed_e2e": 0.04278546504905217
+    },
+    "trimmed_mean_drop_top_e2e_5": {
+      "close_mean_ms": 0.22679204210526316,
+      "dropped_indices": [
+        42,
+        17,
+        67,
+        28,
+        61
+      ],
+      "e2e_mean_ms": 1.1606868421052632,
+      "open_mean_ms": 0.6619574,
+      "statement_mean_ms": 0.04966052631578947
+    },
+    "upper_bound": {
+      "close_median_over_e2e_p50": 0.19753125141724376,
+      "raw_close_mean_over_e2e_p50": 0.27576115792048,
+      "trimmed_close_mean_over_e2e_p50": 0.1922509811927889
+    },
+    "valid": true
+  }
+}

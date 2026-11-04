@@ -1,0 +1,5184 @@
+44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104  /tmp/peri-perf/bin/peri-platform-r66-main
+a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594  /tmp/peri-perf/bin/peri-loom-v1-r58-main
+47d96fc87642a412030f7814c78e92b49d46457f6b6715f64607564dd5afe2a1  /tmp/peri-r66-gc/dev.py
+=== 2026-11-04T19:43:52+0800 leg=r1a1 side=A port=20501 ===
+[r1a1] side=A GOGC=400 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20501
+[r1a1] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r1a1/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=40ms p50=0.54ms p95=0.81ms p99=8.87ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=10ms p50=0.65ms p95=1.32ms p99=1.57ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=9ms p50=1.15ms p95=2.08ms p99=2.46ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=21ms p50=2.12ms p95=15.66ms p99=16.00ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20501', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:44:08.303708+00:00 |
+| ended_utc | 2026-11-04T11:44:08.545731+00:00 |
+| duration_seconds | 0.242 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.54ms | 0.81ms | 8.87ms | 0 | 0 | 0 | 0 | 0 | 2.28ms | PASS |
+| 4 | 50 | 0.65ms | 1.32ms | 1.57ms | 0 | 0 | 0 | 0 | 0 | 5.05ms | PASS |
+| 8 | 50 | 1.15ms | 2.08ms | 2.46ms | 0 | 0 | 0 | 0 | 0 | 2.56ms | PASS |
+| 16 | 50 | 2.26ms | 15.66ms | 16.00ms | 0 | 0 | 0 | 0 | 0 | 2.18ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r1a1/A] stop: clean unresolved: False
+[r1a1] run_status=0
+leg r1a1 exit=0
+=== 2026-11-04T19:44:09+0800 leg=r1b1 side=B port=20502 ===
+[r1b1] side=B GOGC=1000 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20502
+[r1b1] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r1b1/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=50ms p50=0.54ms p95=0.61ms p99=19.53ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=11ms p50=0.69ms p95=1.45ms p99=1.89ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=28ms p50=1.13ms p95=21.53ms p99=21.90ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=9ms p50=2.09ms p95=3.73ms p99=4.61ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20502', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:44:25.399915+00:00 |
+| ended_utc | 2026-11-04T11:44:25.654968+00:00 |
+| duration_seconds | 0.255 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.54ms | 0.61ms | 19.53ms | 0 | 0 | 0 | 0 | 0 | 2.22ms | PASS |
+| 4 | 50 | 0.70ms | 1.45ms | 1.89ms | 0 | 0 | 0 | 0 | 0 | 2.87ms | PASS |
+| 8 | 50 | 1.15ms | 21.53ms | 21.90ms | 0 | 0 | 0 | 0 | 0 | 2.81ms | PASS |
+| 16 | 50 | 2.09ms | 3.73ms | 4.61ms | 0 | 0 | 0 | 0 | 0 | 2.77ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r1b1/B] stop: clean unresolved: False
+[r1b1] run_status=0
+leg r1b1 exit=0
+=== 2026-11-04T19:44:26+0800 leg=r1b2 side=B port=20503 ===
+[r1b2] side=B GOGC=1000 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20503
+[r1b2] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r1b2/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=47ms p50=0.51ms p95=0.74ms p99=16.81ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=10ms p50=0.68ms p95=1.12ms p99=1.34ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=8ms p50=1.08ms p95=1.52ms p99=1.99ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=37ms p50=2.04ms p95=32.52ms p99=32.87ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20503', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:44:42.460315+00:00 |
+| ended_utc | 2026-11-04T11:44:42.713216+00:00 |
+| duration_seconds | 0.253 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.51ms | 0.74ms | 16.81ms | 0 | 0 | 0 | 0 | 0 | 2.12ms | PASS |
+| 4 | 50 | 0.69ms | 1.12ms | 1.34ms | 0 | 0 | 0 | 0 | 0 | 2.69ms | PASS |
+| 8 | 50 | 1.09ms | 1.52ms | 1.99ms | 0 | 0 | 0 | 0 | 0 | 2.24ms | PASS |
+| 16 | 50 | 2.12ms | 32.52ms | 32.87ms | 0 | 0 | 0 | 0 | 0 | 2.68ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r1b2/B] stop: clean unresolved: False
+[r1b2] run_status=0
+leg r1b2 exit=0
+=== 2026-11-04T19:44:43+0800 leg=r1a2 side=A port=20504 ===
+[r1a2] side=A GOGC=400 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20504
+[r1a2] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r1a2/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=54ms p50=0.53ms p95=7.09ms p99=8.85ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=26ms p50=0.59ms p95=16.93ms p99=17.12ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=38ms p50=1.13ms p95=6.26ms p99=30.39ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=8ms p50=1.96ms p95=2.96ms p99=4.53ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20504', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:44:59.660478+00:00 |
+| ended_utc | 2026-11-04T11:44:59.896827+00:00 |
+| duration_seconds | 0.236 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.53ms | 7.09ms | 8.85ms | 0 | 0 | 0 | 0 | 0 | 2.28ms | PASS |
+| 4 | 50 | 0.59ms | 16.93ms | 17.12ms | 0 | 0 | 0 | 0 | 0 | 2.27ms | PASS |
+| 8 | 50 | 1.14ms | 6.26ms | 30.39ms | 0 | 0 | 0 | 0 | 0 | 2.31ms | PASS |
+| 16 | 50 | 2.02ms | 2.96ms | 4.53ms | 0 | 0 | 0 | 0 | 0 | 3.05ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r1a2/A] stop: clean unresolved: False
+[r1a2] run_status=0
+leg r1a2 exit=0
+=== 2026-11-04T19:45:01+0800 leg=r1c1 side=C port=20505 ===
+[r1c1] side=C GOGC=off GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20505
+[r1c1] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r1c1/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=39ms p50=0.49ms p95=0.63ms p99=8.58ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=10ms p50=0.66ms p95=1.08ms p99=1.21ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=9ms p50=1.16ms p95=1.96ms p99=2.38ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=9ms p50=1.92ms p95=3.22ms p99=3.59ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20505', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:45:17.457187+00:00 |
+| ended_utc | 2026-11-04T11:45:17.682100+00:00 |
+| duration_seconds | 0.225 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.49ms | 0.63ms | 8.58ms | 0 | 0 | 0 | 0 | 0 | 2.31ms | PASS |
+| 4 | 50 | 0.66ms | 1.08ms | 1.21ms | 0 | 0 | 0 | 0 | 0 | 2.37ms | PASS |
+| 8 | 50 | 1.18ms | 1.96ms | 2.38ms | 0 | 0 | 0 | 0 | 0 | 2.35ms | PASS |
+| 16 | 50 | 1.96ms | 3.22ms | 3.59ms | 0 | 0 | 0 | 0 | 0 | 2.57ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r1c1/C] stop: clean unresolved: False
+[r1c1] run_status=0
+leg r1c1 exit=0
+=== 2026-11-04T19:45:18+0800 leg=r2a1 side=A port=20506 ===
+[r2a1] side=A GOGC=400 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20506
+[r2a1] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r2a1/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=57ms p50=0.50ms p95=7.87ms p99=8.62ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=38ms p50=0.65ms p95=20.97ms p99=21.07ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=9ms p50=1.15ms p95=1.79ms p99=2.06ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=8ms p50=1.70ms p95=3.62ms p99=4.26ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20506', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:45:34.465259+00:00 |
+| ended_utc | 2026-11-04T11:45:34.727857+00:00 |
+| duration_seconds | 0.263 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.50ms | 7.87ms | 8.62ms | 0 | 0 | 0 | 0 | 0 | 2.36ms | PASS |
+| 4 | 50 | 0.66ms | 20.97ms | 21.07ms | 0 | 0 | 0 | 0 | 0 | 2.20ms | PASS |
+| 8 | 50 | 1.16ms | 1.79ms | 2.06ms | 0 | 0 | 0 | 0 | 0 | 4.48ms | PASS |
+| 16 | 50 | 1.72ms | 3.62ms | 4.26ms | 0 | 0 | 0 | 0 | 0 | 2.23ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r2a1/A] stop: clean unresolved: False
+[r2a1] run_status=0
+leg r2a1 exit=0
+=== 2026-11-04T19:45:35+0800 leg=r2b1 side=B port=20507 ===
+[r2b1] side=B GOGC=1000 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20507
+[r2b1] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r2b1/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=46ms p50=0.50ms p95=0.70ms p99=16.52ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=10ms p50=0.63ms p95=1.16ms p99=1.43ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=9ms p50=1.13ms p95=1.86ms p99=2.32ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=8ms p50=1.74ms p95=3.01ms p99=3.69ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20507', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:45:51.721633+00:00 |
+| ended_utc | 2026-11-04T11:45:51.967085+00:00 |
+| duration_seconds | 0.245 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.50ms | 0.70ms | 16.52ms | 0 | 0 | 0 | 0 | 0 | 2.15ms | PASS |
+| 4 | 50 | 0.63ms | 1.16ms | 1.43ms | 0 | 0 | 0 | 0 | 0 | 3.05ms | PASS |
+| 8 | 50 | 1.15ms | 1.86ms | 2.32ms | 0 | 0 | 0 | 0 | 0 | 2.47ms | PASS |
+| 16 | 50 | 1.75ms | 3.01ms | 3.69ms | 0 | 0 | 0 | 0 | 0 | 2.34ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r2b1/B] stop: clean unresolved: False
+[r2b1] run_status=0
+leg r2b1 exit=0
+=== 2026-11-04T19:45:53+0800 leg=r2b2 side=B port=20508 ===
+[r2b2] side=B GOGC=1000 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20508
+[r2b2] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r2b2/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=47ms p50=0.52ms p95=0.62ms p99=16.73ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=9ms p50=0.58ms p95=0.98ms p99=1.08ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=8ms p50=1.11ms p95=1.74ms p99=2.02ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=8ms p50=1.70ms p95=3.63ms p99=4.30ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20508', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:46:08.811070+00:00 |
+| ended_utc | 2026-11-04T11:46:09.039607+00:00 |
+| duration_seconds | 0.229 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.52ms | 0.62ms | 16.73ms | 0 | 0 | 0 | 0 | 0 | 2.09ms | PASS |
+| 4 | 50 | 0.58ms | 0.98ms | 1.08ms | 0 | 0 | 0 | 0 | 0 | 2.37ms | PASS |
+| 8 | 50 | 1.11ms | 1.74ms | 2.02ms | 0 | 0 | 0 | 0 | 0 | 2.37ms | PASS |
+| 16 | 50 | 1.72ms | 3.63ms | 4.30ms | 0 | 0 | 0 | 0 | 0 | 2.42ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r2b2/B] stop: clean unresolved: False
+[r2b2] run_status=0
+leg r2b2 exit=0
+=== 2026-11-04T19:46:10+0800 leg=r2a2 side=A port=20509 ===
+[r2a2] side=A GOGC=400 GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20509
+[r2a2] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r2a2/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=45ms p50=0.52ms p95=0.85ms p99=8.73ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=10ms p50=0.70ms p95=1.18ms p99=1.39ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=8ms p50=1.14ms p95=1.69ms p99=1.84ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=21ms p50=2.42ms p95=15.98ms p99=16.06ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20509', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:46:25.935833+00:00 |
+| ended_utc | 2026-11-04T11:46:26.188452+00:00 |
+| duration_seconds | 0.253 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.52ms | 0.85ms | 8.73ms | 0 | 0 | 0 | 0 | 0 | 2.12ms | PASS |
+| 4 | 50 | 0.70ms | 1.18ms | 1.39ms | 0 | 0 | 0 | 0 | 0 | 2.24ms | PASS |
+| 8 | 50 | 1.16ms | 1.69ms | 1.84ms | 0 | 0 | 0 | 0 | 0 | 2.65ms | PASS |
+| 16 | 50 | 2.59ms | 15.98ms | 16.06ms | 0 | 0 | 0 | 0 | 0 | 2.22ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r2a2/A] stop: clean unresolved: False
+[r2a2] run_status=0
+leg r2a2 exit=0
+=== 2026-11-04T19:46:27+0800 leg=r2c1 side=C port=20510 ===
+[r2c1] side=C GOGC=off GODEBUG=unset platform=peri-platform-r66-main sha256=44448ed6323ec3eb08c04863f8eef68c6c048b9c5d3ff2f4a7569f09efbff104 worker_sha256=a648ecd9f4a327c41950627c45326f7c3a22b4b4a1b21163f0f56ca2c4be1594 port=20510
+[r2c1] platform process: /tmp/peri-perf/bin/peri-platform-r66-main -config /private/tmp/peri-perf/run-r66gc-r2c1/platform.json
+inserted 20/8625 messages
+inserted 40/8625 messages
+inserted 60/8625 messages
+inserted 80/8625 messages
+inserted 100/8625 messages
+inserted 120/8625 messages
+inserted 140/8625 messages
+inserted 160/8625 messages
+inserted 180/8625 messages
+inserted 200/8625 messages
+inserted 220/8625 messages
+inserted 240/8625 messages
+inserted 260/8625 messages
+inserted 280/8625 messages
+inserted 300/8625 messages
+inserted 320/8625 messages
+inserted 340/8625 messages
+inserted 360/8625 messages
+inserted 380/8625 messages
+inserted 400/8625 messages
+inserted 420/8625 messages
+inserted 440/8625 messages
+inserted 460/8625 messages
+inserted 480/8625 messages
+inserted 500/8625 messages
+inserted 520/8625 messages
+inserted 540/8625 messages
+inserted 560/8625 messages
+inserted 580/8625 messages
+inserted 600/8625 messages
+inserted 620/8625 messages
+inserted 640/8625 messages
+inserted 660/8625 messages
+inserted 680/8625 messages
+inserted 700/8625 messages
+inserted 720/8625 messages
+inserted 740/8625 messages
+inserted 760/8625 messages
+inserted 780/8625 messages
+inserted 800/8625 messages
+inserted 820/8625 messages
+inserted 840/8625 messages
+inserted 860/8625 messages
+inserted 880/8625 messages
+inserted 900/8625 messages
+inserted 920/8625 messages
+inserted 940/8625 messages
+inserted 960/8625 messages
+inserted 980/8625 messages
+inserted 1000/8625 messages
+inserted 1020/8625 messages
+inserted 1040/8625 messages
+inserted 1060/8625 messages
+inserted 1080/8625 messages
+inserted 1100/8625 messages
+inserted 1120/8625 messages
+inserted 1140/8625 messages
+inserted 1160/8625 messages
+inserted 1180/8625 messages
+inserted 1200/8625 messages
+inserted 1220/8625 messages
+inserted 1240/8625 messages
+inserted 1260/8625 messages
+inserted 1280/8625 messages
+inserted 1300/8625 messages
+inserted 1320/8625 messages
+inserted 1340/8625 messages
+inserted 1360/8625 messages
+inserted 1380/8625 messages
+inserted 1400/8625 messages
+inserted 1420/8625 messages
+inserted 1440/8625 messages
+inserted 1460/8625 messages
+inserted 1480/8625 messages
+inserted 1500/8625 messages
+inserted 1520/8625 messages
+inserted 1540/8625 messages
+inserted 1560/8625 messages
+inserted 1580/8625 messages
+inserted 1600/8625 messages
+inserted 1620/8625 messages
+inserted 1640/8625 messages
+inserted 1660/8625 messages
+inserted 1680/8625 messages
+inserted 1700/8625 messages
+inserted 1720/8625 messages
+inserted 1740/8625 messages
+inserted 1760/8625 messages
+inserted 1780/8625 messages
+inserted 1800/8625 messages
+inserted 1820/8625 messages
+inserted 1840/8625 messages
+inserted 1860/8625 messages
+inserted 1880/8625 messages
+inserted 1900/8625 messages
+inserted 1920/8625 messages
+inserted 1940/8625 messages
+inserted 1960/8625 messages
+inserted 1980/8625 messages
+inserted 2000/8625 messages
+inserted 2020/8625 messages
+inserted 2040/8625 messages
+inserted 2060/8625 messages
+inserted 2080/8625 messages
+inserted 2100/8625 messages
+inserted 2120/8625 messages
+inserted 2140/8625 messages
+inserted 2160/8625 messages
+inserted 2180/8625 messages
+inserted 2200/8625 messages
+inserted 2220/8625 messages
+inserted 2240/8625 messages
+inserted 2260/8625 messages
+inserted 2280/8625 messages
+inserted 2300/8625 messages
+inserted 2320/8625 messages
+inserted 2340/8625 messages
+inserted 2360/8625 messages
+inserted 2380/8625 messages
+inserted 2400/8625 messages
+inserted 2420/8625 messages
+inserted 2440/8625 messages
+inserted 2460/8625 messages
+inserted 2480/8625 messages
+inserted 2500/8625 messages
+inserted 2520/8625 messages
+inserted 2540/8625 messages
+inserted 2560/8625 messages
+inserted 2580/8625 messages
+inserted 2600/8625 messages
+inserted 2620/8625 messages
+inserted 2640/8625 messages
+inserted 2660/8625 messages
+inserted 2680/8625 messages
+inserted 2700/8625 messages
+inserted 2720/8625 messages
+inserted 2740/8625 messages
+inserted 2760/8625 messages
+inserted 2780/8625 messages
+inserted 2800/8625 messages
+inserted 2820/8625 messages
+inserted 2840/8625 messages
+inserted 2860/8625 messages
+inserted 2880/8625 messages
+inserted 2900/8625 messages
+inserted 2920/8625 messages
+inserted 2940/8625 messages
+inserted 2960/8625 messages
+inserted 2980/8625 messages
+inserted 3000/8625 messages
+inserted 3020/8625 messages
+inserted 3040/8625 messages
+inserted 3060/8625 messages
+inserted 3080/8625 messages
+inserted 3100/8625 messages
+inserted 3120/8625 messages
+inserted 3140/8625 messages
+inserted 3160/8625 messages
+inserted 3180/8625 messages
+inserted 3200/8625 messages
+inserted 3220/8625 messages
+inserted 3240/8625 messages
+inserted 3260/8625 messages
+inserted 3280/8625 messages
+inserted 3300/8625 messages
+inserted 3320/8625 messages
+inserted 3340/8625 messages
+inserted 3360/8625 messages
+inserted 3380/8625 messages
+inserted 3400/8625 messages
+inserted 3420/8625 messages
+inserted 3440/8625 messages
+inserted 3460/8625 messages
+inserted 3480/8625 messages
+inserted 3500/8625 messages
+inserted 3520/8625 messages
+inserted 3540/8625 messages
+inserted 3560/8625 messages
+inserted 3580/8625 messages
+inserted 3600/8625 messages
+inserted 3620/8625 messages
+inserted 3640/8625 messages
+inserted 3660/8625 messages
+inserted 3680/8625 messages
+inserted 3700/8625 messages
+inserted 3720/8625 messages
+inserted 3740/8625 messages
+inserted 3760/8625 messages
+inserted 3780/8625 messages
+inserted 3800/8625 messages
+inserted 3820/8625 messages
+inserted 3840/8625 messages
+inserted 3860/8625 messages
+inserted 3880/8625 messages
+inserted 3900/8625 messages
+inserted 3920/8625 messages
+inserted 3940/8625 messages
+inserted 3960/8625 messages
+inserted 3980/8625 messages
+inserted 4000/8625 messages
+inserted 4020/8625 messages
+inserted 4040/8625 messages
+inserted 4060/8625 messages
+inserted 4080/8625 messages
+inserted 4100/8625 messages
+inserted 4120/8625 messages
+inserted 4140/8625 messages
+inserted 4160/8625 messages
+inserted 4180/8625 messages
+inserted 4200/8625 messages
+inserted 4220/8625 messages
+inserted 4240/8625 messages
+inserted 4260/8625 messages
+inserted 4280/8625 messages
+inserted 4300/8625 messages
+inserted 4320/8625 messages
+inserted 4340/8625 messages
+inserted 4360/8625 messages
+inserted 4380/8625 messages
+inserted 4400/8625 messages
+inserted 4420/8625 messages
+inserted 4440/8625 messages
+inserted 4460/8625 messages
+inserted 4480/8625 messages
+inserted 4500/8625 messages
+inserted 4520/8625 messages
+inserted 4540/8625 messages
+inserted 4560/8625 messages
+inserted 4580/8625 messages
+inserted 4600/8625 messages
+inserted 4620/8625 messages
+inserted 4640/8625 messages
+inserted 4660/8625 messages
+inserted 4680/8625 messages
+inserted 4700/8625 messages
+inserted 4720/8625 messages
+inserted 4740/8625 messages
+inserted 4760/8625 messages
+inserted 4780/8625 messages
+inserted 4800/8625 messages
+inserted 4820/8625 messages
+inserted 4840/8625 messages
+inserted 4860/8625 messages
+inserted 4880/8625 messages
+inserted 4900/8625 messages
+inserted 4920/8625 messages
+inserted 4940/8625 messages
+inserted 4960/8625 messages
+inserted 4980/8625 messages
+inserted 5000/8625 messages
+inserted 5020/8625 messages
+inserted 5040/8625 messages
+inserted 5060/8625 messages
+inserted 5080/8625 messages
+inserted 5100/8625 messages
+inserted 5120/8625 messages
+inserted 5140/8625 messages
+inserted 5160/8625 messages
+inserted 5180/8625 messages
+inserted 5200/8625 messages
+inserted 5220/8625 messages
+inserted 5240/8625 messages
+inserted 5260/8625 messages
+inserted 5280/8625 messages
+inserted 5300/8625 messages
+inserted 5320/8625 messages
+inserted 5340/8625 messages
+inserted 5360/8625 messages
+inserted 5380/8625 messages
+inserted 5400/8625 messages
+inserted 5420/8625 messages
+inserted 5440/8625 messages
+inserted 5460/8625 messages
+inserted 5480/8625 messages
+inserted 5500/8625 messages
+inserted 5520/8625 messages
+inserted 5540/8625 messages
+inserted 5560/8625 messages
+inserted 5580/8625 messages
+inserted 5600/8625 messages
+inserted 5620/8625 messages
+inserted 5640/8625 messages
+inserted 5660/8625 messages
+inserted 5680/8625 messages
+inserted 5700/8625 messages
+inserted 5720/8625 messages
+inserted 5740/8625 messages
+inserted 5760/8625 messages
+inserted 5780/8625 messages
+inserted 5800/8625 messages
+inserted 5820/8625 messages
+inserted 5840/8625 messages
+inserted 5860/8625 messages
+inserted 5880/8625 messages
+inserted 5900/8625 messages
+inserted 5920/8625 messages
+inserted 5940/8625 messages
+inserted 5960/8625 messages
+inserted 5980/8625 messages
+inserted 6000/8625 messages
+inserted 6020/8625 messages
+inserted 6040/8625 messages
+inserted 6060/8625 messages
+inserted 6080/8625 messages
+inserted 6100/8625 messages
+inserted 6120/8625 messages
+inserted 6140/8625 messages
+inserted 6160/8625 messages
+inserted 6180/8625 messages
+inserted 6200/8625 messages
+inserted 6220/8625 messages
+inserted 6240/8625 messages
+inserted 6260/8625 messages
+inserted 6280/8625 messages
+inserted 6300/8625 messages
+inserted 6320/8625 messages
+inserted 6340/8625 messages
+inserted 6360/8625 messages
+inserted 6380/8625 messages
+inserted 6400/8625 messages
+inserted 6420/8625 messages
+inserted 6440/8625 messages
+inserted 6460/8625 messages
+inserted 6480/8625 messages
+inserted 6500/8625 messages
+inserted 6520/8625 messages
+inserted 6540/8625 messages
+inserted 6560/8625 messages
+inserted 6580/8625 messages
+inserted 6600/8625 messages
+inserted 6620/8625 messages
+inserted 6640/8625 messages
+inserted 6660/8625 messages
+inserted 6680/8625 messages
+inserted 6700/8625 messages
+inserted 6720/8625 messages
+inserted 6740/8625 messages
+inserted 6760/8625 messages
+inserted 6780/8625 messages
+inserted 6800/8625 messages
+inserted 6820/8625 messages
+inserted 6840/8625 messages
+inserted 6860/8625 messages
+inserted 6880/8625 messages
+inserted 6900/8625 messages
+inserted 6920/8625 messages
+inserted 6940/8625 messages
+inserted 6960/8625 messages
+inserted 6980/8625 messages
+inserted 7000/8625 messages
+inserted 7020/8625 messages
+inserted 7040/8625 messages
+inserted 7060/8625 messages
+inserted 7080/8625 messages
+inserted 7100/8625 messages
+inserted 7120/8625 messages
+inserted 7140/8625 messages
+inserted 7160/8625 messages
+inserted 7180/8625 messages
+inserted 7200/8625 messages
+inserted 7220/8625 messages
+inserted 7240/8625 messages
+inserted 7260/8625 messages
+inserted 7280/8625 messages
+inserted 7300/8625 messages
+inserted 7320/8625 messages
+inserted 7340/8625 messages
+inserted 7360/8625 messages
+inserted 7380/8625 messages
+inserted 7400/8625 messages
+inserted 7420/8625 messages
+inserted 7440/8625 messages
+inserted 7460/8625 messages
+inserted 7480/8625 messages
+inserted 7500/8625 messages
+inserted 7520/8625 messages
+inserted 7540/8625 messages
+inserted 7560/8625 messages
+inserted 7580/8625 messages
+inserted 7600/8625 messages
+inserted 7620/8625 messages
+inserted 7640/8625 messages
+inserted 7660/8625 messages
+inserted 7680/8625 messages
+inserted 7700/8625 messages
+inserted 7720/8625 messages
+inserted 7740/8625 messages
+inserted 7760/8625 messages
+inserted 7780/8625 messages
+inserted 7800/8625 messages
+inserted 7820/8625 messages
+inserted 7840/8625 messages
+inserted 7860/8625 messages
+inserted 7880/8625 messages
+inserted 7900/8625 messages
+inserted 7920/8625 messages
+inserted 7940/8625 messages
+inserted 7960/8625 messages
+inserted 7980/8625 messages
+inserted 8000/8625 messages
+inserted 8020/8625 messages
+inserted 8040/8625 messages
+inserted 8060/8625 messages
+inserted 8080/8625 messages
+inserted 8100/8625 messages
+inserted 8120/8625 messages
+inserted 8140/8625 messages
+inserted 8160/8625 messages
+inserted 8180/8625 messages
+inserted 8200/8625 messages
+inserted 8220/8625 messages
+inserted 8240/8625 messages
+inserted 8260/8625 messages
+inserted 8280/8625 messages
+inserted 8300/8625 messages
+inserted 8320/8625 messages
+inserted 8340/8625 messages
+inserted 8360/8625 messages
+inserted 8380/8625 messages
+inserted 8400/8625 messages
+inserted 8420/8625 messages
+inserted 8440/8625 messages
+inserted 8460/8625 messages
+inserted 8480/8625 messages
+inserted 8500/8625 messages
+inserted 8520/8625 messages
+inserted 8540/8625 messages
+inserted 8560/8625 messages
+inserted 8580/8625 messages
+inserted 8600/8625 messages
+inserted 8620/8625 messages
+inserted 8625/8625 messages
+verify threads=201 messages=8625 chars=20177069 focus=8625
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=50/50 elapsed=39ms p50=0.52ms p95=0.63ms p99=8.70ms 429=0
+  X1 concurrency=4  n=50/50 elapsed=10ms p50=0.65ms p95=1.19ms p99=1.65ms 429=0
+  X1 concurrency=8  n=50/50 elapsed=8ms p50=1.01ms p95=1.86ms p99=1.96ms 429=0
+  X1 concurrency=16 n=50/50 elapsed=23ms p50=2.38ms p95=17.73ms p99=18.48ms 429=0
+# Issue 28 纯 peri-loom 性能测试结果
+
+## 环境与数据
+
+| 项 | 值 |
+|---|---|
+| target | {'endpoint': 'http://127.0.0.1:20510', 'database': {'namespace': {'tenant': 'local_default', 'database': 'demo'}, 'branch': 'main'}, 'tls': False} |
+| python | 3.14.7 |
+| platform | macOS-26.5.1-arm64-arm-64bit-Mach-O |
+| git_revision | 39e8e6cf9b41fbb32190c0b414a77edbe17e6535 |
+| connection_file | provided (redacted) |
+| platform_label | HEAD 39e8e6c / rust unknown |
+| quota_max_sessions | 16 |
+| quota_max_concurrent | 100 |
+| quota_requests_per_second | 500 |
+| quota_max_result_bytes | 4194304 |
+| started_utc | 2026-11-04T11:46:43.042335+00:00 |
+| ended_utc | 2026-11-04T11:46:43.272999+00:00 |
+| duration_seconds | 0.231 |
+| rounds | 1 |
+| warmup | 0 |
+| samples | 1 |
+| concurrency_requests | 50 |
+| resource_before | {} |
+| resource_after | {} |
+| resource_after_idle | {} |
+| threads | 201 |
+| messages | 8,625 |
+| content chars | 20,177,069 |
+| content bytes | 20,177,069 |
+| focus thread messages | 8,625 |
+| projection non-null | 0 |
+| projection bytes | 0 |
+| fixture | PASS |
+| quota max_sessions | 16 |
+| quota max_concurrent | 100 |
+| quota requests_per_second | 500 |
+| quota max_result_bytes | 4,194,304 |
+
+## 结果
+
+| 版本 | 场景 | 协议 | 样本 | 中位数 | p95 | 最小 | 最大 | 行数 | 响应字节 | SQL-only | 结果 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+
+## 协议轮次中位数
+
+| 场景 | 协议 | 各轮中位数 |
+|---|---|---|
+
+## 并发
+
+| 并发 | 请求 | 中位数 | p95 | p99 | 429 | 错误 | active_permits | unknown_held_permits | session_seats | 排空 | 结果 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 50 | 0.52ms | 0.63ms | 8.70ms | 0 | 0 | 0 | 0 | 0 | 2.17ms | PASS |
+| 4 | 50 | 0.66ms | 1.19ms | 1.65ms | 0 | 0 | 0 | 0 | 0 | 2.19ms | PASS |
+| 8 | 50 | 1.06ms | 1.86ms | 1.96ms | 0 | 0 | 0 | 0 | 0 | 2.50ms | PASS |
+| 16 | 50 | 2.42ms | 17.73ms | 18.48ms | 0 | 0 | 0 | 0 | 0 | 2.63ms | PASS |
+
+## 备注
+
+- 单流场景：1 轮 × 每轮 0 次 warmup + 1 次计时；表中统计各场景实际计时样本数。
+- 并发场景每个并发级别 50 次，一次运行；warmup 不计入。
+- 所有请求带唯一 `X-Request-ID`；SQL 请求不自动重试。
+- `SQL-only` 来自响应中的 `query_duration_ms`；cursor 无该指标，显示 `—`。
+- R1 的 `result_limit` 是结果预算拒绝，属于预期行为，不计为错误。
+- X1 运行配额：`max_concurrent=100`。
+- 当前快照的 `projection` 基本为 NULL；H2/H3 不能代表真实投影载荷。
+
+[r2c1/C] stop: clean unresolved: False
+[r2c1] run_status=0
+leg r2c1 exit=0
+ALL_DONE 2026-11-04T19:46:44+0800

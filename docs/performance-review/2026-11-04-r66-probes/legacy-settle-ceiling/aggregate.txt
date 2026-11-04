@@ -1,0 +1,61 @@
+R66 legacy-settle 上限探针聚合（smoke，不可作为对外性能结论）
+A=main@39e8e6c  B=probe@066ba9e  每个 level 50 请求；2 轮 x A/B/B/A
+
+== 逐腿 ==
+r1a1 A r1 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.50/0.94/9.33  c8 1.32/8.67/9.01  c16 1.99/3.91/5.14
+     durability=audit_file_v1 deferred.pending=616 pending_max=830 inline=0 lockwait_delta=423.1ms lockwait_max=22.0ms appends_delta=404 compactions_delta=0 syncs_delta=26 commits_delta=404 audit_queue=341
+     lockwait/req=2.07ms sync/req=0.127
+r1b1 B r1 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.47/0.53/0.89  c8 1.12/1.89/2.07  c16 2.21/15.59/16.37
+     durability=audit_file_v1 deferred.pending=586 pending_max=800 inline=0 lockwait_delta=493.2ms lockwait_max=28.7ms appends_delta=404 compactions_delta=0 syncs_delta=24 commits_delta=404 audit_queue=355
+     lockwait/req=2.42ms sync/req=0.118
+r1b2 B r1 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.50/0.60/6.06  c8 1.12/1.90/2.03  c16 1.97/3.32/4.57
+     durability=audit_file_v1 deferred.pending=586 pending_max=800 inline=0 lockwait_delta=323.0ms lockwait_max=21.0ms appends_delta=404 compactions_delta=0 syncs_delta=25 commits_delta=404 audit_queue=355
+     lockwait/req=1.58ms sync/req=0.123
+r1a2 A r1 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.54/12.72/16.52  c8 1.43/14.95/15.20  c16 1.98/4.54/4.72
+     durability=audit_file_v1 deferred.pending=484 pending_max=696 inline=0 lockwait_delta=601.6ms lockwait_max=21.0ms appends_delta=404 compactions_delta=0 syncs_delta=32 commits_delta=404 audit_queue=293
+     lockwait/req=2.95ms sync/req=0.157
+r2a1 A r2 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.55/7.22/16.63  c8 1.08/1.92/1.97  c16 2.17/3.02/4.48
+     durability=audit_file_v1 deferred.pending=502 pending_max=716 inline=0 lockwait_delta=628.1ms lockwait_max=25.8ms appends_delta=404 compactions_delta=0 syncs_delta=29 commits_delta=404 audit_queue=305
+     lockwait/req=3.08ms sync/req=0.142
+r2b1 B r2 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.49/0.63/1.03  c8 1.25/8.06/8.24  c16 2.04/2.84/3.44
+     durability=audit_file_v1 deferred.pending=491 pending_max=756 inline=0 lockwait_delta=339.2ms lockwait_max=21.0ms appends_delta=404 compactions_delta=0 syncs_delta=25 commits_delta=404 audit_queue=297
+     lockwait/req=1.66ms sync/req=0.123
+r2b2 B r2 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.49/0.65/10.13  c8 1.09/1.82/2.07  c16 2.42/17.35/18.30
+     durability=audit_file_v1 deferred.pending=536 pending_max=749 inline=0 lockwait_delta=369.7ms lockwait_max=20.9ms appends_delta=404 compactions_delta=0 syncs_delta=26 commits_delta=404 audit_queue=325
+     lockwait/req=1.81ms sync/req=0.127
+r2a2 A r2 valid=True errors=0 429=0 rejected=0 bad_outcome=0 bad_rows=0 stop=clean unresolved=False warnings=[]
+     n(c1,c8,c16)=50/50/50 (planned 50 each)
+     fixture threads=201 messages=8625 chars=20177069 | p50/p95/p99: c1 0.54/7.91/16.88  c8 1.16/1.76/1.86  c16 1.85/3.04/3.91
+     durability=audit_file_v1 deferred.pending=582 pending_max=795 inline=0 lockwait_delta=617.2ms lockwait_max=29.0ms appends_delta=404 compactions_delta=0 syncs_delta=29 commits_delta=404 audit_queue=352
+     lockwait/req=3.03ms sync/req=0.142
+
+== 每轮比值（同轮同侧两腿取中位；B/A）==
+round 1 c1  p50 0.52->0.49 (0.934)  p95 6.83->0.57 (0.083)  p99 12.93->3.48 (0.269)
+round 1 c8  p50 1.38->1.12 (0.816)  p95 11.81->1.89 (0.160)  p99 12.10->2.05 (0.169)
+round 1 c16 p50 1.99->2.09 (1.052)  p95 4.23->9.45 (2.237)  p99 4.93->10.47 (2.123)
+round 2 c1  p50 0.55->0.49 (0.890)  p95 7.57->0.64 (0.085)  p99 16.75->5.58 (0.333)
+round 2 c8  p50 1.12->1.17 (1.044)  p95 1.84->4.94 (2.685)  p99 1.92->5.16 (2.692)
+round 2 c16 p50 2.01->2.23 (1.111)  p95 3.03->10.09 (3.333)  p99 4.19->10.87 (2.591)
+
+== 冻结判据 ==
+c8/c16 四单元均在两轮 <1.0（同向）: False
+每轮 c16 p95 或 p99 <=0.90: False (round1=False round2=False)
+任一单元 >1.10 的反向: 是
+上限结论: 不足/不可确认——停止该方向
+c1 p50 护栏 round 1: 0.934 (<=1.10 -> True)
+c1 p50 护栏 round 2: 0.890 (<=1.10 -> True)
+c1 p50 合并护栏: 0.900 (<=1.10 -> True)

@@ -1,0 +1,49 @@
+{
+  "checks": [
+    {
+      "actual": 201,
+      "expected": 201,
+      "name": "threads",
+      "ok": true
+    },
+    {
+      "actual": 8625,
+      "expected": 8625,
+      "name": "messages",
+      "ok": true
+    },
+    {
+      "actual": 20177069,
+      "expected": 20177069,
+      "name": "content_chars",
+      "ok": true
+    },
+    {
+      "actual": 8625,
+      "expected": 8625,
+      "name": "focus_messages",
+      "ok": true
+    }
+  ],
+  "complete": true,
+  "content_bytes": 20177069,
+  "content_chars": 20177069,
+  "empty_cwd": "/workspace/issue28/__issue28_missing__",
+  "focus_content_bytes": 20177069,
+  "focus_messages": 8625,
+  "focus_thread": "issue28-focus",
+  "list_cwd": "/workspace/issue28",
+  "list_threads": 40,
+  "messages": 8625,
+  "projection_bytes": 0,
+  "projection_non_null": 0,
+  "quotas": {
+    "max_concurrent": 100,
+    "max_databases": 8,
+    "max_result_bytes": 4194304,
+    "max_sessions": 16,
+    "max_sql_bytes": 65536,
+    "requests_per_second": 500
+  },
+  "threads": 201
+}
