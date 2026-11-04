@@ -185,16 +185,16 @@ func TestHranaHTTPWriteCursorPartialRowsDisconnectProvesRollback(t *testing.T) {
 		return map[string]any{"closed": true, "abort_proven": true}, nil
 	})
 	handler := newHranaHTTP(fixture.gateway).(*hranaHTTP)
-	// Let the baton, step_begin and the first two rows reach the client, then
-	// disconnect on the third row so the abort happens after a partial response.
-	writer := &failingCursorWriter{ResponseRecorder: httptest.NewRecorder(), maxWrites: 4}
+	// Cursor rows leave in page-sized writes, so the disconnect lands on the
+	// second page after the first page of rows reached the client.
+	writer := &failingCursorWriter{ResponseRecorder: httptest.NewRecorder(), maxWrites: 3}
 	request := httptest.NewRequest(http.MethodPost, "/db/tenant-a/db-a/main/v3-protobuf/cursor", bytes.NewReader(hranaHTTPCursorStatement("INSERT INTO records VALUES(1) RETURNING id")))
 	request.Header.Set("Authorization", "Bearer "+fixture.tokenA)
 	request.Header.Set("Content-Type", "application/x-protobuf")
 	if !serveHranaV3(writer, request, handler) {
 		t.Fatal("partial cursor disconnect was not routed")
 	}
-	if fetches != 1 || fixture.upstream.count("close_write_cursor") != 1 {
+	if fetches != 2 || fixture.upstream.count("close_write_cursor") != 1 {
 		t.Fatalf("partial disconnect dispatched again: fetch=%d close=%d", fetches, fixture.upstream.count("close_write_cursor"))
 	}
 	assertCursorNotIsolated(t, fixture)

@@ -414,6 +414,23 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 	var rowEncoder hranaJSONCursorRow
 	var pageScanner hranaCursorPageScanner
 	flusher, _ := writer.(http.Flusher)
+	// Rows accumulate here and reach the response once per page. The previous
+	// per-row write forced one chunk boundary per row; the bytes and the page
+	// flush stay the same, only the write granularity changes.
+	var rowBuffer bytes.Buffer
+	flushRows := func() bool {
+		if rowBuffer.Len() == 0 {
+			return true
+		}
+		_, err := writer.Write(rowBuffer.Bytes())
+		rowBuffer.Reset()
+		if err != nil {
+			clientStopped = true
+			failed = true
+			return false
+		}
+		return true
+	}
 	start := func() bool {
 		if started {
 			return true
@@ -432,7 +449,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		return true
 	}
 	write := func(entry any) bool {
-		if !start() {
+		if !start() || !flushRows() {
 			return false
 		}
 		if encoder.Encode(entry) != nil {
@@ -447,6 +464,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 		if !started {
 			http.Error(writer, "cursor outcome unknown: "+message, 502)
 		} else {
+			flushRows()
 			_ = encoder.Encode(map[string]any{"type": "error", "error": map[string]any{"message": message, "code": "outcome_unknown"}})
 		}
 	}
@@ -464,11 +482,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			}
 			return false
 		}
-		if _, err := writer.Write(rowEncoder.bytes()); err != nil {
-			clientStopped = true
-			failed = true
-			return false
-		}
+		_, _ = rowBuffer.Write(rowEncoder.bytes())
 		return true
 	}
 	writePageRow := func(page *hranaCursorPage, index int) bool {
@@ -485,11 +499,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			}
 			return false
 		}
-		if _, err := writer.Write(rowEncoder.bytes()); err != nil {
-			clientStopped = true
-			failed = true
-			return false
-		}
+		_, _ = rowBuffer.Write(rowEncoder.bytes())
 		return true
 	}
 	nativeFailure := func(reply hranaReply) bool {
@@ -502,6 +512,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			// Hrana frame. Keep its durable query handle in this response too.
 			hranaPipelineFailure(writer, identifier, true, reply)
 		} else {
+			flushRows()
 			_ = encoder.Encode(map[string]any{"type": "error", "error": hranaFailureFields(reply, true)})
 		}
 		return true
@@ -595,6 +606,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				// global cursor error after its header, retaining the native proof.
 				failed = true
 				if start() {
+					flushRows()
 					_ = encoder.Encode(map[string]any{"type": "error", "error": hranaSettledFailureFields(reply, true)})
 				}
 				return
@@ -713,6 +725,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				}
 				done = page.done
 			}
+			if !flushRows() {
+				return
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -729,7 +744,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 			}
 		}
 	}
-	if !start() {
+	if !start() || !flushRows() {
 		return
 	}
 	if flusher != nil {

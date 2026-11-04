@@ -186,6 +186,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		stream.mu.Unlock()
 	}()
+	var rowBuffer []byte
 	writeEncoded := func(frame []byte) error {
 		if _, err := writer.Write(frame); err != nil {
 			// A failed frame write means the peer stopped reading. It says nothing
@@ -195,7 +196,23 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 		}
 		return nil
 	}
+	// Row frames accumulate here and reach the response once per page. The frame
+	// bytes and the page flush stay the same; only the write granularity changes.
+	flushRows := func() error {
+		if len(rowBuffer) == 0 {
+			return nil
+		}
+		_, err := writer.Write(rowBuffer)
+		rowBuffer = rowBuffer[:0]
+		if err != nil {
+			clientStopped = true
+		}
+		return err
+	}
 	writeFrame := func(payload []byte) error {
+		if err := flushRows(); err != nil {
+			return err
+		}
 		return writeEncoded(append(hranaProtoVar(uint64(len(payload))), payload...))
 	}
 	results := make([]any, len(readSteps))
@@ -404,14 +421,16 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 					rowFrame.begin()
 					for _, cell := range row {
 						if rowFrame.appendCell(cell) != nil {
+							_ = flushRows()
 							failed = true
 							return true
 						}
 					}
-					if writeEncoded(rowFrame.frame()) != nil {
-						failed = true
-						return true
-					}
+					rowBuffer = append(rowBuffer, rowFrame.frame()...)
+				}
+				if flushRows() != nil {
+					failed = true
+					return true
 				}
 				done = page.Done
 				if done {
@@ -441,13 +460,15 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter, 
 					}
 					rowFrame.begin()
 					if rowFrame.appendPageRow(&page, rowIndex) != nil {
+						_ = flushRows()
 						failed = true
 						return true
 					}
-					if writeEncoded(rowFrame.frame()) != nil {
-						failed = true
-						return true
-					}
+					rowBuffer = append(rowBuffer, rowFrame.frame()...)
+				}
+				if flushRows() != nil {
+					failed = true
+					return true
 				}
 				if flusher, ok := writer.(http.Flusher); ok {
 					flusher.Flush()
