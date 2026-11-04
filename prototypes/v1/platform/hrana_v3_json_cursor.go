@@ -370,7 +370,15 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 	}
 	started, failed, active, activeWrite := false, false, false, false
 	writeCommitted, clientStopped := false, false
+	var pendingCursorFetch <-chan hranaReply
 	defer func() {
+		// A prefetch can still be in flight when the stream is abandoned. Join it
+		// before the cleanup close: the worker session accepts one RPC at a time,
+		// so the close must not race the fetch it would otherwise wait for.
+		if pendingCursorFetch != nil {
+			<-pendingCursorFetch
+			pendingCursorFetch = nil
+		}
 		if request.Context().Err() != nil {
 			clientStopped = true
 		}
@@ -645,7 +653,12 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				return
 			}
 			if !firstPage {
-				reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
+				if pendingCursorFetch != nil {
+					reply = <-pendingCursorFetch
+					pendingCursorFetch = nil
+				} else {
+					reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
+				}
 			}
 			fused := firstPage
 			firstPage = false
@@ -717,6 +730,11 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 				if page.rows > 256 || page.rows == 0 && !page.done {
 					fatal("invalid cursor page")
 					return
+				}
+				if !page.done && request.Context().Err() == nil {
+					// The next page's worker time now runs while this page is
+					// transcoded and flushed.
+					pendingCursorFetch = handler.cursorFetchAhead(request, credential, stream.session)
 				}
 				for rowIndex := 0; rowIndex < page.rows; rowIndex++ {
 					if request.Context().Err() != nil {

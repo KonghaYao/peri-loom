@@ -1,0 +1,55 @@
+R56 验收判据（实现与 A/B 前冻结，2026-11-04）
+
+基线 main @ fbc0e3d
+候选 perf/r56-cursor-page-pipeline @ d5cf31f
+
+方向：只读 cursor 页流水线（第 N 页转码/发送时第 N+1 页 fetch 已在途）+ worker 响应体按
+Content-Length 预分配（消除 io.ReadAll 的 1.25x 增长拷贝与中间垃圾）。
+两者都只改平台侧；请求/响应字节、审计动作、耐久时点均不变。
+
+上限依据（已测）：
+- 平台页路径 R54 探针：每页转码 4.18ms + flush 1.54ms = 5.72ms 可与 fetch 等待重叠。
+- 预分配微基准（600KB × 34 页，/tmp/peri-r56-probe）：io.ReadAll 9.61ms → 预分配 5.86ms，
+  省 3.75ms；线上 ReadAll 实测 8.53–8.83ms。
+- 合计上限 ≈ 9.5ms / 64.7ms ≈ 14.7%，高于 10% 硬门。
+
+批次声明（若单轮不足 10%）：R56 与 R57（worker 只读 cursor 页借用序列化，上限 4.6–5.1ms）
+组成一个发布批次；批级门槛为主指标端到端 A/B ≥10% 且无回归，每轮各自做 Gate 0。
+
+主指标（硬门）：
+- H1.content-20mb json-cursor 与 protobuf-cursor。
+- 每轮 A/B/B/A 4 条腿、每条腿 1 warmup + 5 samples；每轮取该侧 2 条腿的 median_ms 中位数。
+- 通过条件：两个协议各自的候选轮中位数 ≤ 0.90 × 同轮基线中位数（≥10% 改善），且 2 轮同向。
+  任一项不满足即不合入。
+
+同路径证据（非主指标）：
+- H3.content-projection json-cursor / protobuf-cursor 预期同向；>10% 且可复现退化按失败处理。
+
+回归门（A/B 后单独跑，4 条腿 A/B/B/A，5 samples/腿）：
+- R1.limit-1000 json-pipeline、protobuf-pipeline
+- F1.select-1 json-pipeline、protobuf-pipeline
+- L1.list-20 json-pipeline、json-cursor
+- B1.batch-20 json-pipeline、protobuf-pipeline
+- C1.baton-10 json-pipeline
+- H3.content-projection json-cursor、protobuf-cursor
+- X1.concurrency json-pipeline
+任一项 >10% 且两轮/多腿可复现即判回归；单腿抖动需高样本复测。
+
+不变量：
+- response_bytes 与基线逐字节一致：H1 json 20,608,525；H1 pb 20,272,006；
+  H3 json 20,746,565；H3 pb 20,306,526；R1 json 2,369,290；R1 pb 2,349,053；
+  F1 json 312；F1 pb 40。
+- 全部样本 warnings=[]、非 200 = 0、fails=0；fixture 校验通过。
+- 写 cursor 路径不启用预取（保持严格顺序）。
+
+Gate 0（A/B 前完成）：
+- 探针计数：每查询 prefetch 命中 >0，且 fetch 调用数 = 页数 − 1（读 cursor）。
+- 「关掉」对照：写 cursor 与单页 cursor 的 prefetch 计数为 0。
+- wire 字节与基线一致；探针只存在于 gate worktree，不进入测量二进制。
+
+允许的语义边界（已评审）：
+- 预取在客户端断开时可能多执行一次只读 fetch 并留下一条成功的 cursor_fetch 审计记录；
+  该 fetch 确实在 worker 上执行过，记录不虚假；无数据效果，不改变任何耐久时点。
+- 预取使用 context.WithoutCancel + 超时，避免客户端取消把已发出的 fetch 变成审计失败。
+- 提前返回前先 join 在途预取，再走原有 cursor/会话关闭；
+  worker 会话关闭本就等待 active RPC 结束（session_entry.rs finish_close）。

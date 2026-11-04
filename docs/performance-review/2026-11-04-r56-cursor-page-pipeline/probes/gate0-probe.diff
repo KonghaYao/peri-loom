@@ -1,0 +1,73 @@
+diff --git a/prototypes/v1/platform/hrana_cursor_prefetch.go b/prototypes/v1/platform/hrana_cursor_prefetch.go
+index 7e63e08..df7ba50 100644
+--- a/prototypes/v1/platform/hrana_cursor_prefetch.go
++++ b/prototypes/v1/platform/hrana_cursor_prefetch.go
+@@ -3,6 +3,7 @@ package platform
+ import (
+ 	"context"
+ 	"net/http"
++	"sync/atomic"
+ 	"time"
+ )
+ 
+@@ -12,6 +13,8 @@ import (
+ // production time.
+ const cursorFetchAheadTimeout = 30 * time.Second
+ 
++var cursorFetchAheadIssued, cursorFetchAheadConsumed atomic.Int64
++
+ // cursorFetchAhead issues the next read-cursor page fetch while the current page
+ // is still being transcoded and written. The worker produces page N+1 during
+ // the adapter's local work, which is the only part of the page loop that does
+@@ -28,6 +31,7 @@ func (handler *hranaHTTP) cursorFetchAhead(request *http.Request, credential str
+ 	prefetch := request.WithContext(ctx)
+ 	input := map[string]any{"session": session, "max_rows": 256, "write_cursor": false}
+ 	done := make(chan hranaReply, 1)
++	cursorFetchAheadIssued.Add(1)
+ 	go func() {
+ 		defer cancel()
+ 		done <- handler.call(prefetch, credential, "/v1/sql/cursor/fetch", input)
+diff --git a/prototypes/v1/platform/hrana_http_cursor.go b/prototypes/v1/platform/hrana_http_cursor.go
+index 769a150..747ef2a 100644
+--- a/prototypes/v1/platform/hrana_http_cursor.go
++++ b/prototypes/v1/platform/hrana_http_cursor.go
+@@ -151,7 +151,9 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter,
+ 		if pendingCursorFetch != nil {
+ 			<-pendingCursorFetch
+ 			pendingCursorFetch = nil
++			cursorFetchAheadConsumed.Add(1)
+ 		}
++		log.Printf("R56GATE path=native issued=%d consumed=%d", cursorFetchAheadIssued.Swap(0), cursorFetchAheadConsumed.Swap(0))
+ 		if request.Context().Err() != nil {
+ 			clientStopped = true
+ 		}
+@@ -396,6 +398,7 @@ func (handler *hranaHTTP) serveNativeHTTPReadCursor(writer http.ResponseWriter,
+ 			if pendingCursorFetch != nil {
+ 				reply = <-pendingCursorFetch
+ 				pendingCursorFetch = nil
++				cursorFetchAheadConsumed.Add(1)
+ 			} else {
+ 				reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writeCursor})
+ 			}
+diff --git a/prototypes/v1/platform/hrana_v3_json_cursor.go b/prototypes/v1/platform/hrana_v3_json_cursor.go
+index 9214cb4..f9dd30d 100644
+--- a/prototypes/v1/platform/hrana_v3_json_cursor.go
++++ b/prototypes/v1/platform/hrana_v3_json_cursor.go
+@@ -378,7 +378,9 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 		if pendingCursorFetch != nil {
+ 			<-pendingCursorFetch
+ 			pendingCursorFetch = nil
++			cursorFetchAheadConsumed.Add(1)
+ 		}
++		log.Printf("R56GATE path=json issued=%d consumed=%d", cursorFetchAheadIssued.Swap(0), cursorFetchAheadConsumed.Swap(0))
+ 		if request.Context().Err() != nil {
+ 			clientStopped = true
+ 		}
+@@ -656,6 +658,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
+ 				if pendingCursorFetch != nil {
+ 					reply = <-pendingCursorFetch
+ 					pendingCursorFetch = nil
++					cursorFetchAheadConsumed.Add(1)
+ 				} else {
+ 					reply = handler.call(request, credential, "/v1/sql/cursor/fetch", map[string]any{"session": stream.session, "max_rows": 256, "write_cursor": writing})
+ 				}

@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -291,5 +292,31 @@ func TestGatewayActualSQLWireLostCommitReply(test *testing.T) {
 	defer cancel()
 	if fixture.gateway.Close(ctx) == nil {
 		test.Fatal("unknown HTTP side effect fake-cleaned")
+	}
+}
+
+// TestReadWorkerReplyPrefersTheDeclaredLength covers the buffer the worker's
+// Content-Length lets the platform allocate once: the growable path remains for
+// replies without a usable length, and a truncated body stays an error.
+func TestReadWorkerReplyPrefersTheDeclaredLength(t *testing.T) {
+	payload := bytes.Repeat([]byte("page"), 150_000)
+	declared := &http.Response{Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: int64(len(payload))}
+	body, err := readWorkerReply(declared)
+	if err != nil || !bytes.Equal(body, payload) {
+		t.Fatalf("declared length reply mismatch: %d bytes err=%v", len(body), err)
+	}
+	chunked := &http.Response{Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: -1}
+	if body, err = readWorkerReply(chunked); err != nil || !bytes.Equal(body, payload) {
+		t.Fatalf("chunked reply mismatch: %d bytes err=%v", len(body), err)
+	}
+	// The caller rejects a declared length above the wire limit before reading;
+	// the helper only has to leave such a reply on the bounded growable path.
+	oversize := &http.Response{Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: sqlWireLimit + 2}
+	if body, err = readWorkerReply(oversize); err != nil || !bytes.Equal(body, payload) {
+		t.Fatalf("oversize reply mismatch: %d bytes err=%v", len(body), err)
+	}
+	truncated := &http.Response{Body: io.NopCloser(bytes.NewReader(payload[:64])), ContentLength: int64(len(payload))}
+	if _, err = readWorkerReply(truncated); err == nil {
+		t.Fatal("truncated reply was accepted")
 	}
 }
