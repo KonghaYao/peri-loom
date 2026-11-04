@@ -262,6 +262,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R65 | 测量轮（无生产代码改动；A `main`@`1399f15` sha256 `fd959df7…`，B `main`@`1a6b9dd` sha256 `9214cd0c…`，worker 两侧 `a648ecd9…`） | R64 合入后的回归门：W1/F1/H1 主协议（W1/F1 `json-pipeline`、H1 `json-cursor`），确认延后耐久待办上限 256→4096 未造成 >10% 退化；2 轮 × A/B/B/A，每场景 8 腿，共 24 腿 | 24/24 腿有效：fixture complete、352/352 请求 `ok`/HTTP 200、warnings/fatal 空、F1 rows=1、H1 rows=8625、samples 5/5/3、clean stop 且 `unresolved_operations=false`、无 429/expected_limit/audit_unavailable。主指标（候选/基线）：W1 1.101（33.705→37.125ms；round1 0.972、round2 1.153）、F1 0.987（0.532→0.525ms；两轮均 0.987）、H1 1.022（53.171→54.357ms；0.950/1.078）。**W1 边界 PASS**：round2 1.153 与合并 1.101 均 >1.10，仅因 round1 0.972 未超阈值；W1 round2 `query_ms` 从 9–11ms 阶跃到 16.96/20.41/16.14ms（A `r2a2` 同样受影响），`duration_ms − query_ms` 比值 round1 0.977 / round2 1.031 / 合并 0.977 ⇒ 平台侧无回归信号。机制快照：12 条 B 腿 `deferred_durability.maximum=4096`、`inline_total=0`，`pending_max` W1=4 / F1=91 / H1=18–21，远低于 4096，未逼近新上限；12 条 A 腿无该指标 | 无代码改动：冻结判据下三场景均无回归 PASS；W1 为边界 PASS，不是稳健无回归。后续 R43 adapter 级 fused close 撤销会改变 F1 绝对延迟，本轮判决仅代表 `a46afa2` 上的 R64 变更 |
 | R66 | 探针轮（无生产代码）；`probe/r66-legacy-settle-ceiling` @ `066ba9e` 未合入 | legacy settle / GC / fused close 三个上限探针 | legacy settle 移除：c8/c16 尾部无改善（c16 p95/p99 两轮 2.12–3.33×反向）；GOGC=off 仍有同样 15.7–32.9ms 停顿；F1 close 均值 0.248ms 但 fused close 当前仅约 4% 且属红线 | 全部判停，不合入；授权内无可过 ≥10% 门槛的方向 |
 | R67 | 测量轮（无代码改动） | 复测 v1.2.7 发布 A/B 的 F1 FAIL：v1.2.6 vs v1.2.7，2 轮 × A/B/B/A、每腿 20 个 timed 样本 | 两轮 0.800 / 1.276（方向相反），合并 2.631→2.413ms（**0.917**）；样本级 Mann-Whitney p=0.997，原窗口 40 样本 p=0.989 | 判为低功效估计量导致的噪声，不改写原 FAIL 记录；验收改用样本级合并统计 |
+| R68 | 无代码改动（只读反思轮） | 复核「现有授权内是否还剩 ≥10% 方向」，并定位 c128 的 `audit_unavailable` 与 `deferred_durability` 上限行为 | 逐候选上限：适配器→网关内部 HTTP 转发 25µs/条（F1 4.7%、L1 2.4%、C1 7.0%），而其中可移除部分仅 2.6µs/条（F1≈1%、B1≈2.4%）；worker 会话生命周期 341µs/请求（F1 64%、L1 33%）需会话语义授权；H1 三条路径上限均 <10%；X1 尾部由宿主级暂停主导；编码/分配/GC ≤2–8%，且 c64 时 CPU 仅 0.30 core；唯一实测 ≥20% 的方向（W1 intent 屏障重排，R61 −20.9%~−23.1%）需耐久语义授权 | 无合入；结论记录为 R68 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -2942,6 +2943,80 @@ fused close 未证明 ≥20% 且属红线；legacy settle 安全版本没有 ≥
 **限制**：单宿主、单窗口；未做 P0/P1/P2 提交级归因（预注册规则：两轮方向相反即结案）；
 20 样本/腿仍不足以在 0.5ms 量级上给出 80% power；F1 的双峰慢尾（~1ms 与 ~5–7ms 两簇）
 来源未定位。
+
+#### R68：只读反思——现有授权内已无 ≥10% 方向（无代码改动）
+
+**目的与方法**：R66 已判定「现有授权内没有能过 10% 门槛的方向」；本轮以只读方式复核该结论，
+并顺带关闭两条长期挂起的容量疑问（c128 的 `audit_unavailable` 归属、`deferred_durability`
+4096 上限的饱和行为）。方法是既往轮次实测记录 + 本轮代码阅读。**本轮没有任何 A/B 测量：
+所有数字要么来自既往轮次的实测记录，要么来自本轮代码阅读，不得被引用为新的性能结论。**
+
+**候选与上限（逐条否证）**：
+
+| 候选 | 关键位置 | 上限 / 已有证据 | 判定 |
+|---|---|---|---|
+| 适配器→网关内部 HTTP 转发 | `hrana_http.go:995-1006`、`hrana_protobuf.go:1160-1175`、`hrana_v3_json_cursor.go:845-860` | 转发本身 25µs/条（F1 4.7%、L1 2.4%、C1 7.0%）；R44 D3 实测其中**可移除**部分只有 2.6µs/条（`json.Marshal` 0.61 + `httptest.NewRequest` 1.16 + reply 0.69 + 响应编码 0.16µs），折算 F1≈1%、B1≈2.4% | 上限不足 10% |
+| worker 会话生命周期 | `src/worker_rpc/sessions.rs:233-300`、`:417`；平台入口 `gateway_http.go:423-431` | `open_session` 251.4µs + `close_session` 89.8µs = 341µs/请求，占 F1 p50 64%、L1 33%、c1 X1 约 76% | 减少它只有会话复用 / fused close（协议帧）/ 去掉 authority 校验三条路，均需授权或已被否证 |
+| W1 intent 屏障重排 | `operation_state.go:454-475`、`gateway_operations.go:222-267` | R61 上限探针实测 −20.9%~−23.1% | 唯一实测 ≥20% 的方向，但改变耐久提交时点，需授权 |
+| H1 剩余成本 | worker `turso_step`、页序列化、行级检查 | worker `turso_step` 16.5–18.3ms、页序列化 6.4–7.1ms（R58）；平台页路径 ≤5ms≈7.7%（R54）；worker 序列化 ≤7.2–8.0%（R53）；行级检查 ≤7.3–7.5%（R58） | 均 <10%，且大头是 Turso VM 与协议帧序列化（授权红线） |
+| X1 c8/c16 尾部 | deferred 账户、checkpoint、GC | R59 deferred workers 8→64 反向崩坏（c16 3.75→124–166ms）；R61 checkpoint 全跳过无改善；R66 GC=off 仍有 17.7–18.5ms 台阶 | 尾部由宿主级暂停主导，平台侧无杠杆 |
+| 编码 / 分配 / GC | journal 编码、堆目标 | R34/R36 编码 ≤1–2%，R35 仅摊薄 GC 代价，R66 探针否证 GC 尾部假设；R36 实测 c64 时 platform 0.30 core、worker 0.10 core | 瓶颈是等待而非算力 |
+
+**结论**：现有授权内没有能同时满足「≥10%（<10ms 场景 ≥20%）」与「不触碰耐久/协议/审计/配额
+红线」的单一改动。R66 的判停在本轮复核成立。
+
+**c128 的 `audit_unavailable`(503) 定位（代码阅读结论，未实跑）**：
+
+- 默认配额下 c128 先被会话座位 16（`admission.go:199-205`）与并发 100（`admission.go:201-203`）
+  挡住，返回 **429 `quota_exceeded`**（原因 `session_limit` / `concurrency_limit`），不会先到 503。
+- 配额放宽后，**v1 `audit_file_v1`**（`completionStore == nil`）在 c128 下容量型 503 不可达：
+  完成槽 1024/4 MiB、全局 4096/8 MiB、请求 1024/2 MiB（`audit.go:44-58`）。
+- **v2 `completion_journal_v2`** 下 `completionReservedMaximum=64`（`completion_journal.go:12`，
+  判定 `audit.go:322-326`，`limits.completion_slots` 在 v2 被覆盖为 64，`audit.go:824-828`）：
+  同时处于「已预留、未入队」的**非-close** 在途请求超过 64 个 → 第 65 个起 **503
+  `audit_unavailable`**，metrics 拒绝原因 `audit_capacity`。
+- close 永不因槽位被拒（`gateway_http.go:418` 显式 `action != "close"`），避免座位泄漏。
+- 其余 `audit_unavailable` 是 fail-closed 而非容量：`gateway_http.go:283-286`（`deferred.refusal()`）、
+  `hrana_http.go:280-289` + `:853-862`（pipeline collector Flush 失败）、
+  `gateway_http.go:212-231`（无 reservation 的 close 在完成预算耗尽时）。
+- **精确化**：R25/R30/R31 记录的「c128 下 `audit_unavailable` 仍是独立问题」应读作
+  「**v2 完成日志 + 超过 64 个并发在途非-close 请求**才会触发；默认配额先撞 429；
+  v1 默认配置下不可达」。原记录保持原样，本节只作补充。以上为代码阅读结论，**没有实跑验证**。
+
+**`deferred_durability` 上限 4096 的饱和行为**：
+
+- `settle` 在 `pending >= maximum` 或账户已停止时不解引用队列，直接 `inline.Add(1)` 并同步
+  `wait()`（`durability_deferred.go:81-86`）——语义是「回复后异步」退化为「回复前内联等待」，
+  **不返回 503**。
+- 调用点在请求 defer 内、`writeResponse` 之前（`gateway_http.go:133-161`、`:247-257`），
+  不持有命名空间 fence、不占 completion 槽，因此不会级联成容量拒绝。
+- 计数器：`/v1/metrics` 的 `deferred_durability.pending/pending_max/maximum/enqueued_total/inline_total`
+  （`durability_deferred.go:124-139`、`metrics.go:98`）。
+- 现状：确定性单测 `TestDeferredQueueSaturationWaitsInline`（`durability_deferred_test.go:132-160`，
+  `maximum=1`）覆盖行为；生产值 4096 从未在 E2E 触达（R65 `pending_max` W1=4 / F1=91 / H1=18–21；
+  R64 的 X1 c1–c16 为 661–800，`inline_total=0`）。
+- **判定**：不是正确性缺陷，是**容量标定缺口**——高并发长窗口下有逼近 4096 的结构可能，
+  届时表现为 p95/p99 台阶而非 503。补测方式（未实施）：c128 容量实验（非默认配额，需标注）
+  抓 `pending_max`/`inline_total`。
+
+**需授权才能做的方向（本轮不推荐实施、未实施，仅备查）**：
+
+| 方向 | 越界原因 | 需要的授权 | 需要的 E2E 证据 |
+|---|---|---|---|
+| W1 intent 屏障重排 | 改变写语句耐久提交时点/顺序（`operation_state.go:454-475`、`gateway_operations.go:222-267`） | 耐久语义变更授权 | W1 受控 A/B + 崩溃恢复（已 ack 写不丢、Unknown 分类不变） |
+| worker 会话复用 | 会话语义与生命周期变更（`src/worker_rpc/sessions.rs:233-300`、`:417`） | 会话绑定 placement、客户端显式重开的语义授权 | 长会话 + 迁移/失效路径 E2E |
+| fused close | 减少协议帧数（红线）；且 R66 已证明当前不到 20% | 协议/帧语义授权，并先有 close-only 受控 A/B | adapter 级 close-only A/B + 协议兼容矩阵 |
+| authority 本地校验 / lease 缓存 | Go 不做持久层权威，storage 是最终 fencing authority（架构边界 3） | fencing 与权威边界授权 | 旧 epoch 拒写、分区/复活演练 |
+| audit checkpoint 频率 | 审计链耐久与顺序语义；R61/R66 已先否证其收益 | 审计语义授权 | 崩溃恢复 + 链连续性校验 |
+
+以上均**未实施**、**本轮不推荐实施**：前两项只有上限证据、没有安全实现的设计；后三项或属红线、
+或已被探针否证。
+
+**未闭合项**：
+
+- c128 的 v2 槽位结论来自代码阅读，未实跑；
+- `deferred_durability` 4096 的上限逼近未标定；
+- 现有授权内已无 ≥10% 方向，继续迭代需要用户授权上表任一项。
 
 ## 代码约定
 
