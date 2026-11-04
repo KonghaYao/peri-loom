@@ -1552,6 +1552,38 @@ fn fused_close_retires_the_session_in_the_open_request() -> Result<()> {
     Ok(())
 }
 
+/// A failed close must stay ambiguous on the wire. Its reply is the only evidence
+/// the platform has, and a lost reply can still have retired the session, so the
+/// worker must not claim the command was rejected before execution. Close is
+/// deliberately outside the pre-execution proof added to open and the statement
+/// preludes; this pins that it stays that way.
+#[test]
+fn a_failed_close_carries_no_execution_evidence() -> Result<()> {
+    let worker = Worker::new()?;
+    // A well-formed identifier this worker never issued: close reaches the session
+    // registry and is refused there, after admission and before any SQL.
+    let unknown = "a".repeat(64);
+    let closed = worker.call(
+        WorkerCommand::CloseSession {
+            session: unknown.clone(),
+        },
+        false,
+    )?;
+    assert_eq!(closed["ok"], false, "{closed}");
+    assert!(
+        closed["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown worker session"),
+        "{closed}"
+    );
+    assert!(
+        closed.get("execution_completed").is_none(),
+        "a close failure must carry no execution verdict: {closed}"
+    );
+    Ok(())
+}
+
 #[test]
 fn fused_close_leaves_the_session_for_a_refused_write() -> Result<()> {
     let worker = Worker::new()?;
