@@ -1,0 +1,11 @@
+R47 Gate 0（探针二进制，测量前已移除）
+base probe sha256 9f62c6a3e025b22a5f0615689956b229360404de0d0599ae1da0433bd85fe9d2（d05f314 + 计时探针）
+cand probe sha256 afba737097d6622737e168241b38dcf99da1a715097c9d435c4e265e123aba6c（e4b6606 + 同一探针）
+同一 fixture（threads=201 messages=8625 focus_thread=issue28-focus），
+R1.limit-1000 json-pipeline，3 rounds × (1 warmup + 5 timed) = 18 请求。
+
+base（每请求）: fused_parse 2.0 / validate 2.0 / open_unmarshal 1.0 / decode 1.0
+cand（每请求）: fused_parse 1.0 / validate 1.0 / open_unmarshal 0.0 / typed_open 1.0 / decode 1.0
+
+上限探针（base，per call）：fused_parse 6.39ms、validate 3.53ms、open_unmarshal 2.11ms；
+被移除的两段 = 6.39 + 2.11 ≈ 8.5ms/请求（R1 约 39.9ms 的 21%）。typed_open 计数证明新路径命中。
