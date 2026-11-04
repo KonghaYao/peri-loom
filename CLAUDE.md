@@ -503,13 +503,32 @@ merge `fffd305`（已合入 `main`）。
   CI：PR runs `41843969071`（baseline）、`41843968853`（Issue 8）、`41843932858`（push），
   post-merge `41847588930`、`41847588721`，全部 success（Issue 8 的 `quick-native`/`formal-native`
   是 manual-only，PR 上 skip 属设计行为）。
-  **保留的已知缺口**：① worker 侧 **close 没有回归测试覆盖**——把 `CloseSession` 也包上证据后，
-  68 个 `worker_rpc` 测试与新增的 Go 负向用例**都不会转红**，当前 close 安全只靠「分支 diff 为空」
-  这一结构事实；② `not_executed` helper 会覆盖内层 `SqlEvidence::Settled`（实测
-  `downcast=Some(NotExecuted)`），当前所有包装点都在执行之前、`Settled` 不可达，因此不是现存缺陷，
-  但后续若在 fetch/cursor 之后复用它，会制造「已执行却报未执行」的错误，必须先加固；
+  **原保留的已知缺口（①② 已修复，③ 保留）**：① worker 侧 **close 没有回归测试覆盖**——把
+  `CloseSession` 也包上证据后，68 个 `worker_rpc` 测试与新增的 Go 负向用例**都不会转红**，
+  当时 close 安全只靠「分支 diff 为空」这一结构事实。
+  **已修复**（`18e4d77`，merge `0ccd0c2`）：新增
+  `tests/statement_worker.rs::a_failed_close_carries_no_execution_evidence`，用真实 HTTP worker
+  关闭一个该 worker 从未签发过的合法 64-hex 会话（`sessions.close` 在 registry 处以
+  `unknown worker session` 拒绝，位于准入之后、任何 SQL 之前），断言失败回复不含
+  `execution_completed` 字段；给 `CloseSession` 临时包上 `not_executed` 会让该用例转红
+  （`42 passed; 1 failed`），还原后 43/43——close 安全不再只靠 diff 为空。
+  ② `not_executed` helper 会覆盖内层 `SqlEvidence::Settled`（实测 `downcast=Some(NotExecuted)`）。
+  **已修复**（`18e4d77`，merge `0ccd0c2`）：helper 先 `downcast_ref::<SqlEvidence>()`（`anyhow`
+  的 `downcast_ref` 搜索整条 context 链），错误链任意层已有证据就原样返回，只在完全没有证据时
+  补 `NotExecuted`（与 `session::ExecutionEvidence::failure` 的保守写法一致）；
+  `prepare_guarded_batch` 改用同一 helper（对今日可达输入逐字等价）。新增
+  `a_wrapped_settled_failure_keeps_its_execution_evidence` 与
+  `a_wrapped_refusal_keeps_a_single_proof_prefix` 两条用例，并用变异证明：回退实现后
+  `11 passed; 2 failed`。
   ③ `OpenOwnedSession` 的 binding 失败会按「未执行」释放配额，而 worker 已插入会话——极小概率
-  孤儿会话，实际不可达。
+  孤儿会话，实际不可达，**仍为已知缺口**。
+  本轮**明确未改**：`CloseSession` 行为（close 失败仍 502 `outcome_unknown` 并隔离）、配额
+  16/128/16、耐久时点、隔离规则、协议字段、Turso gitlink `24a3a460…`。
+  测试口径：`cargo test --lib` 4 次全量中 1 次 686 passed / 0 failed，另 3 次 685/1 为既存 flaky
+  `authority_rpc::server::batch_tests::authenticated_batches_are_registered_only_by_live_writers`
+  （单跑 3/3 通过），**不宣称全量稳定全绿**；`statement_worker` 43/43、`writer_worker_rpc`
+  10 passed / 2 ignored，fmt/clippy 干净。CI：PR #34 runs `41857097197`（baseline）、
+  `41857096878`（Issue 8），post-merge `41860190838`、`41860190480`，全部 success。
   另需注意网关 `max_sessions` 配额可以高于 worker 每库上限（默认都是 16，属一致；本次把网关提到 256
   才暴露不一致）——现在这类拒绝被如实分类为 503 `sql_unavailable`，但配额本身的不一致仍未消除。
 - **逐 action 分解**（串行 100 次，v1.1.26）：`open` 5.276ms、`close` 4.596ms、`cursor_start` 2.044ms、
