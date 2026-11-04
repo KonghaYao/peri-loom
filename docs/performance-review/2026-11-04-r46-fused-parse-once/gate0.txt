@@ -1,0 +1,6 @@
+8c6787e772120646e6411131a3f65e623ae798da16c10032142dc9937e200f71  bin/peri-platform-r46-base-probe
+406114c0f4a224bc23ef437638e6e1d337eb91e6008df0b5c03a04511ec2fc66  bin/peri-platform-r46-cand-probe
+run: R1.limit-1000 json-pipeline, 1 warmup + 3 timed = 4 fused statements per stack
+base probe_r46={fused_dispatch_total: 4, fused_parse_total: 12, fused_reuse_total: 0, fused_fallback_total: 0}
+cand probe_r46={fused_dispatch_total: 4, fused_parse_total: 8, fused_reuse_total: 4, fused_fallback_total: 0}
+parses per fused statement: base 3.0 -> cand 2.0; reuse 4/4; fallback 0
