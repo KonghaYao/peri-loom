@@ -1,0 +1,40 @@
+R51 验收判据（A/B 前冻结，2026-11-04）
+
+基线 main @ 578c32d（peri-platform-r51-base，sha256 e3745b85…）
+候选 perf/r51-cursor-page-bulk @ 9ad2c43（peri-platform-r51-cand，sha256 f7f4f130…）
+两侧独立 run 目录与全新卷，同一 Rust worker 二进制（peri-loom-v1-r43-cand），
+同一 fixture（verify threads=201 messages=8625 chars=20177069 focus=8625），
+端口 19493/19494，默认配额，无观测器。
+
+主指标（硬门）：
+- H1.content-20mb json-cursor 与 protobuf-cursor。
+- 每轮 A/B/B/A 4 条腿、每条腿 1 warmup + 5 samples；每轮取该侧 2 条腿的 median_ms 中位数。
+- 通过条件：两个协议各自的候选轮中位数 ≤ 0.90 × 同轮基线中位数（≥10% 改善），
+  且 2 轮同向。任一项不满足即不合入。
+
+同路径证据（非主指标）：
+- H3.content-projection json-cursor / protobuf-cursor 预期同向改善；出现 >10% 且可复现退化按失败处理。
+
+回归门（A/B 后单独跑，4 条腿 A/B/B/A，5 samples/腿）：
+- R1.limit-1000 json-pipeline、protobuf-pipeline
+- F1.select-1 json-pipeline、protobuf-pipeline
+- L1.list-20 json-pipeline、json-cursor
+- B1.batch-20 json-pipeline、protobuf-pipeline
+- C1.baton-10 json-pipeline
+- H3.content-projection json-cursor、protobuf-cursor
+- X1.concurrency json-pipeline
+任一项 >10% 且两轮/多腿可复现即判回归；单腿抖动需高样本复测。
+
+不变量：
+- response_bytes 与基线逐字节一致：H1 json 20,608,525；H1 pb 20,272,006；
+  H3 json 20,746,565；H3 pb 20,306,526；R1 json 2,369,290；R1 pb 2,349,053；
+  F1 json 312；F1 pb 40。
+- 全部样本 warnings=[]、非 200 = 0、fails=0；fixture 校验通过。
+
+Gate 0（已在 A/B 前完成）：
+- 探针二进制 sha256 7ba35a7e…；H1 json/protobuf 各 1 样本：
+  string_calls=34,779 string_bytes=80,778,969 string_mismatch=0；
+  text_calls=8,625 text_bytes=20,177,069 text_mismatch=0；
+  json_calls=8,625 json_bytes=20,194,319 json_mismatch=0；
+  52,029 行日志全部 mismatch=0；wire bytes 与基线一致。
+- 探针仅存在于 gate worktree，不进入测量二进制。

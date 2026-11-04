@@ -1,0 +1,39 @@
+R51 Gate 0（2026-11-04，先于 A/B）
+
+目的：证明候选的新批量路径在真实 H1 游标页上被执行，且与旧的逐字节路径逐字节一致。
+
+探针来源：`/tmp/peri-perf/r51-gate0-src`（detached 9ad2c43），只在该 worktree 中：
+- `hrana_cursor_page.go` 的三个函数改名为 `stringSpan` / `hranaCursorPageAppendTextSpan` /
+  `hranaJSONAppendPageTextSpan`，由 `perf_gate0_r51.go` 中的同名包装调用旧实现并逐字节比较；
+- `dev.py` 转发 `PERI_R51_GATE0_LOG`；
+- 探针文件与 diff 见 `probes/`。测量二进制不含这些改动。
+
+探针二进制：`/tmp/peri-perf/bin/peri-platform-r51-gate0`
+sha256 = 7ba35a7e0566024a2a945213a7365e3ded84f109e9487b930c1fbdebaa29d139
+
+运行：
+```
+python3 scripts/perf-reliability/issue28/run.py --connection-file /tmp/peri-perf/run-r51gate/connection.json \
+  --scenario H1.content-20mb --protocol json-cursor --rounds 1 --warmup 0 --samples 1 \
+  --out /tmp/peri-perf/gate0-json-cursor
+python3 scripts/perf-reliability/issue28/run.py --connection-file /tmp/peri-perf/run-r51gate/connection.json \
+  --scenario H1.content-20mb --protocol protobuf-cursor --rounds 1 --warmup 0 --samples 1 \
+  --out /tmp/peri-perf/gate0-protobuf-cursor
+```
+探针开启时延时不作性能数字（json 630.58ms / protobuf 633.46ms，旧实现被额外执行一遍）。
+
+结果（日志末行）：
+```
+r51gate string_calls=34779 string_bytes=80778969 string_mismatch=0 \
+  text_calls=8625 text_bytes=20177069 text_mismatch=0 \
+  json_calls=8625 json_bytes=20194319 json_mismatch=0 detail=text
+```
+- 52,029 行日志全部 `mismatch=0`，无非零行；日志 9,264,874 字节（仅 /tmp 保留，未入库）。
+- `text_bytes=20,177,069` 与 fixture 的 content_chars 完全一致，`json_bytes=20,194,319` 为转义后字节。
+- 新路径命中计数均 >0，计数随页大小线性增长（string 扫描 ≈4×20MB，两协议各一遍）。
+
+wire 字节（与基线一致）：
+- H1 json-cursor 20,608,525
+- H1 protobuf-cursor 20,272,006
+
+判定：PASS。新路径在真实页上执行，输出与旧实现逐字节一致。

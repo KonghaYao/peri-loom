@@ -1,0 +1,114 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:19493",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "9ad2c43b8601948bdc25f60ae4291c7b83c628e4",
+    "connection_file": "provided (redacted)",
+    "platform_label": "HEAD 9ad2c43 / rust unknown",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-04T04:37:48.885742+00:00",
+    "ended_utc": "2026-11-04T04:37:49.548524+00:00",
+    "duration_seconds": 0.663,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 5,
+    "concurrency_requests": 100,
+    "resource_before": {},
+    "resource_after": {},
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 100,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "H3.content-projection",
+      "title": "内容 + 投影（8,625 行）",
+      "protocol": "protobuf-cursor",
+      "kind": "read",
+      "samples": 5,
+      "median_ms": 104.440583,
+      "p95_ms": 106.820916,
+      "min_ms": 100.071875,
+      "max_ms": 106.820916,
+      "round_medians_ms": [
+        104.440583
+      ],
+      "rows": 8625,
+      "response_bytes": 20306526,
+      "query_ms": null,
+      "status_counts": {
+        "200": 5
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 5
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}
