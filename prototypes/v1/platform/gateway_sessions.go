@@ -532,6 +532,19 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 	}
 	if action == "cursor_fetch" || action == "cursor_start" {
+		if !request.WriteCursor {
+			// A read page is decoded and structurally indexed once, by sqlDecode;
+			// the result is the page itself, so no second validation scan follows.
+			var pageReply hranaCursorPageReply
+			pageReply.allowMetadata = action == "cursor_start"
+			if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &pageReply); err != nil {
+				return gateway.upstreamFailure(err, session, permit)
+			}
+			if len(pageReply.page.source) > quota.MaxResultBytes || pageReply.page.rows > request.MaxRows || action == "cursor_start" && !validCursorFirstPage(pageReply.page) {
+				return gateway.unknown(session, permit)
+			}
+			return gatewayResult{value: json.RawMessage(pageReply.page.source), dispatched: true, validatedResult: true, cursorPage: &pageReply.page}
+		}
 		var reply json.RawMessage
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			result := gateway.upstreamFailure(err, session, permit)

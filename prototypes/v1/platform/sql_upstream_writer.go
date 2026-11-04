@@ -54,6 +54,11 @@ func sqlDecodeWriter(ctx context.Context, body []byte, requestID string, output 
 	var temporary any
 	if output != nil {
 		decoded = reflect.New(reflect.ValueOf(output).Elem().Type())
+		if page, ok := output.(*hranaCursorPageReply); ok && page != nil {
+			// The page fast path needs the caller's metadata permission, and the
+			// temporary value is decoded from scratch: carry it over.
+			decoded.Elem().Set(reflect.ValueOf(page).Elem())
+		}
 		temporary = decoded.Interface()
 	}
 	err = sqlDecode(ctx, normalized, requestID, temporary)

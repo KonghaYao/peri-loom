@@ -702,10 +702,19 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 					}
 				}
 			} else {
-				// A read cursor page is written straight from its token spans;
-				// the scanner already proved the shape the old decode relied on.
-				page, err := pageScanner.scan(reply.result, true, fused)
-				if err != nil || page.rows > 256 || page.rows == 0 && !page.done {
+				// A read cursor page is written straight from its token spans. The
+				// gateway already scanned this exact span, so only a re-encoded
+				// result needs the adapter's own pass.
+				page := hranaCursorPageFromReply(reply)
+				if page == nil {
+					scanned, err := pageScanner.scan(reply.result, true, fused)
+					if err != nil {
+						fatal("invalid cursor page")
+						return
+					}
+					page = &scanned
+				}
+				if page.rows > 256 || page.rows == 0 && !page.done {
 					fatal("invalid cursor page")
 					return
 				}
@@ -719,7 +728,7 @@ func (handler *hranaHTTP) servePagedJSONCursor(writer http.ResponseWriter, reque
 						fatal("invalid cursor row")
 						return
 					}
-					if !writePageRow(&page, rowIndex) {
+					if !writePageRow(page, rowIndex) {
 						return
 					}
 				}

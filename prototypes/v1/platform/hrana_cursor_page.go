@@ -35,6 +35,45 @@ type hranaCursorPage struct {
 	rows    int
 	offsets []int
 	cells   []hranaCursorPageCell
+	// The fused first page may carry cols and autocommit. Their spans exclude
+	// surrounding whitespace, exactly like the json.RawMessage a map decode used
+	// to hand the old first-page validator.
+	hasCols       bool
+	cols          []byte
+	hasAutocommit bool
+	autocommit    []byte
+	// compact records that the scan saw no JSON whitespace outside a string, so
+	// the retained page bytes need no json.Compact validation when the gateway
+	// publishes them as the result.
+	compact bool
+}
+
+// hranaCursorPageReply is the worker reply of a read cursor page. page spans the
+// reply body; allowMetadata marks the fused first page, whose cols and
+// autocommit members the page scan may accept. sqlDecode fills it in place,
+// without copying the page.
+type hranaCursorPageReply struct {
+	allowMetadata bool
+	page          hranaCursorPage
+}
+
+// UnmarshalJSON is the fallback for upstreams that answer through encoding/json
+// (test doubles and fixtures). The HTTP upstream never reaches it: sqlDecode
+// indexes the page inside the reply body instead.
+func (reply *hranaCursorPageReply) UnmarshalJSON(data []byte) error {
+	var scanner hranaCursorPageScanner
+	page, err := scanner.scan(data, true, reply.allowMetadata)
+	if err != nil {
+		return err
+	}
+	reply.page = page
+	return nil
+}
+
+// hranaCursorPageSameBytes reports whether the two slices are the same span, not
+// merely equal bytes: only then do the page's offsets describe the result.
+func hranaCursorPageSameBytes(left, right []byte) bool {
+	return len(left) == len(right) && len(left) > 0 && &left[0] == &right[0]
 }
 
 var errHranaCursorPage = errors.New("invalid cursor page")
@@ -51,17 +90,36 @@ func (page *hranaCursorPage) cellBytes(cell hranaCursorPageCell) []byte {
 // materializing rows. Its buffers are reused across the pages of one request;
 // a page returned by scan is only valid until the next scan on the scanner.
 type hranaCursorPageScanner struct {
-	body    []byte
-	record  bool
-	done    bool
-	rows    int
-	offsets []int
-	cells   []hranaCursorPageCell
+	body          []byte
+	record        bool
+	done          bool
+	rows          int
+	offsets       []int
+	cells         []hranaCursorPageCell
+	hasCols       bool
+	cols          []byte
+	hasAutocommit bool
+	autocommit    []byte
+	compact       bool
+	// maxDepth bounds container nesting. Zero keeps encoding/json's limit; the
+	// strict reply decoder sets sqlJSONDecodeMaxDepth instead.
+	maxDepth int
 }
 
 // hranaCursorPageMaxDepth matches encoding/json's container nesting limit, so
 // the scanner accepts and rejects exactly the pages json.Unmarshal accepts.
 const hranaCursorPageMaxDepth = 10000
+
+func (scanner *hranaCursorPageScanner) depthLimit() int {
+	if scanner.maxDepth > 0 {
+		return scanner.maxDepth
+	}
+	return hranaCursorPageMaxDepth
+}
+
+// hranaCursorPageScanHook lets a test count page scans. Production leaves it
+// nil; the check is one branch per page, not per byte.
+var hranaCursorPageScanHook func()
 
 // scan parses body as the read cursor page shape: an object with exactly the
 // done and rows members, where every row is an array (or null, which
@@ -71,12 +129,20 @@ const hranaCursorPageMaxDepth = 10000
 // strict JSON syntax scan as well, so it can stand in for the json.Unmarshal
 // calls that used to accept or reject the page.
 func (scanner *hranaCursorPageScanner) scan(body []byte, record, allowMetadata bool) (hranaCursorPage, error) {
+	if hranaCursorPageScanHook != nil {
+		hranaCursorPageScanHook()
+	}
 	scanner.body = body
 	scanner.record = record
 	scanner.done = false
 	scanner.rows = 0
 	scanner.offsets = scanner.offsets[:0]
 	scanner.cells = scanner.cells[:0]
+	scanner.hasCols = false
+	scanner.cols = nil
+	scanner.hasAutocommit = false
+	scanner.autocommit = nil
+	scanner.compact = true
 	if record {
 		scanner.offsets = append(scanner.offsets, 0)
 	}
@@ -163,8 +229,18 @@ func (scanner *hranaCursorPageScanner) scan(body []byte, record, allowMetadata b
 				if !allowMetadata {
 					return hranaCursorPage{}, errHranaCursorPage
 				}
+				if position, err = scanner.whitespace(position); err != nil {
+					return hranaCursorPage{}, errHranaCursorPage
+				}
+				start := position
 				if position, err = scanner.value(position, 2); err != nil {
 					return hranaCursorPage{}, errHranaCursorPage
+				}
+				// A later duplicate wins, like json.Unmarshal into a map.
+				if key == "cols" {
+					scanner.hasCols, scanner.cols = true, body[start:position]
+				} else {
+					scanner.hasAutocommit, scanner.autocommit = true, body[start:position]
 				}
 			default:
 				return hranaCursorPage{}, errHranaCursorPage
@@ -196,7 +272,16 @@ func (scanner *hranaCursorPageScanner) scan(body []byte, record, allowMetadata b
 	if string(token) != "true" && string(token) != "false" {
 		return hranaCursorPage{}, errHranaCursorPage
 	}
-	page := hranaCursorPage{source: body, done: scanner.done, rows: scanner.rows}
+	page := hranaCursorPage{
+		source:        body,
+		done:          scanner.done,
+		rows:          scanner.rows,
+		hasCols:       scanner.hasCols,
+		cols:          scanner.cols,
+		hasAutocommit: scanner.hasAutocommit,
+		autocommit:    scanner.autocommit,
+		compact:       scanner.compact,
+	}
 	if record {
 		page.offsets = scanner.offsets
 		page.cells = scanner.cells
@@ -337,6 +422,12 @@ func (scanner *hranaCursorPageScanner) cell(position int) (hranaCursorPageCellKi
 }
 
 func (scanner *hranaCursorPageScanner) value(position, depth int) (int, error) {
+	// The strict reply decoder mirrors sqlJSONSkipValue, which bounded the depth
+	// of every value, not only of containers. The original 10000 limit stays
+	// container-only so the adapter fallback keeps matching json.Unmarshal.
+	if scanner.maxDepth > 0 && depth > scanner.maxDepth {
+		return 0, errHranaCursorPage
+	}
 	body := scanner.body
 	var err error
 	if position, err = scanner.whitespace(position); err != nil {
@@ -364,7 +455,7 @@ func (scanner *hranaCursorPageScanner) value(position, depth int) (int, error) {
 }
 
 func (scanner *hranaCursorPageScanner) array(position, depth int) (int, error) {
-	if depth > hranaCursorPageMaxDepth {
+	if depth > scanner.depthLimit() {
 		return 0, errHranaCursorPage
 	}
 	body := scanner.body
@@ -398,7 +489,7 @@ func (scanner *hranaCursorPageScanner) array(position, depth int) (int, error) {
 }
 
 func (scanner *hranaCursorPageScanner) object(position, depth int) (int, error) {
-	if depth > hranaCursorPageMaxDepth {
+	if depth > scanner.depthLimit() {
 		return 0, errHranaCursorPage
 	}
 	body := scanner.body
@@ -532,8 +623,12 @@ func (scanner *hranaCursorPageScanner) whitespace(position int) (int, error) {
 	if position < 0 || position > len(scanner.body) {
 		return 0, errHranaCursorPage
 	}
+	start := position
 	for position < len(scanner.body) && sqlJSONSpace(scanner.body[position]) {
 		position++
+	}
+	if position != start {
+		scanner.compact = false
 	}
 	return position, nil
 }
