@@ -1,0 +1,816 @@
+{
+  "checks": [
+    {
+      "check": "flag-off publishes no deferred key in window",
+      "detail": "window-after has deferred_session_close=False",
+      "pass": true
+    },
+    {
+      "check": "flag-off publishes no deferred key after leg",
+      "detail": "metrics-after has deferred_session_close=False",
+      "pass": true
+    },
+    {
+      "check": "flag-off read leg has no failures",
+      "detail": "failures=0",
+      "pass": true
+    },
+    {
+      "check": "flag-on read leg enqueues closes",
+      "detail": "enqueued_total=500",
+      "pass": true
+    },
+    {
+      "check": "flag-on read eligibility ratio >= 0.90",
+      "detail": "ratio=1.0 over close_actions=500",
+      "pass": true
+    },
+    {
+      "check": "flag-on read leg has no failures",
+      "detail": "failures=0",
+      "pass": true
+    },
+    {
+      "check": "flag-on read window has no error counters",
+      "detail": "errors_total={}",
+      "pass": true
+    },
+    {
+      "check": "flag-on read window has no refusals",
+      "detail": "rejection_reasons_total={}",
+      "pass": true
+    },
+    {
+      "check": "flag-on read ends with zero unresolved closes",
+      "detail": "unresolved_total=0",
+      "pass": true
+    },
+    {
+      "check": "flag-on write enqueues nothing",
+      "detail": "enqueued_total=0 over close_actions=100",
+      "pass": true
+    },
+    {
+      "check": "flag-on write leg has no failures",
+      "detail": "failures=0",
+      "pass": true
+    },
+    {
+      "check": "flag-on write window has no error counters",
+      "detail": "errors_total={}",
+      "pass": true
+    },
+    {
+      "check": "a-read ends with zero session seats",
+      "detail": "session_seats_after=0",
+      "pass": true
+    },
+    {
+      "check": "a-read ends with zero active permits",
+      "detail": "active_permits_after=0",
+      "pass": true
+    },
+    {
+      "check": "b-read ends with zero session seats",
+      "detail": "session_seats_after=0",
+      "pass": true
+    },
+    {
+      "check": "b-read ends with zero active permits",
+      "detail": "active_permits_after=0",
+      "pass": true
+    },
+    {
+      "check": "c-write ends with zero session seats",
+      "detail": "session_seats_after=0",
+      "pass": true
+    },
+    {
+      "check": "c-write ends with zero active permits",
+      "detail": "active_permits_after=0",
+      "pass": true
+    },
+    {
+      "check": "d-read-c8 ends with zero session seats",
+      "detail": "session_seats_after=0",
+      "pass": true
+    },
+    {
+      "check": "d-read-c8 ends with zero active permits",
+      "detail": "active_permits_after=0",
+      "pass": true
+    }
+  ],
+  "checks_passed": 20,
+  "checks_total": 20,
+  "close_latency": {
+    "change_percent": -83.75,
+    "off_us": 588.784,
+    "on_us": 95.698,
+    "ratio_on_over_off": 0.1625
+  },
+  "legs": [
+    {
+      "container": "peri-r71-g2-a-read",
+      "deferred_key_after_leg": false,
+      "deferred_key_in_window": false,
+      "exit_code": {
+        "driver": 0
+      },
+      "flag": "off",
+      "kind": "read",
+      "leg": "a-read",
+      "platform_sha256": "3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014",
+      "port": "20880",
+      "summary": {
+        "block_size": 100,
+        "block_summaries": [
+          {
+            "block": 1,
+            "failures": 0,
+            "median_ms": 0.841792,
+            "requests": 100,
+            "wall_ms": 158.363167,
+            "warmup": false,
+            "wire_bytes": 31488
+          },
+          {
+            "block": 2,
+            "failures": 0,
+            "median_ms": 2.333583,
+            "requests": 100,
+            "wall_ms": 272.849292,
+            "warmup": false,
+            "wire_bytes": 31390
+          },
+          {
+            "block": 3,
+            "failures": 0,
+            "median_ms": 1.850833,
+            "requests": 100,
+            "wall_ms": 232.926041,
+            "warmup": false,
+            "wire_bytes": 31449
+          },
+          {
+            "block": 4,
+            "failures": 0,
+            "median_ms": 0.917375,
+            "requests": 100,
+            "wall_ms": 171.848,
+            "warmup": false,
+            "wire_bytes": 31466
+          },
+          {
+            "block": 5,
+            "failures": 0,
+            "median_ms": 1.99275,
+            "requests": 100,
+            "wall_ms": 274.307584,
+            "warmup": false,
+            "wire_bytes": 31466
+          }
+        ],
+        "blocks": 5,
+        "failures": 0,
+        "first_failure": null,
+        "label": "flag off",
+        "leg": "a-read",
+        "ok": 500,
+        "payload": "f1-select-1-json-pipeline-close",
+        "request_ms": {
+          "max": 13.345625,
+          "mean": 2.191109928,
+          "min": 0.652792,
+          "p50": 1.61475,
+          "p95": 5.980417
+        },
+        "requests": 500,
+        "warmup_blocks": 1,
+        "warmup_failures": 0,
+        "window": {
+          "action_latency_ns_total": {
+            "close": 294391990,
+            "open": 304865474,
+            "statement": 67600781
+          },
+          "actions_total": {
+            "close": 500,
+            "open": 500,
+            "statement": 500
+          },
+          "active_permits_after": 0,
+          "admitted_requests_total": 1500,
+          "cleanup_ledger_after": {
+            "isolated_records": {
+              "count": 0,
+              "oldest_age_ms": 0,
+              "state_read": "ok"
+            },
+            "orphan_sessions": {
+              "count": 0,
+              "oldest_age_ms": 0
+            },
+            "pending_close": {
+              "count": 0,
+              "exhausted": 0,
+              "last_failure": "",
+              "oldest_age_ms": 0
+            }
+          },
+          "close_actions": 500,
+          "close_latency_mean_us": 588.784,
+          "close_latency_ns_total": 294391990,
+          "deferred_session_close": null,
+          "eligibility_ratio": null,
+          "errors_total": {},
+          "rejected_requests_total": 0,
+          "rejection_reasons_total": {},
+          "session_seats_after": 0,
+          "successful_requests_total": 1500,
+          "unknown_held_permits_after": 0
+        },
+        "window_files": {
+          "after": "window-after.json",
+          "before": "window-before.json"
+        },
+        "wire_bytes_per_request": 314.518,
+        "wire_bytes_total": 157259
+      },
+      "volume": "peri-r71-g2-a-read-data",
+      "window": {
+        "action_latency_ns_total": {
+          "close": 294391990,
+          "open": 304865474,
+          "statement": 67600781
+        },
+        "actions_total": {
+          "close": 500,
+          "open": 500,
+          "statement": 500
+        },
+        "active_permits_after": 0,
+        "admitted_requests_total": 1500,
+        "cleanup_ledger_after": {
+          "isolated_records": {
+            "count": 0,
+            "oldest_age_ms": 0,
+            "state_read": "ok"
+          },
+          "orphan_sessions": {
+            "count": 0,
+            "oldest_age_ms": 0
+          },
+          "pending_close": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          }
+        },
+        "close_actions": 500,
+        "close_latency_mean_us": 588.784,
+        "close_latency_ns_total": 294391990,
+        "deferred_session_close": null,
+        "eligibility_ratio": null,
+        "errors_total": {},
+        "rejected_requests_total": 0,
+        "rejection_reasons_total": {},
+        "session_seats_after": 0,
+        "successful_requests_total": 1500,
+        "unknown_held_permits_after": 0
+      }
+    },
+    {
+      "container": "peri-r71-g2-b-read",
+      "deferred_key_after_leg": true,
+      "deferred_key_in_window": true,
+      "exit_code": {
+        "driver": 0
+      },
+      "flag": "on",
+      "kind": "read",
+      "leg": "b-read",
+      "platform_sha256": "3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014",
+      "port": "20880",
+      "summary": {
+        "block_size": 100,
+        "block_summaries": [
+          {
+            "block": 1,
+            "failures": 0,
+            "median_ms": 0.949916,
+            "requests": 100,
+            "wall_ms": 184.821625,
+            "warmup": false,
+            "wire_bytes": 31499
+          },
+          {
+            "block": 2,
+            "failures": 0,
+            "median_ms": 1.592708,
+            "requests": 100,
+            "wall_ms": 251.969667,
+            "warmup": false,
+            "wire_bytes": 31439
+          },
+          {
+            "block": 3,
+            "failures": 0,
+            "median_ms": 0.995292,
+            "requests": 100,
+            "wall_ms": 180.533333,
+            "warmup": false,
+            "wire_bytes": 31395
+          },
+          {
+            "block": 4,
+            "failures": 0,
+            "median_ms": 1.041875,
+            "requests": 100,
+            "wall_ms": 201.595875,
+            "warmup": false,
+            "wire_bytes": 31335
+          },
+          {
+            "block": 5,
+            "failures": 0,
+            "median_ms": 0.844791,
+            "requests": 100,
+            "wall_ms": 151.463542,
+            "warmup": false,
+            "wire_bytes": 31385
+          }
+        ],
+        "blocks": 5,
+        "failures": 0,
+        "first_failure": null,
+        "label": "flag on",
+        "leg": "b-read",
+        "ok": 500,
+        "payload": "f1-select-1-json-pipeline-close",
+        "request_ms": {
+          "max": 17.862833,
+          "mean": 1.9077766859999998,
+          "min": 0.544041,
+          "p50": 1.036666,
+          "p95": 5.967292
+        },
+        "requests": 500,
+        "warmup_blocks": 1,
+        "warmup_failures": 0,
+        "window": {
+          "action_latency_ns_total": {
+            "close": 47849073,
+            "open": 349554997,
+            "statement": 46483783
+          },
+          "actions_total": {
+            "close": 500,
+            "open": 500,
+            "statement": 500
+          },
+          "active_permits_after": 0,
+          "admitted_requests_total": 1500,
+          "cleanup_ledger_after": {
+            "isolated_records": {
+              "count": 0,
+              "oldest_age_ms": 0,
+              "state_read": "ok"
+            },
+            "orphan_sessions": {
+              "count": 0,
+              "oldest_age_ms": 0
+            },
+            "pending_close": {
+              "count": 0,
+              "exhausted": 0,
+              "last_failure": "",
+              "oldest_age_ms": 0
+            }
+          },
+          "close_actions": 500,
+          "close_latency_mean_us": 95.698,
+          "close_latency_ns_total": 47849073,
+          "deferred_session_close": {
+            "enqueued_total": 500,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 0,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 2,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "eligibility_ratio": 1.0,
+          "errors_total": {},
+          "rejected_requests_total": 0,
+          "rejection_reasons_total": {},
+          "session_seats_after": 0,
+          "successful_requests_total": 1500,
+          "unknown_held_permits_after": 0
+        },
+        "window_files": {
+          "after": "window-after.json",
+          "before": "window-before.json"
+        },
+        "wire_bytes_per_request": 314.106,
+        "wire_bytes_total": 157053
+      },
+      "volume": "peri-r71-g2-b-read-data",
+      "window": {
+        "action_latency_ns_total": {
+          "close": 47849073,
+          "open": 349554997,
+          "statement": 46483783
+        },
+        "actions_total": {
+          "close": 500,
+          "open": 500,
+          "statement": 500
+        },
+        "active_permits_after": 0,
+        "admitted_requests_total": 1500,
+        "cleanup_ledger_after": {
+          "isolated_records": {
+            "count": 0,
+            "oldest_age_ms": 0,
+            "state_read": "ok"
+          },
+          "orphan_sessions": {
+            "count": 0,
+            "oldest_age_ms": 0
+          },
+          "pending_close": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          }
+        },
+        "close_actions": 500,
+        "close_latency_mean_us": 95.698,
+        "close_latency_ns_total": 47849073,
+        "deferred_session_close": {
+          "enqueued_total": 500,
+          "failed_total": 0,
+          "flushed_total": 0,
+          "inline_total": 0,
+          "maximum": 256,
+          "pending": 0,
+          "pending_max": 2,
+          "per_database_maximum": 4,
+          "retried_total": 0,
+          "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+          "unresolved_total": 0
+        },
+        "eligibility_ratio": 1.0,
+        "errors_total": {},
+        "rejected_requests_total": 0,
+        "rejection_reasons_total": {},
+        "session_seats_after": 0,
+        "successful_requests_total": 1500,
+        "unknown_held_permits_after": 0
+      }
+    },
+    {
+      "container": "peri-r71-g2-c-write",
+      "deferred_key_after_leg": true,
+      "deferred_key_in_window": true,
+      "exit_code": {
+        "driver": 0
+      },
+      "flag": "on",
+      "kind": "write",
+      "leg": "c-write",
+      "platform_sha256": "3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014",
+      "port": "20880",
+      "summary": {
+        "affected_rows_total": 100,
+        "block_size": 20,
+        "block_summaries": [
+          {
+            "block": 1,
+            "failures": 0,
+            "median_ms": 21.48675,
+            "requests": 20,
+            "wall_ms": 481.518,
+            "wire_bytes": 5078
+          },
+          {
+            "block": 2,
+            "failures": 0,
+            "median_ms": 23.68925,
+            "requests": 20,
+            "wall_ms": 509.192833,
+            "wire_bytes": 5147
+          },
+          {
+            "block": 3,
+            "failures": 0,
+            "median_ms": 20.332791,
+            "requests": 20,
+            "wall_ms": 444.269334,
+            "wire_bytes": 5129
+          },
+          {
+            "block": 4,
+            "failures": 0,
+            "median_ms": 28.245542,
+            "requests": 20,
+            "wall_ms": 565.768,
+            "wire_bytes": 5139
+          },
+          {
+            "block": 5,
+            "failures": 0,
+            "median_ms": 25.861042,
+            "requests": 20,
+            "wall_ms": 528.827917,
+            "wire_bytes": 5124
+          }
+        ],
+        "blocks": 5,
+        "failures": 0,
+        "first_failure": null,
+        "label": "flag on",
+        "leg": "c-write",
+        "ok": 100,
+        "payload": "w1-insert-json-pipeline-close",
+        "request_ms": {
+          "max": 53.039875,
+          "mean": 25.2394875,
+          "min": 16.456,
+          "p50": 23.184,
+          "p95": 40.054
+        },
+        "requests": 100,
+        "table": "\"issue28_g2_write_c_write\"",
+        "window": {
+          "action_latency_ns_total": {
+            "close": 30076903,
+            "open": 67165829,
+            "statement": 2330399597
+          },
+          "actions_total": {
+            "close": 100,
+            "open": 100,
+            "statement": 100
+          },
+          "active_permits_after": 0,
+          "admitted_requests_total": 300,
+          "cleanup_ledger_after": {
+            "isolated_records": {
+              "count": 0,
+              "oldest_age_ms": 0,
+              "state_read": "ok"
+            },
+            "orphan_sessions": {
+              "count": 0,
+              "oldest_age_ms": 0
+            },
+            "pending_close": {
+              "count": 0,
+              "exhausted": 0,
+              "last_failure": "",
+              "oldest_age_ms": 0
+            }
+          },
+          "close_actions": 100,
+          "close_latency_mean_us": 300.769,
+          "close_latency_ns_total": 30076903,
+          "deferred_session_close": {
+            "enqueued_total": 0,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 0,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 0,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "eligibility_ratio": 0.0,
+          "errors_total": {},
+          "rejected_requests_total": 0,
+          "rejection_reasons_total": {},
+          "session_seats_after": 0,
+          "successful_requests_total": 300,
+          "unknown_held_permits_after": 0
+        },
+        "window_files": {
+          "after": "window-after.json",
+          "before": "window-before.json"
+        },
+        "wire_bytes_per_request": 256.17,
+        "wire_bytes_total": 25617
+      },
+      "volume": "peri-r71-g2-c-write-data",
+      "window": {
+        "action_latency_ns_total": {
+          "close": 30076903,
+          "open": 67165829,
+          "statement": 2330399597
+        },
+        "actions_total": {
+          "close": 100,
+          "open": 100,
+          "statement": 100
+        },
+        "active_permits_after": 0,
+        "admitted_requests_total": 300,
+        "cleanup_ledger_after": {
+          "isolated_records": {
+            "count": 0,
+            "oldest_age_ms": 0,
+            "state_read": "ok"
+          },
+          "orphan_sessions": {
+            "count": 0,
+            "oldest_age_ms": 0
+          },
+          "pending_close": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          }
+        },
+        "close_actions": 100,
+        "close_latency_mean_us": 300.769,
+        "close_latency_ns_total": 30076903,
+        "deferred_session_close": {
+          "enqueued_total": 0,
+          "failed_total": 0,
+          "flushed_total": 0,
+          "inline_total": 0,
+          "maximum": 256,
+          "pending": 0,
+          "pending_max": 0,
+          "per_database_maximum": 4,
+          "retried_total": 0,
+          "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+          "unresolved_total": 0
+        },
+        "eligibility_ratio": 0.0,
+        "errors_total": {},
+        "rejected_requests_total": 0,
+        "rejection_reasons_total": {},
+        "session_seats_after": 0,
+        "successful_requests_total": 300,
+        "unknown_held_permits_after": 0
+      }
+    },
+    {
+      "container": "peri-r71-g2-d-read-c8",
+      "deferred_key_after_leg": true,
+      "deferred_key_in_window": true,
+      "exit_code": {
+        "driver": 0
+      },
+      "flag": "on",
+      "kind": "c8",
+      "leg": "d-read-c8",
+      "platform_sha256": "3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014",
+      "port": "20880",
+      "summary": {
+        "concurrency": 8,
+        "failures": 0,
+        "first_failure": null,
+        "label": "flag on",
+        "leg": "d-read-c8",
+        "ok": 160,
+        "payload": "f1-select-1-json-pipeline-close-c8",
+        "request_ms": {
+          "max": 15.76875,
+          "mean": 5.36247211875,
+          "min": 0.985833,
+          "p50": 4.386875,
+          "p95": 13.185041
+        },
+        "requests": 160,
+        "wall_ms": 110.359333,
+        "window": {
+          "action_latency_ns_total": {
+            "close": 109382296,
+            "open": 449834208,
+            "statement": 32053646
+          },
+          "actions_total": {
+            "close": 160,
+            "open": 160,
+            "statement": 160
+          },
+          "active_permits_after": 0,
+          "admitted_requests_total": 480,
+          "cleanup_ledger_after": {
+            "isolated_records": {
+              "count": 0,
+              "oldest_age_ms": 0,
+              "state_read": "ok"
+            },
+            "orphan_sessions": {
+              "count": 0,
+              "oldest_age_ms": 0
+            },
+            "pending_close": {
+              "count": 0,
+              "exhausted": 0,
+              "last_failure": "",
+              "oldest_age_ms": 0
+            }
+          },
+          "close_actions": 160,
+          "close_latency_mean_us": 683.639,
+          "close_latency_ns_total": 109382296,
+          "deferred_session_close": {
+            "enqueued_total": 158,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 2,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 4,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "eligibility_ratio": 0.9875,
+          "errors_total": {},
+          "rejected_requests_total": 0,
+          "rejection_reasons_total": {},
+          "session_seats_after": 0,
+          "successful_requests_total": 480,
+          "unknown_held_permits_after": 0
+        },
+        "window_files": {
+          "after": "window-after.json",
+          "before": "window-before.json"
+        },
+        "wire_bytes_total": 50406
+      },
+      "volume": "peri-r71-g2-d-read-c8-data",
+      "window": {
+        "action_latency_ns_total": {
+          "close": 109382296,
+          "open": 449834208,
+          "statement": 32053646
+        },
+        "actions_total": {
+          "close": 160,
+          "open": 160,
+          "statement": 160
+        },
+        "active_permits_after": 0,
+        "admitted_requests_total": 480,
+        "cleanup_ledger_after": {
+          "isolated_records": {
+            "count": 0,
+            "oldest_age_ms": 0,
+            "state_read": "ok"
+          },
+          "orphan_sessions": {
+            "count": 0,
+            "oldest_age_ms": 0
+          },
+          "pending_close": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          }
+        },
+        "close_actions": 160,
+        "close_latency_mean_us": 683.639,
+        "close_latency_ns_total": 109382296,
+        "deferred_session_close": {
+          "enqueued_total": 158,
+          "failed_total": 0,
+          "flushed_total": 0,
+          "inline_total": 2,
+          "maximum": 256,
+          "pending": 0,
+          "pending_max": 4,
+          "per_database_maximum": 4,
+          "retried_total": 0,
+          "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+          "unresolved_total": 0
+        },
+        "eligibility_ratio": 0.9875,
+        "errors_total": {},
+        "rejected_requests_total": 0,
+        "rejection_reasons_total": {},
+        "session_seats_after": 0,
+        "successful_requests_total": 480,
+        "unknown_held_permits_after": 0
+      }
+    }
+  ],
+  "root": "/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r71-deferred-close-gate2"
+}

@@ -1,0 +1,115 @@
+{
+  "block_size": 100,
+  "block_summaries": [
+    {
+      "block": 1,
+      "failures": 0,
+      "median_ms": 0.841792,
+      "requests": 100,
+      "wall_ms": 158.363167,
+      "warmup": false,
+      "wire_bytes": 31488
+    },
+    {
+      "block": 2,
+      "failures": 0,
+      "median_ms": 2.333583,
+      "requests": 100,
+      "wall_ms": 272.849292,
+      "warmup": false,
+      "wire_bytes": 31390
+    },
+    {
+      "block": 3,
+      "failures": 0,
+      "median_ms": 1.850833,
+      "requests": 100,
+      "wall_ms": 232.926041,
+      "warmup": false,
+      "wire_bytes": 31449
+    },
+    {
+      "block": 4,
+      "failures": 0,
+      "median_ms": 0.917375,
+      "requests": 100,
+      "wall_ms": 171.848,
+      "warmup": false,
+      "wire_bytes": 31466
+    },
+    {
+      "block": 5,
+      "failures": 0,
+      "median_ms": 1.99275,
+      "requests": 100,
+      "wall_ms": 274.307584,
+      "warmup": false,
+      "wire_bytes": 31466
+    }
+  ],
+  "blocks": 5,
+  "failures": 0,
+  "first_failure": null,
+  "label": "flag off",
+  "leg": "a-read",
+  "ok": 500,
+  "payload": "f1-select-1-json-pipeline-close",
+  "request_ms": {
+    "max": 13.345625,
+    "mean": 2.191109928,
+    "min": 0.652792,
+    "p50": 1.61475,
+    "p95": 5.980417
+  },
+  "requests": 500,
+  "warmup_blocks": 1,
+  "warmup_failures": 0,
+  "window": {
+    "action_latency_ns_total": {
+      "close": 294391990,
+      "open": 304865474,
+      "statement": 67600781
+    },
+    "actions_total": {
+      "close": 500,
+      "open": 500,
+      "statement": 500
+    },
+    "active_permits_after": 0,
+    "admitted_requests_total": 1500,
+    "cleanup_ledger_after": {
+      "isolated_records": {
+        "count": 0,
+        "oldest_age_ms": 0,
+        "state_read": "ok"
+      },
+      "orphan_sessions": {
+        "count": 0,
+        "oldest_age_ms": 0
+      },
+      "pending_close": {
+        "count": 0,
+        "exhausted": 0,
+        "last_failure": "",
+        "oldest_age_ms": 0
+      }
+    },
+    "close_actions": 500,
+    "close_latency_mean_us": 588.784,
+    "close_latency_ns_total": 294391990,
+    "deferred_session_close": null,
+    "eligibility_ratio": null,
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "rejection_reasons_total": {},
+    "session_seats_after": 0,
+    "successful_requests_total": 1500,
+    "unknown_held_permits_after": 0
+  },
+  "window_files": {
+    "after": "window-after.json",
+    "before": "window-before.json"
+  },
+  "wire_bytes_per_request": 314.518,
+  "wire_bytes_total": 157259
+}

@@ -1,0 +1,54 @@
+{
+  "action_latency_ns_total": {
+    "close": 109382296,
+    "open": 449834208,
+    "statement": 32053646
+  },
+  "actions_total": {
+    "close": 160,
+    "open": 160,
+    "statement": 160
+  },
+  "active_permits_after": 0,
+  "admitted_requests_total": 480,
+  "cleanup_ledger_after": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "close_actions": 160,
+  "close_latency_mean_us": 683.639,
+  "close_latency_ns_total": 109382296,
+  "deferred_session_close": {
+    "enqueued_total": 158,
+    "failed_total": 0,
+    "flushed_total": 0,
+    "inline_total": 2,
+    "maximum": 256,
+    "pending": 0,
+    "pending_max": 4,
+    "per_database_maximum": 4,
+    "retried_total": 0,
+    "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+    "unresolved_total": 0
+  },
+  "eligibility_ratio": 0.9875,
+  "errors_total": {},
+  "rejected_requests_total": 0,
+  "rejection_reasons_total": {},
+  "session_seats_after": 0,
+  "successful_requests_total": 480,
+  "unknown_held_permits_after": 0
+}

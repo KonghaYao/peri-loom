@@ -1,0 +1,127 @@
+{
+  "block_size": 100,
+  "block_summaries": [
+    {
+      "block": 1,
+      "failures": 0,
+      "median_ms": 0.949916,
+      "requests": 100,
+      "wall_ms": 184.821625,
+      "warmup": false,
+      "wire_bytes": 31499
+    },
+    {
+      "block": 2,
+      "failures": 0,
+      "median_ms": 1.592708,
+      "requests": 100,
+      "wall_ms": 251.969667,
+      "warmup": false,
+      "wire_bytes": 31439
+    },
+    {
+      "block": 3,
+      "failures": 0,
+      "median_ms": 0.995292,
+      "requests": 100,
+      "wall_ms": 180.533333,
+      "warmup": false,
+      "wire_bytes": 31395
+    },
+    {
+      "block": 4,
+      "failures": 0,
+      "median_ms": 1.041875,
+      "requests": 100,
+      "wall_ms": 201.595875,
+      "warmup": false,
+      "wire_bytes": 31335
+    },
+    {
+      "block": 5,
+      "failures": 0,
+      "median_ms": 0.844791,
+      "requests": 100,
+      "wall_ms": 151.463542,
+      "warmup": false,
+      "wire_bytes": 31385
+    }
+  ],
+  "blocks": 5,
+  "failures": 0,
+  "first_failure": null,
+  "label": "flag on",
+  "leg": "b-read",
+  "ok": 500,
+  "payload": "f1-select-1-json-pipeline-close",
+  "request_ms": {
+    "max": 17.862833,
+    "mean": 1.9077766859999998,
+    "min": 0.544041,
+    "p50": 1.036666,
+    "p95": 5.967292
+  },
+  "requests": 500,
+  "warmup_blocks": 1,
+  "warmup_failures": 0,
+  "window": {
+    "action_latency_ns_total": {
+      "close": 47849073,
+      "open": 349554997,
+      "statement": 46483783
+    },
+    "actions_total": {
+      "close": 500,
+      "open": 500,
+      "statement": 500
+    },
+    "active_permits_after": 0,
+    "admitted_requests_total": 1500,
+    "cleanup_ledger_after": {
+      "isolated_records": {
+        "count": 0,
+        "oldest_age_ms": 0,
+        "state_read": "ok"
+      },
+      "orphan_sessions": {
+        "count": 0,
+        "oldest_age_ms": 0
+      },
+      "pending_close": {
+        "count": 0,
+        "exhausted": 0,
+        "last_failure": "",
+        "oldest_age_ms": 0
+      }
+    },
+    "close_actions": 500,
+    "close_latency_mean_us": 95.698,
+    "close_latency_ns_total": 47849073,
+    "deferred_session_close": {
+      "enqueued_total": 500,
+      "failed_total": 0,
+      "flushed_total": 0,
+      "inline_total": 0,
+      "maximum": 256,
+      "pending": 0,
+      "pending_max": 2,
+      "per_database_maximum": 4,
+      "retried_total": 0,
+      "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+      "unresolved_total": 0
+    },
+    "eligibility_ratio": 1.0,
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "rejection_reasons_total": {},
+    "session_seats_after": 0,
+    "successful_requests_total": 1500,
+    "unknown_held_permits_after": 0
+  },
+  "window_files": {
+    "after": "window-after.json",
+    "before": "window-before.json"
+  },
+  "wire_bytes_per_request": 314.106,
+  "wire_bytes_total": 157053
+}
