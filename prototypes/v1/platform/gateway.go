@@ -38,6 +38,10 @@ type Gateway struct {
 	// deferred is the fail-closed account of completion barriers paid after the
 	// reply. NewGateway always sets it; a nil value pays every barrier inline.
 	deferred *deferredDurability
+	// settle counts local settlement refusals and the bounded retries that recover
+	// from a full operation journal. Its zero value is ready and the success path
+	// only reads it when a submit is refused.
+	settle operationSettleAccount
 }
 
 type gatewaySession struct {

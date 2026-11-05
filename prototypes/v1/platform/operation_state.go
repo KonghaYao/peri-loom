@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"reflect"
 
@@ -391,7 +392,7 @@ func admissionReadScope(source string) operationReadScope {
 // that cannot commit. The record is created already settled, so the request
 // pays one sidecar commit instead of a registration plus a settlement.
 func settleNonCommittingOperation(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, change func(*OperationRecord)) (string, error) {
-	return settleNonCommittingOperationUsing(store, database, requestID, source, action, stage, worker, session, digest, func(_ *operationEdit, record *OperationRecord) error {
+	return settleNonCommittingOperationUsing(context.Background(), nil, store, database, requestID, source, action, stage, worker, session, digest, func(_ *operationEdit, record *OperationRecord) error {
 		if change != nil {
 			change(record)
 		}
@@ -409,8 +410,9 @@ func settleNonCommittingOperation(store StateStore, database controller.Database
 // barrier. submit queues the edit and hands back the barrier, so the namespace
 // fence is released before the request waits on it - or hands it to the account
 // that pays it after the reply: two settlements of the same database then share
-// one fsync instead of queueing behind each other.
-func settleNonCommittingOperationUsing(store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, apply func(*operationEdit, *OperationRecord) error, submit func(func(*operationEdit) error) (func() error, error)) (string, error) {
+// one fsync instead of queueing behind each other. account may be nil, which keeps
+// the single-attempt behaviour of store-level callers.
+func settleNonCommittingOperationUsing(ctx context.Context, account *operationSettleAccount, store StateStore, database controller.DatabaseID, requestID, source, action, stage, worker, session, digest string, apply func(*operationEdit, *OperationRecord) error, submit func(func(*operationEdit) error) (func() error, error)) (string, error) {
 	operationID, err := controller.RandomID()
 	if err != nil {
 		return "", err
@@ -419,8 +421,7 @@ func settleNonCommittingOperationUsing(store StateStore, database controller.Dat
 		return operationID, errors.New("operation registration unavailable")
 	}
 	caller := newDurabilityCaller(store, operationID, requestID, "terminal", source)
-	unlock := lockObservedOperationNamespace(database.Namespace, caller)
-	wait, err := submit(func(edit *operationEdit) error {
+	wait, err := account.submit(ctx, database.Namespace, caller, submit, func(edit *operationEdit) error {
 		edit.caller = caller
 		if edit.has(operationKey(database, operationID)) {
 			return ErrOperationExists
@@ -437,7 +438,6 @@ func settleNonCommittingOperationUsing(store StateStore, database controller.Dat
 		edit.put(operationKey(database, operationID), record)
 		return nil
 	})
-	unlock()
 	if err != nil {
 		return operationID, err
 	}

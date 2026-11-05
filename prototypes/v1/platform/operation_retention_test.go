@@ -329,7 +329,7 @@ func TestOperationKnownCloseAllowsDatabaseDeletionWithoutHistoryProof(test *test
 		test.Fatal(err)
 	}
 	result := gatewayResult{session: &gatewaySession{upstream: upstreamSession, database: database}, dispatched: true}
-	resources.settleOperation(database, "closed", "close_session", &result, nil)
+	resources.settleOperation(context.Background(), database, "closed", "close_session", &result, nil)
 	state, err := store.Snapshot()
 	if err != nil || !operationKnownTerminal(state.Operations[operationKey(database, "opened")]) || !operationKnownTerminal(state.Operations[operationKey(database, "closed")]) {
 		test.Fatal("Close ACK did not settle safe resource history")
