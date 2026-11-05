@@ -84,6 +84,10 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if err != nil {
 		return err
 	}
+	deferredSessionClose, err := deferredSessionCloseEnabled()
+	if err != nil {
+		return err
+	}
 	audit, err := OpenCompletionAudit(state, config.AuditPath, completionEnabled)
 	if err != nil {
 		return err
@@ -206,7 +210,7 @@ func runService(parent context.Context, config ServiceConfig, output io.Writer, 
 	if observation != nil {
 		observer = observation.observer
 	}
-	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission, OpenObserver: observer, RequestTimeout: requestTimeout})
+	gateway, err := NewGateway(GatewayConfig{State: state, Placements: metadata, Controller: control, Identity: identity, Upstream: upstream, Audit: audit, WriterAdmission: config.WriterAdmission, OpenObserver: observer, RequestTimeout: requestTimeout, DeferredSessionClose: deferredSessionClose})
 	if err != nil {
 		return err
 	}

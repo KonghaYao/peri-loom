@@ -230,10 +230,11 @@ func parseGuardedBatchReply(reply json.RawMessage, statements []guardedBatchStat
 			if item.Reason != nil || item.Error != nil || item.ExecutionCompleted != nil {
 				return nil, 0, false
 			}
-			if reason, statement := guardedStatementReply(item.Result); reason != "" || !statement {
+			reason, statement, autocommit, autocommitKnown := guardedStatementReply(item.Result)
+			if reason != "" || !statement {
 				return nil, 0, false
 			}
-			items[position] = guardedBatchItem{status: guardedBatchStatusOK, result: item.Result}
+			items[position] = guardedBatchItem{status: guardedBatchStatusOK, result: item.Result, autocommit: autocommit, autocommitKnown: autocommitKnown}
 		case "requires_intent":
 			if item.Reason == nil || item.Result != nil || item.Error != nil || item.ExecutionCompleted != nil {
 				return nil, 0, false
@@ -351,6 +352,9 @@ func (gateway *Gateway) guardedBatchStatement(ctx context.Context, step guardedB
 	}
 	batch.mutex.Lock()
 	if batch.broken {
+		// A broken block answer proves nothing about the entries it covered, so
+		// the session loses the stateless proof.
+		session.pristine = false
 		result := batch.brokenResult
 		batch.mutex.Unlock()
 		return result, true
@@ -372,6 +376,7 @@ func (gateway *Gateway) guardedBatchStatement(ctx context.Context, step guardedB
 	}
 	switch item.status {
 	case guardedBatchStatusOK:
+		session.noteStatementAutocommit(item.autocommit, item.autocommitKnown)
 		if len(item.result) > quota.MaxResultBytes {
 			return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget, operationDeferred: pending}, true
 		}
@@ -382,6 +387,9 @@ func (gateway *Gateway) guardedBatchStatement(ctx context.Context, step guardedB
 		}
 		return gateway.committingStatement(ctx, session, binding, requestID, stage, frozen, permit, quota), true
 	case guardedBatchStatusError:
+		// A settled block error ran something whose autocommit flag the block
+		// answer does not carry, so the session keeps the synchronous close.
+		session.pristine = false
 		result := gateway.upstreamFailure(item.failure, session, permit)
 		if result.code == "outcome_unknown" {
 			result.operationDeferred = pending

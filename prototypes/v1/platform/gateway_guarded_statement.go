@@ -49,14 +49,20 @@ func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySe
 	leaveNative()
 	leaveWorker()
 	if err != nil {
+		// The call crossed the worker boundary, so this session no longer has a
+		// clean stateless proof even if the failure turns out to be a refusal.
+		session.pristine = false
 		result := gateway.upstreamFailure(err, session, permit)
 		result.operationDeferred = pending
 		return result
 	}
 	if len(reply) > quota.MaxResultBytes {
+		// The statement ran but its result is not the validated answer this path
+		// publishes, so its autocommit flag was never read.
+		session.pristine = false
 		return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget, operationDeferred: pending}
 	}
-	reason, statementResult := guardedStatementReply(reply)
+	reason, statementResult, autocommit, autocommitKnown := guardedStatementReply(reply)
 	if reason != "" {
 		// SELECT inside a transaction needs an intent for that session only.
 		// Remembering that refusal would make every other session pay for it.
@@ -70,6 +76,7 @@ func (gateway *Gateway) guardedStatement(ctx context.Context, session *gatewaySe
 		result.operationDeferred = pending
 		return result
 	}
+	session.noteStatementAutocommit(autocommit, autocommitKnown)
 	return gatewayResult{value: reply, dispatched: true, validatedResult: true, operationDeferred: pending}
 }
 
@@ -83,28 +90,35 @@ const (
 
 // A refusal needs both the exact flag and a known reason. An old, partial or
 // extended reply is not proof that SQL never ran, so it cannot be replayed.
-func guardedStatementReply(reply json.RawMessage) (reason guardedIntentReason, statementResult bool) {
+// The autocommit flag is returned alongside the success verdict so the caller
+// can keep the session's transaction state without parsing the result again.
+func guardedStatementReply(reply json.RawMessage) (reason guardedIntentReason, statementResult bool, autocommit bool, autocommitKnown bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(reply, &fields) != nil {
-		return "", false
+		return "", false, false, false
 	}
 	if raw, exists := fields["requires_intent"]; exists {
 		if len(fields) != 2 || string(raw) != "true" || json.Unmarshal(fields["reason"], &reason) != nil {
-			return "", false
+			return "", false, false, false
 		}
 		switch reason {
 		case guardedEngineWritable, guardedTransactionContext, guardedConnectionControl:
-			return reason, false
+			return reason, false, false, false
 		default:
-			return "", false
+			return "", false, false, false
 		}
 	}
-	return "", validStatementResult(reply)
+	valid, value, known := validStatementResultAutocommit(reply)
+	return "", valid, value, known
 }
 
 // Cached and freshly proven writes share the same intent-before-dispatch
 // boundary. Cache hits must not skip durable registration or outcome tracking.
 func (gateway *Gateway) committingStatement(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID, stage string, frozen frozenCommand, permit *admissionPermit, quota Quotas) gatewayResult {
+	// A statement the worker proved committing removes any claim that this
+	// session is stateless, including a SELECT that needs an intent because the
+	// session already holds a transaction.
+	session.pristine = false
 	leaveIntent := requestPhaseSpan(ctx, requestPhaseIntent)
 	operationID, _, err := gateway.beginDispatchOperation(session, "statement", stage, requestID, false, frozen, nil)
 	leaveIntent()
@@ -128,8 +142,10 @@ func (gateway *Gateway) dispatchStatement(ctx context.Context, session *gatewayS
 	if len(reply) > quota.MaxResultBytes {
 		return gatewayResult{status: 413, code: "result_limit", dispatched: true, rejection: rejectionMemoryBudget}
 	}
-	if !validStatementResult(reply) {
+	valid, autocommit, autocommitKnown := validStatementResultAutocommit(reply)
+	if !valid {
 		return gateway.unknown(session, permit)
 	}
+	session.noteStatementAutocommit(autocommit, autocommitKnown)
 	return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 }

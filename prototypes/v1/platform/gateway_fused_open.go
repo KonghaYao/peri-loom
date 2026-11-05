@@ -206,6 +206,11 @@ type fusedStatementAnswer struct {
 	reason             guardedIntentReason
 	message            string
 	executionCompleted *bool
+	// autocommit is the statement result's own flag, kept from the same scan
+	// that validated the result. autocommitKnown distinguishes a false flag
+	// from a shape that carried none.
+	autocommit      bool
+	autocommitKnown bool
 }
 
 // hranaOpenReply carries the open answer the gateway already decoded and
@@ -314,6 +319,9 @@ func (gateway *Gateway) fusedGuardedStatement(ctx context.Context, session *gate
 	default:
 		present := answer.executionCompleted != nil
 		completed := present && *answer.executionCompleted
+		// The fused answer carries no autocommit flag, so the session can no
+		// longer prove it is stateless even when the failure is a refusal.
+		session.pristine = false
 		result := gateway.upstreamFailure(sqlWorkerFailureFromReply(present, completed, answer.message), session, permit)
 		if result.code == "outcome_unknown" {
 			result.operationDeferred = pending

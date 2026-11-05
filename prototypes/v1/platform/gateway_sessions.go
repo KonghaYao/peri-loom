@@ -185,7 +185,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	} else {
 		ctx = bindSQLOpenObservation(ctx, gateway.config.OpenObserver, requestID)
 		leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
-		err = gateway.config.Upstream.Call(ctx, worker, requestID, openCommand, &reply)
+		err = gateway.callOpenSession(ctx, database, worker, requestID, openCommand, &reply)
 		leaveNative()
 		if err != nil && fusedAttempt {
 			var failure *SQLRPCError
@@ -206,7 +206,7 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 					return gateway.admissionFailure(database, err)
 				}
 				leaveNative := requestPhaseSpan(ctx, requestPhaseNative)
-				err = gateway.config.Upstream.Call(ctx, worker, requestID, openCommand, &reply)
+				err = gateway.callOpenSession(ctx, database, worker, requestID, openCommand, &reply)
 				leaveNative()
 			}
 		}
@@ -245,7 +245,18 @@ func (gateway *Gateway) open(ctx context.Context, principal Principal, database 
 	if err != nil {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenPublicID, gateway.unknown(nil, permit), nil)
 	}
-	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, keyID: principal.KeyID, writerProtocol: writerProtocol, hrana: ctx.Value(hranaSessionContextKey{}) != nil, lastUsed: time.Now(), fusedClose: fusedClose}
+	session := &gatewaySession{public: identifier, upstream: reply.Session, worker: worker, binding: binding, database: database, project: principal.Project, subject: principal.Subject, keyID: principal.KeyID, writerProtocol: writerProtocol, hrana: ctx.Value(hranaSessionContextKey{}) != nil, lastUsed: time.Now(), fusedClose: fusedClose, pristine: true}
+	if fusedAnswerValid {
+		// A fused statement ran inside the open, so its own autocommit flag is
+		// the session's first transaction fact. A refusal or a failure carries
+		// no such proof and keeps the close synchronous.
+		switch fusedAnswer.kind {
+		case fusedStatementOK:
+			session.noteStatementAutocommit(fusedAnswer.autocommit, fusedAnswer.autocommitKnown)
+		default:
+			session.pristine = false
+		}
+	}
 	if writerProtocol && (!session.acceptWriterState(writerState, binding) || writerState.Owner) {
 		return observeSQLOpenResult(ctx, requestID, sqlOpenWriterBinding, gateway.unknown(nil, permit), nil)
 	}
@@ -505,6 +516,38 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			gateway.removeSession(session)
 			return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
 		}
+		deferred := gateway.deferredClose != nil && session.deferredCloseEligible()
+		removed := false
+		if deferred {
+			// A proven stateless session gives its public identity and admission
+			// seat back before the worker is told: the client cannot address it
+			// again, and a session that never ran anything that could commit has
+			// no worker-side result the reply has to wait for. The account retries
+			// a failed worker close through the cleanup ledger; the worker's own
+			// idle sweep is the final backstop.
+			gateway.removeSession(session)
+			removed = true
+			attempt := func() error {
+				attemptCtx, cancel := context.WithTimeout(context.Background(), gateway.deferredSessionCloseAttemptTimeout())
+				defer cancel()
+				var answered struct {
+					Closed bool `json:"closed"`
+				}
+				if err := gateway.callSession(attemptCtx, session, currentBinding, requestID, frozen, &answered); err != nil {
+					return err
+				}
+				if !answered.Closed {
+					return errDeferredSessionCloseNotProven
+				}
+				return nil
+			}
+			if gateway.deferredClose.enqueue(session, attempt) {
+				return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
+			}
+			// The account is full or stopped, so the reply pays the worker wait
+			// inline exactly as it did before the deferral. A bound is latency,
+			// never a refusal.
+		}
 		var reply struct {
 			Closed bool `json:"closed"`
 		}
@@ -515,19 +558,27 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 		if !reply.Closed {
 			return gateway.unknown(session, permit)
 		}
-		gateway.removeSession(session)
+		if !removed {
+			gateway.removeSession(session)
+		}
 		return gatewayResult{value: map[string]bool{"closed": true}, dispatched: true}
 	}
 	if action == "cursor_open" {
 		var reply json.RawMessage
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
+			session.pristine = false
 			return gateway.upstreamFailure(err, session, permit)
 		}
 		if len(reply) > quota.MaxResultBytes || !validCursorOpenResult(reply) {
 			return gateway.unknown(session, permit)
 		}
 		if request.WriteCursor {
+			// A write cursor may commit, so the session keeps the synchronous
+			// close regardless of how the cursor ends.
+			session.pristine = false
 			session.writeCursorOpen, session.writeCursorCommitted = true, false
+		} else {
+			session.readCursorOpen = true
 		}
 		return gatewayResult{value: reply, dispatched: true, validatedResult: true}
 	}
@@ -543,9 +594,15 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			if len(pageReply.page.source) > quota.MaxResultBytes || pageReply.page.rows > request.MaxRows || action == "cursor_start" && !validCursorFirstPage(pageReply.page) {
 				return gateway.unknown(session, permit)
 			}
+			// A done page leaves no cursor behind; an unfinished page does, and
+			// the session keeps its synchronous close until it is closed.
+			session.readCursorOpen = !pageReply.page.done
 			return gatewayResult{value: json.RawMessage(pageReply.page.source), dispatched: true, validatedResult: true, cursorPage: &pageReply.page}
 		}
 		var reply json.RawMessage
+		// A write cursor action can commit, so the session keeps the synchronous
+		// close even when the reply turns out to be a refusal.
+		session.pristine = false
 		if err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply); err != nil {
 			result := gateway.upstreamFailure(err, session, permit)
 			if request.WriteCursor && result.code == "outcome_unknown" {
@@ -625,6 +682,8 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 				failure.cursorClientStopped, failure.cursorDispatchStopped = lifecycle.cursorClientStopped, lifecycle.cursorDispatchStopped
 				return failure
 			}
+		} else {
+			session.readCursorOpen = false
 		}
 		lifecycle.value, lifecycle.dispatched = map[string]bool{"closed": true}, true
 		return lifecycle
@@ -662,6 +721,9 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			Executed bool `json:"executed"`
 		}
 		err := gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply)
+		// The execute answer carries no autocommit flag, so this session can no
+		// longer prove it is stateless; the close keeps its worker wait.
+		session.pristine = false
 		if err != nil {
 			return gateway.upstreamFailure(err, session, permit)
 		}
@@ -672,6 +734,8 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 	}
 	var reply json.RawMessage
 	err = gateway.callSession(ctx, session, currentBinding, requestID, frozen, &reply)
+	// A query answer carries no autocommit flag either.
+	session.pristine = false
 	if err != nil {
 		return gateway.upstreamFailure(err, session, permit)
 	}

@@ -66,6 +66,13 @@ func noteCleanupDue(session *gatewaySession, now time.Time) {
 	}
 }
 
+// sessionCleanupBackoff returns the wait after one failed retirement attempt.
+// It is a variable so a test can compress the bounded ladder; production keeps
+// the 2/4/8/16/32/60s schedule.
+var sessionCleanupBackoff = func(attempts int) time.Duration {
+	return min(time.Duration(1<<min(attempts, 5))*time.Second, sessionCleanupMaxBackoff)
+}
+
 // noteCleanupAttempt advances the account for one attempt that reaches a worker
 // call. A local refusal dispatches nothing, so it must not spend the budget of a
 // remediation that has not been tried yet; the caller's own cadence keeps that
@@ -73,8 +80,7 @@ func noteCleanupDue(session *gatewaySession, now time.Time) {
 func noteCleanupAttempt(session *gatewaySession, now time.Time) {
 	account := &session.cleanup
 	account.attempts++
-	backoff := time.Duration(1<<min(account.attempts, 5)) * time.Second
-	account.nextAttempt = now.Add(min(backoff, sessionCleanupMaxBackoff))
+	account.nextAttempt = now.Add(sessionCleanupBackoff(account.attempts))
 }
 
 // noteCleanupFailure keeps the reason of the last failed attempt in the account,
