@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r74-session-connect-ceiling/stage-b
 REPO=/Users/kk/code/peri-loom
 IMAGE=ghcr.io/konghayao/peri-loom:v1.2.8
+DEV_R74=$REPO/docs/performance-review/2026-11-05-r74-session-connect-ceiling/dev_r74.py
 B_WORKER=/tmp/r74-probe/bin/peri-loom-v1-b
 DRIVER=$REPO/docs/performance-review/2026-11-05-r74-session-connect-ceiling/probe_block_driver.py
 SEED=$REPO/docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py
@@ -14,12 +15,13 @@ SNAP=$REPO/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/snap
 WAIT=$REPO/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/wait_settled.py
 VERIFY=$REPO/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/verify_audit.py
 STATE=/tmp/r74-probe/state/stage-b
-container=peri-r74-probe-seg
-volume=peri-r74-probe-seg-data
+container=peri-r74-probe-seg3
+volume=peri-r74-probe-seg3-data
 port=21901
 legdir="$ROOT/legs/segmentation"
 conn="$STATE/${container}-connection.json"
-mkdir -p "$legdir"
+mkdir -p "$legdir" "$STATE"
+chmod 700 "$STATE"
 
 if docker container inspect "$container" >/dev/null 2>&1; then
   echo "container exists, refusing: $container" >&2; exit 2
@@ -43,6 +45,7 @@ docker run -d --name "$container" --platform linux/arm64 --network host \
   --init --stop-timeout 60 --security-opt no-new-privileges:true --cap-drop ALL \
   -e PERI_HRANA_EXPERIMENTAL=1 -e PERI_R74_SEGMENTS=1 \
   -v "$volume":/data/peri \
+  -v "$DEV_R74":/app/prototypes/v1/platform/dev.py:ro \
   -v "$B_WORKER":/usr/local/bin/peri-loom-v1:ro \
   "$IMAGE" --run-dir /data/peri --backend local --listen 127.0.0.1:"$port" --no-build >/dev/null
 
@@ -60,11 +63,12 @@ chmod 600 "$conn"
 } >> "$legdir/leg.txt" 2>&1
 
 python3 "$SEED" "$conn" > "$legdir/seed.txt" 2>&1
+sleep 2
 python3 "$SNAP" "$conn" "$legdir/metrics-before.json"
 
 set +e
 python3 "$DRIVER" --connection-file "$conn" --out "$legdir/driver.json" \
-  --label segmentation --blocks 10 --block-size 100 --warmup-blocks 1 --gap-ms 50 \
+  --label segmentation --blocks 10 --block-size 100 --warmup-blocks 1 --gap-ms 1000 \
   > "$legdir/driver.txt" 2>&1
 status=$?
 set -e

@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r74-session-connect-ceiling/stage-b
 REPO=/Users/kk/code/peri-loom
 IMAGE=ghcr.io/konghayao/peri-loom:v1.2.8
+DEV_R74=$REPO/docs/performance-review/2026-11-05-r74-session-connect-ceiling/dev_r74.py
 A_WORKER=/tmp/r74-probe/bin/peri-loom-v1-a
 B_WORKER=/tmp/r74-probe/bin/peri-loom-v1-b
 DRIVER=$REPO/docs/performance-review/2026-11-05-r74-session-connect-ceiling/probe_block_driver.py
@@ -64,6 +65,7 @@ run_leg() {
     --init --stop-timeout 60 --security-opt no-new-privileges:true --cap-drop ALL \
     -e PERI_HRANA_EXPERIMENTAL=1 ${extra[@]+"${extra[@]}"} \
     -v "$volume":/data/peri \
+    -v "$DEV_R74":/app/prototypes/v1/platform/dev.py:ro \
     -v "$worker":/usr/local/bin/peri-loom-v1:ro \
     "$IMAGE" --run-dir /data/peri --backend local --listen 127.0.0.1:"$port" --no-build >/dev/null
 
@@ -111,6 +113,7 @@ print("project quotas: " + json.dumps(quotas, sort_keys=True))
 ' >> "$legdir/binaries.txt" 2>&1
 
   python3 "$SEED" "$conn" > "$legdir/seed.txt" 2>&1
+sleep 2
   tail -1 "$legdir/seed.txt" >> "$legdir/binaries.txt"
   python3 "$SNAP" "$conn" "$legdir/metrics-before.json"
   docker exec "$container" sh -c 'cat /data/peri/audit/events.json /data/peri/audit/events.json.segment.* 2>/dev/null | wc -l' | tr -d ' ' > "$legdir/audit-count-before.txt"
@@ -119,7 +122,7 @@ print("project quotas: " + json.dumps(quotas, sort_keys=True))
   set +e
   python3 "$DRIVER" --connection-file "$conn" --out "$legdir/driver.json" \
     --label "r${round}-${seq}${arm}" --blocks 30 --block-size 100 \
-    --warmup-blocks 1 --gap-ms 50 > "$legdir/driver.txt" 2>&1
+    --warmup-blocks 1 --gap-ms 1000 > "$legdir/driver.txt" 2>&1
   status=$?
   set -e
   printf '{"driver": %d}\n' "$status" > "$legdir/exit-code.json"
