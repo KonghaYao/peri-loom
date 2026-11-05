@@ -1,0 +1,23 @@
+{
+  "polls": [
+    {
+      "active_permits": 0,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": true,
+      "elapsed_s": 0.0232,
+      "session_seats": 0,
+      "unknown_held_permits": 0,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      }
+    }
+  ],
+  "timeout_s": 30.0,
+  "verdict": "settled"
+}

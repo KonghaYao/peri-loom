@@ -1,0 +1,1 @@
+{"label": "r2-8b", "blocks_planned": 30, "block_size": 100, "block_median_ns": 2027381, "request_p50_ns": 1120417, "request_p95_ns": 5609875} failures=0

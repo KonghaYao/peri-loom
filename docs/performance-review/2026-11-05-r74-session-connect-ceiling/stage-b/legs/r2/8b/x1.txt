@@ -1,0 +1,12 @@
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=100/100 elapsed=187ms p50=1.43ms p95=3.60ms p99=4.92ms 429=0
+  X1 concurrency=4  n=100/100 elapsed=79ms p50=1.56ms p95=9.78ms p99=11.72ms 429=0
+  X1 concurrency=8  n=100/100 elapsed=89ms p50=5.05ms p95=16.45ms p99=22.06ms 429=0
+  X1 concurrency=16 n=100/100 elapsed=51ms p50=6.98ms p95=13.39ms p99=14.51ms 429=37
+wrote /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r74-session-connect-ceiling/stage-b/legs/r2/8b/harness-x1/summary.md and /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r74-session-connect-ceiling/stage-b/legs/r2/8b/harness-x1/summary.json

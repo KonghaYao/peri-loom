@@ -1,0 +1,363 @@
+{
+  "criteria_sha256": "6e185c8b28a16a1e3f8956caace9447bae47a26b6a6fce40dfc1285b09f62830",
+  "records": [
+    {
+      "round": 1,
+      "seq": 1,
+      "arm": "A",
+      "directory": "stage-b/legs/r1/1a",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1808457,
+      "block_mean_ns": 1783634,
+      "request_p50_ns": 984646,
+      "request_p95_ns": 5509334,
+      "failures": [],
+      "after_errors": {},
+      "after_rejections": {},
+      "after_rate_limit_429": 0,
+      "immediate_errors": {},
+      "immediate_rejections": {},
+      "immediate_rate_limit_429": 0,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 1a                           records=9752 seq=1..9752 head=True errors=0",
+      "probe_lines": [],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 1,
+      "seq": 2,
+      "arm": "B",
+      "directory": "stage-b/legs/r1/2b",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1755659,
+      "block_mean_ns": 1811022,
+      "request_p50_ns": 996667,
+      "request_p95_ns": 5681959,
+      "failures": [],
+      "after_errors": {},
+      "after_rejections": {},
+      "after_rate_limit_429": 0,
+      "immediate_errors": {},
+      "immediate_rejections": {},
+      "immediate_rate_limit_429": 0,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 2b                           records=9752 seq=1..9752 head=True errors=0",
+      "probe_lines": [
+        "R74POOL takes=498 misses=2 created=499 failures=0",
+        "R74POOL takes=998 misses=2 created=999 failures=0",
+        "R74POOL takes=1498 misses=2 created=1499 failures=0",
+        "R74POOL takes=1998 misses=2 created=1999 failures=0",
+        "R74POOL takes=2498 misses=2 created=2500 failures=0",
+        "R74POOL takes=2998 misses=2 created=2999 failures=0"
+      ],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 1,
+      "seq": 3,
+      "arm": "B",
+      "directory": "stage-b/legs/r1/3b",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1889279,
+      "block_mean_ns": 1872487,
+      "request_p50_ns": 1008333,
+      "request_p95_ns": 5643958,
+      "failures": [],
+      "after_errors": {},
+      "after_rejections": {},
+      "after_rate_limit_429": 0,
+      "immediate_errors": {},
+      "immediate_rejections": {},
+      "immediate_rate_limit_429": 0,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 3b                           records=9752 seq=1..9752 head=True errors=0",
+      "probe_lines": [
+        "R74POOL takes=498 misses=2 created=499 failures=0",
+        "R74POOL takes=998 misses=2 created=999 failures=0",
+        "R74POOL takes=1498 misses=2 created=1500 failures=0",
+        "R74POOL takes=1998 misses=2 created=1999 failures=0",
+        "R74POOL takes=2498 misses=2 created=2499 failures=0",
+        "R74POOL takes=2998 misses=2 created=2999 failures=0"
+      ],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 1,
+      "seq": 4,
+      "arm": "A",
+      "directory": "stage-b/legs/r1/4a",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1787563,
+      "block_mean_ns": 1865996,
+      "request_p50_ns": 1029375,
+      "request_p95_ns": 5518333,
+      "failures": [],
+      "after_errors": {},
+      "after_rejections": {},
+      "after_rate_limit_429": 0,
+      "immediate_errors": {},
+      "immediate_rejections": {},
+      "immediate_rate_limit_429": 0,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 4a                           records=9752 seq=1..9752 head=True errors=0",
+      "probe_lines": [],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 2,
+      "seq": 5,
+      "arm": "B",
+      "directory": "stage-b/legs/r2/5b",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1911743,
+      "block_mean_ns": 1895294,
+      "request_p50_ns": 996770,
+      "request_p95_ns": 5974291,
+      "failures": [],
+      "after_errors": {},
+      "after_rejections": {},
+      "after_rate_limit_429": 0,
+      "immediate_errors": {},
+      "immediate_rejections": {},
+      "immediate_rate_limit_429": 0,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 5b                           records=9752 seq=1..9752 head=True errors=0",
+      "probe_lines": [
+        "R74POOL takes=498 misses=2 created=499 failures=0",
+        "R74POOL takes=998 misses=2 created=999 failures=0",
+        "R74POOL takes=1498 misses=2 created=1499 failures=0",
+        "R74POOL takes=1998 misses=2 created=1999 failures=0",
+        "R74POOL takes=2498 misses=2 created=2499 failures=0",
+        "R74POOL takes=2998 misses=2 created=2999 failures=0"
+      ],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 2,
+      "seq": 6,
+      "arm": "A",
+      "directory": "stage-b/legs/r2/6a",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1852143,
+      "block_mean_ns": 1867921,
+      "request_p50_ns": 998750,
+      "request_p95_ns": 5783584,
+      "failures": [],
+      "after_errors": {},
+      "after_rejections": {},
+      "after_rate_limit_429": 0,
+      "immediate_errors": {},
+      "immediate_rejections": {},
+      "immediate_rate_limit_429": 0,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 6a                           records=9752 seq=1..9752 head=True errors=0",
+      "probe_lines": [],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 2,
+      "seq": 7,
+      "arm": "A",
+      "directory": "stage-b/legs/r2/7a",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 1856237,
+      "block_mean_ns": 1903159,
+      "request_p50_ns": 1096062,
+      "request_p95_ns": 5630083,
+      "failures": [],
+      "after_errors": {
+        "quota_exceeded": 63
+      },
+      "after_rejections": {
+        "rate_limit": 63
+      },
+      "after_rate_limit_429": 63,
+      "immediate_errors": {
+        "quota_exceeded": 63
+      },
+      "immediate_rejections": {
+        "rate_limit": 63
+      },
+      "immediate_rate_limit_429": 63,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 7a                           records=11245 seq=1..11245 head=True errors=0",
+      "probe_lines": [],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    },
+    {
+      "round": 2,
+      "seq": 8,
+      "arm": "B",
+      "directory": "stage-b/legs/r2/8b",
+      "present": true,
+      "invalid": false,
+      "invalid_reasons": [],
+      "blocks": 30,
+      "block_median_ns": 2027381,
+      "block_mean_ns": 1986551,
+      "request_p50_ns": 1120417,
+      "request_p95_ns": 5609875,
+      "failures": [],
+      "after_errors": {
+        "quota_exceeded": 46
+      },
+      "after_rejections": {
+        "rate_limit": 46
+      },
+      "after_rate_limit_429": 46,
+      "immediate_errors": {
+        "quota_exceeded": 46
+      },
+      "immediate_rejections": {
+        "rate_limit": 46
+      },
+      "immediate_rate_limit_429": 46,
+      "settled": {
+        "session_seats": 0,
+        "active_permits": 0,
+        "unknown_held_permits": 0
+      },
+      "audit_verify": "OK 8b                           records=11271 seq=1..11271 head=True errors=0",
+      "probe_lines": [
+        "R74POOL takes=498 misses=2 created=500 failures=0",
+        "R74POOL takes=998 misses=2 created=999 failures=0",
+        "R74POOL takes=1498 misses=2 created=1500 failures=0",
+        "R74POOL takes=1998 misses=2 created=1999 failures=0",
+        "R74POOL takes=2498 misses=2 created=2499 failures=0",
+        "R74POOL takes=2998 misses=2 created=2999 failures=0",
+        "R74POOL takes=3496 misses=4 created=3497 failures=0"
+      ],
+      "launcher_stop": {
+        "outcome": "clean",
+        "reason": "terminal_proof_written",
+        "unresolved_operations": false
+      }
+    }
+  ],
+  "rounds": {
+    "1": {
+      "side": {
+        "A": {
+          "legs": [
+            1808457,
+            1787563
+          ],
+          "statistic_ns": 1798010
+        },
+        "B": {
+          "legs": [
+            1755659,
+            1889279
+          ],
+          "statistic_ns": 1822469
+        }
+      },
+      "improvement": -0.013603372617504883
+    },
+    "2": {
+      "side": {
+        "A": {
+          "legs": [
+            1852143,
+            1856237
+          ],
+          "statistic_ns": 1854190
+        },
+        "B": {
+          "legs": [
+            1911743,
+            2027381
+          ],
+          "statistic_ns": 1969562
+        }
+      },
+      "improvement": -0.06222231810116541
+    }
+  },
+  "primary_result": -0.06222231810116541,
+  "verdict": "CLOSE_DIRECTION",
+  "regression_observations": {
+    "note": "observations only, not judged",
+    "legs": [
+      "stage-b/legs/r2/7a",
+      "stage-b/legs/r2/8b"
+    ]
+  }
+}

@@ -57,16 +57,21 @@ def leg_record(round_index: int, seq: int, arm: str) -> dict:
     for label, metrics in (("after", after), ("immediate", immediate)):
         errors = metrics.get("errors_total") or {}
         rejections = {key: value for key, value in (metrics.get("rejection_reasons_total") or {}).items() if value}
+        # The frozen invalid_leg rule names outcome_unknown / 502 / 503 /
+        # audit_unavailable / broken audit chain. A default-quota rate-limit 429
+        # from the optional X1 c16 observation is not one of them; it is recorded
+        # separately and never excuses a judged block failure.
+        invalidating_errors = {key: value for key, value in errors.items() if key != "quota_exceeded"}
+        invalidating_rejections = {key: value for key, value in rejections.items() if key != "rate_limit"}
         record["%s_errors" % label] = errors
         record["%s_rejections" % label] = rejections
-        if errors:
+        record["%s_rate_limit_429" % label] = rejections.get("rate_limit", 0)
+        if invalidating_errors:
             record["invalid"] = True
-            record["invalid_reasons"].append("%s errors: %s" % (label, errors))
-        if any(key.startswith("unknown") or key in ("502", "503") for key in errors):
+            record["invalid_reasons"].append("%s errors: %s" % (label, invalidating_errors))
+        if invalidating_rejections:
             record["invalid"] = True
-        if rejections:
-            record["invalid"] = True
-            record["invalid_reasons"].append("%s rejections: %s" % (label, rejections))
+            record["invalid_reasons"].append("%s rejections: %s" % (label, invalidating_rejections))
     record["settled"] = {
         "session_seats": after.get("session_seats"),
         "active_permits": after.get("active_permits"),

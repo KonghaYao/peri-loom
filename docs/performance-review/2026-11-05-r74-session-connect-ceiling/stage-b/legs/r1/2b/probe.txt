@@ -1,0 +1,6 @@
+R74POOL takes=498 misses=2 created=499 failures=0
+R74POOL takes=998 misses=2 created=999 failures=0
+R74POOL takes=1498 misses=2 created=1499 failures=0
+R74POOL takes=1998 misses=2 created=1999 failures=0
+R74POOL takes=2498 misses=2 created=2500 failures=0
+R74POOL takes=2998 misses=2 created=2999 failures=0

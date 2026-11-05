@@ -1,0 +1,13 @@
+round=1
+seq=1
+arm=a
+port=21901
+container=peri-r74-probe-v2-r1-1a
+volume=peri-r74-probe-v2-r1-1a-data
+image=ghcr.io/konghayao/peri-loom:v1.2.8
+image_id=sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d
+repo_digest=ghcr.io/konghayao/peri-loom@sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d
+worker_host=/tmp/r74-probe/bin/peri-loom-v1-a sha256=8a5a7d539468f16543c8aed289de54567b8a32916d2cf29c1c26dcf096a86150
+driver=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r74-session-connect-ceiling/probe_block_driver.py sha256=6b9a97a8daf77e94b353bcddf815a51c2023840eca075e0c6510147b097e74fb
+seed=/Users/kk/code/peri-loom/docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py sha256=092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210
+run_py=/Users/kk/code/peri-loom/scripts/perf-reliability/issue28/run.py sha256=499ad87f0d6264f8c387209fcc832204274058119604cd6fea0febacaec36676

@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r74-session-connect-ceiling/stage-b/legs/r2/6a/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "ba6540205f08264852f9e6dd4335f4f29abbc6e04061b6f44b1f09ba446be524",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 9752,
+  "last_hash": "ba6540205f08264852f9e6dd4335f4f29abbc6e04061b6f44b1f09ba446be524",
+  "last_sequence": 9752,
+  "leg": "6a",
+  "present": true,
+  "records": 9752,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 9752
+    }
+  ]
+}
