@@ -1,0 +1,5 @@
+criteria_sha256=6e185c8b28a16a1e3f8956caace9447bae47a26b6a6fce40dfc1285b09f62830
+frozen_at_utc=2026-11-05T11:28:35Z
+hashed_at_utc=2026-11-05T11:28:39Z
+measurement_legs_at_freeze=0
+stage_b_started_at_freeze=no

@@ -1,0 +1,145 @@
+{
+  "campaign": "r74-session-connect-ceiling",
+  "title": "Worker open_session non-authority ceiling for F1.select-1",
+  "frozen_at_utc": "2026-11-05T11:28:35Z",
+  "measurement_legs_before_freeze": [],
+  "purpose": "Decide whether the non-authority part of worker open_session can make F1 (<10ms scenario) reach the frozen 20% gate. This is an upper-bound probe, not an optimization, not a capacity or SLA proof.",
+  "authorization": {
+    "granted": [
+      "durability commit timing, ordering and barrier placement",
+      "session and protocol semantics"
+    ],
+    "not_granted": [
+      "relaxing quotas",
+      "skipping audit",
+      "bypassing fail-closed or isolation",
+      "authority-local validation (R41/R44)",
+      "relaxing lease validation"
+    ],
+    "probe_branch": "probe/r74-session-connect-ceiling",
+    "main_must_stay": "518c40dc0aa041f1b297f6a30111bdb9d206ef55",
+    "probe_never_merged": true
+  },
+  "reference_arithmetic": {
+    "f1_p50_ms_r73_b_leg_median": 0.714,
+    "f1_20pct_threshold_ms": 0.1428,
+    "stage_a_open_threshold_ns": 143000,
+    "worker_open_session_us_r38_d1": 251.4,
+    "authority_validate_session_us_not_authorized": 135.0,
+    "non_authority_upper_us": 116.4,
+    "expected_non_authority_share": "116.4 / 714 = 16.3%, below the 20% gate; the probe verifies the split and looks for unaccounted nonlinear cost"
+  },
+  "environment": {
+    "host": "macOS arm64, Docker 29.4.0 (OrbStack), linux/arm64 containers, host network, no TLS",
+    "image": {
+      "name": "ghcr.io/konghayao/peri-loom:v1.2.8",
+      "digest": "sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d"
+    },
+    "fixture": {
+      "script": "docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py",
+      "threads": 201,
+      "messages": 8625,
+      "content_chars": 20177069,
+      "focus_messages": 8625,
+      "fresh_import_per_leg": true
+    },
+    "quotas": "platform defaults; never relaxed",
+    "observers": "PERI_DURABILITY_OBSERVER, PERI_SQL_OPEN_OBSERVER and PERI_COMPLETION_JOURNAL unset in all Stage B A/B legs",
+    "ports": {
+      "stage_a": 21900,
+      "stage_b": "21901-21908 (one per leg, execution order)"
+    },
+    "volumes": "fresh named volume per leg with prefix peri-r74-probe-; no existing peri-* volume is reused or deleted",
+    "containers": "one container per leg: same image, same launcher, same flags, fresh volume. The launcher fails closed on a dirty run directory, so a dirty volume is never reused. This is the R73 convention and the only supported way to get a clean proof per leg.",
+    "untouched_containers": ["peri-loom", "peri-r71-diag", "fenix-*", "coze-*", "open-compute-*"],
+    "interface": "no TLS; no secret leaves the connection.json copy; any Authorization output is redacted as Bearer <REDACTED>"
+  },
+  "stage_a": {
+    "goal": "Cheap zero-code screen on the release image as-is",
+    "scenario": "F1.select-1",
+    "protocol": "json-pipeline",
+    "concurrency": 1,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 125,
+    "command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <conn> --out <leg>/harness --container <container> --scenario F1 --protocol json-pipeline --rounds 1 --warmup 1 --samples 125",
+    "metric": {
+      "primary": "open_action_mean_ns = action_latency_ns_total['open'] / actions_total['open'] from the settled /v1/metrics snapshot",
+      "quantile_limitation": "the platform exposes only a per-action sum and count, no quantiles. For a right-skewed latency this mean is an upper bound on p50, so a below-threshold mean is a conservative stop condition; an above-threshold mean does not prove p50 is above the threshold, which is exactly why the rule then enters Stage B.",
+      "controls": ["statement", "close", "query", "execute", "describe", "session_by_id (record absence if the key does not exist)"],
+      "client_control": "median of the 125 timed F1 durations in the harness raw.jsonl (client-side p50)"
+    },
+    "decision": {
+      "stop_no_stage_b": "open_action_mean_ns < 143000",
+      "enter_stage_b": "open_action_mean_ns >= 143000",
+      "fallback": "if actions_total has no 'open' key, record the available keys, estimate from the client F1 p50 and the open-path relation, and enter Stage B when still undecidable"
+    }
+  },
+  "stage_b": {
+    "arms": {
+      "A": "worker built from main@518c40d (the v1.2.8 source) with the same rust toolchain and flags as B; platform is the v1.2.8 image's own /usr/local/bin/peri-platform for both arms",
+      "B": "probe worker from probe/r74-session-connect-ceiling with PERI_R74_CONNECT_POOL=1; PERI_R74_SEGMENTS unset",
+      "why_local_A": "building A and B with the same toolchain isolates the probe patch; Stage A separately measures the release image's own binaries, so any image-vs-local gap remains visible in the evidence"
+    },
+    "pool_arm_definition": "a background refiller keeps 1-2 pre-connected and pre-configured native turso connections per RemoteDatabase; Database::session() pops one when available and otherwise falls back to an inline connect; each connection serves exactly one session and is then dropped without reset",
+    "segmentation": {
+      "kind": "diagnostic only, never used for the A/B judgment",
+      "run": "B worker with PERI_R74_SEGMENTS=1 and PERI_R74_CONNECT_POOL=0, one fresh stack, at least 1000 F1 requests",
+      "segments": ["connect", "configure", "lane_new", "register", "attach", "validate_authority", "urandom", "open_total", "session_open_total"],
+      "output": "worker stderr summary lines 'R74WORKER opens=<n> ...' emitted every 500 completed opens",
+      "statistics": "p50 and p95 per segment",
+      "assertion": "each segment's sample count equals the completed open count of the same process; a mismatch invalidates only the segmentation data"
+    },
+    "build": {
+      "container_image": "rust:1.98-bookworm",
+      "toolchain_env": "RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu",
+      "command": "cargo build --release --locked --offline --bin peri-loom-v1",
+      "record": "worker SHA256 for both arms, platform SHA256, launcher SHA256"
+    },
+    "block_protocol": {
+      "block": "100 consecutive F1.select-1 json-pipeline requests; block value = wall clock nanoseconds / 100",
+      "blocks_per_leg": 30,
+      "warmup_per_leg": "1 block of 100 requests, not counted",
+      "legs_per_round": 4,
+      "round_orders": {
+        "round1": ["A", "B", "B", "A"],
+        "round2": ["B", "A", "A", "B"]
+      },
+      "rounds": 2,
+      "fresh_volume_per_leg": true,
+      "leg_statistic": "median of the 30 block values",
+      "round_side_statistic": "median of the two leg statistics of that side in that round",
+      "round_improvement": "1 - B_round / A_round, positive is faster",
+      "primary_result": "min(round1_improvement, round2_improvement)",
+      "secondary_diagnostic": "median of all individual request durations per leg (client p50), per-block p50 and per-block mean, reported but not judged",
+      "driver": "a probe-side Python driver reusing scripts/perf-reliability/issue28/hrana.py; 100 requests are issued back-to-back on one keep-alive connection"
+    },
+    "decision": {
+      "continue_implement_secure_version": "primary_result >= 0.20",
+      "record_below_f1_20pct_gate": "0.10 <= primary_result < 0.20",
+      "close_direction": "primary_result < 0.10",
+      "invalid_leg": "any outcome_unknown, HTTP 502, HTTP 503, audit_unavailable, or broken audit chain invalidates that leg; fix the environment and re-run; the invalid leg and the re-run are both reported"
+    },
+    "regression_observations": {
+      "not_judged": true,
+      "items": ["L1.list-20 json-pipeline", "X1.concurrency c8", "worker RSS", "session_seats at settle"]
+    }
+  },
+  "invariants": [
+    "container and worker binaries SHA256 recorded per leg",
+    "observers off in every A/B leg",
+    "default quotas in every leg",
+    "settle check: session_seats=0, active_permits=0, unknown_held_permits=0, worker sessions=0, pending close=0",
+    "no outcome_unknown / 502 / 503 / audit_unavailable",
+    "audit chain continuous from head to tail"
+  ],
+  "deviation_policy": "After this freeze, do not change criteria, sample sizes, quotas, ports or statistics. Environment events are recorded and labelled 'not attributed to this round'. Any invalidated leg is re-run, never silently accepted.",
+  "report_schema": {
+    "must_report": [
+      "criteria.json SHA256 and UTC freeze time, and that no measurement leg existed at freeze",
+      "Stage A: image digest, container binary SHA256, per-action totals and open mean, client F1 p50, decision",
+      "Stage B: probe branch and commit SHA, worker SHA256, segment p50/p95 with counts, each round/leg block-average raw numbers, both round directions, F1/L1/X1 results, regression observations",
+      "final verdict: continue implementing or close the direction, with the raw evidence path"
+    ]
+  }
+}
