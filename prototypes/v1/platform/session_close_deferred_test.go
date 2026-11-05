@@ -441,6 +441,68 @@ func TestDeferredSessionCloseCapacityRetryHappensOnce(t *testing.T) {
 	}
 }
 
+// TestDeferredSessionCloseFusedCapacityRetryHappensOnce pins the same one-retry
+// rule on the fused open. The worker wraps the fused session creation with
+// not_executed evidence, so the capacity refusal proves no session exists and
+// the statement never ran: flushing the pending closes and asking once more
+// creates a session, it never replays SQL. Any other refusal keeps the ordinary
+// answer and is not retried.
+func TestDeferredSessionCloseFusedCapacityRetryHappensOnce(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		failure  string
+		status   int
+		code     string
+		attempts int64
+	}{
+		{name: "capacity refusal", failure: "database session capacity exceeded", status: http.StatusOK, attempts: 2},
+		{name: "other refusal", failure: "worker saturated", status: http.StatusServiceUnavailable, code: "sql_unavailable", attempts: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGatewayFixture(t)
+			latch := enableDeferredSessionClose(t, fixture.gateway)
+			var attempts atomic.Int64
+			var retriedFused atomic.Bool
+			fixture.upstream.setHook(func(_ context.Context, _ controller.Worker, command map[string]any) (any, error) {
+				switch command["command"] {
+				case "capabilities":
+					return map[string]any{"readonly_batch_protocol": 1, "open_guarded_statement": 2}, nil
+				case "open_guarded_statement":
+					if attempts.Add(1) == 1 {
+						return nil, sqlWorkerFailureFromReply(true, false, test.failure)
+					}
+					retriedFused.Store(command["sql"] == "SELECT 42")
+					return map[string]any{
+						"session":   fusedOpenSession,
+						"readonly":  false,
+						"statement": map[string]any{"status": "ok", "result": guardedBatchReadResult(42)},
+					}, nil
+				case "close_session":
+					return map[string]bool{"closed": true}, nil
+				}
+				return nil, fmt.Errorf("unexpected worker command %v", command["command"])
+			})
+			response := runPipelineAuditRequest(t, newHranaHTTP(fixture.gateway), fixture, fusedOpenPipelineRequests())
+			if response.Code != test.status {
+				t.Fatalf("pipeline: %d %s", response.Code, response.Body.String())
+			}
+			if test.code != "" && gatewayCode(t, response) != test.code {
+				t.Fatalf("pipeline code: %s", gatewayCode(t, response))
+			}
+			if attempts.Load() != test.attempts {
+				t.Fatalf("fused open attempts: %d want %d", attempts.Load(), test.attempts)
+			}
+			if test.attempts == 2 && !retriedFused.Load() {
+				t.Fatal("the retry did not resend the fused command")
+			}
+			if deferredCloseCount(latch.Status(), "flushed_total") != 0 {
+				t.Fatalf("flush account: %v", latch.Status())
+			}
+			latch.wait()
+		})
+	}
+}
+
 func TestSessionCapacityRefusal(t *testing.T) {
 	ambiguous := &SQLRPCError{Ambiguous: true, workerFailure: "database session capacity exceeded"}
 	tests := []struct {
@@ -468,7 +530,7 @@ func TestDeferredSessionCloseStopDrainsPending(t *testing.T) {
 	session := deferredCloseTestSession(&counter)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	if !latch.enqueue(session, func() error {
+	if !latch.enqueue(session, func(context.Context) error {
 		close(started)
 		<-release
 		return nil
@@ -477,7 +539,7 @@ func TestDeferredSessionCloseStopDrainsPending(t *testing.T) {
 	}
 	<-started
 	stopped := make(chan error, 1)
-	go func() { stopped <- latch.stop() }()
+	go func() { stopped <- latch.stop(context.Background()) }()
 	close(release)
 	if err := <-stopped; err != nil {
 		t.Fatalf("stop: %v", err)
@@ -492,20 +554,70 @@ func TestDeferredSessionCloseStopReportsUnresolved(t *testing.T) {
 	var counter atomic.Int64
 	session := deferredCloseTestSession(&counter)
 	attempted := make(chan struct{})
-	if !latch.enqueue(session, func() error {
+	if !latch.enqueue(session, func(context.Context) error {
 		close(attempted)
 		return fmt.Errorf("worker unavailable")
 	}) {
 		t.Fatal("the account refused the only close")
 	}
 	<-attempted
-	err := latch.stop()
+	err := latch.stop(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "unresolved") {
 		t.Fatalf("stop error: %v", err)
 	}
 	status := latch.Status()
 	if deferredCloseCount(status, "pending") != 0 || deferredCloseCount(status, "failed_total") != 1 || deferredCloseCount(status, "unresolved_total") != 1 {
 		t.Fatalf("unresolved account: %v", status)
+	}
+}
+
+// TestDeferredSessionCloseStopAbandonsTheQueueWhenTheBudgetExpires pins the
+// stop contract: once the shutdown budget is spent, the queued closes are
+// abandoned without each paying another attempt, an attempt already in flight
+// is cancelled through the lifetime it took, and the account reports exactly
+// what it could not finish.
+func TestDeferredSessionCloseStopAbandonsTheQueueWhenTheBudgetExpires(t *testing.T) {
+	latch := newDeferredSessionCloseOf(8, 8, 1)
+	var counter atomic.Int64
+	var queuedAttempts atomic.Int64
+	firstStarted := make(chan struct{})
+	firstRelease := make(chan struct{})
+	if !latch.enqueue(deferredCloseTestSession(&counter), func(context.Context) error {
+		close(firstStarted)
+		<-firstRelease
+		return nil
+	}) {
+		t.Fatal("the account refused the first close")
+	}
+	<-firstStarted
+	for index := 0; index < 3; index++ {
+		if !latch.enqueue(deferredCloseTestSession(&counter), func(context.Context) error {
+			queuedAttempts.Add(1)
+			return nil
+		}) {
+			t.Fatal("the account refused a queued close")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- latch.stop(ctx) }()
+	cancel()
+	select {
+	case err := <-stopped:
+		if err == nil {
+			t.Fatal("stop reported a clean drain after the budget expired")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not honour the shutdown budget")
+	}
+	close(firstRelease)
+	latch.wait()
+	if queuedAttempts.Load() != 0 {
+		t.Fatalf("queued closes paid %d attempts after the budget expired", queuedAttempts.Load())
+	}
+	status := latch.Status()
+	if deferredCloseCount(status, "pending") != 0 || deferredCloseCount(status, "unresolved_total") != 3 {
+		t.Fatalf("budget-exhausted account: %v", status)
 	}
 }
 
@@ -611,7 +723,7 @@ func TestDeferredSessionCloseRetriesThroughTheCleanupLedger(t *testing.T) {
 	var counter atomic.Int64
 	session := deferredCloseTestSession(&counter)
 	var attempts atomic.Int64
-	if !latch.enqueue(session, func() error {
+	if !latch.enqueue(session, func(context.Context) error {
 		if attempts.Add(1) == 1 {
 			return fmt.Errorf("worker unavailable")
 		}
@@ -637,7 +749,7 @@ func TestGatewayCloseReportsAnUnresolvedDeferredClose(t *testing.T) {
 	var counter atomic.Int64
 	session := deferredCloseTestSession(&counter)
 	attempted := make(chan struct{})
-	if !latch.enqueue(session, func() error {
+	if !latch.enqueue(session, func(context.Context) error {
 		close(attempted)
 		return fmt.Errorf("worker unavailable")
 	}) {

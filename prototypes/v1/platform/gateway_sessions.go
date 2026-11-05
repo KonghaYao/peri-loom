@@ -527,8 +527,8 @@ func (gateway *Gateway) dispatchLocked(ctx context.Context, principal Principal,
 			// idle sweep is the final backstop.
 			gateway.removeSession(session)
 			removed = true
-			attempt := func() error {
-				attemptCtx, cancel := context.WithTimeout(context.Background(), gateway.deferredSessionCloseAttemptTimeout())
+			attempt := func(parent context.Context) error {
+				attemptCtx, cancel := context.WithTimeout(parent, gateway.deferredSessionCloseAttemptTimeout())
 				defer cancel()
 				var answered struct {
 					Closed bool `json:"closed"`

@@ -16,10 +16,14 @@ import (
 
 const (
 	// deferredSessionClosePerDatabaseMaximum bounds the worker closes one
-	// database leaves outstanding. The worker holds 16 sessions per database, so
-	// a bound of 4 keeps the closing set well inside that ceiling while still
-	// absorbing the close that follows each pipeline in an 8-way burst. A
-	// saturated bound becomes reply latency, never a refusal.
+	// database leaves outstanding. It is not a capacity guarantee: the gateway
+	// returns a session's seat as soon as the reply is written, while the worker
+	// keeps that session until the close lands, so a database held at the
+	// gateway's MaxSessions can have MaxSessions+4 sessions in the worker. The
+	// worker refuses past its own per-database ceiling, and both open paths
+	// (open_session and the fused open_guarded_statement) answer that provably
+	// unexecuted refusal by flushing this database's pending closes and asking
+	// once more. A saturated bound becomes reply latency, never a refusal.
 	deferredSessionClosePerDatabaseMaximum = 4
 
 	// deferredSessionCloseMaximum matches the completion account: one session
@@ -44,7 +48,10 @@ var errDeferredSessionCloseStopped = errors.New("deferred session close stopped 
 type deferredSessionCloseJob struct {
 	database string
 	session  *gatewaySession
-	attempt  func() error
+	// attempt takes the context its worker call is derived from, so a shutdown
+	// that spends its budget cancels a call that already started instead of
+	// waiting for the attempt's own timeout.
+	attempt func(context.Context) error
 }
 
 // deferredSessionClose is the account of worker close_session calls dispatched
@@ -68,16 +75,25 @@ type deferredSessionClose struct {
 	workerCount        int
 	jobs               chan deferredSessionCloseJob
 	stopCh             chan struct{}
-	workers            sync.WaitGroup
-	running            int
-	done               sync.WaitGroup
-	enqueued           atomic.Int64
-	inline             atomic.Int64
-	failed             atomic.Int64
-	retried            atomic.Int64
-	unresolved         atomic.Int64
-	flushed            atomic.Int64
-	peak               atomic.Int64
+	// lifetime is the parent of every worker attempt. stop ties it to the
+	// shutdown budget, so an attempt already in flight is cancelled when the
+	// budget expires rather than holding the process for its own timeout.
+	lifetime context.Context
+	expire   context.CancelFunc
+	// stopCtx is the shutdown budget handed to stop. A queued close consults it
+	// before each attempt so the queue stops paying attempts once the budget is
+	// gone; before stop it is nil and the account still owns its retries.
+	stopCtx    context.Context
+	workers    sync.WaitGroup
+	running    int
+	done       sync.WaitGroup
+	enqueued   atomic.Int64
+	inline     atomic.Int64
+	failed     atomic.Int64
+	retried    atomic.Int64
+	unresolved atomic.Int64
+	flushed    atomic.Int64
+	peak       atomic.Int64
 }
 
 func newDeferredSessionClose() *deferredSessionClose {
@@ -94,12 +110,15 @@ func newDeferredSessionCloseOf(maximum, perDatabase, workers int) *deferredSessi
 	if workers < 1 {
 		workers = 1
 	}
+	lifetime, expire := context.WithCancel(context.Background())
 	return &deferredSessionClose{
 		maximum:            maximum,
 		perDatabaseMaximum: perDatabase,
 		workerCount:        workers,
 		jobs:               make(chan deferredSessionCloseJob, maximum),
 		stopCh:             make(chan struct{}),
+		lifetime:           lifetime,
+		expire:             expire,
 		databases:          map[string]int{},
 		waiters:            map[string]chan struct{}{},
 	}
@@ -108,7 +127,7 @@ func newDeferredSessionCloseOf(maximum, perDatabase, workers int) *deferredSessi
 // enqueue hands one worker close to the account and reports whether the account
 // took it. A refusal is the caller's signal to pay the close inline before the
 // reply: the bound is a latency limit, never an error the client can see.
-func (latch *deferredSessionClose) enqueue(session *gatewaySession, attempt func() error) bool {
+func (latch *deferredSessionClose) enqueue(session *gatewaySession, attempt func(context.Context) error) bool {
 	if latch == nil {
 		return false
 	}
@@ -203,6 +222,13 @@ func (latch *deferredSessionClose) run() {
 
 func (latch *deferredSessionClose) execute(job deferredSessionCloseJob) {
 	for {
+		// A close still queued when the shutdown budget is spent must not open
+		// another worker attempt: the stop is already reported incomplete, and
+		// every such attempt would hold the process past its deadline.
+		if err := latch.budgetError(); err != nil {
+			latch.abandon(job, err)
+			return
+		}
 		now := time.Now()
 		noteCleanupDue(job.session, now)
 		if cleanupExhausted(job.session.cleanup, now) {
@@ -216,11 +242,21 @@ func (latch *deferredSessionClose) execute(job deferredSessionCloseJob) {
 				timer.Stop()
 				latch.abandon(job, errDeferredSessionCloseStopped)
 				return
+			case <-latch.lifetime.Done():
+				// The shutdown budget ended while this close was backing off, so
+				// its retry window is gone with it.
+				timer.Stop()
+				failure := latch.budgetError()
+				if failure == nil {
+					failure = errDeferredSessionCloseStopped
+				}
+				latch.abandon(job, failure)
+				return
 			case <-timer.C:
 			}
 		}
 		noteCleanupAttempt(job.session, time.Now())
-		err := job.attempt()
+		err := job.attempt(latch.attemptParent())
 		if err == nil {
 			return
 		}
@@ -235,6 +271,34 @@ func (latch *deferredSessionClose) execute(job deferredSessionCloseJob) {
 		}
 		latch.retried.Add(1)
 	}
+}
+
+// attemptParent is the context one worker attempt is derived from. After the
+// shutdown began it is the shutdown budget itself, so the attempt inherits its
+// deadline; an attempt that started before the shutdown runs on the account's
+// lifetime, which stop cancels when that budget expires.
+func (latch *deferredSessionClose) attemptParent() context.Context {
+	latch.mutex.Lock()
+	defer latch.mutex.Unlock()
+	if latch.stopCtx != nil {
+		return latch.stopCtx
+	}
+	return latch.lifetime
+}
+
+// budgetError names why a queued close may no longer start an attempt. It is
+// nil while the account is running, nil during a graceful stop that still holds
+// budget, and the shutdown context's own error once that budget is spent.
+func (latch *deferredSessionClose) budgetError() error {
+	latch.mutex.Lock()
+	defer latch.mutex.Unlock()
+	if !latch.closed {
+		return nil
+	}
+	if latch.stopCtx == nil {
+		return errDeferredSessionCloseStopped
+	}
+	return latch.stopCtx.Err()
 }
 
 func (latch *deferredSessionClose) finish(job deferredSessionCloseJob) {
@@ -264,22 +328,43 @@ func (latch *deferredSessionClose) abandon(job deferredSessionCloseJob, failure 
 	log.Printf("ERROR deferred session close unresolved: database=%s session=%s attempts=%d failure=%s", job.session.database.Key(), job.session.public, job.session.cleanup.attempts, cleanupFailureCode(failure))
 }
 
-// stop retires the pool after draining every queued close. A close that cannot
-// be finished stops at its retry window instead of holding shutdown for the
-// whole cleanup budget; the unresolved count is what makes that visible.
-func (latch *deferredSessionClose) stop() error {
+// stop retires the pool under the caller's shutdown budget. Queued closes keep
+// draining while the budget holds; once it expires the account abandons them
+// without another worker attempt, and an attempt already in flight is cancelled
+// through the lifetime it was derived from. The returned error reports what the
+// budget could not finish, so Gateway.Close can refuse a clean terminal.
+func (latch *deferredSessionClose) stop(ctx context.Context) error {
 	if latch == nil {
 		return nil
+	}
+	if ctx == nil {
+		return errors.New("invalid deferred session close shutdown context")
 	}
 	latch.mutex.Lock()
 	if !latch.closed {
 		latch.closed = true
+		latch.stopCtx = ctx
+		// The budget can expire while an attempt is already on the wire, so the
+		// cancellation has to reach that attempt too, not only the queue.
+		context.AfterFunc(ctx, latch.expire)
 		close(latch.stopCh)
 		close(latch.jobs)
 	}
 	latch.mutex.Unlock()
-	latch.workers.Wait()
-	latch.done.Wait()
+	drained := make(chan struct{})
+	go func() {
+		latch.workers.Wait()
+		latch.done.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-ctx.Done():
+		// Waiting here would let each queued close spend its own attempt timeout
+		// past the shutdown deadline, which is what makes the teardown miss the
+		// audit tail and the operation checkpoint. Report the unfinished work
+		// instead; the workers abandon the queue on their own.
+	}
 	latch.mutex.Lock()
 	pending, failure := latch.pending, latch.failure
 	latch.mutex.Unlock()
@@ -375,9 +460,10 @@ func (session *gatewaySession) noteStatementAutocommit(value, known bool) {
 
 // sessionCapacityRefusal reports whether a worker reply proves an open was
 // refused for session capacity before it created a session. The worker wraps
-// open_session with not_executed evidence (worker_rpc::dispatch), so this is a
-// refusal, not an unknown outcome: retrying the open is legal and is not a SQL
-// replay. Any other failure keeps the ordinary answer.
+// both open_session and the fused open_guarded_statement's session creation with
+// not_executed evidence (worker_rpc::dispatch), so this is a refusal, not an
+// unknown outcome: retrying the open is legal and is not a SQL replay. Any other
+// failure keeps the ordinary answer.
 func sessionCapacityRefusal(err error) bool {
 	var failure *SQLRPCError
 	if !errors.As(err, &failure) || failure.Ambiguous || !failure.evidence.Rejected() {
@@ -387,14 +473,30 @@ func sessionCapacityRefusal(err error) bool {
 		strings.Contains(failure.workerFailure, "worker session capacity exceeded")
 }
 
+// openCapacityRetryable reports whether this open command's capacity refusal
+// may be retried after the pending closes are flushed. The worker wraps both the
+// plain open_session and the fused open_guarded_statement's session creation
+// with not_executed evidence (worker_rpc::dispatch), so the refusal proves no
+// session exists. The fused statement only runs after that open succeeds, so a
+// retry creates a session; it never replays SQL.
+func openCapacityRetryable(command frozenCommand) bool {
+	switch command.operationName() {
+	case "open_session", "open_guarded_statement":
+		return true
+	default:
+		return false
+	}
+}
+
 // callOpenSession sends the open command and, when the worker proves it refused
-// open_session for session capacity before creating a session, flushes the
-// closes this database still owes and asks exactly once more. Only this command
-// and this provably unexecuted refusal qualify: a statement is never replayed,
-// and a refusal that proves nothing keeps the ordinary failure path.
+// the session creation for capacity before any session existed, flushes the
+// closes this database still owes and asks exactly once more. Both open commands
+// qualify, because the worker wraps both their session creations with
+// not_executed evidence; every other command and every refusal that proves
+// nothing keeps the ordinary failure path, so a statement is never replayed.
 func (gateway *Gateway) callOpenSession(ctx context.Context, database controller.DatabaseID, worker controller.Worker, requestID string, command frozenCommand, reply any) error {
 	err := gateway.config.Upstream.Call(ctx, worker, requestID, command, reply)
-	if err == nil || gateway.deferredClose == nil || command.operationName() != "open_session" || !sessionCapacityRefusal(err) {
+	if err == nil || gateway.deferredClose == nil || !openCapacityRetryable(command) || !sessionCapacityRefusal(err) {
 		return err
 	}
 	gateway.deferredClose.flush(ctx, database.Key())

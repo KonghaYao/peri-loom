@@ -883,6 +883,21 @@ def safe_environment(capacity_trace=False):
     return environment
 
 
+def platform_process_environment():
+    """Build the platform child's base environment.
+
+    The platform reads its experiment switches from its own environment; the launcher
+    forwards only the names it is told to. The deferred session close account stays off
+    unless the operator asks for it, so the switch crosses into the child only when the
+    caller set it; an unset caller keeps the platform default instead of a
+    launcher-invented value.
+    """
+    environment = safe_environment()
+    if "PERI_DEFERRED_SESSION_CLOSE" in os.environ:
+        environment["PERI_DEFERRED_SESSION_CLOSE"] = os.environ["PERI_DEFERRED_SESSION_CLOSE"]
+    return environment
+
+
 def experimental_environment(environment, maintenance=False):
     """Forward the calibration switches by name, never the rest of the caller's environment.
 
@@ -2607,7 +2622,7 @@ class Project:
                     raise RuntimeError(name + " is required for the authority only")
             authority_environment.update({name: value for name, value in os.environ.items() if name.startswith("S3_")})
         self.start("authority", [str(self.rust), "authority", backend, self.launch["authority"], str(self.directory / "authority")], authority_environment)
-        platform_environment = safe_environment()
+        platform_environment = platform_process_environment()
         platform_environment["PERI_COMPLETION_JOURNAL"] = "1" if self.launch.get("completion_journal", False) else "0"
         if self.launch["dev_sql_timeout_seconds"] != 30:
             platform_environment["PERI_DEV_SQL_TIMEOUT_SECONDS"] = str(self.launch["dev_sql_timeout_seconds"])

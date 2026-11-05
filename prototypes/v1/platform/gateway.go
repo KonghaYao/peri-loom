@@ -291,7 +291,7 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 			// pays what is left before the audit and state stores close. A worker
 			// close the cleanup budget could not finish turns into the same
 			// unresolved-close error the synchronous drain reports.
-			closeErr := gateway.deferredClose.stop()
+			closeErr := gateway.deferredClose.stop(ctx)
 			gateway.deferred.stop()
 			return closeErr
 		}
