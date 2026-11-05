@@ -1,0 +1,24 @@
+R71 Gate 1b positive control (both sides are the probe binary; only B injects)
+protocol: identical to A/A; A = probe (no delay), B = probe with
+          PERI_R71_CLOSE_DELAY_US=100.
+
+1) sleep-based injection (probe commit 5403339, binary 51680925...)
+merged B/A: 1.66238, CI [1.57261, 1.78467]; rounds r1 1.75294, r2 1.55022
+BUT the injected delay was not 100us. Independent measurement in the same
+container image (linux/arm64, go1.27.3, n=300):
+  sleep100us n=300 min=118.251us p50=2.923109ms p90=3.928575ms max=5.359546ms mean=2.877749ms
+  spin100us  n=300 min=100.000us p50=100.042us  p90=100.084us  max=128.710us  mean=100.244us
+and the leg-level close action mean confirms it: probe A close 73.7us ->
+probe+delay B close 1196.8us (r1-a1 vs r1-b1). A 100us sleep is therefore a
+~1.1ms injection in this VM and cannot validate a 100us control.
+
+2) busy-wait injection (probe commit f01cd8e, binary 6517583e...)  [VALID]
+merged B/A: 1.13258, CI [1.08304, 1.20891]; rounds r1 1.13602, r2 1.12804
+leg medians (ms/request):
+  r1-a1 1.8748  r1-b1 2.1537  r1-b2 2.1372  r1-a2 1.9338
+  r2-a1 1.8595  r2-b1 2.2288  r2-b2 2.1693  r2-a2 2.0067
+close action mean (r1 pair): 85.4us (A) -> 234.8us (B), +149.4us for a
+100us busy wait plus scheduling overhead.
+failures: 0 in all 8 legs; session_seats 0; active_permits 0
+verdict: the injection is detected at +13.3% (>= 8%) with both rounds in the
+same direction (1.136 / 1.128). Protocol power check passes.

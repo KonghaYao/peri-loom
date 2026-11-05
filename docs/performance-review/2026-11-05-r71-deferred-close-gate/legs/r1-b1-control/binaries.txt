@@ -1,0 +1,20 @@
+campaign: control
+leg: r1-b1  side: b  round: r1
+host: Darwin 25.5.0 arm64
+image: ghcr.io/konghayao/peri-loom:v1.2.7
+  image id: sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+platform host path: /tmp/r71-bin/peri-platform-probe
+platform host sha256: 51680925f8704dc5387f0850b0c90cc393a9c119c27d36dcaefc81d71679f485
+worker host path: /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+worker host sha256: b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+close delay env: 100
+launcher: /tmp/peri-r70-close/prototypes/v1/platform/dev.py (mounted for both sides)
+container: peri-r71-g1b-control-r1-b1
+volume: peri-r71-g1b-control-r1-b1-data (fresh)
+port: 20781
+driver: /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r71-deferred-close-gate/block_driver.py block_size=100 blocks=30 warmup=1
+quotas: platform defaults (not relaxed)
+observer: none
+51680925f8704dc5387f0850b0c90cc393a9c119c27d36dcaefc81d71679f485  /usr/local/bin/peri-platform
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /usr/local/bin/peri-loom-v1
+launcher env PERI_R71_CLOSE_DELAY_US=100

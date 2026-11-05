@@ -1,0 +1,31 @@
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 0, "warmup": true, "requests": 100, "requests_ok": 100, "seconds": 0.178087417, "per_request_ms": 1.78087417, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 1, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.171145416, "per_request_ms": 1.7114541600000002, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 2, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.163626666, "per_request_ms": 1.63626666, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 3, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.91944475, "per_request_ms": 9.1944475, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 4, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.334708125, "per_request_ms": 3.34708125, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 5, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.173926458, "per_request_ms": 1.73926458, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 6, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.167631166, "per_request_ms": 1.67631166, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 7, "warmup": false, "requests": 100, "requests_ok": 100, "seconds": 0.181898458, "per_request_ms": 1.81898458, "statuses": {"200": 100}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 8, "warmup": false, "requests": 100, "requests_ok": 60, "seconds": 0.215535791, "per_request_ms": 2.1553579099999998, "statuses": {"200": 89, "429": 11}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 9, "warmup": false, "requests": 100, "requests_ok": 34, "seconds": 0.231923083, "per_request_ms": 2.31923083, "statuses": {"200": 82, "429": 18}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 10, "warmup": false, "requests": 100, "requests_ok": 39, "seconds": 0.268128583, "per_request_ms": 2.6812858299999998, "statuses": {"200": 88, "429": 12}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 11, "warmup": false, "requests": 100, "requests_ok": 35, "seconds": 0.225920167, "per_request_ms": 2.25920167, "statuses": {"200": 85, "429": 15}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 12, "warmup": false, "requests": 100, "requests_ok": 29, "seconds": 0.227969916, "per_request_ms": 2.2796991600000003, "statuses": {"200": 85, "429": 15}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 13, "warmup": false, "requests": 100, "requests_ok": 32, "seconds": 0.232001625, "per_request_ms": 2.32001625, "statuses": {"200": 84, "429": 16}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 14, "warmup": false, "requests": 100, "requests_ok": 38, "seconds": 0.245323542, "per_request_ms": 2.45323542, "statuses": {"200": 85, "429": 15}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 15, "warmup": false, "requests": 100, "requests_ok": 30, "seconds": 0.227886917, "per_request_ms": 2.27886917, "statuses": {"200": 83, "429": 17}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 16, "warmup": false, "requests": 100, "requests_ok": 31, "seconds": 0.224336125, "per_request_ms": 2.24336125, "statuses": {"200": 83, "429": 17}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 17, "warmup": false, "requests": 100, "requests_ok": 31, "seconds": 0.235089958, "per_request_ms": 2.35089958, "statuses": {"200": 86, "429": 14}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 18, "warmup": false, "requests": 100, "requests_ok": 28, "seconds": 0.213189125, "per_request_ms": 2.13189125, "statuses": {"200": 79, "429": 21}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 19, "warmup": false, "requests": 100, "requests_ok": 29, "seconds": 0.230085875, "per_request_ms": 2.3008587499999997, "statuses": {"200": 87, "429": 13}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 20, "warmup": false, "requests": 100, "requests_ok": 22, "seconds": 0.21417925, "per_request_ms": 2.1417924999999998, "statuses": {"200": 85, "429": 15}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 21, "warmup": false, "requests": 100, "requests_ok": 27, "seconds": 0.221548958, "per_request_ms": 2.21548958, "statuses": {"200": 84, "429": 16}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 22, "warmup": false, "requests": 100, "requests_ok": 33, "seconds": 0.224487584, "per_request_ms": 2.24487584, "statuses": {"200": 80, "429": 20}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 23, "warmup": false, "requests": 100, "requests_ok": 28, "seconds": 0.224373125, "per_request_ms": 2.2437312499999997, "statuses": {"200": 84, "429": 16}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 24, "warmup": false, "requests": 100, "requests_ok": 30, "seconds": 0.227355333, "per_request_ms": 2.27355333, "statuses": {"200": 84, "429": 16}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 25, "warmup": false, "requests": 100, "requests_ok": 31, "seconds": 0.229063458, "per_request_ms": 2.29063458, "statuses": {"200": 84, "429": 16}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 26, "warmup": false, "requests": 100, "requests_ok": 57, "seconds": 0.292468542, "per_request_ms": 2.9246854200000003, "statuses": {"200": 90, "429": 10}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 27, "warmup": false, "requests": 100, "requests_ok": 37, "seconds": 0.244366833, "per_request_ms": 2.44366833, "statuses": {"200": 85, "429": 15}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 28, "warmup": false, "requests": 100, "requests_ok": 28, "seconds": 0.225374, "per_request_ms": 2.25374, "statuses": {"200": 84, "429": 16}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 29, "warmup": false, "requests": 100, "requests_ok": 23, "seconds": 0.214746125, "per_request_ms": 2.14746125, "statuses": {"200": 85, "429": 15}}
+{"leg": "r1-a1", "side": "a", "round": "r1", "block": 30, "warmup": false, "requests": 100, "requests_ok": 26, "seconds": 0.224954833, "per_request_ms": 2.24954833, "statuses": {"200": 85, "429": 15}}

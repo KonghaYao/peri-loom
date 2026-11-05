@@ -1,0 +1,122 @@
+{
+  "mode": "candidate",
+  "legs": [
+    {
+      "leg": "r1-a1",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.5682,
+      "mean_ms": 2.5673,
+      "stdev_ms": 0.4357,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-a2",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.534,
+      "mean_ms": 2.5602,
+      "stdev_ms": 0.4591,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-b1",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 1.9407,
+      "mean_ms": 1.9338,
+      "stdev_ms": 0.2402,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-b2",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 1.7738,
+      "mean_ms": 1.7634,
+      "stdev_ms": 0.3101,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-a1",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.5672,
+      "mean_ms": 2.4546,
+      "stdev_ms": 0.4557,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-a2",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.5148,
+      "mean_ms": 2.5565,
+      "stdev_ms": 0.478,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-b1",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 1.8092,
+      "mean_ms": 1.8333,
+      "stdev_ms": 0.2932,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-b2",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 1.745,
+      "mean_ms": 1.7992,
+      "stdev_ms": 0.3339,
+      "failures": 0,
+      "first_failure": null
+    }
+  ],
+  "blocks": {
+    "a": 120,
+    "b": 120
+  },
+  "per_leg": {
+    "r1-a1": 2.5682,
+    "r1-a2": 2.534,
+    "r1-b1": 1.9407,
+    "r1-b2": 1.7738,
+    "r2-a1": 2.5672,
+    "r2-a2": 2.5148,
+    "r2-b1": 1.8092,
+    "r2-b2": 1.745
+  },
+  "merged_b_over_a": {
+    "ratio": 0.72653,
+    "ci95": [
+      0.6935,
+      0.75035
+    ],
+    "draws": 10000
+  },
+  "round_ratios": {
+    "r1": 0.73142,
+    "r2": 0.69852
+  },
+  "failed_legs": [],
+  "complete": true,
+  "verdict": "implement: >= 15% improvement"
+}

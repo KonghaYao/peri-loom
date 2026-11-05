@@ -1,0 +1,44 @@
+R71 Gate 1b runtime guardrails (all campaign legs)
+campaign  leg    side blocks failures session_seats active_permits errors  seed
+aa        r1-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r1-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r1-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r1-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+smoke     r1-a1  a    30     1542     0             0              1542    verify threads=201 messages=8625 chars=20177069 focus=8625
+smoke2    r1-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+smoke3    r1-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r1-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r1-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r1-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r1-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r1-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r1-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r1-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r1-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r1-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r1-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r1-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r1-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r2-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r2-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r2-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r2-a1  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r2-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r2-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r2-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r2-a2  a    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r2-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r2-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r2-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r2-b1  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+aa        r2-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+candidate r2-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control   r2-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+control2  r2-b2  b    30     0        0             0              0       verify threads=201 messages=8625 chars=20177069 focus=8625
+
+legs with failures or non-zero seats/permits/errors: ['r1-a1-smoke']
+
+driver parameters: block_size=100, blocks=30, warmup=1, block_gap=0.75s, initial_refill=1.2s
+quotas: platform defaults (max_concurrent=100, max_sessions=16, requests_per_second=500)
+observer: none in every Gate 1b leg
+worker binary identical on both sides in every leg (sha b17a0708...)

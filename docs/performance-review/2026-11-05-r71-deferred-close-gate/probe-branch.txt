@@ -1,0 +1,17 @@
+R71 Gate 1b probe branch (never merged, never pushed as a candidate)
+branch: probe/r70-deferred-close-ceiling
+worktree base: 203f2418327fcaaed409f6a4582348aea6fe00c9
+commits:
+  5403339d5eb46601cbe1a8282551fb8efef5b6d7  close waits no longer; background call; time.Sleep positive control
+  f01cd8ea1fa4876d723941247aaec36b9eff74ca  positive control replaced with a busy wait (true 100us)
+binaries (linux/arm64, CGO_ENABLED=0, go1.27.3, -trimpath):
+  51680925f8704dc5387f0850b0c90cc393a9c119c27d36dcaefc81d71679f485  sleep-control build (control campaign)
+  6517583e751e2dd936c44fcbd80dd77d13b10757503a0917a7f83bad16096916  spin-control build (control2 + candidate campaigns)
+scope:
+  - gateway_sessions.go action=="close: client reply no longer waits for close_session; one
+    detached goroutine with a 30s bound calls the upstream once, drops the result, writes no
+    record and never retries. Platform admission, close record and removeSession unchanged.
+  - probe_r71_close.go: PERI_R71_CLOSE_DELAY_US positive control (busy wait).
+  - dev.py: forwards only PERI_R71_CLOSE_DELAY_US to the platform; mounted for BOTH sides so
+    the launcher is identical across legs.
+  - untouched: fused close, retirement/cleanup drain, management tools, writer/transaction paths.

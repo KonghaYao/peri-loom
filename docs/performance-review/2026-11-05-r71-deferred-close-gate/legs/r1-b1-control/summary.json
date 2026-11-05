@@ -1,0 +1,19 @@
+{
+  "leg": "r1-b1",
+  "side": "b",
+  "round": "r1",
+  "block_size": 100,
+  "blocks": 30,
+  "block_gap_seconds": 0.75,
+  "initial_refill_seconds": 1.2,
+  "timed_blocks": 30,
+  "warmup_blocks": 1,
+  "warmup_median_ms": 3.153,
+  "median_ms": 2.9132,
+  "mean_ms": 3.1588,
+  "stdev_ms": 0.6009,
+  "min_ms": 2.375,
+  "max_ms": 4.6642,
+  "failures": 0,
+  "first_failure": null
+}

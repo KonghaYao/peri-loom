@@ -1,0 +1,16 @@
+R71 Gate 1b A/A self-check (v1.2.7 platform binary on BOTH sides)
+protocol: 4 legs A/B/B/A x 2 rounds; 1 warmup + 30 timed blocks of 100
+          consecutive [execute SELECT 1, close] pipeline requests; sample =
+          block wall clock / 100; fresh stack + volume per leg; default quotas;
+          no observer; identical v1.2.7 worker.
+merged B/A (pooled 120 blocks per side): 1.04629
+bootstrap 95% CI (10,000 draws, block resampling): [1.00665, 1.08013]
+per-round ratios: r1 0.99859, r2 1.09169
+positional diagnostic (a1 legs vs a2 legs): 0.91407, CI [0.87739, 0.97270]
+leg medians (ms/request):
+  r1-a1 2.6818  r1-b1 2.4467  r1-b2 2.6243  r1-a2 2.4481
+  r2-a1 2.4864  r2-b1 2.5863  r2-b2 2.6411  r2-a2 2.3320
+failures: 0 in all 8 legs; session_seats 0; active_permits 0
+verdict: merged ratio is inside 1.00 +/- 0.05 (pass, margin 0.4pp). The
+positional split and the r2 ratio show ~9% drift with an identical binary;
+the candidate's -27% effect and both-round agreement are well outside it.

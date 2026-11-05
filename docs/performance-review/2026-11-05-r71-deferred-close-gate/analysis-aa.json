@@ -1,0 +1,130 @@
+{
+  "mode": "aa",
+  "legs": [
+    {
+      "leg": "r1-a1",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.6818,
+      "mean_ms": 2.6114,
+      "stdev_ms": 0.3839,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-a2",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.4481,
+      "mean_ms": 2.4461,
+      "stdev_ms": 0.2956,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-b1",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.4467,
+      "mean_ms": 2.4077,
+      "stdev_ms": 0.4781,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-b2",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.6243,
+      "mean_ms": 2.6222,
+      "stdev_ms": 0.3647,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-a1",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.4864,
+      "mean_ms": 2.4796,
+      "stdev_ms": 0.3161,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-a2",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.332,
+      "mean_ms": 2.324,
+      "stdev_ms": 0.2363,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-b1",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.5863,
+      "mean_ms": 2.5325,
+      "stdev_ms": 0.2974,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-b2",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.6411,
+      "mean_ms": 2.5755,
+      "stdev_ms": 0.3253,
+      "failures": 0,
+      "first_failure": null
+    }
+  ],
+  "blocks": {
+    "a": 120,
+    "b": 120
+  },
+  "per_leg": {
+    "r1-a1": 2.6818,
+    "r1-a2": 2.4481,
+    "r1-b1": 2.4467,
+    "r1-b2": 2.6243,
+    "r2-a1": 2.4864,
+    "r2-a2": 2.332,
+    "r2-b1": 2.5863,
+    "r2-b2": 2.6411
+  },
+  "merged_b_over_a": {
+    "ratio": 1.04629,
+    "ci95": [
+      1.00665,
+      1.08013
+    ],
+    "draws": 10000
+  },
+  "round_ratios": {
+    "r1": 0.99859,
+    "r2": 1.09169
+  },
+  "failed_legs": [],
+  "complete": true,
+  "aa_a1_over_a2": {
+    "ratio": 0.91407,
+    "ci95": [
+      0.87739,
+      0.9727
+    ],
+    "draws": 10000
+  },
+  "verdict": "pass: merged A/A ratio inside 1.00 +/- 0.05"
+}

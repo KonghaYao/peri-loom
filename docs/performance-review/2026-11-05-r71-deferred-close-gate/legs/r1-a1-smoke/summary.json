@@ -1,0 +1,21 @@
+{
+  "leg": "r1-a1",
+  "side": "a",
+  "round": "r1",
+  "block_size": 100,
+  "blocks": 30,
+  "timed_blocks": 30,
+  "warmup_blocks": 1,
+  "warmup_median_ms": 1.7809,
+  "median_ms": 2.2565,
+  "mean_ms": 2.4776,
+  "stdev_ms": 1.3145,
+  "min_ms": 1.6363,
+  "max_ms": 9.1944,
+  "failures": 1542,
+  "first_failure": {
+    "block": 8,
+    "kind": "http",
+    "status": 429
+  }
+}

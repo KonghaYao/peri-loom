@@ -1,0 +1,122 @@
+{
+  "mode": "control",
+  "legs": [
+    {
+      "leg": "r1-a1",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 1.7812,
+      "mean_ms": 1.7964,
+      "stdev_ms": 0.2966,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-a2",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 1.7138,
+      "mean_ms": 1.7137,
+      "stdev_ms": 0.2164,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-b1",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.9132,
+      "mean_ms": 3.1588,
+      "stdev_ms": 0.6009,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r1-b2",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 3.1658,
+      "mean_ms": 3.1894,
+      "stdev_ms": 0.5354,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-a1",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 1.8347,
+      "mean_ms": 1.86,
+      "stdev_ms": 0.2927,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-a2",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 1.8667,
+      "mean_ms": 1.8604,
+      "stdev_ms": 0.2889,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-b1",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.6688,
+      "mean_ms": 2.8333,
+      "stdev_ms": 0.4848,
+      "failures": 0,
+      "first_failure": null
+    },
+    {
+      "leg": "r2-b2",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 3.031,
+      "mean_ms": 3.014,
+      "stdev_ms": 0.4295,
+      "failures": 0,
+      "first_failure": null
+    }
+  ],
+  "blocks": {
+    "a": 120,
+    "b": 120
+  },
+  "per_leg": {
+    "r1-a1": 1.7812,
+    "r1-a2": 1.7138,
+    "r1-b1": 2.9132,
+    "r1-b2": 3.1658,
+    "r2-a1": 1.8347,
+    "r2-a2": 1.8667,
+    "r2-b1": 2.6688,
+    "r2-b2": 3.031
+  },
+  "merged_b_over_a": {
+    "ratio": 1.66238,
+    "ci95": [
+      1.57261,
+      1.78467
+    ],
+    "draws": 10000
+  },
+  "round_ratios": {
+    "r1": 1.75294,
+    "r2": 1.55022
+  },
+  "failed_legs": [],
+  "complete": true,
+  "verdict": "pass: +100us control detected (>= 8%, both rounds same direction)"
+}
