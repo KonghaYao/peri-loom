@@ -1,0 +1,131 @@
+{
+  "database": {
+    "branch": "main",
+    "namespace": {
+      "database": "demo",
+      "tenant": "local_default"
+    }
+  },
+  "session": "de8b98a0204257a3a4c298f8a848416a",
+  "steps": [
+    {
+      "code": "",
+      "duration_ms": 4.608583,
+      "ok": true,
+      "path": "/v1/sql/open",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "2fd8469b07fbbe4a38d7de07daa2dcde",
+        "result": {
+          "readonly": false,
+          "session": "de8b98a0204257a3a4c298f8a848416a"
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "open"
+    },
+    {
+      "code": "",
+      "duration_ms": 1.846416,
+      "ok": true,
+      "path": "/v1/sql/statement",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "46a4407c8fcd00e70941e9006e383450",
+        "result": {
+          "affected_row_count": 0,
+          "autocommit": true,
+          "cols": [
+            {
+              "decltype": null,
+              "name": "5"
+            }
+          ],
+          "last_insert_rowid": null,
+          "query_duration_ms": 0.21662499999999998,
+          "rows": [
+            [
+              5
+            ]
+          ],
+          "rows_read": 0,
+          "rows_written": 0
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "statement"
+    },
+    {
+      "code": "",
+      "duration_ms": 0.458667,
+      "ok": true,
+      "path": "/v1/sql/close",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "2da41ef31b5ac18278cfb56d7b43be74",
+        "result": {
+          "closed": true
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "close"
+    },
+    {
+      "code": "invalid_session",
+      "duration_ms": 6.95525,
+      "ok": false,
+      "path": "/v1/sql/statement",
+      "response": {
+        "error": {
+          "code": "invalid_session"
+        },
+        "ok": false,
+        "request_id": "2c397e7db98a71c14cf59ba1e2f98d56",
+        "result": null,
+        "version": 1
+      },
+      "status": 403,
+      "step": "reuse_statement"
+    },
+    {
+      "code": "invalid_session",
+      "duration_ms": 2.237833,
+      "ok": false,
+      "path": "/v1/sql/cursor/open",
+      "response": {
+        "error": {
+          "code": "invalid_session"
+        },
+        "ok": false,
+        "request_id": "5b900a5cee94c1622ffe2d7541d40f75",
+        "result": null,
+        "version": 1
+      },
+      "status": 403,
+      "step": "reuse_cursor"
+    },
+    {
+      "code": "invalid_session",
+      "duration_ms": 2.238917,
+      "ok": false,
+      "path": "/v1/sql/query",
+      "response": {
+        "error": {
+          "code": "invalid_session"
+        },
+        "ok": false,
+        "request_id": "637199eb6d8bb333f77a218bc30972d1",
+        "result": null,
+        "version": 1
+      },
+      "status": 403,
+      "step": "reuse_query"
+    }
+  ]
+}

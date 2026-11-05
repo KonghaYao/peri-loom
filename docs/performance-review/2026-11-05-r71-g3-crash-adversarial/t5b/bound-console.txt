@@ -1,0 +1,22 @@
+{
+  "concurrency": 8,
+  "duration_s": 8.0,
+  "failures": 0,
+  "first_failures": [],
+  "label": "t5b-bound-c8",
+  "latency_ms": {
+    "max": 229.655458,
+    "mean": 137.91739783285303,
+    "min": 1.695459,
+    "n": 347,
+    "p50": 203.95075,
+    "p90": 206.958208,
+    "p95": 207.6165,
+    "p99": 210.689208
+  },
+  "ok": 347,
+  "requests": 347,
+  "requests_per_second": 42.288307881539566,
+  "target_rps": 60.0,
+  "wall_s": 8.205577791668475
+}

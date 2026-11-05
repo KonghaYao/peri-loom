@@ -1,0 +1,7 @@
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  /data/peri/launcher.lock
+9f3299f50f5c4b4907689e65f59a6447cd61b0a5cb19ce49064ff519fbaf76f9  /data/peri/owned-proof/worker-a.identity.json
+233bd4c7cea9b709b3a598830854150f044f13bf533bbd98e42e4147d95d4da4  /data/peri/owned-proof/worker-a.stop.json
+733d66404df36f0db05fda638f0b3dd750e37a2437952806763b3d06f996b3dd  /data/peri/owned-proof/worker-b.identity.json
+887e3c2d6404c5e4d1348325e9a6998a1025155f79edf681837545a6eb5ca586  /data/peri/owned-proof/worker-b.stop.json
+clean
+/data/peri/launcher-stop.pre-recovery.json

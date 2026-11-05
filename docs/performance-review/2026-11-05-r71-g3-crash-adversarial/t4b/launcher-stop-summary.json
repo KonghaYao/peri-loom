@@ -1,0 +1,32 @@
+{
+  "generation": "2481a9fe61b9bed0ad6cd8ff396663db1a05d533b6831fb1c9886b916971ca79",
+  "outcome": "clean",
+  "reason": "terminal_proof_written",
+  "stages": [
+    {
+      "cap_ms": 15000,
+      "exit_code": 0,
+      "name": "platform",
+      "waited_ms": 39.53387215733528
+    },
+    {
+      "cap_ms": 13000,
+      "exit_code": 0,
+      "name": "worker-a",
+      "waited_ms": 141.03476284071803
+    },
+    {
+      "cap_ms": 13000,
+      "exit_code": 0,
+      "name": "worker-b",
+      "waited_ms": 59.412349946796894
+    },
+    {
+      "cap_ms": 12000,
+      "exit_code": 0,
+      "name": "authority",
+      "waited_ms": 17.462474759668112
+    }
+  ],
+  "unresolved_operations": false
+}

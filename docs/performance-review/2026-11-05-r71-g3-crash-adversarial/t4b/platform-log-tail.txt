@@ -1,0 +1,14 @@
+2026/11/05 07:05:35 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:05:39 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:05:43 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:05:47 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:05:51 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:05:55 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:05:59 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:06:03 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:06:06 deferred session close failed; retrying: database=local_default/demo/main session=2e67e4d01c07cd5c8a994a9d8d55b315 failure=cleanup_timeout
+2026/11/05 07:06:07 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:06:11 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:06:15 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:06:19 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms
+2026/11/05 07:06:23 控制面心跳观测过期：worker=worker-a，本 pass 第1次重探（上限4次），探测上限=2000ms

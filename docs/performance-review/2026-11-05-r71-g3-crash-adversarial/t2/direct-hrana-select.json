@@ -1,0 +1,1 @@
+{"error":{"code":"database_isolated","execution_proven":true,"message":"database_isolated","operation_id":"ae87d85098a957b97a5b1c142004af71","outcome_unknown":false,"partial_execution_possible":false,"possible_commit":true,"retry_allowed":false,"retryable":false,"stage":"open_session"}}

@@ -1,0 +1,22 @@
+{
+  "concurrency": 2,
+  "duration_s": 3.0,
+  "failures": 0,
+  "first_failures": [],
+  "label": "t4b-post-resume",
+  "latency_ms": {
+    "max": 15.688459,
+    "mean": 5.3657965333333335,
+    "min": 1.79475,
+    "n": 60,
+    "p50": 5.403125,
+    "p90": 7.841167,
+    "p95": 10.020917,
+    "p99": 10.9225
+  },
+  "ok": 60,
+  "requests": 60,
+  "requests_per_second": 19.655576420195665,
+  "target_rps": 20.0,
+  "wall_s": 3.0525688342750072
+}

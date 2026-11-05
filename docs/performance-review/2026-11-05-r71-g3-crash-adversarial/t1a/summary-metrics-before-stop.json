@@ -1,0 +1,58 @@
+{
+  "actions_total": {
+    "close": 2407,
+    "open": 2407,
+    "statement": 2407
+  },
+  "active_permits": 0,
+  "cleanup_ledger": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "deferred_session_close": {
+    "enqueued_total": 2403,
+    "failed_total": 0,
+    "flushed_total": 0,
+    "inline_total": 4,
+    "maximum": 256,
+    "pending": 0,
+    "pending_max": 4,
+    "per_database_maximum": 4,
+    "retried_total": 0,
+    "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+    "unresolved_total": 0
+  },
+  "errors_total": {},
+  "operation_settle": {
+    "exhausted_total": 0,
+    "refusal_values": [
+      "queue_full",
+      "state_closed",
+      "state_uncertain",
+      "state_frozen",
+      "operation_refused",
+      "other"
+    ],
+    "refused_total": {},
+    "retry_budget_ms": 300,
+    "retry_success_total": 0,
+    "retry_total": 0,
+    "semantics": "only a local journal queue refusal before any write is retried; the SQL call is never replayed and no lock is held across a backoff"
+  },
+  "rejection_reasons_total": {},
+  "session_seats": 0,
+  "unknown_held_permits": 0
+}

@@ -1,0 +1,1 @@
+verify_no_unresolved_operations: PASS (state after direct platform clean stop, generation from platform.json)

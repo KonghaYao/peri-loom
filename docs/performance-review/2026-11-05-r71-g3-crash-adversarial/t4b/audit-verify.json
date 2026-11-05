@@ -1,0 +1,21 @@
+{
+  "audit_dir": "evidence/t4b/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "e00863e8bb1bd6fe86f1ba3b75dce453d3d8189136807c716c2c7ad6f70705d1",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 199,
+  "last_hash": "e00863e8bb1bd6fe86f1ba3b75dce453d3d8189136807c716c2c7ad6f70705d1",
+  "last_sequence": 199,
+  "leg": "t4b",
+  "present": true,
+  "records": 199,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 199
+    }
+  ]
+}

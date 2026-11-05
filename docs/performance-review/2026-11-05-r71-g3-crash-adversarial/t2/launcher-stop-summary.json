@@ -1,0 +1,32 @@
+{
+  "generation": "afc7574967474f7d29eed579eb6d8ac3910411b26336395859a930477c40217d",
+  "outcome": "unclean",
+  "reason": "terminal_proof_unavailable: unresolved platform operation prevents clean restart",
+  "stages": [
+    {
+      "cap_ms": 15000,
+      "exit_code": 0,
+      "name": "platform",
+      "waited_ms": 36.195744294673204
+    },
+    {
+      "cap_ms": 13000,
+      "exit_code": 0,
+      "name": "worker-a",
+      "waited_ms": 144.2449721507728
+    },
+    {
+      "cap_ms": 13000,
+      "exit_code": 0,
+      "name": "worker-b",
+      "waited_ms": 141.10476104542613
+    },
+    {
+      "cap_ms": 12000,
+      "exit_code": 0,
+      "name": "authority",
+      "waited_ms": 15.16855601221323
+    }
+  ],
+  "unresolved_operations": "not_verified"
+}

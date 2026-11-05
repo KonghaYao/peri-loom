@@ -1,0 +1,24 @@
+{
+  "rows": [
+    [
+      "r71-g3-acked-b"
+    ]
+  ],
+  "statuses": [
+    {
+      "code": "",
+      "status": 200,
+      "step": "open"
+    },
+    {
+      "code": "",
+      "status": 200,
+      "step": "query"
+    },
+    {
+      "code": "",
+      "status": 200,
+      "step": "close"
+    }
+  ]
+}

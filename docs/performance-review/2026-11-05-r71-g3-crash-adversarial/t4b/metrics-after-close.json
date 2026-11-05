@@ -1,0 +1,34 @@
+{
+  "active_permits": 0,
+  "cleanup_ledger": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "deferred_session_close": {
+    "enqueued_total": 1,
+    "failed_total": 0,
+    "flushed_total": 0,
+    "inline_total": 0,
+    "maximum": 256,
+    "pending": 1,
+    "pending_max": 1,
+    "per_database_maximum": 4,
+    "retried_total": 0,
+    "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+    "unresolved_total": 0
+  },
+  "session_seats": 0
+}
