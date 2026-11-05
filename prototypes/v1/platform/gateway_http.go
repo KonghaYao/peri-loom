@@ -153,11 +153,11 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		if result.operationPending && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
-			gateway.settleOperationCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, identifier)
+			gateway.settleOperationCaller(ctx, result.operationDatabase, result.operationID, result.operationStage, &result, permit, identifier)
 			leaveTerminal()
 		} else if result.operationDeferred != nil && !unified {
 			leaveTerminal := requestPhaseSpan(ctx, requestPhaseTerminal)
-			gateway.settlePendingOperation(result.operationDeferred, &result, permit, gateway.deferredCompletion(action, &result))
+			gateway.settlePendingOperation(ctx, result.operationDeferred, &result, permit, gateway.deferredCompletion(action, &result))
 			leaveTerminal()
 		}
 		outcome := result.code
@@ -187,9 +187,9 @@ func (gateway *Gateway) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 				}
 				if result.operationPending {
 					caller := newDurabilityCaller(gateway.config.State, result.operationID, identifier, "completion", "gateway")
-					auditErr = gateway.settleOperationUsingCaller(result.operationDatabase, result.operationID, result.operationStage, &result, permit, submit, caller)
+					auditErr = gateway.settleOperationUsingCaller(ctx, result.operationDatabase, result.operationID, result.operationStage, &result, permit, submit, caller)
 				} else {
-					auditErr = gateway.settlePendingOperationUsing(result.operationDeferred, &result, permit, submit, gateway.deferredCompletion(action, &result))
+					auditErr = gateway.settlePendingOperationUsing(ctx, result.operationDeferred, &result, permit, submit, gateway.deferredCompletion(action, &result))
 				}
 				completion.Release()
 				completion = nil

@@ -74,7 +74,7 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 		// The marker stays set when the record cannot be written: a later retry
 		// must skip the worker call again, because that session does not exist.
 		result := gatewayResult{session: session, dispatched: true, value: map[string]bool{"closed": true}}
-		gateway.settlePendingOperation(pending, &result, permit, nil)
+		gateway.settlePendingOperation(ctx, pending, &result, permit, nil)
 		if result.code == "outcome_unknown" {
 			return &SQLRPCError{Ambiguous: true}
 		}
@@ -89,36 +89,42 @@ func (gateway *Gateway) closeTrackedSession(ctx context.Context, session *gatewa
 	if err != nil {
 		result = gateway.upstreamFailure(err, session, permit)
 	}
-	gateway.settlePendingOperation(pending, &result, permit, nil)
+	gateway.settlePendingOperation(ctx, pending, &result, permit, nil)
 	if result.code == "outcome_unknown" {
 		return &SQLRPCError{Ambiguous: true, cause: err}
 	}
 	return err
 }
 
-func (gateway *Gateway) settleOperation(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit) {
-	gateway.settleOperationCaller(database, operationID, stage, result, permit, "")
+func (gateway *Gateway) settleOperation(ctx context.Context, database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit) {
+	gateway.settleOperationCaller(ctx, database, operationID, stage, result, permit, "")
 }
 
-func (gateway *Gateway) settleOperationCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, requestID string) {
+func (gateway *Gateway) settleOperationCaller(ctx context.Context, database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, requestID string) {
 	caller := newDurabilityCaller(gateway.config.State, operationID, requestID, "terminal", "gateway")
-	_ = gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, func(change func(*operationEdit) error) (func() error, error) {
+	_ = gateway.settleOperationUsingCaller(ctx, database, operationID, stage, result, permit, func(change func(*operationEdit) error) (func() error, error) {
 		return nil, updateOperationRecords(gateway.config.State, change)
 	}, caller)
 }
 
-func (gateway *Gateway) settleOperationUsing(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error)) error {
-	return gateway.settleOperationUsingCaller(database, operationID, stage, result, permit, submit, nil)
+func (gateway *Gateway) settleOperationUsing(ctx context.Context, database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error)) error {
+	return gateway.settleOperationUsingCaller(ctx, database, operationID, stage, result, permit, submit, nil)
 }
 
-func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), caller *durabilityCaller) error {
-	unlock := lockObservedOperationNamespace(database.Namespace, caller)
+func (gateway *Gateway) settleOperationUsingCaller(ctx context.Context, database controller.DatabaseID, operationID, stage string, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), caller *durabilityCaller) error {
 	result.operationID, result.operationStage = operationID, stage
 	// observed keeps the committed copy of a record whose outcome the reply must
 	// quote; the edit below only exposes a value copy, and the reply is written
 	// after this function returns. It is request-local, so no lock is shared.
 	var observed *OperationStatus
-	wait, err := submit(func(edit *operationEdit) error {
+	requestID := ""
+	if caller != nil {
+		requestID = caller.request
+	}
+	// The record is ordered for one namespace before the fence drops, so several
+	// settlements of one database can share the barrier they wait for afterwards.
+	// A local queue refusal is retried with the fence already released.
+	wait, err := gateway.settle.submit(ctx, database.Namespace, caller, submit, func(edit *operationEdit) error {
 		edit.caller = caller
 		key := operationKey(database, operationID)
 		record, exists := edit.record(key)
@@ -136,13 +142,11 @@ func (gateway *Gateway) settleOperationUsingCaller(database controller.DatabaseI
 		}
 		return nil
 	})
-	// The record is ordered for one namespace before the fence drops, so several
-	// settlements of one database can share the barrier they wait for afterwards.
-	unlock()
 	if err == nil && wait != nil {
 		err = wait()
 	}
 	if err != nil {
+		gateway.settle.recordRefusal(err, settleTarget{stage: stage, operation: operationID, request: requestID, database: database.Key()})
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)
 		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, stage, database
@@ -213,13 +217,16 @@ func pendingOutcomeOperation(database controller.DatabaseID, worker, session, ac
 //
 // deferAfter hands the barrier of a known outcome to the reply-independent account;
 // the retirement path passes nil because its retry decision needs the result.
-func (gateway *Gateway) settlePendingOperation(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, deferAfter *deferredDurability) {
-	_ = gateway.settlePendingOperationUsing(pending, result, permit, func(change func(*operationEdit) error) (func() error, error) {
+func (gateway *Gateway) settlePendingOperation(ctx context.Context, pending *pendingOperation, result *gatewayResult, permit *admissionPermit, deferAfter *deferredDurability) {
+	// Every refusal that rewrites the result to outcome_unknown is counted and
+	// logged by settlePendingOperationUsing, so this call site cannot lose it
+	// silently.
+	_ = gateway.settlePendingOperationUsing(ctx, pending, result, permit, func(change func(*operationEdit) error) (func() error, error) {
 		return submitOperationRecords(gateway.config.State, change)
 	}, deferAfter)
 }
 
-func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), deferAfter *deferredDurability) error {
+func (gateway *Gateway) settlePendingOperationUsing(ctx context.Context, pending *pendingOperation, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), deferAfter *deferredDurability) error {
 	unknown := result.code == "outcome_unknown"
 	if !unknown && !pending.outcome {
 		return nil
@@ -244,7 +251,7 @@ func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, r
 	// quote: an open whose reply was lost is answered from its own record, so the
 	// reply cannot claim a commit the record does not.
 	var observed *OperationStatus
-	operationID, err := settleNonCommittingOperationUsing(gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(edit *operationEdit, record *OperationRecord) error {
+	operationID, err := settleNonCommittingOperationUsing(ctx, &gateway.settle, gateway.config.State, pending.database, pending.requestID, "gateway", pending.action, pending.stage, pending.worker, pending.session, pending.digest, func(edit *operationEdit, record *OperationRecord) error {
 		applyOperationOutcome(record, settled, pending.stage)
 		if pending.stage == "open_session" && unknown {
 			status := record.OperationStatus
@@ -257,6 +264,7 @@ func (gateway *Gateway) settlePendingOperationUsing(pending *pendingOperation, r
 	}, settle)
 	result.operationID, result.operationStage = operationID, pending.stage
 	if err != nil {
+		gateway.settle.recordRefusal(err, settleTarget{action: pending.action, stage: pending.stage, request: pending.requestID, database: pending.database.Key()})
 		finish := result.finish
 		*result = gateway.unknown(result.session, permit)
 		result.finish, result.operationID, result.operationStage, result.operationDatabase = finish, operationID, pending.stage, pending.database
