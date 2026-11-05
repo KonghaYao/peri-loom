@@ -1,0 +1,101 @@
+| leg | flag | checks | driver exit | audit records | audit delta | deferred enqueued |
+|---|---|---:|---:|---:|---:|---:|
+| p2/c8/r1-a1 | off | 13/13 | 0 | 12476 | 12024 | — |
+| p2/c8/r1-a2 | off | 13/13 | 0 | 12476 | 12024 | — |
+| p2/c8/r1-b1 | on | 18/18 | 0 | 12476 | 12024 | 3901 |
+| p2/c8/r1-b2 | on | 18/18 | 0 | 12476 | 12024 | 3895 |
+| p2/c8/r2-a1 | off | 13/13 | 0 | 12476 | 12024 | — |
+| p2/c8/r2-a2 | off | 13/13 | 0 | 12476 | 12024 | — |
+| p2/c8/r2-b1 | on | 18/18 | 0 | 12476 | 12024 | 3903 |
+| p2/c8/r2-b2 | on | 18/18 | 0 | 12476 | 12024 | 3875 |
+| p2/f1/p1-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p1-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p2-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p2-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p3-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p3-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p4-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p4-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p5-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p5-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p6-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p6-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p7-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p7-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/f1/p8-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/f1/p8-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/h1/r1-a1 | off | 13/13 | 0 | 602 | 150 | — |
+| p2/h1/r1-a2 | off | 13/13 | 0 | 602 | 150 | — |
+| p2/h1/r1-b1 | on | 18/18 | 0 | 602 | 150 | 4 |
+| p2/h1/r1-b2 | on | 18/18 | 0 | 602 | 150 | 4 |
+| p2/h1/r2-a1 | off | 13/13 | 0 | 602 | 150 | — |
+| p2/h1/r2-a2 | off | 13/13 | 0 | 602 | 150 | — |
+| p2/h1/r2-b1 | on | 18/18 | 0 | 602 | 150 | 4 |
+| p2/h1/r2-b2 | on | 18/18 | 0 | 602 | 150 | 4 |
+| p2/l1/p1-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p1-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p2-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p2-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p3-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p3-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p4-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p4-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p5-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p5-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p6-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p6-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p7-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p7-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/l1/p8-a | off | 13/13 | 0 | 836 | 384 | — |
+| p2/l1/p8-b | on | 18/18 | 0 | 836 | 384 | 126 |
+| p2/w1/r1-a1 | off | 13/13 | 0 | 647 | 195 | — |
+| p2/w1/r1-a2 | off | 13/13 | 0 | 647 | 195 | — |
+| p2/w1/r1-b1 | on | 17/18 | 0 | 647 | 195 | 0 |
+  FAIL: flag on enqueues closes
+| p2/w1/r1-b2 | on | 17/18 | 0 | 647 | 195 | 0 |
+  FAIL: flag on enqueues closes
+| p2/w1/r2-a1 | off | 13/13 | 0 | 647 | 195 | — |
+| p2/w1/r2-a2 | off | 13/13 | 0 | 647 | 195 | — |
+| p2/w1/r2-b1 | on | 17/18 | 0 | 647 | 195 | 0 |
+  FAIL: flag on enqueues closes
+| p2/w1/r2-b2 | on | 17/18 | 0 | 647 | 195 | 0 |
+  FAIL: flag on enqueues closes
+| p2/x1/r1-a1 | off | 15/15 | 1 | 1617 | 1165 | — |
+| p2/x1/r1-a2 | off | 15/15 | 1 | 1609 | 1157 | — |
+| p2/x1/r1-b1 | on | 20/20 | 1 | 1567 | 1115 | 347 |
+| p2/x1/r1-b2 | on | 20/20 | 1 | 1553 | 1101 | 334 |
+| p2/x1/r2-a1 | off | 15/15 | 1 | 1569 | 1117 | — |
+| p2/x1/r2-a2 | off | 15/15 | 1 | 1613 | 1161 | — |
+| p2/x1/r2-b1 | on | 20/20 | 1 | 1587 | 1135 | 356 |
+| p2/x1/r2-b2 | on | 20/20 | 1 | 1509 | 1057 | 320 |
+audit counts c8/r1 equal=True A=[('r1-a1', 12024), ('r1-a2', 12024)] B=[('r1-b1', 12024), ('r1-b2', 12024)]
+audit counts c8/r2 equal=True A=[('r2-a1', 12024), ('r2-a2', 12024)] B=[('r2-b1', 12024), ('r2-b2', 12024)]
+audit counts f1/p1 equal=True A=[('p1-a', 384)] B=[('p1-b', 384)]
+audit counts f1/p2 equal=True A=[('p2-a', 384)] B=[('p2-b', 384)]
+audit counts f1/p3 equal=True A=[('p3-a', 384)] B=[('p3-b', 384)]
+audit counts f1/p4 equal=True A=[('p4-a', 384)] B=[('p4-b', 384)]
+audit counts f1/p5 equal=True A=[('p5-a', 384)] B=[('p5-b', 384)]
+audit counts f1/p6 equal=True A=[('p6-a', 384)] B=[('p6-b', 384)]
+audit counts f1/p7 equal=True A=[('p7-a', 384)] B=[('p7-b', 384)]
+audit counts f1/p8 equal=True A=[('p8-a', 384)] B=[('p8-b', 384)]
+audit counts h1/r1 equal=True A=[('r1-a1', 150), ('r1-a2', 150)] B=[('r1-b1', 150), ('r1-b2', 150)]
+audit counts h1/r2 equal=True A=[('r2-a1', 150), ('r2-a2', 150)] B=[('r2-b1', 150), ('r2-b2', 150)]
+audit counts l1/p1 equal=True A=[('p1-a', 384)] B=[('p1-b', 384)]
+audit counts l1/p2 equal=True A=[('p2-a', 384)] B=[('p2-b', 384)]
+audit counts l1/p3 equal=True A=[('p3-a', 384)] B=[('p3-b', 384)]
+audit counts l1/p4 equal=True A=[('p4-a', 384)] B=[('p4-b', 384)]
+audit counts l1/p5 equal=True A=[('p5-a', 384)] B=[('p5-b', 384)]
+audit counts l1/p6 equal=True A=[('p6-a', 384)] B=[('p6-b', 384)]
+audit counts l1/p7 equal=True A=[('p7-a', 384)] B=[('p7-b', 384)]
+audit counts l1/p8 equal=True A=[('p8-a', 384)] B=[('p8-b', 384)]
+audit counts w1/r1 equal=True A=[('r1-a1', 195), ('r1-a2', 195)] B=[('r1-b1', 195), ('r1-b2', 195)]
+audit counts w1/r2 equal=True A=[('r2-a1', 195), ('r2-a2', 195)] B=[('r2-b1', 195), ('r2-b2', 195)]
+x1 audit r1-a1 delta=1165 successful=1120 c16_429=22 explainable=True
+x1 audit r1-a2 delta=1157 successful=1117 c16_429=26 explainable=True
+x1 audit r1-b1 delta=1115 successful=1048 c16_429=47 explainable=True
+x1 audit r1-b2 delta=1101 successful=1032 c16_429=54 explainable=True
+x1 audit r2-a1 delta=1117 successful=1058 c16_429=46 explainable=True
+x1 audit r2-a2 delta=1161 successful=1124 c16_429=24 explainable=True
+x1 audit r2-b1 delta=1135 successful=1076 c16_429=37 explainable=True
+x1 audit r2-b2 delta=1057 successful=973 c16_429=76 explainable=True
+60/64 legs passed; audit count groups equal=True; x1 audit explained=True; VERDICT=FAIL

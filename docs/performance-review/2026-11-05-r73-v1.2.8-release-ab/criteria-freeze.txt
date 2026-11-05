@@ -1,0 +1,9 @@
+frozen_at_utc: 2026-11-05T09:16:59Z
+freeze_recorded_utc: 2026-11-05T09:17:20Z
+criteria_file: /tmp/r73-evidence/criteria.json
+criteria_sha256: 77bdd4bc56ecfdceba1f5d5346252c389b59b2aab4e6af1fb4df38b3d7dca2af
+note: frozen before the first R73 stack or measurement leg was started. Only build artifacts
+      (platform cross-compile, worker Rust build, SHA reproduction, T1 probe compile) existed
+      at freeze time. The criteria file is immutable after this record. The frozen_at value
+      above is read back from criteria.json; the earlier hand-written 09:16:37 value was a
+      transcription error corrected before any leg started.

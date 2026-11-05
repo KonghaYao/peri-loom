@@ -1,0 +1,23 @@
+campaign: r73-v1.2.8-release-ab
+frozen_at_utc: 2026-11-05T09:16:59Z
+criteria_file: criteria.json
+criteria_sha256: 77bdd4bc56ecfdceba1f5d5346252c389b59b2aab4e6af1fb4df38b3d7dca2af
+host: Darwin 25.5.0 arm64 (macOS 26.5.1), load average at end 2.32/2.22/2.27
+docker: 29.4.0 linux/arm64 (OrbStack)
+image: ghcr.io/konghayao/peri-loom:v1.2.7
+image_id: sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+image_repo_digest: ghcr.io/konghayao/peri-loom@sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+A: v1.2.7 source 640ae7e3ce035f1d2b02d9367dc6aa755a018789
+A_platform_sha256: 95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912
+A_worker_sha256: b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+B: main 03d9b87fe687ac2ea22c72548741bf5fc22e01b5
+B_platform_sha256: e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba
+B_platform_note: reproduced from 56dc914 (platform source identical to main; diff over compiled dirs is empty); clean main rebuild is 88aa249f0e2a3cc4dc310b6800d2152a344427bb77bc0beada015c102f746c99
+B_worker_sha256: 8e62601274ca06a6503ba6eb41c4f20c358b4432c928f456970372e1e21bbd5d
+B_worker_build: rust:1.98-bookworm, rustc 1.98.1, RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu, CARGO_HOME=/cargo-home, cargo build --release --locked --offline --bin peri-loom-v1
+launcher_sha256: 80bcab2ab246ab280647f4b3452ba6ef9f9c3334eb7d2b1f15960c8c0c9497b2
+fixture: threads=201 messages=8625 content_chars=20177069 focus_messages=8625, reimport per leg
+network: host, no TLS, no observers (dev.py sets PERI_DURABILITY_OBSERVER=0, PERI_SQL_OPEN_OBSERVER=0, PERI_COMPLETION_JOURNAL=0)
+quotas: default max_sessions=16 max_concurrent=100 requests_per_second=500 max_databases=8 max_sql_bytes=65536 max_result_bytes=4194304
+volumes: peri-r73-release-* (fresh per leg; no volume deleted)
+ports: f1 21700-21715, l1 21720-21735, x1 21740-21747, c8 21760-21767, w1 21780-21787, h1 21790-21797, t8 21800-21801, t1 21802-21805

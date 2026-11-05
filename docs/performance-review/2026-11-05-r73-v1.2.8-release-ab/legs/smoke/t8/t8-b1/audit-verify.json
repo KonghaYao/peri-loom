@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/tmp/r73-evidence/legs/smoke/t8/t8-b1/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "5ae4492cec7ce51dc60d9a49a2f2e16e9639882d8eaec99751e88a3d02d891ac",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 476,
+  "last_hash": "5ae4492cec7ce51dc60d9a49a2f2e16e9639882d8eaec99751e88a3d02d891ac",
+  "last_sequence": 476,
+  "leg": "t8-b1",
+  "present": true,
+  "records": 476,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 476
+    }
+  ]
+}

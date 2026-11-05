@@ -1,0 +1,44 @@
+== A platform ==
+/tmp/peri-release-ab/bin/peri-platform-v1.2.7: go1.27.3
+	build	CGO_ENABLED=0
+	build	GOARCH=arm64
+	build	GOOS=linux
+	build	vcs=git
+	build	vcs.revision=640ae7e3ce035f1d2b02d9367dc6aa755a018789
+	build	vcs.time=2026-11-04T12:27:06Z
+	build	vcs.modified=false
+
+== B platform (reproduced e07e6da8) ==
+bin/peri-platform-56dc914-dirty: go1.27.3
+	build	CGO_ENABLED=0
+	build	GOARCH=arm64
+	build	GOOS=linux
+	build	vcs=git
+	build	vcs.revision=56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6
+	build	vcs.time=2026-11-05T07:54:42Z
+	build	vcs.modified=true
+
+== B platform (clean main rebuild) ==
+bin/peri-platform-main: go1.27.3
+	build	CGO_ENABLED=0
+	build	GOARCH=arm64
+	build	GOOS=linux
+	build	vcs=git
+	build	vcs.revision=03d9b87fe687ac2ea22c72548741bf5fc22e01b5
+	build	vcs.time=2026-11-05T08:50:25Z
+	build	vcs.modified=false
+
+== image platform ==
+image-binaries/peri-platform-image: go1.23.12
+	build	CGO_ENABLED=1
+	build	GOARCH=arm64
+	build	GOOS=linux
+
+== SHAs ==
+95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912  /tmp/peri-release-ab/bin/peri-platform-v1.2.7
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba  bin/peri-platform-56dc914-dirty
+8e62601274ca06a6503ba6eb41c4f20c358b4432c928f456970372e1e21bbd5d  bin/peri-loom-v1-main
+88aa249f0e2a3cc4dc310b6800d2152a344427bb77bc0beada015c102f746c99  bin/peri-platform-main
+9e9f2fd6b46fc89d7c8321bc950c789f9d1860cb251535893738ae54bc01cc4e  image-binaries/peri-loom-v1-image
+3286df6480e855d4b7e16806701755f54725e22fd4e7e5a0319e38d40fb1832a  image-binaries/peri-platform-image

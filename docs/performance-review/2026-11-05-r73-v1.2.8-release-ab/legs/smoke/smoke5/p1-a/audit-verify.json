@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/tmp/r73-evidence/legs/smoke/smoke5/p1-a/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "c2d93a30ef04b72ff344a9ebfde92de0c02797302494a0a1913f0a7567b1f297",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 476,
+  "last_hash": "c2d93a30ef04b72ff344a9ebfde92de0c02797302494a0a1913f0a7567b1f297",
+  "last_sequence": 476,
+  "leg": "p1-a",
+  "present": true,
+  "records": 476,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 476
+    }
+  ]
+}

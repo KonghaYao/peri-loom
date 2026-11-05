@@ -1,0 +1,12 @@
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=100/100 elapsed=160ms p50=0.99ms p95=3.53ms p99=5.23ms 429=0
+  X1 concurrency=4  n=100/100 elapsed=97ms p50=3.35ms p95=6.53ms p99=9.91ms 429=0
+  X1 concurrency=8  n=100/100 elapsed=53ms p50=3.34ms p95=10.21ms p99=14.83ms 429=0
+  X1 concurrency=16 n=100/100 elapsed=58ms p50=6.23ms p95=18.34ms p99=20.46ms 429=46
+wrote /tmp/r73-evidence/legs/p2/x1/r2-a1/harness/summary.md and /tmp/r73-evidence/legs/p2/x1/r2-a1/harness/summary.json

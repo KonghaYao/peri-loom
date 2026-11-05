@@ -1,0 +1,8 @@
+go:
+go version go1.27.3 darwin/arm64
+rustc:
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo:
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+docker:
+29.4.0 linux/arm64

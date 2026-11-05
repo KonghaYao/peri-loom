@@ -1,0 +1,21 @@
+block 00 warmup n=200 121.1ms 1651.1 qps failures=0
+block 01 warmup n=200 166.7ms 1199.4 qps failures=0
+block 02 warmup n=200 124.1ms 1611.3 qps failures=0
+block 03 warmup n=200 137.2ms 1457.5 qps failures=0
+block 04 timed n=200 178.0ms 1123.3 qps failures=0
+block 05 timed n=200 119.7ms 1671.4 qps failures=0
+block 06 timed n=200 139.0ms 1439.1 qps failures=0
+block 07 timed n=200 151.3ms 1321.8 qps failures=0
+block 08 timed n=200 105.7ms 1892.8 qps failures=0
+block 09 timed n=200 141.3ms 1415.0 qps failures=0
+block 10 timed n=200 145.3ms 1376.4 qps failures=0
+block 11 timed n=200 138.4ms 1444.9 qps failures=0
+block 12 timed n=200 115.7ms 1728.5 qps failures=0
+block 13 timed n=200 157.1ms 1272.9 qps failures=0
+block 14 timed n=200 130.1ms 1537.5 qps failures=0
+block 15 timed n=200 148.3ms 1348.9 qps failures=0
+block 16 timed n=200 148.5ms 1346.7 qps failures=0
+block 17 timed n=200 136.6ms 1464.0 qps failures=0
+block 18 timed n=200 164.6ms 1214.9 qps failures=0
+block 19 timed n=200 120.0ms 1667.2 qps failures=0
+{"leg": "r2-a1", "timed": {"requests": 3200, "failures": 0, "first_failure": null, "wall_ms": 2239.59675, "throughput_qps": 1428.829, "p50_ms": 3.2589, "p95_ms": 15.1604, "mean_ms": 5.3904, "min_ms": 0.6553, "max_ms": 43.1779, "status_counts": {"200": 3200}, "error_codes": {}}, "warmup": {"requests": 800, "failures": 0}, "deferred": null}

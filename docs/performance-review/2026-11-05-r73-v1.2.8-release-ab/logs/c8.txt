@@ -1,0 +1,8 @@
+c8 r1-a1 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.377 volume=peri-r73-release-c8-r1-a1-data
+c8 r1-b1 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.267 volume=peri-r73-release-c8-r1-b1-data
+c8 r1-b2 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.348 volume=peri-r73-release-c8-r1-b2-data
+c8 r1-a2 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.315 volume=peri-r73-release-c8-r1-a2-data
+c8 r2-b1 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.326 volume=peri-r73-release-c8-r2-b1-data
+c8 r2-a1 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.347 volume=peri-r73-release-c8-r2-a1-data
+c8 r2-a2 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.321 volume=peri-r73-release-c8-r2-a2-data
+c8 r2-b2 done driver_exit=0 settle_exit=0 stop_exit=0 stop_s=0.354 volume=peri-r73-release-c8-r2-b2-data

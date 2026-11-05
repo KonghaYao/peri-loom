@@ -1,0 +1,9 @@
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  W1.insert                write      json-pipeline
+  W1.insert                json-pipeline      n=20  median=  18.73ms p95=  25.11ms
+wrote /tmp/r73-evidence/legs/p2/w1/r2-b2/harness/summary.md and /tmp/r73-evidence/legs/p2/w1/r2-b2/harness/summary.json

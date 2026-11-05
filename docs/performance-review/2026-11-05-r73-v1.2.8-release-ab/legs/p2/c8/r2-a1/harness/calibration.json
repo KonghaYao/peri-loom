@@ -1,0 +1,58 @@
+[
+  {
+    "bytes": 323,
+    "duration_ns": 14347166,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 312,
+    "duration_ns": 14357459,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 324,
+    "duration_ns": 14391167,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 312,
+    "duration_ns": 13824917,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 312,
+    "duration_ns": 13424834,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 312,
+    "duration_ns": 17103834,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 323,
+    "duration_ns": 13453917,
+    "error": "",
+    "ok": true,
+    "status": 200
+  },
+  {
+    "bytes": 323,
+    "duration_ns": 13862750,
+    "error": "",
+    "ok": true,
+    "status": 200
+  }
+]

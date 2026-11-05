@@ -1,0 +1,9 @@
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  H1.content-20mb          read       json-cursor
+  H1.content-20mb          json-cursor        n=3   median=  64.46ms p95=  66.22ms
+wrote /tmp/r73-evidence/legs/p2/h1/r2-a1/harness/summary.md and /tmp/r73-evidence/legs/p2/h1/r2-a1/harness/summary.json

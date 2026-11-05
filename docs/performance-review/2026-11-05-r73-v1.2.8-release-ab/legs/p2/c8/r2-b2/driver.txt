@@ -1,0 +1,21 @@
+block 00 warmup n=200 150.2ms 1331.4 qps failures=0
+block 01 warmup n=200 135.9ms 1471.2 qps failures=0
+block 02 warmup n=200 215.0ms 930.2 qps failures=0
+block 03 warmup n=200 135.4ms 1477.2 qps failures=0
+block 04 timed n=200 145.9ms 1370.8 qps failures=0
+block 05 timed n=200 109.6ms 1824.5 qps failures=0
+block 06 timed n=200 112.8ms 1773.7 qps failures=0
+block 07 timed n=200 173.4ms 1153.1 qps failures=0
+block 08 timed n=200 131.8ms 1517.9 qps failures=0
+block 09 timed n=200 129.4ms 1545.1 qps failures=0
+block 10 timed n=200 130.3ms 1534.9 qps failures=0
+block 11 timed n=200 128.9ms 1551.0 qps failures=0
+block 12 timed n=200 93.8ms 2131.8 qps failures=0
+block 13 timed n=200 78.5ms 2546.9 qps failures=0
+block 14 timed n=200 131.3ms 1522.9 qps failures=0
+block 15 timed n=200 135.8ms 1472.7 qps failures=0
+block 16 timed n=200 136.2ms 1468.6 qps failures=0
+block 17 timed n=200 144.7ms 1381.9 qps failures=0
+block 18 timed n=200 129.3ms 1547.2 qps failures=0
+block 19 timed n=200 143.4ms 1394.4 qps failures=0
+{"leg": "r2-b2", "timed": {"requests": 3200, "failures": 0, "first_failure": null, "wall_ms": 2055.250208, "throughput_qps": 1556.988, "p50_ms": 2.966, "p95_ms": 14.1361, "mean_ms": 4.932, "min_ms": 0.6146, "max_ms": 36.3768, "status_counts": {"200": 3200}, "error_codes": {}}, "warmup": {"requests": 800, "failures": 0}, "deferred": {"enqueued_total": 3867, "inline_total": 133, "failed_total": 0, "retried_total": 0, "unresolved_total": 0, "flushed_total": 0, "pending": 0, "pending_max": 4, "maximum": 256, "per_database_maximum": 4, "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger"}}

@@ -1,0 +1,742 @@
+{
+  "failures": [],
+  "passed": true,
+  "scenarios": {
+    "f1": {
+      "equal": true,
+      "legs": {
+        "p1-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 78,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p1-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 88,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p2-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              323,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 87,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p2-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 84,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p3-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 84,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p3-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 88,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p4-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              308,
+              310,
+              311,
+              312,
+              323,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 83,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p4-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              308,
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 81,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p5-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              323,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 88,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p5-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 83,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p6-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 92,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p6-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 78,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p7-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 87,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p7-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              308,
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 83,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p8-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              310,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 73,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p8-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              309,
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 84,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        }
+      },
+      "tuples": [
+        [
+          312,
+          1,
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "l1": {
+      "equal": true,
+      "legs": {
+        "p1-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 90,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p1-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 89,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p2-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 86,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p2-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 81,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p3-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 86,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p3-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 83,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p4-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 89,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p4-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 87,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p5-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 89,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p5-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 91,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p6-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 85,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p6-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 84,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p7-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 86,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p7-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 82,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        },
+        "p8-a": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 98,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": null
+        },
+        "p8-b": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 88,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": null
+        }
+      },
+      "tuples": [
+        [
+          15627,
+          40,
+          201,
+          0,
+          0
+        ]
+      ]
+    }
+  }
+}

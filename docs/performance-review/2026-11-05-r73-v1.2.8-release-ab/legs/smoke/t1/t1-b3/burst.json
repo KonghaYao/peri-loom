@@ -1,0 +1,34 @@
+{
+  "concurrency": 4,
+  "ok": true,
+  "results": [
+    {
+      "duration_ns": 11799375,
+      "error": "",
+      "ok": true,
+      "status": 200,
+      "worker": 0
+    },
+    {
+      "duration_ns": 11824958,
+      "error": "",
+      "ok": true,
+      "status": 200,
+      "worker": 1
+    },
+    {
+      "duration_ns": 11595916,
+      "error": "",
+      "ok": true,
+      "status": 200,
+      "worker": 2
+    },
+    {
+      "duration_ns": 11771875,
+      "error": "",
+      "ok": true,
+      "status": 200,
+      "worker": 3
+    }
+  ]
+}

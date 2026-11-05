@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/private/tmp/r73-evidence/legs/p2/f1/p3-b/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "cbd6f46d9443b3e2de1b3abc2b1030a569798c5c793c48e54f9c657d4739a9b4",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 836,
+  "last_hash": "cbd6f46d9443b3e2de1b3abc2b1030a569798c5c793c48e54f9c657d4739a9b4",
+  "last_sequence": 836,
+  "leg": "p3-b",
+  "present": true,
+  "records": 836,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 836
+    }
+  ]
+}

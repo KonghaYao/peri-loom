@@ -1,0 +1,276 @@
+{
+  "campaign": "r73-v1.2.8-release-ab",
+  "title": "v1.2.7 vs main@03d9b87 release-level endpoint A/B",
+  "frozen_at_utc": "2026-11-05T09:16:59Z",
+  "purpose": "Performance and regression gate for v1.2.8. Not a capacity or SLA proof.",
+  "arms": {
+    "A": {
+      "label": "v1.2.7 released build",
+      "source_commit": "640ae7e3ce035f1d2b02d9367dc6aa755a018789",
+      "platform_sha256": "95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912",
+      "worker_sha256": "b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff"
+    },
+    "B": {
+      "label": "main",
+      "source_commit": "03d9b87fe687ac2ea22c72548741bf5fc22e01b5",
+      "platform_sha256": "e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba",
+      "platform_reproduced_from_commit": "56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6",
+      "platform_clean_rebuild_sha256": "88aa249f0e2a3cc4dc310b6800d2152a344427bb77bc0beada015c102f746c99",
+      "platform_source_equivalence": "git diff 56dc914..03d9b87 over prototypes/v1/platform, prototypes/v1/src, prototypes/v1/controller and scripts is empty; the two builds differ only in embedded VCS metadata",
+      "worker_sha256": "8e62601274ca06a6503ba6eb41c4f20c358b4432c928f456970372e1e21bbd5d",
+      "worker_build": "rust:1.98-bookworm (rustc 1.98.1), RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu, cargo build --release --locked --offline --bin peri-loom-v1"
+    }
+  },
+  "image": {
+    "name": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "digest": "sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff",
+    "embedded_binaries_excluded": {
+      "platform_sha256": "3286df6480e855d4b7e16806701755f54725e22fd4e7e5a0319e38d40fb1832a",
+      "worker_sha256": "9e9f2fd6b46fc89d7c8321bc950c789f9d1860cb251535893738ae54bc01cc4e",
+      "reason": "The v1.2.7 release protocol excluded the image's own binaries because CI build flags/toolchain are not the measured pair; both arms mount the same locally built binaries into the same image."
+    }
+  },
+  "launcher": {
+    "path": "prototypes/v1/platform/dev.py",
+    "sha256": "80bcab2ab246ab280647f4b3452ba6ef9f9c3334eb7d2b1f15960c8c0c9497b2",
+    "note": "Same launcher mounted on both arms; it differs from the image's dev.py only by forwarding PERI_DEFERRED_SESSION_CLOSE to the platform child."
+  },
+  "fixture": {
+    "seed_script_sha256": "092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210",
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "focus_messages": 8625,
+    "reimport_per_leg": true
+  },
+  "runtime": {
+    "docker": "29.4.0 linux/arm64 (OrbStack)",
+    "network": "host",
+    "tls": false,
+    "observers": "off (PERI_DURABILITY_OBSERVER / PERI_SQL_OPEN_OBSERVER / PERI_COMPLETION_JOURNAL unset)",
+    "durability_mode": "audit_file_v1 (legacy v1, not completion_journal_v2)",
+    "quotas": "platform defaults, not relaxed",
+    "volumes": "fresh named volume per leg, prefix peri-r73-release-; old volumes are never reused or deleted",
+    "ports": {
+      "f1": "21700-21715",
+      "l1": "21720-21735",
+      "x1": "21740-21747",
+      "c8": "21760-21767",
+      "w1": "21780-21787",
+      "h1": "21790-21797",
+      "t8": "21800-21801",
+      "t1": "21802"
+    }
+  },
+  "leg_sequence": {
+    "pairs8": [
+      "p1-a",
+      "p1-b",
+      "p2-b",
+      "p2-a",
+      "p3-b",
+      "p3-a",
+      "p4-a",
+      "p4-b",
+      "p5-b",
+      "p5-a",
+      "p6-a",
+      "p6-b",
+      "p7-a",
+      "p7-b",
+      "p8-b",
+      "p8-a"
+    ],
+    "pairs8_orders": {
+      "p1": "A_then_B",
+      "p2": "B_then_A",
+      "p3": "B_then_A",
+      "p4": "A_then_B",
+      "p5": "B_then_A",
+      "p6": "A_then_B",
+      "p7": "A_then_B",
+      "p8": "B_then_A"
+    },
+    "two_rounds": [
+      "r1-a1",
+      "r1-b1",
+      "r1-b2",
+      "r1-a2",
+      "r2-b1",
+      "r2-a1",
+      "r2-a2",
+      "r2-b2"
+    ],
+    "two_rounds_orders": [
+      "A_then_B_then_B_then_A (r1)",
+      "B_then_A_then_A_then_B (r2)"
+    ]
+  },
+  "scenarios": {
+    "F1.select-1": {
+      "protocol": "json-pipeline",
+      "concurrency": 1,
+      "pairs": 8,
+      "warmup_per_leg": 1,
+      "timed_per_leg": 125,
+      "legs": "pairs8",
+      "command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <conn> --out <leg>/harness --container <container> --scenario F1 --protocol json-pipeline --rounds 1 --warmup 1 --samples 125",
+      "pass": {
+        "pair_p50_ratio_median_max": 0.9,
+        "pooled_p95_ratio_max": 1.1
+      },
+      "reference_response": {
+        "modal_bytes": 312,
+        "rows": 1
+      }
+    },
+    "L1.list-20": {
+      "protocol": "json-pipeline",
+      "concurrency": 1,
+      "pairs": 8,
+      "warmup_per_leg": 1,
+      "timed_per_leg": 125,
+      "legs": "pairs8",
+      "command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <conn> --out <leg>/harness --container <container> --scenario L1 --protocol json-pipeline --rounds 1 --warmup 1 --samples 125",
+      "pass": {
+        "pair_p50_ratio_median_max": 0.9,
+        "pooled_p95_ratio_max": 1.1
+      },
+      "reference_response": {
+        "modal_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201
+      }
+    },
+    "X1.concurrency": {
+      "protocol": "json-pipeline",
+      "rounds": 2,
+      "legs": "two_rounds",
+      "requests_per_level": 100,
+      "levels": [
+        1,
+        4,
+        8,
+        16
+      ],
+      "command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <conn> --out <leg>/harness --container <container> --scenario X1 --concurrency-requests 100",
+      "pass": {
+        "c8_throughput_median_ratio_min": 0.9,
+        "c8_429_max": 0,
+        "c8_errors_max": 0
+      },
+      "diagnostic": "c16 is diagnostic only; its default-quota 429s are recorded, never used to excuse c8"
+    },
+    "sustained-c8": {
+      "protocol": "json-pipeline",
+      "legs": "two_rounds",
+      "clients": 8,
+      "requests_per_client": 500,
+      "warmup_per_client": 100,
+      "timed_per_client": 400,
+      "requests_per_block": 200,
+      "block_gap_seconds": 1.2,
+      "initial_refill_seconds": 1.5,
+      "command": "python3 docs/performance-review/2026-11-05-r72-deferred-close-default-ab/sustained_c8_driver.py --connection-file <conn> --out <leg>/harness --leg <leg> --label sustained-c8 --requests-per-client 500 --warmup-per-client 100 --requests-per-block 200 --block-gap-seconds 1.2 --initial-refill-seconds 1.5",
+      "pass": {
+        "throughput_median_ratio_min": 0.9,
+        "failures_per_leg_max": 0,
+        "timed_requests_per_leg": 3200
+      }
+    },
+    "W1.insert": {
+      "protocol": "json-pipeline",
+      "concurrency": 1,
+      "legs": "two_rounds",
+      "warmup_per_leg": 1,
+      "timed_per_leg": 20,
+      "command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <conn> --out <leg>/harness --container <container> --scenario W1.insert --protocol json-pipeline --rounds 1 --warmup 1 --samples 20",
+      "pass": {
+        "pair_p50_ratio_median_max": 1.1
+      },
+      "pairing": "ordered pairs (r1-a1 vs r1-b1), (r1-b2 vs r1-a2), (r2-b1 vs r2-a1), (r2-a2 vs r2-b2)"
+    },
+    "H1.content-20mb": {
+      "optional": true,
+      "protocol": "json-cursor",
+      "concurrency": 1,
+      "legs": "two_rounds",
+      "warmup_per_leg": 1,
+      "timed_per_leg": 3,
+      "command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <conn> --out <leg>/harness --container <container> --scenario H1 --protocol json-cursor --rounds 1 --warmup 1 --samples 3",
+      "pass": {
+        "pair_p50_ratio_median_max": 1.1
+      }
+    }
+  },
+  "analysis": {
+    "percentile": "sorted ascending, index min(n-1, int(n*p/100)) (same as Issue 28 / R72)",
+    "pair_p50_ratio": "median(B leg p50 / A leg p50) over the defined pairs",
+    "pooled_p95_ratio": "p95 of all timed samples pooled per side, B/A",
+    "bootstrap_seed": 20261105,
+    "bootstrap_draws_pair": 10000,
+    "bootstrap_draws_pooled": 2000,
+    "x1_throughput": "1000 * requests / elapsed_ms for the c8 level; per-side median of 4 legs; ratio B/A",
+    "c8_throughput": "summary.timed.throughput_qps per leg; per-side median of 4 legs; ratio B/A"
+  },
+  "invalid_leg_policy": {
+    "invalid_if": [
+      "container failed to start, connection.json missing, or stack health not reached",
+      "fixture import incomplete or seed verification line missing",
+      "driver/harness exit non-zero because of transport or environment failure",
+      "timed sample count differs from the frozen count",
+      "429 / rate-limit or quota refusal in any non-X1-c16 leg",
+      "metrics, audit, launcher-stop or binary identity evidence missing/unreadable"
+    ],
+    "rerun": "A leg declared invalid may be rerun once for the same arm with a new volume and a new port. Valid legs are never rerun. If the rerun is also invalid, report ENVIRONMENT_BLOCKED if the cause is clearly environmental; otherwise FAIL.",
+    "forbidden": "No quota relaxation, no observer enablement, no criteria change, no dropping/replacing a valid leg after seeing its result."
+  },
+  "invariants_per_leg": [
+    "container platform and worker SHA256 equal the frozen arm values",
+    "image digest equals sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff",
+    "launcher SHA256 equals 80bcab2ab246ab280647f4b3452ba6ef9f9c3334eb7d2b1f15960c8c0c9497b2",
+    "no observer environment variable is present in the platform process",
+    "zero outcome_unknown / 502 / 503 / session_moved / audit_unavailable events",
+    "metrics error and rejection deltas are empty (X1 c16 rate_limit only, diagnostic)",
+    "audit chain continuous and head matches tail; audit count grows",
+    "end state session_seats=0, active_permits=0, unknown_held_permits=0, worker sessions=0, pending close=0",
+    "launcher-stop outcome=clean, reason=terminal_proof_written, unresolved_operations=false; docker stop exit 0",
+    "F1 modal response 312 bytes / 1 row; L1 modal response 15627 bytes / 40 rows / rows_read 201",
+    "B default publishes deferred_session_close and drains to pending=0; A publishes no such key"
+  ],
+  "release_blocking_smoke": {
+    "T8": {
+      "arm": "B",
+      "env": "PERI_DEFERRED_SESSION_CLOSE=0",
+      "workload": "5 timed json-pipeline F1 requests (execute SELECT 1 + close)",
+      "pass": [
+        "platform process env is 0",
+        "no deferred_session_close key in before/after metrics",
+        "cleanup_ledger.pending_close=0 and worker sessions=0 immediately after the burst",
+        "control run with the switch unset publishes the key with enqueued_total>0"
+      ],
+      "note": "T8 does not participate in the performance verdict; it is a release blocker."
+    },
+    "T1": {
+      "arm": "B platform built from main plus probe/r71-g3-fault-injection (090aad5) cherry-picked; B worker",
+      "env": "PERI_R71_G3_CLOSE_DELAY_MS=2000, deferred close default on",
+      "workload": "4 concurrent Hrana pipeline [execute SELECT 1, close] requests, then immediately docker stop -t 60",
+      "pass": [
+        "pre-stop metrics shows pending>0 (injected)",
+        "docker stop waits for the deferred close (platform stage waited_ms>=1800)",
+        "launcher-stop outcome=clean and unresolved_operations=false",
+        "stop exit 0",
+        "4 close records in a continuous audit chain",
+        "0 'deferred session close unresolved' log lines",
+        "pending=0 and failed=0 before the clean terminal is written (evidenced by clean stop after drain and zero unresolved/failed log lines)"
+      ],
+      "fallback": "If the probe cannot be rebuilt, cite R71 Gate 3 T1 evidence and mark 'not rerun in this release candidate'. Rebuild is feasible, so this fallback is not expected."
+    }
+  },
+  "verdict_rule": {
+    "PASS": "every mandatory scenario meets its thresholds; every per-leg invariant passes; T8 and T1 pass (or T1 is explicitly cited under the frozen fallback).",
+    "FAIL": "any mandatory threshold or invariant fails, including any reproducible >10% core-scenario regression.",
+    "ENVIRONMENT_BLOCKED": "an unrecoverable environment problem prevents a leg or the whole campaign; the exact failure and attempted recovery must be in the evidence.",
+    "H1": "optional; if skipped, state so and do not count it as PASS."
+  }
+}

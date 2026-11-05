@@ -1,0 +1,31 @@
+    = note: for more information visit <https://doc.rust-lang.org/nightly/core/ptr/fn.fn_addr_eq.html>
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> /src/prototypes/p0/turso/core/vector/operations/text.rs:69:56
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector> {
+   |                                                        ^^^^            ^^^^^^ the same lifetime is hidden here
+   |                                                        |
+   |                                                        the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+69 | pub fn vector_from_text(vector_type: VectorType, text: &str) -> Result<Vector<'_>> {
+   |                                                                              ++++
+
+   Compiling peri-loom-v1 v1.2.7 (/src/prototypes/v1)
+warning: specialization is experimental
+  --> /src/prototypes/p0/turso/core/alloc/collections/iterator.rs:43:5
+   |
+43 |     default fn try_from_result_iter(iter: I) -> Result<Self, TryReserveError> {
+   |     ^^^^^^^
+   |
+   = note: see issue #31844 <https://github.com/rust-lang/rust/issues/31844> for more information
+   = warning: unstable syntax can change at any point in the future, causing a hard error!
+   = note: for more information, see issue #154045 <https://github.com/rust-lang/rust/issues/154045>
+
+warning: `turso_core` (lib) generated 9 warnings (run `cargo fix --lib -p turso_core` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 1m 13s
+BUILD_EXIT=0
