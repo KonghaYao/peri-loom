@@ -1,0 +1,53 @@
+{
+  "image": "ghcr.io/konghayao/peri-loom:v1.2.8",
+  "image_digest": "sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d",
+  "container_binaries": {
+    "peri-platform": "1c7b38252bf277ec31eddced46f79dcdd0b9e1b0c0a6f74ff192d8f1f0f2c6cf",
+    "peri-loom-v1": "65e5cc161078f47e725dce3b1458940694890b850b60bf746bec4dac768a80bc"
+  },
+  "task_stated_worker_sha": "614e005f... (does not match the pulled image; observed value is recorded above)",
+  "actions_delta": {
+    "close": {
+      "count": 127,
+      "mean_ns": 64921
+    },
+    "open": {
+      "count": 127,
+      "mean_ns": 619592
+    },
+    "query": {
+      "count": 4,
+      "mean_ns": 19739904
+    },
+    "statement": {
+      "count": 126,
+      "mean_ns": 107445
+    }
+  },
+  "open_action_mean_ns": 619592,
+  "stage_a_threshold_ns": 143000,
+  "decision": "ENTER_STAGE_B",
+  "client_f1": {
+    "samples": 125,
+    "p50_ms": 1.096792,
+    "mean_ms": 1.703990336,
+    "min_ms": 0.568708,
+    "max_ms": 5.398417,
+    "p95_ms": 4.353208
+  },
+  "invariants": {
+    "driver_exit": 0,
+    "outcomes": [
+      "ok"
+    ],
+    "status": [
+      200
+    ],
+    "audit_records": 836,
+    "audit_chain_ok": true,
+    "launcher_stop": "clean/terminal_proof_written/unresolved_operations=false",
+    "session_seats": 0,
+    "active_permits": 0,
+    "unknown_held_permits": 0
+  }
+}
