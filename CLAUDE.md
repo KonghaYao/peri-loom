@@ -264,6 +264,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R67 | 测量轮（无代码改动） | 复测 v1.2.7 发布 A/B 的 F1 FAIL：v1.2.6 vs v1.2.7，2 轮 × A/B/B/A、每腿 20 个 timed 样本 | 两轮 0.800 / 1.276（方向相反），合并 2.631→2.413ms（**0.917**）；样本级 Mann-Whitney p=0.997，原窗口 40 样本 p=0.989 | 判为低功效估计量导致的噪声，不改写原 FAIL 记录；验收改用样本级合并统计 |
 | R68 | 无代码改动（只读反思轮） | 复核「现有授权内是否还剩 ≥10% 方向」，并定位 c128 的 `audit_unavailable` 与 `deferred_durability` 上限行为 | 逐候选上限：适配器→网关内部 HTTP 转发 25µs/条（F1 4.7%、L1 2.4%、C1 7.0%），而其中可移除部分仅 2.6µs/条（F1≈1%、B1≈2.4%）；worker 会话生命周期 341µs/请求（F1 64%、L1 33%）需会话语义授权；H1 三条路径上限均 <10%；X1 尾部由宿主级暂停主导；编码/分配/GC ≤2–8%，且 c64 时 CPU 仅 0.30 core；唯一实测 ≥20% 的方向（W1 intent 屏障重排，R61 −20.9%~−23.1%）需耐久语义授权 | 无合入；结论记录为 R68 |
 | R71 | `perf/r71-deferred-session-close` / `af2e542`（merge `1d0185c`） | close 的 worker 等待移出回复路径（延迟会话关闭，kill switch 默认关闭） | R71d：P1 0.76577（−23.4%，CI 0.66563–0.87018，26/30 同向）；F1/L1/标准 X1/持续 c8 全 PASS（持续 c8 1.02246，8/8 legs 零错误）；P3 34/34；Gate 3 T1–T9 PASS | 合入 main |
+| R72 | `perf/r72-deferred-close-default` / `56dc914`（merge `12d0d10`） | 默认启用延迟会话关闭（机制同 R71；显式 `=0` 回退） | 验收 C1/C2/C3/C5/C6/C7/C8 PASS：P1 0.770102（CI 0.695077–0.834904，24/30）、F1 p50 0.49494/p95 0.80161、L1 p50 0.69538、X1 c8 1.05891、持续 c8 1.18520（8/8 零错误）、P3 34/34；C4 L1 p95 1.17471（冻结口径 FAIL，未复现）→ R72c 8 对复测 p95 中位 0.71738（CI 0.53010–0.96910，8/8 对 <1.10）PASS | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -3022,8 +3023,8 @@ fused close 未证明 ≥20% 且属红线；legacy settle 安全版本没有 ≥
 #### R71：延迟会话关闭——close 的 worker 等待移出回复路径（2026-11-05，合入）
 
 **机制与改动边界**：Route A 延迟会话关闭——把 close 的 worker 等待移出回复路径。kill switch
-`PERI_DEFERRED_SESSION_CLOSE`（R71 合入时默认关闭；R72 起**默认启用**，显式 `=0` 回退到同步关闭，
-行为与改动前完全一致）；每库最多 4 个
+`PERI_DEFERRED_SESSION_CLOSE`（R71 合入时默认关闭；R72 起**默认启用**，显式 `=0` 回退到同步关闭、
+行为与改动前完全一致，见 R72 小节）；每库最多 4 个
 pending close、全局队列 256 / 8 worker；队列饱和时回退为内联等待（**绝不返回 503**）；
 `removeSession` 在入队前执行，seat 立即归还；仅 **pristine 只读会话**可延迟关闭（提交型语句、
 `RequiresIntent`、`autocommit=false`、写游标、`outcome_unknown` 一律不走该路径）；
@@ -3084,6 +3085,73 @@ pending close、全局队列 256 / 8 worker；队列饱和时回退为内联等�
 drain 由 `pending`/`unresolved`/`failed` + 审计条数 + 干净停止共同证明；④ 饱和时退化为内联
 延迟（p50≈204 ms @200 ms 注入）而非拒绝，属设计行为但应视为容量边界；⑤ native
 `/v1/sql/query` 无 `autocommit` 字段，该路径保持同步关闭。
+
+#### R72：默认启用延迟会话关闭（2026-11-05，合入）
+
+**改动边界**：只翻转 `PERI_DEFERRED_SESSION_CLOSE` 的默认值，机制代码与 R71 合入版本一致：
+未设置 → 启用延迟关闭；显式 `=0` → 完全同步关闭（无账户、无 goroutine、无计数，
+`/v1/metrics` 不出现 `deferred_session_close` 键）；`=1` → 启用；非法值 → 启动前报错（既有
+语义）。`dev.py` 只在显式设置时转发该变量（默认不注入，仅更新 docstring）；
+`owned_stop_proof_native_test.go` 一处显式注入 `=0`——该用例断言 native 响应丢失 → 502
+`outcome_unknown`，默认启用后 close 在回复后派发使其不可见，固定 kill switch 以保留原契约。
+用户授权原文「授权语意变更，你有最高权限」；不涉及配额、审计、隔离/fail-closed 放宽。
+
+**证据目录**：`docs/performance-review/2026-11-05-r72-deferred-close-default-ab/`（R72）、
+`…-r72b-l1-p95-retest/`（R72b）、`…-r72c-l1-p95-legs8/`（R72c）。
+
+**R72 验收（判据 SHA256 `de7860a1b1737d4fd20b14fd0f743c1f14f38455892e8b162d44c6b59ce0ba39`，
+冻结于 `2026-11-05T07:57:03Z`）**：总判定 **FAIL**——C4 未过冻结阈值，其余 7 项 PASS。
+
+- C1 Gate 0 PASS：A 臂（显式 0）无 `deferred_session_close` 键；B 臂（未设置）有该键、
+  `enqueued_total=5`、`pending_max=1`；两臂 `operation_settle.retry_total=0`。
+- C2 P1 PASS：`B/mean(A1,A2)` 中位 **0.770102**，bootstrap 95% CI **0.695077–0.834904**，
+  30/30 有效 triples，**24/30** B 更快。
+- C3 F1 c1 PASS：p50 **0.49494**、p95 **0.80161**。
+- C4 L1 c1 **FAIL**：p50 0.69538（通过），p95 **1.17471 > 1.10**；两轮方向相反（r1 1.26545 /
+  r2 0.83121），4 腿 bootstrap 0.81–1.27，合并 500 样本/侧口径 0.98。按冻结口径判 FAIL，
+  未改判，也未为通过重跑 L1 腿。
+- C5 标准 X1 c8 PASS：B/A **1.05891**。
+- C6 持续 c8 PASS：B/A **1.18520**，8/8 腿零错误。
+- C7 不变量 PASS：36 个容器日志零 `outcome_unknown`/502/`audit_unavailable`/`session_moved`；
+  34/34 腿 seats/permits/unknown 归零；34/34 审计链连续；F1 312 bytes/1 row、L1 15,627 bytes/40 rows
+  一致；B 腿 `pending_max ≤ 4`。
+- C8 P3 PASS：**34/34** 腿（P1 2、F1 8、L1 8、X1 8、c8 8），clean stop 34/34。
+- 运行中一处 `operation_settle.retry_total=33`（`retry_success_total=8`、`exhausted=0`），
+  属本地结算队列满后的有界重试路径，非 502。
+
+**R72b 环境阻塞（判据 `0b2f2769…`，冻结 `2026-11-05T08:23:00Z`）**：默认速率配额 500 req/s
+与 500 样本/腿协议冲突——较快的 B 臂在约 0.8 s 内耗尽令牌桶，p1-b 从计时样本 488 起出现
+11 次 429/quota，B 腿无效；16 腿中仅 2 腿执行，无主判据结论。未改配额/pacing/样本量，只记录；
+平台行为本身正确（无数据损坏、无 seat/permit 泄漏、审计链连续），缺陷在测量协议。
+
+**R72c 预冻高功效复测（判据 `5d89e33b…`，冻结 `2026-11-05T08:32:12Z`，PASS）**：8 对 A/B、
+每腿 1 warmup + 125 timed（与 R72 同负载，避开默认配额）；A=显式 0、B=未设置，16 腿全新卷。
+p95 比值中位 **0.71738**（bootstrap 95% CI **0.53010–0.96910**），8/8 对 <1.10（7 对 B 更快，
+1 对持平 1.00084）；p50 中位 **0.61882**；合并 1,000 样本/侧 p95 **0.70110**
+（CI 0.61133–0.76938）；16/16 腿零错误、审计链 836 条/腿连续、响应字节
+15,627/40 rows/201 rows_read 一致；B 腿 `enqueued_total` 增量 126、`pending_max` 1–2。
+**这是测量前重新冻结判据的更高功效复测，不改写 R72 的 C4 FAIL。**
+
+**配置与二进制**：两侧同一平台二进制 SHA256
+`e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba`（`GOOS=linux GOARCH=arm64
+CGO_ENABLED=0 go build -trimpath ./cmd/peri-platform`，构建自 `56dc914`，两次构建 SHA 一致）、
+worker `b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff`、镜像 digest
+`sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff`；默认配额未放宽
+（`requests_per_second=500`）、观测器全程关闭；每腿全新卷 `peri-r72-*` / `peri-r72b-*` /
+`peri-r72c-*`（端口 21400–21447、21500–21501、21600–21615），卷保留。
+
+**测试**：分支上平台 `go test ./...` 全量 PASS（platform 185.809 s，其余 4 包 PASS）；`go vet`
+退出 0；`gofmt -l` 无输出；`test_dev_sql_observer.py` 13/14，1 个既有环境失败
+（`test_cli_flag_pins_fresh_launch`，`main` 上同样复现）。
+
+**崩溃语义**：引用 R71 Gate 3 T1–T9（同一代码路径，特性显式启用）；R72 未重跑 T2。
+真实掉电未测（T2 为确定性故障注入）。
+
+**剩余风险与未测量**：① 真实掉电/机器崩溃未测；② worker 崩溃丢会话状态的恢复未端到端验证；
+③ `deferred_session_close.flushed_total` 的计数口径是「按库 flush 等待次数」而非 drained
+jobs；④ 饱和时退化为内联延迟（p50≈204 ms @200 ms 注入）属设计行为但应视为容量边界；
+⑤ native `/v1/sql/query` 缺 `autocommit` 仍同步关闭；⑥ 单机 macOS/Docker 不构成容量/SLA
+证明；⑦ 默认启用后 `deferred_session_close` 指标默认出现，依赖「无该键」判定的流程须显式 `=0`。
 
 ## 代码约定
 
