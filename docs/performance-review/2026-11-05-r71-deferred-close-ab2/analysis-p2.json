@@ -1,0 +1,766 @@
+{
+  "scenarios": {
+    "f1": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.755,
+          "mean_ms": 2.064,
+          "p95_ms": 4.4189,
+          "min_ms": 0.6202,
+          "max_ms": 6.9627,
+          "failures": 0,
+          "response_bytes": {
+            "308": 1,
+            "309": 5,
+            "310": 3,
+            "311": 7,
+            "312": 79,
+            "324": 30
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 0.779,
+          "mean_ms": 1.3894,
+          "p95_ms": 3.2898,
+          "min_ms": 0.5219,
+          "max_ms": 5.7259,
+          "failures": 0,
+          "response_bytes": {
+            "309": 4,
+            "310": 2,
+            "311": 8,
+            "312": 90,
+            "324": 21
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.1679,
+          "mean_ms": 1.5845,
+          "p95_ms": 4.699,
+          "min_ms": 0.542,
+          "max_ms": 5.8275,
+          "failures": 0,
+          "response_bytes": {
+            "309": 4,
+            "310": 2,
+            "311": 12,
+            "312": 80,
+            "323": 1,
+            "324": 26
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.6222,
+          "mean_ms": 2.3434,
+          "p95_ms": 5.8498,
+          "min_ms": 0.5882,
+          "max_ms": 8.6606,
+          "failures": 0,
+          "response_bytes": {
+            "309": 5,
+            "310": 5,
+            "311": 6,
+            "312": 81,
+            "324": 28
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.7916,
+          "mean_ms": 2.5484,
+          "p95_ms": 6.419,
+          "min_ms": 0.632,
+          "max_ms": 9.5105,
+          "failures": 0,
+          "response_bytes": {
+            "308": 2,
+            "309": 4,
+            "310": 4,
+            "311": 10,
+            "312": 86,
+            "324": 19
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 0.6825,
+          "mean_ms": 1.3094,
+          "p95_ms": 4.3325,
+          "min_ms": 0.5454,
+          "max_ms": 7.4473,
+          "failures": 0,
+          "response_bytes": {
+            "309": 3,
+            "310": 4,
+            "311": 11,
+            "312": 77,
+            "324": 30
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.1947,
+          "mean_ms": 1.902,
+          "p95_ms": 5.0005,
+          "min_ms": 0.5627,
+          "max_ms": 7.3049,
+          "failures": 0,
+          "response_bytes": {
+            "309": 1,
+            "310": 6,
+            "311": 8,
+            "312": 82,
+            "323": 1,
+            "324": 27
+          },
+          "bytes_median": 312
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.7448,
+          "mean_ms": 2.3414,
+          "p95_ms": 5.7385,
+          "min_ms": 0.6775,
+          "max_ms": 7.0325,
+          "failures": 0,
+          "response_bytes": {
+            "309": 3,
+            "310": 1,
+            "311": 10,
+            "312": 80,
+            "324": 31
+          },
+          "bytes_median": 312
+        }
+      ],
+      "checks": {
+        "median_ms": {
+          "sides": {
+            "a": 1.7499,
+            "b": 0.9734
+          },
+          "merged_b_over_a": 0.55629,
+          "round_ratios": {
+            "r1": 0.57648,
+            "r2": 0.53082
+          },
+          "reproducible_degradation": false
+        },
+        "p95_ms": {
+          "sides": {
+            "a": 5.7942,
+            "b": 4.5157
+          },
+          "merged_b_over_a": 0.77936,
+          "round_ratios": {
+            "r1": 0.77798,
+            "r2": 0.76767
+          },
+          "reproducible_degradation": false
+        }
+      },
+      "wire_bytes": {
+        "a": {
+          "308": 3,
+          "309": 17,
+          "310": 13,
+          "311": 33,
+          "312": 326,
+          "324": 108
+        },
+        "b": {
+          "309": 12,
+          "310": 14,
+          "311": 39,
+          "312": 329,
+          "323": 2,
+          "324": 104
+        }
+      },
+      "wire_bytes_identical": false,
+      "failures": 0,
+      "driver_exits": {
+        "r1-a1": 0,
+        "r1-b1": 0,
+        "r1-b2": 0,
+        "r1-a2": 0,
+        "r2-a1": 0,
+        "r2-b1": 0,
+        "r2-b2": 0,
+        "r2-a2": 0
+      },
+      "warnings": {},
+      "fatal": {},
+      "row_verdicts": {
+        "r1-a1": {
+          "F1.select-1": "PASS"
+        },
+        "r1-b1": {
+          "F1.select-1": "PASS"
+        },
+        "r1-b2": {
+          "F1.select-1": "PASS"
+        },
+        "r1-a2": {
+          "F1.select-1": "PASS"
+        },
+        "r2-a1": {
+          "F1.select-1": "PASS"
+        },
+        "r2-b1": {
+          "F1.select-1": "PASS"
+        },
+        "r2-b2": {
+          "F1.select-1": "PASS"
+        },
+        "r2-a2": {
+          "F1.select-1": "PASS"
+        }
+      }
+    },
+    "l1": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 2.6368,
+          "mean_ms": 2.669,
+          "p95_ms": 5.1429,
+          "min_ms": 0.9493,
+          "max_ms": 6.1939,
+          "failures": 0,
+          "response_bytes": {
+            "15626": 3,
+            "15627": 94,
+            "15638": 28
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.2565,
+          "mean_ms": 1.6158,
+          "p95_ms": 3.1752,
+          "min_ms": 0.8035,
+          "max_ms": 7.1177,
+          "failures": 0,
+          "response_bytes": {
+            "15624": 1,
+            "15625": 2,
+            "15626": 5,
+            "15627": 96,
+            "15638": 21
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.7135,
+          "mean_ms": 2.0924,
+          "p95_ms": 4.7655,
+          "min_ms": 0.8312,
+          "max_ms": 6.7938,
+          "failures": 0,
+          "response_bytes": {
+            "15626": 3,
+            "15627": 80,
+            "15638": 42
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 2.1349,
+          "mean_ms": 2.595,
+          "p95_ms": 5.6788,
+          "min_ms": 0.9751,
+          "max_ms": 8.0473,
+          "failures": 0,
+          "response_bytes": {
+            "15624": 3,
+            "15625": 1,
+            "15626": 4,
+            "15627": 83,
+            "15638": 34
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 2.3846,
+          "mean_ms": 2.7428,
+          "p95_ms": 5.7372,
+          "min_ms": 0.9668,
+          "max_ms": 7.7819,
+          "failures": 0,
+          "response_bytes": {
+            "15624": 2,
+            "15626": 5,
+            "15627": 81,
+            "15638": 37
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.5276,
+          "mean_ms": 2.1694,
+          "p95_ms": 4.3787,
+          "min_ms": 0.7833,
+          "max_ms": 15.0092,
+          "failures": 0,
+          "response_bytes": {
+            "15624": 1,
+            "15625": 1,
+            "15626": 4,
+            "15627": 94,
+            "15638": 25
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 1.529,
+          "mean_ms": 1.8697,
+          "p95_ms": 3.9958,
+          "min_ms": 0.8036,
+          "max_ms": 6.3252,
+          "failures": 0,
+          "response_bytes": {
+            "15624": 2,
+            "15625": 1,
+            "15626": 6,
+            "15627": 87,
+            "15638": 29
+          },
+          "bytes_median": 15627
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          },
+          "requests": 125,
+          "median_ms": 2.1626,
+          "mean_ms": 2.5655,
+          "p95_ms": 5.8617,
+          "min_ms": 0.9747,
+          "max_ms": 9.1867,
+          "failures": 0,
+          "response_bytes": {
+            "15624": 4,
+            "15625": 1,
+            "15626": 2,
+            "15627": 90,
+            "15638": 28
+          },
+          "bytes_median": 15627
+        }
+      ],
+      "checks": {
+        "median_ms": {
+          "sides": {
+            "a": 2.2736,
+            "b": 1.5283
+          },
+          "merged_b_over_a": 0.67219,
+          "round_ratios": {
+            "r1": 0.62242,
+            "r2": 0.67219
+          },
+          "reproducible_degradation": false
+        },
+        "p95_ms": {
+          "sides": {
+            "a": 5.708,
+            "b": 4.1873
+          },
+          "merged_b_over_a": 0.73358,
+          "round_ratios": {
+            "r1": 0.73378,
+            "r2": 0.72201
+          },
+          "reproducible_degradation": false
+        }
+      },
+      "wire_bytes": {
+        "a": {
+          "15624": 9,
+          "15625": 2,
+          "15626": 14,
+          "15627": 348,
+          "15638": 127
+        },
+        "b": {
+          "15624": 4,
+          "15625": 4,
+          "15626": 18,
+          "15627": 357,
+          "15638": 117
+        }
+      },
+      "wire_bytes_identical": false,
+      "failures": 0,
+      "driver_exits": {
+        "r1-a1": 0,
+        "r1-b1": 0,
+        "r1-b2": 0,
+        "r1-a2": 0,
+        "r2-a1": 0,
+        "r2-b1": 0,
+        "r2-b2": 0,
+        "r2-a2": 0
+      },
+      "warnings": {},
+      "fatal": {},
+      "row_verdicts": {
+        "r1-a1": {
+          "L1.list-20": "PASS"
+        },
+        "r1-b1": {
+          "L1.list-20": "PASS"
+        },
+        "r1-b2": {
+          "L1.list-20": "PASS"
+        },
+        "r1-a2": {
+          "L1.list-20": "PASS"
+        },
+        "r2-a1": {
+          "L1.list-20": "PASS"
+        },
+        "r2-b1": {
+          "L1.list-20": "PASS"
+        },
+        "r2-b2": {
+          "L1.list-20": "PASS"
+        },
+        "r2-a2": {
+          "L1.list-20": "PASS"
+        }
+      }
+    },
+    "x1": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 5.4802,
+          "p95_ms": 12.7624,
+          "failures": 0,
+          "elapsed_ms": 86.077916,
+          "throughput_qps": 1161.738
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 4.0915,
+          "p95_ms": 11.7354,
+          "failures": 0,
+          "elapsed_ms": 75.495208,
+          "throughput_qps": 1324.587
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 5.9099,
+          "p95_ms": 20.5323,
+          "failures": 0,
+          "elapsed_ms": 98.815833,
+          "throughput_qps": 1011.984
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 2.8019,
+          "p95_ms": 8.6958,
+          "failures": 0,
+          "elapsed_ms": 49.290583,
+          "throughput_qps": 2028.785
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 6.403,
+          "p95_ms": 20.017,
+          "failures": 0,
+          "elapsed_ms": 85.034917,
+          "throughput_qps": 1175.988
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 5.1995,
+          "p95_ms": 24.912,
+          "failures": 0,
+          "elapsed_ms": 99.849458,
+          "throughput_qps": 1001.508
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 7.8644,
+          "p95_ms": 19.8607,
+          "failures": 0,
+          "elapsed_ms": 112.1745,
+          "throughput_qps": 891.468
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": 0,
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {},
+          "requests": 100,
+          "ok": 100,
+          "median_ms": 6.158,
+          "p95_ms": 17.3832,
+          "failures": 0,
+          "elapsed_ms": 82.63625,
+          "throughput_qps": 1210.123
+        }
+      ],
+      "checks": {
+        "throughput_qps": {
+          "sides": {
+            "a": 1193.055,
+            "b": 1006.746
+          },
+          "merged_b_over_a": 0.84384,
+          "round_ratios": {
+            "r1": 0.73235,
+            "r2": 0.79333
+          },
+          "reproducible_degradation": true
+        }
+      },
+      "failures": 0,
+      "driver_exits": {
+        "r1-a1": 0,
+        "r1-b1": 0,
+        "r1-b2": 0,
+        "r1-a2": 0,
+        "r2-a1": 0,
+        "r2-b1": 0,
+        "r2-b2": 0,
+        "r2-a2": 0
+      },
+      "warnings": {},
+      "fatal": {},
+      "row_verdicts": {
+        "r1-a1": {},
+        "r1-b1": {},
+        "r1-b2": {},
+        "r1-a2": {},
+        "r2-a1": {},
+        "r2-b1": {},
+        "r2-b2": {},
+        "r2-a2": {}
+      }
+    }
+  },
+  "degradations": [
+    "x1 throughput >10% reproducible"
+  ],
+  "verdict": "FAIL"
+}

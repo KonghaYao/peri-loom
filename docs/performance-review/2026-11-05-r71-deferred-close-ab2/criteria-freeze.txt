@@ -1,0 +1,3 @@
+57a38ba4df5b8e08abe69c81195eac2a5fc5b82c8468f041c27bf7160bd1234a  criteria.txt
+2026-11-05T04:28:19Z second freeze: X1 c8 runner clarified BEFORE any stack started or data seen
+33b9323fde0618ee4bff174f5839fdca021ca8e2ffd33a83d5d1a602a9b48d92  criteria.txt (first freeze 2026-11-05T04:26:23Z)

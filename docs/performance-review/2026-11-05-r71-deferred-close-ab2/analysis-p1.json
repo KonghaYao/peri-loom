@@ -1,0 +1,128 @@
+{
+  "campaign": "p1",
+  "complete": true,
+  "valid_triples": 60,
+  "void_triples": 0,
+  "failed_blocks": 0,
+  "requests_total": 3600,
+  "a_requests": 2400,
+  "b_requests": 1200,
+  "blocks": {
+    "A1": {
+      "count": 60,
+      "median": 4.497117,
+      "mean": 4.260475,
+      "p95": 5.361706,
+      "min": 2.309429,
+      "max": 5.608054,
+      "stdev": 0.912333
+    },
+    "A2": {
+      "count": 60,
+      "median": 4.44764,
+      "mean": 4.382451,
+      "p95": 5.669383,
+      "min": 2.351879,
+      "max": 5.836919,
+      "stdev": 0.867164
+    },
+    "B": {
+      "count": 60,
+      "median": 3.73444,
+      "mean": 3.440698,
+      "p95": 4.413935,
+      "min": 0.990394,
+      "max": 4.656233,
+      "stdev": 0.838716
+    }
+  },
+  "zero_control": {
+    "per_triple": {
+      "median": 1.028836,
+      "ci95": [
+        0.948509,
+        1.092547
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "pass": true
+  },
+  "effect": {
+    "per_triple": {
+      "median": 0.818095,
+      "ci95": [
+        0.745575,
+        0.917848
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "paired_difference_ms": {
+      "median": -0.859561,
+      "ci95": [
+        -1.252371,
+        -0.339134
+      ],
+      "draws": 10000
+    },
+    "rounds": {
+      "1": {
+        "triples": 30,
+        "effect": {
+          "median": 0.810175,
+          "ci95": [
+            0.721879,
+            0.925135
+          ],
+          "draws": 10000
+        },
+        "zero_ratio": {
+          "median": 1.028495,
+          "ci95": [
+            0.96735,
+            1.085766
+          ],
+          "draws": 10000
+        },
+        "paired_difference_ms": {
+          "median": -0.885517,
+          "ci95": [
+            -1.375012,
+            -0.321077
+          ],
+          "draws": 10000
+        }
+      },
+      "2": {
+        "triples": 30,
+        "effect": {
+          "median": 0.827928,
+          "ci95": [
+            0.747039,
+            0.984576
+          ],
+          "draws": 10000
+        },
+        "zero_ratio": {
+          "median": 1.043741,
+          "ci95": [
+            0.905375,
+            1.181028
+          ],
+          "draws": 10000
+        },
+        "paired_difference_ms": {
+          "median": -0.838527,
+          "ci95": [
+            -1.299381,
+            -0.068705
+          ],
+          "draws": 10000
+        }
+      }
+    },
+    "pass": true
+  },
+  "verdict": "PASS"
+}

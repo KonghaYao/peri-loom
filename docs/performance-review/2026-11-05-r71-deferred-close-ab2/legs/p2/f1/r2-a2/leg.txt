@@ -1,0 +1,17 @@
+campaign=p2
+scenario=f1
+leg=r2-a2
+flag=off
+port=21147
+container=peri-r71-ab2-p2-f1-r2-a2
+volume=peri-r71-ab2-p2-f1-r2-a2-data
+platform_host=/tmp/r71-ab2/bin/peri-platform-ab2
+platform_sha256=3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014
+worker_host=/tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+worker_sha256=b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+launcher=/Users/kk/code/peri-loom/prototypes/v1/platform/dev.py
+launcher_sha256=80cd2a3c5ecd01d604861368de9bb208bf792e18eaae22ce8db72854c43c2129
+image=ghcr.io/konghayao/peri-loom:v1.2.7
+shape=f1 125 timed requests
+quotas=platform defaults (not relaxed)
+observer=none

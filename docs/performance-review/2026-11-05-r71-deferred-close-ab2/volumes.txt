@@ -1,0 +1,45 @@
+=== campaign containers still present (expect diagnostic failures only) ===
+peri-r71-ab2-diag-p2-x1-r1-a1	Exited (0) 4 minutes ago
+
+=== campaign volumes (preserved) ===
+peri-r71-ab2-diag-p2-x1-r1-a1-data
+peri-r71-ab2-diag2-p2-x1-r1-a1-data
+peri-r71-ab2-diag2-p2-x1-r1-a2-data
+peri-r71-ab2-diag2-p2-x1-r1-b1-data
+peri-r71-ab2-diag2-p2-x1-r1-b2-data
+peri-r71-ab2-diag3-p2-x1-r2-a1-data
+peri-r71-ab2-diag3-p2-x1-r2-a2-data
+peri-r71-ab2-diag3-p2-x1-r2-b1-data
+peri-r71-ab2-diag3-p2-x1-r2-b2-data
+peri-r71-ab2-p0-a-data
+peri-r71-ab2-p0-b-data
+peri-r71-ab2-p1-a-data
+peri-r71-ab2-p1-b-data
+peri-r71-ab2-p2-f1-r1-a1-data
+peri-r71-ab2-p2-f1-r1-a2-data
+peri-r71-ab2-p2-f1-r1-b1-data
+peri-r71-ab2-p2-f1-r1-b2-data
+peri-r71-ab2-p2-f1-r2-a1-data
+peri-r71-ab2-p2-f1-r2-a2-data
+peri-r71-ab2-p2-f1-r2-b1-data
+peri-r71-ab2-p2-f1-r2-b2-data
+peri-r71-ab2-p2-l1-r1-a1-data
+peri-r71-ab2-p2-l1-r1-a2-data
+peri-r71-ab2-p2-l1-r1-b1-data
+peri-r71-ab2-p2-l1-r1-b2-data
+peri-r71-ab2-p2-l1-r2-a1-data
+peri-r71-ab2-p2-l1-r2-a2-data
+peri-r71-ab2-p2-l1-r2-b1-data
+peri-r71-ab2-p2-l1-r2-b2-data
+peri-r71-ab2-p2-x1-r1-a1-data
+peri-r71-ab2-p2-x1-r1-a2-data
+peri-r71-ab2-p2-x1-r1-b1-data
+peri-r71-ab2-p2-x1-r1-b2-data
+peri-r71-ab2-p2-x1-r2-a1-data
+peri-r71-ab2-p2-x1-r2-a2-data
+peri-r71-ab2-p2-x1-r2-b1-data
+peri-r71-ab2-p2-x1-r2-b2-data
+peri-r71-ab2-smoke-p1-a-data
+peri-r71-ab2-smoke-p1-b-data
+
+count: 39

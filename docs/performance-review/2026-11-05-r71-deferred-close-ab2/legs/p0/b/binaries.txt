@@ -1,0 +1,15 @@
+campaign: p0 leg: b
+host: Darwin 25.5.0 arm64
+image: ghcr.io/konghayao/peri-loom:v1.2.7
+  image id: sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+  repo digest: ghcr.io/konghayao/peri-loom@sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+platform host: /tmp/r71-bin/peri-platform-probe sha256=6517583e751e2dd936c44fcbd80dd77d13b10757503a0917a7f83bad16096916
+worker host:   /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7 sha256=b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+launcher:      /private/tmp/peri-r70-close/prototypes/v1/platform/dev.py sha256=63db9b7e7e88fcf3a6f712f98b5cb83433f17a93b9eec6937d1036e880a91187
+container: peri-r71-ab2-p0-b  volume: peri-r71-ab2-p0-b-data  port: 21131
+6517583e751e2dd936c44fcbd80dd77d13b10757503a0917a7f83bad16096916  /usr/local/bin/peri-platform
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /usr/local/bin/peri-loom-v1
+launcher container sha256: 63db9b7e7e88fcf3a6f712f98b5cb83433f17a93b9eec6937d1036e880a91187  /app/prototypes/v1/platform/dev.py
+container PERI_R71_CLOSE_DELAY_US=100
+platform process env: PERI_R71_CLOSE_DELAY_US=100
+verify threads=201 messages=8625 chars=20177069 focus=8625

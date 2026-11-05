@@ -1,0 +1,30 @@
+{
+  "seed": 20261105,
+  "rounds": 2,
+  "triples_per_round": 30,
+  "block_size": 20,
+  "block_gap_seconds": 0.75,
+  "round_gap_seconds": 5.0,
+  "initial_refill_seconds": 1.2,
+  "valid_triples": 60,
+  "void_triples": 0,
+  "blocks": 180,
+  "failed_blocks": 0,
+  "requests_total": 3600,
+  "a_requests": 2400,
+  "b_requests": 1200,
+  "median_effect": 0.818095,
+  "median_zero_ratio": 1.028836,
+  "by_round": {
+    "1": {
+      "triples": 30,
+      "median_effect": 0.810175,
+      "median_zero_ratio": 1.028495
+    },
+    "2": {
+      "triples": 30,
+      "median_effect": 0.827928,
+      "median_zero_ratio": 1.043741
+    }
+  }
+}

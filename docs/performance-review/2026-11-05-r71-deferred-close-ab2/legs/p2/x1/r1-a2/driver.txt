@@ -1,0 +1,42 @@
+{
+  "action_latency_ns_total": {
+    "close": 69468557,
+    "open": 137002067,
+    "statement": 7703832
+  },
+  "actions_total": {
+    "close": 100,
+    "open": 100,
+    "statement": 100
+  },
+  "active_permits_after": 0,
+  "admitted_requests_total": 300,
+  "cleanup_ledger_after": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "close_actions": 100,
+  "close_latency_mean_us": 694.686,
+  "close_latency_ns_total": 69468557,
+  "deferred_session_close": null,
+  "eligibility_ratio": null,
+  "errors_total": {},
+  "rejected_requests_total": 0,
+  "rejection_reasons_total": {},
+  "session_seats_after": 0,
+  "successful_requests_total": 300,
+  "unknown_held_permits_after": 0
+}
