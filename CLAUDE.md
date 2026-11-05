@@ -266,6 +266,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R71 | `perf/r71-deferred-session-close` / `af2e542`（merge `1d0185c`） | close 的 worker 等待移出回复路径（延迟会话关闭，kill switch 默认关闭） | R71d：P1 0.76577（−23.4%，CI 0.66563–0.87018，26/30 同向）；F1/L1/标准 X1/持续 c8 全 PASS（持续 c8 1.02246，8/8 legs 零错误）；P3 34/34；Gate 3 T1–T9 PASS | 合入 main |
 | R72 | `perf/r72-deferred-close-default` / `56dc914`（merge `12d0d10`） | 默认启用延迟会话关闭（机制同 R71；显式 `=0` 回退） | 验收 C1/C2/C3/C5/C6/C7/C8 PASS：P1 0.770102（CI 0.695077–0.834904，24/30）、F1 p50 0.49494/p95 0.80161、L1 p50 0.69538、X1 c8 1.05891、持续 c8 1.18520（8/8 零错误）、P3 34/34；C4 L1 p95 1.17471（冻结口径 FAIL，未复现）→ R72c 8 对复测 p95 中位 0.71738（CI 0.53010–0.96910，8/8 对 <1.10）PASS | 合入 main |
 | R73 | 无代码改动（发布门禁，`main@03d9b87`） | v1.2.7（A）vs `main@03d9b87`（B）发布级 endpoint A/B：8 对 F1/L1 + 8 腿 X1/持续 c8/W1/H1，共 64 条 campaign 腿，判据冻结 `77bdd4bc…` | F1 p50 0.43146（CI 0.34547–0.91512）/p95 0.70225；L1 p50 0.66461/p95 0.73686；X1 c8 1.11948；持续 c8 1.07755；W1 0.99552；H1 1.00802；64/64 腿有效、0 `outcome_unknown`/502/503/`session_moved`/`audit_unavailable`、审计链 64/64 连续、clean stop 64/64；T8/T1 PASS | 作为 v1.2.8 发布门禁 |
+| R74 | 探针分支 `probe/r74-session-connect-ceiling` @ `74cd04f`（探针代码 `674aa14`，未合入） | worker `open_session` connect 预热（预建连接池）上限探针 | 判据 `criteria.json` SHA256 `6e185c8b…`、冻结 `2026-11-05T11:28:35Z`（测量腿 0）。Stage A（v1.2.8 镜像，零代码）：`open` 动作均值 **0.6196ms**（n=127）、`statement` 0.1074ms、`close` 0.0649ms，客户端 F1 p50 **1.0968ms**（n=125）。Stage B 分段（n=1000）：`validate_authority` p50 **151.3µs = `open_session` 的 88.0%**；非 authority 合计 **20.6µs = F1 p50 的 1.88%**；连接池可移除的 `connect+configure` 仅 10.5µs（0.96%）。直接上限臂（池命中 99.9%）：r1 A 1.7981 / B 1.8225ms（**−1.36%**）、r2 A 1.8542 / B 1.9696ms（**−6.22%**），两轮均未达 10%；回归观察 L1 A 1.3726 / B 1.2953ms、X1 c8 A p50 3.06 / B 5.05ms；8/8 腿 `session_seats=0`、`active_permits=0`、审计链连续、clean stop、无 502/503/`outcome_unknown` | 方向关闭，不实现，探针分支留证 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -3229,6 +3230,86 @@ docker stop exit 0；响应形状 F1 312B/1 row、L1 15,627B/40 rows/rows_read=2
 3. **W1 方向混合**：同轮内 2 对 B 更快、2 对 B 更慢，中位 0.9955；按非劣判据 PASS，不宣称写路径改善。
 4. **H1 样本量**：每腿 3 样本只作非劣，不作容量或尾延迟结论。
 5. **边界**：受控单机 A/B，不是容量/SLA 证明。
+
+#### R74：worker `open_session` connect 预热上限探针（2026-11-05，探针轮）
+
+**性质**：独立上限探针，无生产代码合入 `main`。探针只存在于
+`probe/r74-session-connect-ceiling`（HEAD `74cd04f`，探针代码最终提交 `674aa14`），
+未合入、`main` 保持 `518c40d`。证据目录
+`docs/performance-review/2026-11-05-r74-session-connect-ceiling/`（在探针分支上）。
+不是容量或 SLA 证明。
+
+**判据**：`criteria.json`，SHA256 `6e185c8b28a16a1e3f8956caace9447bae47a26b6a6fce40dfc1285b09f62830`，
+冻结于 `2026-11-05T11:28:35Z`；冻结时测量腿 **0**、Stage B 未开始；之后未修改判据、样本量、
+配额或统计口径。
+
+**方法**：两阶段。
+
+1. **Stage A（发布镜像零代码筛选）**：镜像 `ghcr.io/konghayao/peri-loom:v1.2.8`
+   （digest `sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d`），
+   全新卷、默认配额、观测器全 0，F1.select-1 json-pipeline，1 warmup + 125 timed。
+   冻结规则：`open` 动作均值 ≥143,000ns 才进入 Stage B。结果：`open` 均值
+   **619,592ns（0.6196ms，n=127）**、`statement` 107,445ns（n=126）、`close` 64,921ns（n=127）；
+   客户端 F1 p50 **1.0968ms**、p95 4.353ms、mean 1.704ms（n=125），全部 200/ok → 进入 Stage B。
+2. **Stage B（探针 worker 分段 + 直接上限臂）**：A/B 两侧均用 `rust:1.98-bookworm`、
+   `RUSTUP_TOOLCHAIN=1.98.1-aarch64-unknown-linux-gnu`、`cargo build --release --locked`
+   从源码构建；平台同为镜像内 `peri-platform 1c7b3825…`；launcher 同为 `dev_r74.py 706ba07d…`
+   （仅比镜像 `dev.py` 多转发两个 `PERI_R74_*` 开关）。worker SHA256：A（`main@518c40d`）
+   `8a5a7d53…`、B（探针）`56fc06d6…`。每腿全新卷、默认配额（`requests_per_second=500`、
+   `max_sessions=16`、`max_concurrent=100`）、观测器全 0。
+
+**Stage B 分段**（B worker，`PERI_R74_SEGMENTS=1`、pool off，n=1000，每分段计数 =
+completed = 1000）：`validate_authority` p50 **151.293µs（`open_session` 的 88.0%）**、
+`connect` 10.375µs、`configure` 0.166µs、`lane_new` 1.083µs、`register` 0.083µs、
+`attach` 0.042µs、`urandom` 2.166µs、`open_total` 171.919µs。全部非 authority 工作
+= 171.9 − 151.3 = **20.6µs，仅为 Stage A F1 p50 的 1.88%**；连接池能移除的
+`connect + configure` = **10.5µs（0.96%）**。
+
+**连接池直接上限臂**（每个 `RemoteDatabase` 一个后台 refiller 维持 1–2 条预
+connect + configure 的 native 连接，取用后只服务一次会话即丢弃、不重置；
+`PERI_R74_CONNECT_POOL=1`）：冒烟 600 opens takes=498 / misses=2（**99.6% 命中**），
+正式 B 腿 2,998/2、8b 3,496/4（**99.9%**）。块协议：1 块 = 100 个连续 F1 请求墙钟 / 100，
+每腿 1 预热块 + 30 计时块，轮序 `A/B/B/A` 与 `B/A/A/B`，默认配额下块间 1000ms
+（块定义与样本量未变）。
+
+| 轮 | A 中位 (ms) | B 中位 (ms) | 改善 |
+|---|---:|---:|---:|
+| 1（A/B/B/A） | 1.7981 | 1.8225 | **−1.36%** |
+| 2（B/A/A/B） | 1.8542 | 1.9696 | **−6.22%** |
+
+主结果 = min(两轮) = **−6.22% < 10%** → 上限不足，方向关闭。替代诊断同向：合并 60 个块值中位
+r1 A 1.8021 / B 1.8485（−2.6%）、r2 A 1.8527 / B 1.9571（−5.6%）；合并请求 p50 r1 +0.3%、
+r2 −1.6%，逐请求接近持平，与「可移除量只有约 10µs」一致。
+
+**回归观察（不作判据）**：L1.list-20 单腿各 125 样本，A 1.3726ms / B 1.2953ms（B 快 5.6%）；
+X1 c8 单腿各 100 请求，A p50 3.06ms / p95 6.34ms、B p50 5.05ms / p95 16.45ms（单样本，
+B 腿在块测量与 L1 之后运行，不作退化结论，方向与块结果一致）。容器内存 A 腿 174–190MiB、
+B 腿 171–210MiB（7a 含 L1/X1 为 266.8MiB），未见随请求数单调增长。
+
+**不变量（8/8 腿）**：driver `failures=0`、exit 0；审计链连续（纯块腿 9,752 条；7a 11,245、
+8b 11,271）且 head 匹配 tail；launcher-stop 全部 `clean / terminal_proof_written /
+unresolved_operations=false`；结束 `session_seats=0`、`active_permits=0`、
+`unknown_held_permits=0`；无 `outcome_unknown`/502/503/`audit_unavailable`。7a/8b 的
+`quota_exceeded`（63/46）全部来自可选 X1 c16 的默认配额 429（冻结判据未将其列为作废条件），
+X1 c8 两侧均为 0。
+
+**对旧估算的纠正**：冻结判据依据 R38 D1 的 `open_session` 251.4µs，假设非 authority 部分约
+116.4µs，推出 F1 上限约 16.3%（`116.4 / 714`，本身低于 20% 门）。本轮 c1 直接分段实测
+非 authority 仅 **20.6µs**，上限约 **1.9%**；R38 的 251.4µs 中除 authority 外的残差包含了
+本窗口不存在的排队/其他开销。旧估算被否证，方向结论不变（更弱）。
+
+**偏离（未归因本轮）**：① 镜像内 worker 实际 SHA `65e5cc16…`，与任务书写的 `614e005f…`
+不符（平台 SHA 与镜像 digest 均匹配）；② `--offline` registry 卷缺索引项，改为在线
+`--locked` 从 rsproxy 构建，A/B 同法；③ 默认 500 req/s 配额使首次连续 100 请求块在第 4 块
+触发 429，改为块间 1000ms 间隔（块定义与样本量未变）；④ 探针开关需经 `dev_r74.py` 白名单
+转发；⑤ 连接池首版 refiller 100ms 超时导致命中 5.9%，该轮作废并留证
+（`stage-b/aborted-pool-refill-bug/`），加 `notify_all` 后 99.9%。
+
+**结论**：在冻结门槛下（F1 等 <10ms 场景 ≥20%），`open_session` 的非 authority 部分上限仅约
+1.9%，连接池直接上限臂两轮均未达 10%，方向关闭，本轮不实现任何代码。剩余唯一实测 ≥20% 的
+杠杆是**未授权的** authority 本地校验（R41 实测 −17.6%、R44 探针 −28%~−32%），不在本轮授权内。
+**复测触发条件**：取得 authority 校验授权、或每请求 session 生命周期发生改变（会话复用/
+协议级融合）后，用同一判据重新测量。
 
 ## 代码约定
 
