@@ -265,6 +265,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R68 | 无代码改动（只读反思轮） | 复核「现有授权内是否还剩 ≥10% 方向」，并定位 c128 的 `audit_unavailable` 与 `deferred_durability` 上限行为 | 逐候选上限：适配器→网关内部 HTTP 转发 25µs/条（F1 4.7%、L1 2.4%、C1 7.0%），而其中可移除部分仅 2.6µs/条（F1≈1%、B1≈2.4%）；worker 会话生命周期 341µs/请求（F1 64%、L1 33%）需会话语义授权；H1 三条路径上限均 <10%；X1 尾部由宿主级暂停主导；编码/分配/GC ≤2–8%，且 c64 时 CPU 仅 0.30 core；唯一实测 ≥20% 的方向（W1 intent 屏障重排，R61 −20.9%~−23.1%）需耐久语义授权 | 无合入；结论记录为 R68 |
 | R71 | `perf/r71-deferred-session-close` / `af2e542`（merge `1d0185c`） | close 的 worker 等待移出回复路径（延迟会话关闭，kill switch 默认关闭） | R71d：P1 0.76577（−23.4%，CI 0.66563–0.87018，26/30 同向）；F1/L1/标准 X1/持续 c8 全 PASS（持续 c8 1.02246，8/8 legs 零错误）；P3 34/34；Gate 3 T1–T9 PASS | 合入 main |
 | R72 | `perf/r72-deferred-close-default` / `56dc914`（merge `12d0d10`） | 默认启用延迟会话关闭（机制同 R71；显式 `=0` 回退） | 验收 C1/C2/C3/C5/C6/C7/C8 PASS：P1 0.770102（CI 0.695077–0.834904，24/30）、F1 p50 0.49494/p95 0.80161、L1 p50 0.69538、X1 c8 1.05891、持续 c8 1.18520（8/8 零错误）、P3 34/34；C4 L1 p95 1.17471（冻结口径 FAIL，未复现）→ R72c 8 对复测 p95 中位 0.71738（CI 0.53010–0.96910，8/8 对 <1.10）PASS | 合入 main |
+| R73 | 无代码改动（发布门禁，`main@03d9b87`） | v1.2.7（A）vs `main@03d9b87`（B）发布级 endpoint A/B：8 对 F1/L1 + 8 腿 X1/持续 c8/W1/H1，共 64 条 campaign 腿，判据冻结 `77bdd4bc…` | F1 p50 0.43146（CI 0.34547–0.91512）/p95 0.70225；L1 p50 0.66461/p95 0.73686；X1 c8 1.11948；持续 c8 1.07755；W1 0.99552；H1 1.00802；64/64 腿有效、0 `outcome_unknown`/502/503/`session_moved`/`audit_unavailable`、审计链 64/64 连续、clean stop 64/64；T8/T1 PASS | 作为 v1.2.8 发布门禁 |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -3152,6 +3153,82 @@ worker `b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff`、镜�
 jobs；④ 饱和时退化为内联延迟（p50≈204 ms @200 ms 注入）属设计行为但应视为容量边界；
 ⑤ native `/v1/sql/query` 缺 `autocommit` 仍同步关闭；⑥ 单机 macOS/Docker 不构成容量/SLA
 证明；⑦ 默认启用后 `deferred_session_close` 指标默认出现，依赖「无该键」判定的流程须显式 `=0`。
+
+#### R73：v1.2.8 发布级 endpoint A/B（2026-11-05，发布门禁）
+
+**性质**：无代码改动。独立验证只构建、启动隔离栈、测量与留证，未修改产品代码/测试。
+证据目录 `docs/performance-review/2026-11-05-r73-v1.2.8-release-ab/`
+（`verification-report.md` 为验证报告；原始完整副本保留在 `/tmp/r73-evidence/`，未删除/移动）。
+
+**判据**：`criteria.json`，SHA256 `77bdd4bc56ecfdceba1f5d5346252c389b59b2aab4e6af1fb4df38b3d7dca2af`，
+冻结于 `2026-11-05T09:16:59Z`；冻结时无 R73 测量腿，之后未修改判据、配额、样本量或统计口径。
+
+**A/B 源码与二进制**：
+
+| 角色 | 源码 | 平台 SHA256 | worker SHA256 |
+|---|---|---|---|
+| A（v1.2.7） | `640ae7e3ce035f1d2b02d9367dc6aa755a018789` | `95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912` | `b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff` |
+| B（main） | `03d9b87fe687ac2ea22c72548741bf5fc22e01b5` | `e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba` | `8e62601274ca06a6503ba6eb41c4f20c358b4432c928f456970372e1e21bbd5d` |
+
+- A 为 v1.2.7 发布证据同 SHA 的本地重建二进制（`go1.27.3`、`CGO_ENABLED=0`、
+  `vcs.revision=640ae7e`、`vcs.modified=false`）；B 平台从 `56dc914` 加未跟踪标记复现
+  `e07e6da8…`（`git diff 56dc914..03d9b87` 在 `prototypes/v1/platform`、`prototypes/v1/src`、
+  `prototypes/v1/controller`、`scripts` 上为空，差异仅在嵌入的 VCS 元数据），干净 main 重建为
+  `88aa249f…` 作交叉核对；B worker 从 main 用 `rust:1.98-bookworm`（rustc 1.98.1）、
+  `--locked --offline` 构建，二进制含 PR #33 的 `not_executed` 符号字符串 9 次（A worker 为 0），
+  证明血缘。
+- 两侧同一运行镜像 `ghcr.io/konghayao/peri-loom:v1.2.7`（digest
+  `sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff`），只挂载覆盖平台/worker；
+  launcher 同为 `dev.py`（`80bcab2…`），观测器三开关全程 `0`，默认配额未放宽，每腿全新卷并重新导入
+  fixture（`threads=201 messages=8625 chars=20177069 focus=8625`）。
+
+**场景结果**（数字取自验证报告）：
+
+- **F1.select-1**（json-pipeline，c1，8 对 × 125 timed，1,000 样本/侧）：逐对 p50 中位
+  **0.43146**（≤0.90，bootstrap 95% CI **0.34547–0.91512**，7/8 对 B 更快）；合并 p95
+  **0.70225**（≤1.10，CI **0.63833–0.81075**）；合并 p50 0.46430（诊断）。**PASS**。
+- **L1.list-20**（同协议与样本量）：p50 中位 **0.66461**（CI **0.59174–0.71298**，8/8 对 B 更快）；
+  p95 **0.73686**（CI **0.68485–0.79194**）。R72 的 C4 不一致（1.17471 vs R72c 0.717）本轮未复现，
+  8/8 对 <1.0。**PASS**。
+- **X1.concurrency**（2 轮 × A/B/B/A，100 请求/级）：c8 合并 A 1,836.25 / B 2,055.65 qps，
+  **B/A = 1.11948**（≥0.90，CI **0.74686–1.52091**）；轮内 r1 0.84093、r2 1.29737，100 请求/级
+  方差大，按冻结的合并口径判 PASS，不宣称每一轮都无回归；c8 每腿 429=0、errors=0。**PASS**。
+- **持续 c8**（8 客户端 × 500/腿，100 warmup + 400 timed = 3,200 timed/腿）：A 1,429.34 /
+  B 1,540.19 qps，**B/A = 1.07755**（CI **0.97093–1.12406**）；8 腿零失败、零 worker error。**PASS**。
+- **W1.insert**（c1，8 腿 × 20 timed）：逐对 p50 中位 **0.99552**（≤1.10，CI **0.73315–1.29718**）；
+  方向同轮混合（0.8546/1.2972/0.7332/1.1364），p50 在 15.9–24.8ms 间波动，不宣称写路径有稳定改善。**PASS**。
+- **H1.content-20mb**（json-cursor，可选，8 腿 × 3 timed）：p50 中位 **1.00802**（≤1.10，
+  CI **0.94456–1.03624**），每腿仅 3 样本，只作非劣检查。**PASS**。
+
+**不变量**：64/64 腿平台/worker SHA、镜像 digest、launcher SHA 与冻结值一致；64/64 观测器关闭；
+0 条 `outcome_unknown`/502/503/`session_moved`/`audit_unavailable`；64/64 审计链连续且 head 匹配
+tail；64/64 结束 `session_seats=0`、`active_permits=0`、`unknown_held_permits=0`、worker sessions=0、
+pending close=0；64/64 launcher-stop `clean / terminal_proof_written / unresolved_operations=false`、
+docker stop exit 0；响应形状 F1 312B/1 row、L1 15,627B/40 rows/rows_read=201（32 腿一致）。
+4 条 W1 B 腿因写会话不走延迟 close（`enqueued_total=0`，判据明确豁免），复用 R72 collector 报
+“flag on enqueues closes”，属口径差异，不是缺陷。
+
+**T8/T1（发布阻断 smoke）**：
+
+- T8：显式 `PERI_DEFERRED_SESSION_CLOSE=0` 时无 deferred 键、close 走同步路径；默认（unset）
+  时键存在、6 个 close 入账、pending=0、worker sessions/cleanup pending 均为 0。**PASS**。
+- T1：main + `090aad5` 探针平台（`831d647c…`）、`PERI_R71_G3_CLOSE_DELAY_MS=2000`、4 个并发
+  `[SELECT 1, close]`：burst 4/4 HTTP 200；stop 前 `enqueued_total=4, pending=4, pending_max=4,
+  failed_total=0, unresolved_total=0`；`docker stop` 2.147 s、平台 `waited_ms=1916.7`；
+  launcher-stop `clean / terminal_proof_written / unresolved_operations=false`；审计 464 条连续、
+  close 记录 5 条；0 条 unresolved 日志。**PASS**。
+
+**未闭合项**：
+
+1. **镜像二进制血缘**：v1.2.7 镜像内平台 `3286df64…` 为 Go 1.23.12/CGO=1、worker `9e9f2fd6…`，
+   本轮 A 臂为 Go 1.27.3/CGO=0 的 `95716e4d…`/`b17a0708…`。PASS 证明的是“v1.2.7 源码构建 vs main
+   源码构建”，不是镜像内二进制的直接性能证明；发版流程在 tag 前对仓库 Dockerfile 构建的镜像二进制
+   另做 smoke 核对。
+2. **X1 c8 统计强度**：100 请求/级短样本方差大，CI 下界 <0.90；按合并口径 PASS，不宣称 c8
+   非回归具有统计强度。
+3. **W1 方向混合**：同轮内 2 对 B 更快、2 对 B 更慢，中位 0.9955；按非劣判据 PASS，不宣称写路径改善。
+4. **H1 样本量**：每腿 3 样本只作非劣，不作容量或尾延迟结论。
+5. **边界**：受控单机 A/B，不是容量/SLA 证明。
 
 ## 代码约定
 
