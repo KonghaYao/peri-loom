@@ -1,0 +1,371 @@
+{
+  "failures": [],
+  "passed": true,
+  "scenarios": {
+    "f1": {
+      "equal": true,
+      "legs": {
+        "r1-a1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 81,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r1-a2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 83,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r1-b1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 93,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        },
+        "r1-b2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 79,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        },
+        "r2-a1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 84,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r2-a2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              323,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 73,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r2-b1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 79,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        },
+        "r2-b2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              311,
+              312,
+              324
+            ],
+            "distinct_rows": [
+              1
+            ],
+            "mode_samples": 73,
+            "response_bytes": 312,
+            "rows": 1,
+            "rows_read": 0,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        }
+      },
+      "tuples": [
+        [
+          312,
+          1,
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "l1": {
+      "equal": true,
+      "legs": {
+        "r1-a1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 93,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r1-a2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 83,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r1-b1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 85,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        },
+        "r1-b2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 84,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        },
+        "r2-a1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 89,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r2-a2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 89,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "a",
+          "switch": "explicit-0"
+        },
+        "r2-b1": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 79,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        },
+        "r2-b2": {
+          "mode": {
+            "affected_row_count": 0,
+            "distinct_response_bytes": [
+              15626,
+              15627,
+              15638
+            ],
+            "distinct_rows": [
+              40
+            ],
+            "mode_samples": 81,
+            "response_bytes": 15627,
+            "rows": 40,
+            "rows_read": 201,
+            "rows_written": 0,
+            "timed_samples": 125
+          },
+          "side": "b",
+          "switch": "unset-default"
+        }
+      },
+      "tuples": [
+        [
+          15627,
+          40,
+          201,
+          0,
+          0
+        ]
+      ]
+    }
+  }
+}

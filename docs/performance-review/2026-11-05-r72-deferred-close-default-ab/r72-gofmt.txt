@@ -1,0 +1,2 @@
+$ gofmt -l session_close_deferred.go gateway.go model.go session_close_deferred_test.go owned_stop_proof_native_test.go
+exit=0

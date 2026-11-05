@@ -1,0 +1,5257 @@
+{
+  "audit_count_checks": [
+    {
+      "a": [
+        [
+          "a",
+          3603
+        ]
+      ],
+      "a_requests": 1200,
+      "b": [
+        [
+          "b",
+          1803
+        ]
+      ],
+      "b_requests": 600,
+      "count_ratio": 1.998336,
+      "equal": true,
+      "key": "p1/block-mean",
+      "request_ratio": 2.0
+    },
+    {
+      "a": [
+        [
+          "r1-a1",
+          12024
+        ],
+        [
+          "r1-a2",
+          12024
+        ]
+      ],
+      "b": [
+        [
+          "r1-b1",
+          12024
+        ],
+        [
+          "r1-b2",
+          12024
+        ]
+      ],
+      "equal": true,
+      "key": "c8/r1"
+    },
+    {
+      "a": [
+        [
+          "r2-a1",
+          12024
+        ],
+        [
+          "r2-a2",
+          12024
+        ]
+      ],
+      "b": [
+        [
+          "r2-b1",
+          12024
+        ],
+        [
+          "r2-b2",
+          12024
+        ]
+      ],
+      "equal": true,
+      "key": "c8/r2"
+    },
+    {
+      "a": [
+        [
+          "r1-a1",
+          384
+        ],
+        [
+          "r1-a2",
+          384
+        ]
+      ],
+      "b": [
+        [
+          "r1-b1",
+          384
+        ],
+        [
+          "r1-b2",
+          384
+        ]
+      ],
+      "equal": true,
+      "key": "f1/r1"
+    },
+    {
+      "a": [
+        [
+          "r2-a1",
+          384
+        ],
+        [
+          "r2-a2",
+          384
+        ]
+      ],
+      "b": [
+        [
+          "r2-b1",
+          384
+        ],
+        [
+          "r2-b2",
+          384
+        ]
+      ],
+      "equal": true,
+      "key": "f1/r2"
+    },
+    {
+      "a": [
+        [
+          "r1-a1",
+          384
+        ],
+        [
+          "r1-a2",
+          384
+        ]
+      ],
+      "b": [
+        [
+          "r1-b1",
+          384
+        ],
+        [
+          "r1-b2",
+          384
+        ]
+      ],
+      "equal": true,
+      "key": "l1/r1"
+    },
+    {
+      "a": [
+        [
+          "r2-a1",
+          384
+        ],
+        [
+          "r2-a2",
+          384
+        ]
+      ],
+      "b": [
+        [
+          "r2-b1",
+          384
+        ],
+        [
+          "r2-b2",
+          384
+        ]
+      ],
+      "equal": true,
+      "key": "l1/r2"
+    }
+  ],
+  "legs": [
+    {
+      "actions": {
+        "close": 1201,
+        "open": 1201,
+        "statement": 1201
+      },
+      "audit_count_after": 4055,
+      "audit_count_before": 452,
+      "audit_delta": 3603,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 4055,
+      "audit_records": 4055,
+      "c16_429": null,
+      "campaign": "p1",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=4055 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=4055 delta=3603",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "a",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "",
+      "scenario": "block-mean",
+      "side": "a",
+      "successful_requests": 3603
+    },
+    {
+      "actions": {
+        "close": 601,
+        "open": 601,
+        "statement": 601
+      },
+      "audit_count_after": 2255,
+      "audit_count_before": 452,
+      "audit_delta": 1803,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 2255,
+      "audit_records": 2255,
+      "c16_429": null,
+      "campaign": "p1",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=601",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=2255 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=2255 delta=1803",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 601,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "b",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "",
+      "scenario": "block-mean",
+      "side": "b",
+      "successful_requests": 1803
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r1-a1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "c8",
+      "side": "a",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r1-a2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "c8",
+      "side": "a",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=3900",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 3900,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 108,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r1-b1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "c8",
+      "side": "b",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=3898",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 3898,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 110,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r1-b2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "c8",
+      "side": "b",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r2-a1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "c8",
+      "side": "a",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r2-a2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "c8",
+      "side": "a",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=3902",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 3902,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 106,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r2-b1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "c8",
+      "side": "b",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 4008,
+        "open": 4008,
+        "statement": 4008
+      },
+      "audit_count_after": 12476,
+      "audit_count_before": 452,
+      "audit_delta": 12024,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 12476,
+      "audit_records": 12476,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=3875",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=12476 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=12476 delta=12024",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 3875,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 133,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r2-b2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "c8",
+      "side": "b",
+      "successful_requests": 12024
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r1-a1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "f1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r1-a2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "f1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r1-b1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "f1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r1-b2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "f1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r2-a1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "f1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r2-a2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "f1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r2-b1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "f1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r2-b2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "f1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r1-a1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "l1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r1-a2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "l1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r1-b1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "l1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r1-b2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r1",
+      "scenario": "l1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r2-a1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "l1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "off",
+      "leg": "r2-a2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "l1",
+      "side": "a",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r2-b1",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "l1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "audit_count_after": 836,
+      "audit_count_before": 452,
+      "audit_delta": 384,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 836,
+      "audit_records": 836,
+      "c16_429": null,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=126",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=1",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=836 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=836 delta=384",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "no error counters",
+          "detail": {},
+          "pass": true
+        },
+        {
+          "check": "no rejection counters",
+          "detail": {},
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 1,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 0,
+      "errors": {},
+      "flag": "on",
+      "leg": "r2-b2",
+      "passed": true,
+      "rate_limit_refusals": 0,
+      "rejections": {},
+      "round": "r2",
+      "scenario": "l1",
+      "side": "b",
+      "successful_requests": 384
+    },
+    {
+      "actions": {
+        "close": 373,
+        "open": 402,
+        "query": 4,
+        "statement": 372
+      },
+      "audit_count_after": 1603,
+      "audit_count_before": 452,
+      "audit_delta": 1151,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1603,
+      "audit_records": 1603,
+      "c16_429": 29,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1603 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1603 delta=1151",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 40
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 40
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 40,
+            "rate_limit": 40
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 29,
+            "c16_errors": 40,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 40
+      },
+      "flag": "off",
+      "leg": "r1-a1",
+      "passed": true,
+      "rate_limit_refusals": 40,
+      "rejections": {
+        "rate_limit": 40
+      },
+      "round": "r1",
+      "scenario": "x1",
+      "side": "a",
+      "successful_requests": 1111
+    },
+    {
+      "actions": {
+        "close": 361,
+        "open": 402,
+        "query": 4,
+        "statement": 360
+      },
+      "audit_count_after": 1579,
+      "audit_count_before": 452,
+      "audit_delta": 1127,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1579,
+      "audit_records": 1579,
+      "c16_429": 41,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1579 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1579 delta=1127",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 49
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 49
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 49,
+            "rate_limit": 49
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 41,
+            "c16_errors": 49,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 49
+      },
+      "flag": "off",
+      "leg": "r1-a2",
+      "passed": true,
+      "rate_limit_refusals": 49,
+      "rejections": {
+        "rate_limit": 49
+      },
+      "round": "r1",
+      "scenario": "x1",
+      "side": "a",
+      "successful_requests": 1078
+    },
+    {
+      "actions": {
+        "close": 337,
+        "open": 402,
+        "query": 4,
+        "statement": 336
+      },
+      "audit_count_after": 1531,
+      "audit_count_before": 452,
+      "audit_delta": 1079,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1531,
+      "audit_records": 1531,
+      "c16_429": 65,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=331",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1531 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1531 delta=1079",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 84
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 84
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 84,
+            "rate_limit": 84
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 65,
+            "c16_errors": 84,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 331,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 5,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 84
+      },
+      "flag": "on",
+      "leg": "r1-b1",
+      "passed": true,
+      "rate_limit_refusals": 84,
+      "rejections": {
+        "rate_limit": 84
+      },
+      "round": "r1",
+      "scenario": "x1",
+      "side": "b",
+      "successful_requests": 995
+    },
+    {
+      "actions": {
+        "close": 364,
+        "open": 402,
+        "query": 4,
+        "statement": 363
+      },
+      "audit_count_after": 1585,
+      "audit_count_before": 452,
+      "audit_delta": 1133,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1585,
+      "audit_records": 1585,
+      "c16_429": 38,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=349",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1585 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1585 delta=1133",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 59
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 59
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 59,
+            "rate_limit": 59
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 38,
+            "c16_errors": 59,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 349,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 14,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 59
+      },
+      "flag": "on",
+      "leg": "r1-b2",
+      "passed": true,
+      "rate_limit_refusals": 59,
+      "rejections": {
+        "rate_limit": 59
+      },
+      "round": "r1",
+      "scenario": "x1",
+      "side": "b",
+      "successful_requests": 1074
+    },
+    {
+      "actions": {
+        "close": 376,
+        "open": 402,
+        "query": 4,
+        "statement": 375
+      },
+      "audit_count_after": 1609,
+      "audit_count_before": 452,
+      "audit_delta": 1157,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1609,
+      "audit_records": 1609,
+      "c16_429": 26,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1609 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1609 delta=1157",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 43
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 43
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 43,
+            "rate_limit": 43
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 26,
+            "c16_errors": 43,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 43
+      },
+      "flag": "off",
+      "leg": "r2-a1",
+      "passed": true,
+      "rate_limit_refusals": 43,
+      "rejections": {
+        "rate_limit": 43
+      },
+      "round": "r2",
+      "scenario": "x1",
+      "side": "a",
+      "successful_requests": 1114
+    },
+    {
+      "actions": {
+        "close": 356,
+        "open": 402,
+        "query": 4,
+        "statement": 355
+      },
+      "audit_count_after": 1569,
+      "audit_count_before": 452,
+      "audit_delta": 1117,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1569,
+      "audit_records": 1569,
+      "c16_429": 46,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag off publishes no deferred key",
+          "detail": "before=False after=False",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1569 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1569 delta=1117",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 63
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 63
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 63,
+            "rate_limit": 63
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 46,
+            "c16_errors": 63,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {},
+      "deferred_now": null,
+      "deferred_present": false,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 63
+      },
+      "flag": "off",
+      "leg": "r2-a2",
+      "passed": true,
+      "rate_limit_refusals": 63,
+      "rejections": {
+        "rate_limit": 63
+      },
+      "round": "r2",
+      "scenario": "x1",
+      "side": "a",
+      "successful_requests": 1054
+    },
+    {
+      "actions": {
+        "close": 357,
+        "open": 402,
+        "query": 4,
+        "statement": 356
+      },
+      "audit_count_after": 1571,
+      "audit_count_before": 452,
+      "audit_delta": 1119,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1571,
+      "audit_records": 1571,
+      "c16_429": 45,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=351",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1571 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1571 delta=1119",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 62
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 62
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 62,
+            "rate_limit": 62
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 45,
+            "c16_errors": 62,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 351,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 5,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 62
+      },
+      "flag": "on",
+      "leg": "r2-b1",
+      "passed": true,
+      "rate_limit_refusals": 62,
+      "rejections": {
+        "rate_limit": 62
+      },
+      "round": "r2",
+      "scenario": "x1",
+      "side": "b",
+      "successful_requests": 1057
+    },
+    {
+      "actions": {
+        "close": 350,
+        "open": 402,
+        "query": 4,
+        "statement": 349
+      },
+      "audit_count_after": 1557,
+      "audit_count_before": 452,
+      "audit_delta": 1105,
+      "audit_head_matches_tail": true,
+      "audit_last_sequence": 1557,
+      "audit_records": 1557,
+      "c16_429": 52,
+      "campaign": "p2",
+      "checks": [
+        {
+          "check": "flag on publishes deferred key",
+          "detail": "deferred_session_close present=True",
+          "pass": true
+        },
+        {
+          "check": "flag on enqueues closes",
+          "detail": "enqueued=341",
+          "pass": true
+        },
+        {
+          "check": "flag on has no failed/retried closes",
+          "detail": "failed=0 retried=0",
+          "pass": true
+        },
+        {
+          "check": "flag on leaves no unresolved closes",
+          "detail": "unresolved_total=0",
+          "pass": true
+        },
+        {
+          "check": "flag on drains pending closes",
+          "detail": "pending=0 pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "flag on respects the per-database pending maximum",
+          "detail": "pending_max=4",
+          "pass": true
+        },
+        {
+          "check": "session_seats zero",
+          "detail": "session_seats=0",
+          "pass": true
+        },
+        {
+          "check": "active_permits zero",
+          "detail": "active_permits=0",
+          "pass": true
+        },
+        {
+          "check": "worker sessions zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "worker pending_close zero",
+          "detail": {
+            "worker-a": {
+              "pending_close": 0,
+              "sessions": 0
+            },
+            "worker-b": {
+              "pending_close": 0,
+              "sessions": 0
+            }
+          },
+          "pass": true
+        },
+        {
+          "check": "cleanup ledger pending_close zero",
+          "detail": {
+            "count": 0,
+            "exhausted": 0,
+            "last_failure": "",
+            "oldest_age_ms": 0
+          },
+          "pass": true
+        },
+        {
+          "check": "settle reached zero",
+          "detail": "settled",
+          "pass": true
+        },
+        {
+          "check": "audit chain continuous",
+          "detail": "records=1557 errors=[]",
+          "pass": true
+        },
+        {
+          "check": "audit count delta recorded",
+          "detail": "before=452 after=1557 delta=1105",
+          "pass": true
+        },
+        {
+          "check": "clean stop proof",
+          "detail": {
+            "outcome": "clean",
+            "unresolved_operations": false
+          },
+          "pass": true
+        },
+        {
+          "check": "docker stop exit zero",
+          "detail": "0",
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 rejection counters",
+          "detail": {
+            "rate_limit": 62
+          },
+          "pass": true
+        },
+        {
+          "check": "only allowed X1 error counters",
+          "detail": {
+            "quota_exceeded": 62
+          },
+          "pass": true
+        },
+        {
+          "check": "X1 quota_exceeded matches rate_limit refusals",
+          "detail": {
+            "quota_exceeded": 62,
+            "rate_limit": 62
+          },
+          "pass": true
+        },
+        {
+          "check": "standard X1 c8 level clean",
+          "detail": {
+            "c16_429": 52,
+            "c16_errors": 62,
+            "c8_429": 0,
+            "c8_errors": 0
+          },
+          "pass": true
+        }
+      ],
+      "deferred_delta": {
+        "enqueued_total": 341,
+        "failed_total": 0,
+        "flushed_total": 0,
+        "inline_total": 8,
+        "retried_total": 0,
+        "unresolved_total": 0
+      },
+      "deferred_now": {
+        "maximum": 256,
+        "pending": 0,
+        "pending_max": 4,
+        "per_database_maximum": 4,
+        "unresolved_total": 0
+      },
+      "deferred_present": true,
+      "driver_exit": 1,
+      "errors": {
+        "quota_exceeded": 62
+      },
+      "flag": "on",
+      "leg": "r2-b2",
+      "passed": true,
+      "rate_limit_refusals": 62,
+      "rejections": {
+        "rate_limit": 62
+      },
+      "round": "r2",
+      "scenario": "x1",
+      "side": "b",
+      "successful_requests": 1043
+    }
+  ],
+  "legs_passed": 34,
+  "legs_total": 34,
+  "passed": true,
+  "x1_audit_checks": [
+    {
+      "audit_delta": 1151,
+      "c16_429": 29,
+      "explainable": true,
+      "leg": "r1-a1",
+      "successful_requests": 1111
+    },
+    {
+      "audit_delta": 1127,
+      "c16_429": 41,
+      "explainable": true,
+      "leg": "r1-a2",
+      "successful_requests": 1078
+    },
+    {
+      "audit_delta": 1079,
+      "c16_429": 65,
+      "explainable": true,
+      "leg": "r1-b1",
+      "successful_requests": 995
+    },
+    {
+      "audit_delta": 1133,
+      "c16_429": 38,
+      "explainable": true,
+      "leg": "r1-b2",
+      "successful_requests": 1074
+    },
+    {
+      "audit_delta": 1157,
+      "c16_429": 26,
+      "explainable": true,
+      "leg": "r2-a1",
+      "successful_requests": 1114
+    },
+    {
+      "audit_delta": 1117,
+      "c16_429": 46,
+      "explainable": true,
+      "leg": "r2-a2",
+      "successful_requests": 1054
+    },
+    {
+      "audit_delta": 1119,
+      "c16_429": 45,
+      "explainable": true,
+      "leg": "r2-b1",
+      "successful_requests": 1057
+    },
+    {
+      "audit_delta": 1105,
+      "c16_429": 52,
+      "explainable": true,
+      "leg": "r2-b2",
+      "successful_requests": 1043
+    }
+  ]
+}

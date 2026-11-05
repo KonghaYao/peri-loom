@@ -1,0 +1,18 @@
+{
+  "records": [
+    {
+      "side": "a",
+      "requests": 5,
+      "failures": [],
+      "elapsed_ms": 27.136,
+      "per_request_ms": 5.427
+    },
+    {
+      "side": "b",
+      "requests": 5,
+      "failures": [],
+      "elapsed_ms": 13.662,
+      "per_request_ms": 2.732
+    }
+  ]
+}

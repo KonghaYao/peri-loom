@@ -1,0 +1,9 @@
+frozen_at_utc: 2026-11-05T07:57:03Z
+criteria_file: criteria.json
+criteria_sha256: de7860a1b1737d4fd20b14fd0f743c1f14f38455892e8b162d44c6b59ce0ba39
+candidate_branch: perf/r72-deferred-close-default
+candidate_commit: 56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6
+baseline_commit: ee1da7d
+note: frozen before the first Docker stack of this campaign was started. No measurement leg,
+      Gate 0 leg or smoke run existed at freeze time. Nothing in criteria.json may be changed
+      after data is seen.

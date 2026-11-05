@@ -1,0 +1,42 @@
+date_utc: 2026-11-05T07:59:10Z (recorded before the first stack start)
+host: macOS 26.5.1 / Darwin 25.5.0 arm64
+docker_client: 29.4.0
+docker_server: 29.4.0
+go: go version go1.27.3 darwin/arm64
+repo: /Users/kk/code/peri-loom
+branch: perf/r72-deferred-close-default
+commit: 56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6
+baseline_commit: ee1da7d
+image: ghcr.io/konghayao/peri-loom:v1.2.7
+image_id: sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+repo_digest: ghcr.io/konghayao/peri-loom@sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+worker_host: /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+worker_sha256: b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+platform_host: /tmp/peri-r72-ab/bin/peri-platform-r72
+platform_sha256: e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba
+platform_build: |
+  cd prototypes/v1/platform &&
+  GOOS=linux GOARCH=arm64 CGO_ENABLED=0
+  go build -trimpath -o /tmp/peri-r72-ab/bin/peri-platform-r72 ./cmd/peri-platform
+platform_rebuild_sha256: e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba
+platform_rebuild_note: the same source tree built twice to different output paths produced the same SHA256
+launcher: prototypes/v1/platform/dev.py
+launcher_sha256: 80bcab2ab246ab280647f4b3452ba6ef9f9c3334eb7d2b1f15960c8c0c9497b2
+seed_fixture: docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py
+seed_fixture_sha256: 092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210
+fixture_verify: threads=201 messages=8625 chars=20177069 focus=8625 (per stack)
+quotas: platform defaults, not relaxed (max_databases=8, max_sessions=16,
+        max_concurrent=100, requests_per_second=500, max_sql_bytes=65536,
+        max_result_bytes=4194304); recorded per leg from the durable state payload
+durability: audit_file_v1
+observer: none
+sides: A = PERI_DEFERRED_SESSION_CLOSE=0 explicit (synchronous close);
+       B = PERI_DEFERRED_SESSION_CLOSE unset (R72 default deferred close)
+ports: gate0 21400-21401; p1 21400-21401 (fresh volumes, same ports after gate0 stops);
+       p2 f1 21410-21417; p2 l1 21420-21427; p2 x1 21430-21437; p2 c8 21440-21447
+volumes: fresh peri-r72-ab-* volumes; no previous round's volume is reused,
+         modified or deleted
+run_dirs: /tmp/peri-r72-ab/...; connection files stay in /tmp with mode 0600
+          and never enter the repository or a log
+criteria: criteria.json sha256 de7860a1b1737d4fd20b14fd0f743c1f14f38455892e8b162d44c6b59ce0ba39
+          frozen 2026-11-05T07:57:03Z, before any stack start

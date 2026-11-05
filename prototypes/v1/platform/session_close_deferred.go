@@ -414,15 +414,16 @@ func (latch *deferredSessionClose) Status() map[string]any {
 	}
 }
 
-// deferredSessionCloseEnabled reads the kill switch. Both unset and "0" keep
-// today's synchronous close byte for byte: no account, no goroutines, no
-// counters.
+// deferredSessionCloseEnabled reads the kill switch. Unset enables the account
+// (the default since R72). "0" keeps today's synchronous close byte for byte:
+// no account, no goroutines, no counters. Any other value is refused before
+// startup so a typo cannot silently pick either mode.
 func deferredSessionCloseEnabled() (bool, error) {
 	switch strings.TrimSpace(os.Getenv("PERI_DEFERRED_SESSION_CLOSE")) {
-	case "", "0":
-		return false, nil
-	case "1":
+	case "", "1":
 		return true, nil
+	case "0":
+		return false, nil
 	default:
 		return false, errors.New("PERI_DEFERRED_SESSION_CLOSE must be 0 or 1")
 	}

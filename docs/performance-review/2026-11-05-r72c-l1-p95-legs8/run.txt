@@ -1,0 +1,33 @@
+== p2 l1 leg p1-a flag=off switch=explicit-0 port=21600
+p2 l1 leg p1-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p1-a-data
+== p2 l1 leg p1-b flag=on switch=unset-default port=21601
+p2 l1 leg p1-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p1-b-data
+== p2 l1 leg p2-b flag=on switch=unset-default port=21602
+p2 l1 leg p2-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p2-b-data
+== p2 l1 leg p2-a flag=off switch=explicit-0 port=21603
+p2 l1 leg p2-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p2-a-data
+== p2 l1 leg p3-b flag=on switch=unset-default port=21604
+p2 l1 leg p3-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p3-b-data
+== p2 l1 leg p3-a flag=off switch=explicit-0 port=21605
+p2 l1 leg p3-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p3-a-data
+== p2 l1 leg p4-a flag=off switch=explicit-0 port=21606
+p2 l1 leg p4-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p4-a-data
+== p2 l1 leg p4-b flag=on switch=unset-default port=21607
+p2 l1 leg p4-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p4-b-data
+== p2 l1 leg p5-b flag=on switch=unset-default port=21608
+p2 l1 leg p5-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p5-b-data
+== p2 l1 leg p5-a flag=off switch=explicit-0 port=21609
+p2 l1 leg p5-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p5-a-data
+== p2 l1 leg p6-a flag=off switch=explicit-0 port=21610
+p2 l1 leg p6-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p6-a-data
+== p2 l1 leg p6-b flag=on switch=unset-default port=21611
+p2 l1 leg p6-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p6-b-data
+== p2 l1 leg p7-a flag=off switch=explicit-0 port=21612
+p2 l1 leg p7-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p7-a-data
+== p2 l1 leg p7-b flag=on switch=unset-default port=21613
+p2 l1 leg p7-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p7-b-data
+== p2 l1 leg p8-b flag=on switch=unset-default port=21614
+p2 l1 leg p8-b done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p8-b-data
+== p2 l1 leg p8-a flag=off switch=explicit-0 port=21615
+p2 l1 leg p8-a done driver_exit=0 settle_exit=0 stop_exit=0 volume=peri-r72c-l1-p2-l1-p8-a-data
+p2 l1 legs complete

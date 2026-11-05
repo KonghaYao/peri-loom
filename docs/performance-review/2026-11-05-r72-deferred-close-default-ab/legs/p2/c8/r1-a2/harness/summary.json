@@ -1,0 +1,285 @@
+{
+  "active_permits_after": 0,
+  "block_gap_seconds": 1.2,
+  "blocks": [
+    {
+      "block": 0,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1961.893,
+      "wall_ms": 101.942333,
+      "warmup": true
+    },
+    {
+      "block": 1,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1672.199,
+      "wall_ms": 119.602958,
+      "warmup": true
+    },
+    {
+      "block": 2,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1849.234,
+      "wall_ms": 108.152916,
+      "warmup": true
+    },
+    {
+      "block": 3,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 2022.596,
+      "wall_ms": 98.882834,
+      "warmup": true
+    },
+    {
+      "block": 4,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 992.761,
+      "wall_ms": 201.458333,
+      "warmup": false
+    },
+    {
+      "block": 5,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1229.355,
+      "wall_ms": 162.686917,
+      "warmup": false
+    },
+    {
+      "block": 6,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1735.081,
+      "wall_ms": 115.268417,
+      "warmup": false
+    },
+    {
+      "block": 7,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1356.514,
+      "wall_ms": 147.436708,
+      "warmup": false
+    },
+    {
+      "block": 8,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1398.196,
+      "wall_ms": 143.041458,
+      "warmup": false
+    },
+    {
+      "block": 9,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1576.03,
+      "wall_ms": 126.901167,
+      "warmup": false
+    },
+    {
+      "block": 10,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1387.155,
+      "wall_ms": 144.179959,
+      "warmup": false
+    },
+    {
+      "block": 11,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1269.268,
+      "wall_ms": 157.571125,
+      "warmup": false
+    },
+    {
+      "block": 12,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1290.587,
+      "wall_ms": 154.968291,
+      "warmup": false
+    },
+    {
+      "block": 13,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1247.497,
+      "wall_ms": 160.321083,
+      "warmup": false
+    },
+    {
+      "block": 14,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1477.939,
+      "wall_ms": 135.323583,
+      "warmup": false
+    },
+    {
+      "block": 15,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1725.922,
+      "wall_ms": 115.880083,
+      "warmup": false
+    },
+    {
+      "block": 16,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1105.287,
+      "wall_ms": 180.948417,
+      "warmup": false
+    },
+    {
+      "block": 17,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1518.593,
+      "wall_ms": 131.700875,
+      "warmup": false
+    },
+    {
+      "block": 18,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1520.763,
+      "wall_ms": 131.512959,
+      "warmup": false
+    },
+    {
+      "block": 19,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1339.1,
+      "wall_ms": 149.354,
+      "warmup": false
+    }
+  ],
+  "calibration": {
+    "failures": 0,
+    "first_failure": null,
+    "requests": 8
+  },
+  "cleanup_ledger_after": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "concurrency": 8,
+  "deferred_session_close": null,
+  "initial_refill_seconds": 1.5,
+  "label": "sustained-c8",
+  "leg": "r1-a2",
+  "payload": "f1-select-1-json-pipeline-implicit-open-close-c8",
+  "per_client_block": 25,
+  "requests_per_block": 200,
+  "requests_per_client": 500,
+  "session_seats_after": 0,
+  "timed": {
+    "error_codes": {},
+    "failures": 0,
+    "first_failure": null,
+    "max_ms": 48.1504,
+    "mean_ms": 5.6759,
+    "min_ms": 0.6623,
+    "p50_ms": 3.7264,
+    "p95_ms": 17.0819,
+    "requests": 3200,
+    "status_counts": {
+      "200": 3200
+    },
+    "throughput_qps": 1356.764,
+    "wall_ms": 2358.553375
+  },
+  "timed_blocks": 16,
+  "total_blocks": 20,
+  "warmup": {
+    "failures": 0,
+    "requests": 800
+  },
+  "warmup_blocks": 4,
+  "warmup_per_client": 100,
+  "window": {
+    "action_latency_ns_total": {
+      "close": 5234795132,
+      "open": 9295860481,
+      "statement": 850611075
+    },
+    "actions_total": {
+      "close": 4000,
+      "open": 4000,
+      "statement": 4000
+    },
+    "active_permits_after": 0,
+    "admitted_requests_total": 12000,
+    "cleanup_ledger_after": {
+      "isolated_records": {
+        "count": 0,
+        "oldest_age_ms": 0,
+        "state_read": "ok"
+      },
+      "orphan_sessions": {
+        "count": 0,
+        "oldest_age_ms": 0
+      },
+      "pending_close": {
+        "count": 0,
+        "exhausted": 0,
+        "last_failure": "",
+        "oldest_age_ms": 0
+      }
+    },
+    "close_actions": 4000,
+    "close_latency_mean_us": 1308.699,
+    "close_latency_ns_total": 5234795132,
+    "deferred_session_close": null,
+    "eligibility_ratio": null,
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "rejection_reasons_total": {},
+    "session_seats_after": 0,
+    "successful_requests_total": 12000,
+    "unknown_held_permits_after": 0
+  },
+  "worker_errors": []
+}

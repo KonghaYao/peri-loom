@@ -1,0 +1,990 @@
+{
+  "generated_at_utc": "2026-11-05T08:36:37.424590+00:00",
+  "legs": {
+    "p1-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 90,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p1-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 78,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p2-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 94,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p2-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 85,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p3-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 2,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 83,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p3-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 81,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p4-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 78,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p4-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 2,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 89,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p5-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 83,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p5-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 79,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p6-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 83,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p6-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 90,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p7-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 93,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p7-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 77,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p8-b": {
+      "side": "b",
+      "arm": "unset-default",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 87,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      }
+    },
+    "p8-a": {
+      "side": "a",
+      "arm": "explicit-0",
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "errors_delta": {},
+      "rejection_delta": {},
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_delta": 384,
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 89,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15637,
+          15638
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/legs/p2/x1/r2-b1/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "92711017bb3a6db10a8e64549816e3f9de5d98501548225d10780e9533323d67",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 1571,
+  "last_hash": "92711017bb3a6db10a8e64549816e3f9de5d98501548225d10780e9533323d67",
+  "last_sequence": 1571,
+  "leg": "r2-b1",
+  "present": true,
+  "records": 1571,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 1571
+    }
+  ]
+}

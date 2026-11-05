@@ -1,0 +1,41 @@
+R72b L1 c1 p95 retest
+generated: 2026-11-05T08:29:22.623240+00:00
+criteria sha256: 0b2f2769344a8798d64130e68d75e3acd710349fe4d1f17e8e53209316a8af00 (freeze match: True)
+
+| pair | order | A leg | B leg | A p50 | B p50 | p50 B/A | A p95 | B p95 | p95 B/A | valid |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| p1 | A_then_B | p1-a | p1-b | 1.8229 | 1.2066 | 0.66191 | 3.736 | 3.6258 | 0.9705 | False |
+| p2 | B_then_A | p2-a | p2-b | None | None | None | None | None | None | False |
+| p3 | B_then_A | p3-a | p3-b | None | None | None | None | None | None | False |
+| p4 | A_then_B | p4-a | p4-b | None | None | None | None | None | None | False |
+| p5 | B_then_A | p5-a | p5-b | None | None | None | None | None | None | False |
+| p6 | A_then_B | p6-a | p6-b | None | None | None | None | None | None | False |
+| p7 | A_then_B | p7-a | p7-b | None | None | None | None | None | None | False |
+| p8 | B_then_A | p8-a | p8-b | None | None | None | None | None | None | False |
+
+primary p95 ratio median: None (threshold < 1.10) -> False
+auxiliary p50 ratio median: None (threshold < 1.10) -> False
+halves: {"first_4_pairs_p50_median": null, "first_4_pairs_p95_median": null, "last_4_pairs_p50_median": null, "last_4_pairs_p95_median": null}
+pooled: {"a_p50_ms": 1.8229, "a_p95_ms": 3.736, "a_samples": 500, "b_p50_ms": 1.2066, "b_p95_ms": 3.6258, "b_samples": 500, "bootstrap": null, "p50_ratio": 0.66194, "p95_ratio": 0.97049}
+
+| leg | side | port | timed | p50 | p95 | p99 | failures | audit delta | invalid |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| p1-a | a | 21500 | 500 | 1.8229 | 3.736 | 6.512 | 0 | 1509 |  |
+| p1-b | b | 21501 | 500 | 1.2066 | 3.6258 | 5.6725 | 11 | 1507 | 11 timed request failures (first: {'status': 200, 'outcome': 'mismatch', 'error_code': 'row_count_mismatch', 'detail': 'expected 40 rows, got 0'}); 11 timed samples with rows/rows_read != 40/201; driver exit 1; error counters {'quota_exceeded': 11} |
+| p2-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p2-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p3-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p3-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p4-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p4-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p5-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p5-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p6-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p6-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p7-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p7-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p8-b | b | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+| p8-a | a | None | 0 | None | None | None | 0 | None | leg directory missing (not run) |
+
+VERDICT: ENVIRONMENT_BLOCKED
+INVALID LEGS: {"p1-b": ["11 timed request failures (first: {'status': 200, 'outcome': 'mismatch', 'error_code': 'row_count_mismatch', 'detail': 'expected 40 rows, got 0'})", "11 timed samples with rows/rows_read != 40/201", "driver exit 1", "error counters {'quota_exceeded': 11}"], "p2-b": ["leg directory missing (not run)"], "p2-a": ["leg directory missing (not run)"], "p3-b": ["leg directory missing (not run)"], "p3-a": ["leg directory missing (not run)"], "p4-a": ["leg directory missing (not run)"], "p4-b": ["leg directory missing (not run)"], "p5-b": ["leg directory missing (not run)"], "p5-a": ["leg directory missing (not run)"], "p6-a": ["leg directory missing (not run)"], "p6-b": ["leg directory missing (not run)"], "p7-a": ["leg directory missing (not run)"], "p7-b": ["leg directory missing (not run)"], "p8-b": ["leg directory missing (not run)"], "p8-a": ["leg directory missing (not run)"]}

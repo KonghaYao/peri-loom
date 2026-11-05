@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72c-l1-p95-legs8/legs/p2/l1/p4-a/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "11bd61b72aee69481af3f1416337bd5a9380ab20d2582e8328dee11e4acd1f7b",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 836,
+  "last_hash": "11bd61b72aee69481af3f1416337bd5a9380ab20d2582e8328dee11e4acd1f7b",
+  "last_sequence": 836,
+  "leg": "p4-a",
+  "present": true,
+  "records": 836,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 836
+    }
+  ]
+}

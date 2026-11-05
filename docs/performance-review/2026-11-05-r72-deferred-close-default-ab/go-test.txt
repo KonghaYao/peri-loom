@@ -1,0 +1,6 @@
+ok  	peri-loom/platform	185.809s
+ok  	peri-loom/platform/cmd/peri	1.710s
+ok  	peri-loom/platform/cmd/peri-platform	1.042s
+ok  	peri-loom/platform/sdk/go	2.521s
+ok  	peri-loom/platform/sqlcontract	2.457s
+exit=0

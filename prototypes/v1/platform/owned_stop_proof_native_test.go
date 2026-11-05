@@ -46,7 +46,11 @@ func ownedStopProofDefaultCLINativeResponseLoss(test *testing.T, command string)
 	if output, err := build.CombinedOutput(); err != nil {
 		test.Fatalf("actual CLI build: %v\n%s", err, output)
 	}
-	environment := map[string]string{"PERI_RUST_BINARY": fixture.rust, "PERI_PLATFORM_BINARY": fixture.binary}
+	// This test pins the synchronous close's Unknown classification when the
+	// worker reply is lost. A pristine session now defaults to the deferred
+	// close, which answers before the worker call, so the loss is not visible
+	// to the request; pin the kill switch to keep the contract under test.
+	environment := map[string]string{"PERI_RUST_BINARY": fixture.rust, "PERI_PLATFORM_BINARY": fixture.binary, "PERI_DEFERRED_SESSION_CLOSE": "0"}
 	listen := p6VerifyAddress(test)
 	addresses := []string{p6VerifyAddress(test), p6VerifyAddress(test), p6VerifyAddress(test), p6VerifyAddress(test)}
 	proxy := &unknownResponseLossProxy{counts: map[string]int{}}

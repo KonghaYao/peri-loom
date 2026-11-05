@@ -887,10 +887,10 @@ def platform_process_environment():
     """Build the platform child's base environment.
 
     The platform reads its experiment switches from its own environment; the launcher
-    forwards only the names it is told to. The deferred session close account stays off
-    unless the operator asks for it, so the switch crosses into the child only when the
-    caller set it; an unset caller keeps the platform default instead of a
-    launcher-invented value.
+    forwards only the names it is told to. The deferred session close account is enabled
+    by default, so the kill switch crosses into the child only when the caller set it
+    (an explicit 0 restores the synchronous close); an unset caller keeps the platform
+    default instead of a launcher-invented value.
     """
     environment = safe_environment()
     if "PERI_DEFERRED_SESSION_CLOSE" in os.environ:

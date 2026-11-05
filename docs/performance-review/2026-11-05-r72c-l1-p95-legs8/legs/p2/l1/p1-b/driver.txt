@@ -1,0 +1,9 @@
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  L1.list-20               read       json-pipeline
+  L1.list-20               json-pipeline      n=125 median=   1.11ms p95=   3.10ms
+wrote /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72c-l1-p95-legs8/legs/p2/l1/p1-b/harness/summary.md and /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72c-l1-p95-legs8/legs/p2/l1/p1-b/harness/summary.json

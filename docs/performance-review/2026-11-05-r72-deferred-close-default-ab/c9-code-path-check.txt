@@ -1,0 +1,155 @@
+# C9 code-path consistency check for R72
+
+date_utc: 2026-11-05T08:02:24Z
+candidate: perf/r72-deferred-close-default @ 56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6
+probe branch: probe/r71-g3-fault-injection @ 090aad5e8b81364463b657ef5449f6d3448017d5
+probe platform SHA256: 5c3e8f2a9a290620de39d56ffcb02292381ba0616873efa04f03cfa0b9c71152
+
+## diff probe..R72 for the deferred-close mechanism file
+diff --git a/prototypes/v1/platform/session_close_deferred.go b/prototypes/v1/platform/session_close_deferred.go
+index 61c00fe..73ccdcc 100644
+--- a/prototypes/v1/platform/session_close_deferred.go
++++ b/prototypes/v1/platform/session_close_deferred.go
+@@ -414,15 +414,16 @@ func (latch *deferredSessionClose) Status() map[string]any {
+ 	}
+ }
+ 
+-// deferredSessionCloseEnabled reads the kill switch. Both unset and "0" keep
+-// today's synchronous close byte for byte: no account, no goroutines, no
+-// counters.
++// deferredSessionCloseEnabled reads the kill switch. Unset enables the account
++// (the default since R72). "0" keeps today's synchronous close byte for byte:
++// no account, no goroutines, no counters. Any other value is refused before
++// startup so a typo cannot silently pick either mode.
+ func deferredSessionCloseEnabled() (bool, error) {
+ 	switch strings.TrimSpace(os.Getenv("PERI_DEFERRED_SESSION_CLOSE")) {
+-	case "", "0":
+-		return false, nil
+-	case "1":
++	case "", "1":
+ 		return true, nil
++	case "0":
++		return false, nil
+ 	default:
+ 		return false, errors.New("PERI_DEFERRED_SESSION_CLOSE must be 0 or 1")
+ 	}
+
+## probe-only instrumentation diff (inert unless PERI_R71_G3_* is set)
+diff --git a/prototypes/v1/platform/gateway_http.go b/prototypes/v1/platform/gateway_http.go
+index 81868cd..e217e41 100644
+--- a/prototypes/v1/platform/gateway_http.go
++++ b/prototypes/v1/platform/gateway_http.go
+@@ -468,6 +468,12 @@ func (gateway *Gateway) deferredCompletion(action string, result *gatewayResult)
+ // deferAfter pays a reserved row's barrier after the reply; nil pays it here,
+ // which every committing request, refusal and unknown outcome keeps.
+ func (gateway *Gateway) recordAuditEvent(event AuditEvent, completion AuditReservation, principal Principal, result *gatewayResult, deferAfter *deferredDurability) error {
++	if event.Action == "close" && probeDropCloseRecord() {
++		if completion != nil {
++			completion.Release()
++		}
++		return nil
++	}
+ 	if completion != nil {
+ 		defer completion.Release()
+ 		held, ok := completion.(*auditReservation)
+diff --git a/prototypes/v1/platform/gateway_operations.go b/prototypes/v1/platform/gateway_operations.go
+index 0c176d4..47cb824 100644
+--- a/prototypes/v1/platform/gateway_operations.go
++++ b/prototypes/v1/platform/gateway_operations.go
+@@ -229,6 +229,9 @@ func (gateway *Gateway) settlePendingOperation(ctx context.Context, pending *pen
+ }
+ 
+ func (gateway *Gateway) settlePendingOperationUsing(ctx context.Context, pending *pendingOperation, result *gatewayResult, permit *admissionPermit, submit func(func(*operationEdit) error) (func() error, error), deferAfter *deferredDurability) error {
++	if pending.action == "close" && probeDropCloseRecord() {
++		return nil
++	}
+ 	unknown := result.code == "outcome_unknown"
+ 	if !unknown && !pending.outcome {
+ 		return nil
+diff --git a/prototypes/v1/platform/gateway_writer.go b/prototypes/v1/platform/gateway_writer.go
+index 8b86588..442635c 100644
+--- a/prototypes/v1/platform/gateway_writer.go
++++ b/prototypes/v1/platform/gateway_writer.go
+@@ -3,6 +3,7 @@ package platform
+ import (
+ 	"context"
+ 	"errors"
++	"time"
+ 
+ 	controller "peri-loom/controller"
+ )
+@@ -51,6 +52,11 @@ func (gateway *Gateway) writerDispatchGuard(ctx context.Context, principal Princ
+ // mutable command, so the body that reaches the worker is the body the durable
+ // record was settled against.
+ func (gateway *Gateway) callSession(ctx context.Context, session *gatewaySession, binding controller.Binding, requestID string, command frozenCommand, output any) error {
++	if command.operationName() == "close_session" {
++		if delay := probeCloseDelay(); delay > 0 {
++			time.Sleep(delay)
++		}
++	}
+ 	// Deferred: every refusal below still attributes its worker time to the worker segment.
+ 	defer requestPhaseSpan(ctx, requestPhaseWorker)()
+ 	// Native is the cross-process boundary itself. It stays nested inside worker so the
+diff --git a/prototypes/v1/platform/operation_commit.go b/prototypes/v1/platform/operation_commit.go
+index 88ab1aa..125670d 100644
+--- a/prototypes/v1/platform/operation_commit.go
++++ b/prototypes/v1/platform/operation_commit.go
+@@ -69,6 +69,9 @@ func (journal *operationJournal) submitAuditPrepared(view State, delta operation
+ 		return nil, err
+ 	}
+ 	queueMaximum := operationJournalQueueMaximum
++	if probe := probeOperationQueueMaximum(); probe > 0 {
++		queueMaximum = probe
++	}
+ 	if reserved && journal.completion != nil {
+ 		queueMaximum += completionReservedMaximum
+ 	}
+
+## probe file (only on the probe branch)
+package platform
+
+// R71 Gate 3 fault-injection probes. This file exists only on the
+// probe/r71-g3-fault-injection branch and is never merged. Every probe is
+// inert unless its own environment variable is set.
+
+import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// probeCloseDelay simulates worker-side close_session latency. It is read on
+// every worker close call so the A and B arms share the same injected delay.
+func probeCloseDelay() time.Duration {
+	setting := strings.TrimSpace(os.Getenv("PERI_R71_G3_CLOSE_DELAY_MS"))
+	if setting == "" {
+		return 0
+	}
+	milliseconds, err := strconv.Atoi(setting)
+	if err != nil || milliseconds <= 0 {
+		return 0
+	}
+	return time.Duration(milliseconds) * time.Millisecond
+}
+
+// probeDropCloseRecord drops the durable close record (operation and audit)
+// while the client still receives the success reply. It deterministically
+// reproduces a power loss that discards the tail record.
+func probeDropCloseRecord() bool {
+	return strings.TrimSpace(os.Getenv("PERI_R71_G3_DROP_CLOSE_RECORD")) == "1"
+}
+
+// probeOperationQueueMaximum lowers the operation journal admission bound so a
+// settlement can meet a full queue on purpose.
+func probeOperationQueueMaximum() int {
+	setting := strings.TrimSpace(os.Getenv("PERI_R71_G3_OPERATION_QUEUE_MAX"))
+	if setting == "" {
+		return 0
+	}
+	limit, err := strconv.Atoi(setting)
+	if err != nil || limit <= 0 {
+		return 0
+	}
+	return limit
+}

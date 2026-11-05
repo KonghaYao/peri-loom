@@ -1,0 +1,18 @@
+{
+  "status": "cited",
+  "source": "R71 Gate 3 crash/adversarial evidence",
+  "source_path": "docs/performance-review/2026-11-05-r71-g3-crash-adversarial/README.md",
+  "gates": "T1-T9 PASS",
+  "probe_branch": "probe/r71-g3-fault-injection @ 090aad5e8b81364463b657ef5449f6d3448017d5",
+  "probe_platform_sha256": "5c3e8f2a9a290620de39d56ffcb02292381ba0616873efa04f03cfa0b9c71152",
+  "probe_platform_sha256_verified": true,
+  "code_path_check": "git diff probe/r71-g3-fault-injection 56dc914 -- prototypes/v1/platform/session_close_deferred.go shows only the default flip (unset now enables; explicit 0 disables) and the comment. The probe branch's other platform differences are probe-only hooks (probe_r71_g3.go plus four call-site hooks) that are inert unless PERI_R71_G3_CLOSE_DELAY_MS, PERI_R71_G3_DROP_CLOSE_RECORD or PERI_R71_G3_OPERATION_QUEUE_MAX is set. With PERI_DEFERRED_SESSION_CLOSE=1 and no PERI_R71_G3_* variables, the probe binary executes the same deferred-close path as the R72 B arm.",
+  "rerun": false,
+  "rerun_reason": "The R72 campaign's P1 (30 triples) and P2 regression gates (32 legs) consume the time budget. The R72 candidate changes only the default value; R71 Gate 3 already exercised the explicitly enabled path. T2 was therefore cited, not rerun.",
+  "evidence_file": "c9-code-path-check.txt",
+  "notes": [
+    "R71 Gate 3 T2: deterministic drop of the close durable record -> restart quarantines the namespace, Hrana SELECT 1 returns HTTP 409 database_isolated, verify_no_unresolved_operations refuses a clean restart, and the supported recover path (decision -> retire-local -> release) restores HTTP 200 without deleting the ownership marker.",
+    "R71 Gate 3 T1: graceful stop drains pending deferred closes and completes cleanly.",
+    "R71 Gate 3 T3b/T4b/T5/T6/T7/T8/T9 cover SIGKILL-confirmed-write durability, worker stop/resume, 200ms close injection, post-close requests, c8/c16 soak, kill switch equivalence and settlement-queue-full interaction."
+  ]
+}

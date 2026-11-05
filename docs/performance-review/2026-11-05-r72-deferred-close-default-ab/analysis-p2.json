@@ -1,0 +1,1877 @@
+{
+  "scenarios": {
+    "f1": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.7546,
+          "p95_ms": 4.8807,
+          "mean_ms": 2.1428,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 0.626,
+          "p95_ms": 3.7932,
+          "mean_ms": 1.1276,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 0.9464,
+          "p95_ms": 4.2186,
+          "mean_ms": 1.5455,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.8854,
+          "p95_ms": 5.3904,
+          "mean_ms": 2.2581,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.8247,
+          "p95_ms": 3.9421,
+          "mean_ms": 2.0268,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.0461,
+          "p95_ms": 4.4845,
+          "mean_ms": 1.5608,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 0.8322,
+          "p95_ms": 3.0069,
+          "mean_ms": 1.2751,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.7689,
+          "p95_ms": 5.1139,
+          "mean_ms": 2.12,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "F1.select-1": "PASS"
+          }
+        }
+      ],
+      "checks": {
+        "median_ms": {
+          "sides": {
+            "a": 1.7968,
+            "b": 0.8893
+          },
+          "merged_b_over_a": 0.49494,
+          "round_ratios": {
+            "r1": 0.43198,
+            "r2": 0.52268
+          },
+          "reproducible_degradation": false
+        },
+        "p95_ms": {
+          "sides": {
+            "a": 4.9973,
+            "b": 4.0059
+          },
+          "merged_b_over_a": 0.80161,
+          "round_ratios": {
+            "r1": 0.78003,
+            "r2": 0.82723
+          },
+          "reproducible_degradation": false
+        }
+      },
+      "invalid_legs": [],
+      "driver_exits": {
+        "r1-a1": {
+          "driver": 0
+        },
+        "r1-b1": {
+          "driver": 0
+        },
+        "r1-b2": {
+          "driver": 0
+        },
+        "r1-a2": {
+          "driver": 0
+        },
+        "r2-a1": {
+          "driver": 0
+        },
+        "r2-b1": {
+          "driver": 0
+        },
+        "r2-b2": {
+          "driver": 0
+        },
+        "r2-a2": {
+          "driver": 0
+        }
+      },
+      "warnings": {}
+    },
+    "l1": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.9416,
+          "p95_ms": 3.6387,
+          "mean_ms": 2.0869,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.8498,
+          "p95_ms": 4.5808,
+          "mean_ms": 2.0368,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.2642,
+          "p95_ms": 4.7138,
+          "mean_ms": 1.7848,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.8512,
+          "p95_ms": 3.7062,
+          "mean_ms": 2.0183,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.8838,
+          "p95_ms": 4.1181,
+          "mean_ms": 2.124,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.3959,
+          "p95_ms": 4.6105,
+          "mean_ms": 1.7817,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 1.2025,
+          "p95_ms": 3.3295,
+          "mean_ms": 1.6049,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 125,
+          "median_ms": 2.5147,
+          "p95_ms": 5.4342,
+          "mean_ms": 2.5894,
+          "failures": 0,
+          "failure_sample": [],
+          "warnings": [],
+          "fatal": "",
+          "row_verdicts": {
+            "L1.list-20": "PASS"
+          }
+        }
+      ],
+      "checks": {
+        "median_ms": {
+          "sides": {
+            "a": 1.9127,
+            "b": 1.33
+          },
+          "merged_b_over_a": 0.69538,
+          "round_ratios": {
+            "r1": 0.82103,
+            "r2": 0.59075
+          },
+          "reproducible_degradation": false
+        },
+        "p95_ms": {
+          "sides": {
+            "a": 3.9122,
+            "b": 4.5957
+          },
+          "merged_b_over_a": 1.17471,
+          "round_ratios": {
+            "r1": 1.26545,
+            "r2": 0.83121
+          },
+          "reproducible_degradation": true
+        }
+      },
+      "invalid_legs": [],
+      "driver_exits": {
+        "r1-a1": {
+          "driver": 0
+        },
+        "r1-b1": {
+          "driver": 0
+        },
+        "r1-b2": {
+          "driver": 0
+        },
+        "r1-a2": {
+          "driver": 0
+        },
+        "r2-a1": {
+          "driver": 0
+        },
+        "r2-b1": {
+          "driver": 0
+        },
+        "r2-b2": {
+          "driver": 0
+        },
+        "r2-a2": {
+          "driver": 0
+        }
+      },
+      "warnings": {}
+    },
+    "x1": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 69.0,
+            "p50_ms": 4.68,
+            "p95_ms": 11.16,
+            "p99_ms": 12.04,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 4.7592289999999995,
+            "p95_ms": 11.162,
+            "p99_ms": 12.04225,
+            "min_ms": 1.207542,
+            "max_ms": 12.683791,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 3.7650419399142265,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 69.0,
+            "p50_ms": 8.67,
+            "p95_ms": 15.57,
+            "p99_ms": 19.36,
+            "status_429": 29
+          },
+          "c16_429": 29,
+          "c16_errors": 40,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 1449.275,
+          "median_ms": 4.68,
+          "p95_ms": 11.16,
+          "failures": 0
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 41.0,
+            "p50_ms": 2.75,
+            "p95_ms": 5.25,
+            "p99_ms": 5.83,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 2.7588125,
+            "p95_ms": 5.245583,
+            "p99_ms": 5.832,
+            "min_ms": 0.898875,
+            "max_ms": 6.464375,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 2.866125199943781,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 52.0,
+            "p50_ms": 6.39,
+            "p95_ms": 15.01,
+            "p99_ms": 17.23,
+            "status_429": 65
+          },
+          "c16_429": 65,
+          "c16_errors": 84,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 2439.024,
+          "median_ms": 2.75,
+          "p95_ms": 5.25,
+          "failures": 0
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 59.0,
+            "p50_ms": 3.12,
+            "p95_ms": 11.1,
+            "p99_ms": 13.97,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 3.1858744999999997,
+            "p95_ms": 11.101916,
+            "p99_ms": 13.965084,
+            "min_ms": 0.638583,
+            "max_ms": 14.021292,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 2.809791825711727,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 66.0,
+            "p50_ms": 8.51,
+            "p95_ms": 23.86,
+            "p99_ms": 26.29,
+            "status_429": 38
+          },
+          "c16_429": 38,
+          "c16_errors": 59,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 1694.915,
+          "median_ms": 3.12,
+          "p95_ms": 11.1,
+          "failures": 0
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 49.0,
+            "p50_ms": 2.74,
+            "p95_ms": 9.52,
+            "p99_ms": 10.16,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 2.7422500000000003,
+            "p95_ms": 9.516667,
+            "p99_ms": 10.157375,
+            "min_ms": 1.055459,
+            "max_ms": 10.598458,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 3.0967500060796738,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 46.0,
+            "p50_ms": 4.92,
+            "p95_ms": 18.24,
+            "p99_ms": 19.85,
+            "status_429": 41
+          },
+          "c16_429": 41,
+          "c16_errors": 49,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 2040.816,
+          "median_ms": 2.74,
+          "p95_ms": 9.52,
+          "failures": 0
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 72.0,
+            "p50_ms": 3.29,
+            "p95_ms": 16.85,
+            "p99_ms": 19.6,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 3.3045834999999997,
+            "p95_ms": 16.853042,
+            "p99_ms": 19.602209,
+            "min_ms": 1.099834,
+            "max_ms": 20.272416,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 2.9749167151749134,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 55.0,
+            "p50_ms": 6.66,
+            "p95_ms": 18.33,
+            "p99_ms": 19.47,
+            "status_429": 26
+          },
+          "c16_429": 26,
+          "c16_errors": 43,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 1388.889,
+          "median_ms": 3.29,
+          "p95_ms": 16.85,
+          "failures": 0
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 53.0,
+            "p50_ms": 3.92,
+            "p95_ms": 7.52,
+            "p99_ms": 9.21,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 3.946625,
+            "p95_ms": 7.516166,
+            "p99_ms": 9.207583,
+            "min_ms": 0.958333,
+            "max_ms": 12.258084,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 6.586458068341017,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 56.0,
+            "p50_ms": 6.35,
+            "p95_ms": 16.71,
+            "p99_ms": 18.87,
+            "status_429": 45
+          },
+          "c16_429": 45,
+          "c16_errors": 62,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 1886.792,
+          "median_ms": 3.92,
+          "p95_ms": 7.52,
+          "failures": 0
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 58.0,
+            "p50_ms": 4.1,
+            "p95_ms": 9.18,
+            "p99_ms": 11.29,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 4.104729000000001,
+            "p95_ms": 9.182541,
+            "p99_ms": 11.289209,
+            "min_ms": 1.123291,
+            "max_ms": 13.233667,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 3.2702921889722347,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 49.0,
+            "p50_ms": 6.03,
+            "p95_ms": 12.28,
+            "p99_ms": 19.32,
+            "status_429": 52
+          },
+          "c16_429": 52,
+          "c16_errors": 62,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 1724.138,
+          "median_ms": 4.1,
+          "p95_ms": 9.18,
+          "failures": 0
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 1
+          },
+          "present": true,
+          "c8": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 51.0,
+            "p50_ms": 2.98,
+            "p95_ms": 8.68,
+            "p99_ms": 11.45,
+            "status_429": 0
+          },
+          "c8_metrics": {
+            "level": 8,
+            "requests": 100,
+            "planned": 100,
+            "median_ms": 2.998438,
+            "p95_ms": 8.675708,
+            "p99_ms": 11.451958,
+            "min_ms": 0.867708,
+            "max_ms": 11.813459,
+            "status_429": 0,
+            "errors": 0,
+            "active_permits": 0,
+            "unknown_held_permits": 0,
+            "session_seats": 0,
+            "rejected_delta": 0,
+            "rejection_reasons": {},
+            "drain_ms": 2.720292191952467,
+            "verdict": "PASS"
+          },
+          "c8_429": 0,
+          "c8_errors": 0,
+          "c16": {
+            "level": 16,
+            "requests": 100,
+            "planned": 100,
+            "elapsed_ms": 59.0,
+            "p50_ms": 6.27,
+            "p95_ms": 24.97,
+            "p99_ms": 27.06,
+            "status_429": 46
+          },
+          "c16_429": 46,
+          "c16_errors": 63,
+          "fixture_complete": true,
+          "warnings": [],
+          "fatal": "",
+          "throughput_qps": 1960.784,
+          "median_ms": 2.98,
+          "p95_ms": 8.68,
+          "failures": 0
+        }
+      ],
+      "checks": {
+        "throughput_qps": {
+          "sides": {
+            "a": 1705.0295,
+            "b": 1805.465
+          },
+          "merged_b_over_a": 1.05891,
+          "round_ratios": {
+            "r1": 1.18448,
+            "r2": 1.07799
+          },
+          "reproducible_degradation": false
+        }
+      },
+      "invalid_legs": [],
+      "c8_diagnostics": {
+        "r1-a1": {
+          "p50_ms": 4.68,
+          "p95_ms": 11.16,
+          "c8_429": 0,
+          "c16_429": 29,
+          "c16_errors": 40,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r1-b1": {
+          "p50_ms": 2.75,
+          "p95_ms": 5.25,
+          "c8_429": 0,
+          "c16_429": 65,
+          "c16_errors": 84,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r1-b2": {
+          "p50_ms": 3.12,
+          "p95_ms": 11.1,
+          "c8_429": 0,
+          "c16_429": 38,
+          "c16_errors": 59,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r1-a2": {
+          "p50_ms": 2.74,
+          "p95_ms": 9.52,
+          "c8_429": 0,
+          "c16_429": 41,
+          "c16_errors": 49,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r2-a1": {
+          "p50_ms": 3.29,
+          "p95_ms": 16.85,
+          "c8_429": 0,
+          "c16_429": 26,
+          "c16_errors": 43,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r2-b1": {
+          "p50_ms": 3.92,
+          "p95_ms": 7.52,
+          "c8_429": 0,
+          "c16_429": 45,
+          "c16_errors": 62,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r2-b2": {
+          "p50_ms": 4.1,
+          "p95_ms": 9.18,
+          "c8_429": 0,
+          "c16_429": 52,
+          "c16_errors": 62,
+          "driver_exit": {
+            "driver": 1
+          }
+        },
+        "r2-a2": {
+          "p50_ms": 2.98,
+          "p95_ms": 8.68,
+          "c8_429": 0,
+          "c16_429": 46,
+          "c16_errors": 63,
+          "driver_exit": {
+            "driver": 1
+          }
+        }
+      },
+      "driver_exits": {
+        "r1-a1": {
+          "driver": 1
+        },
+        "r1-b1": {
+          "driver": 1
+        },
+        "r1-b2": {
+          "driver": 1
+        },
+        "r1-a2": {
+          "driver": 1
+        },
+        "r2-a1": {
+          "driver": 1
+        },
+        "r2-b1": {
+          "driver": 1
+        },
+        "r2-b2": {
+          "driver": 1
+        },
+        "r2-a2": {
+          "driver": 1
+        }
+      },
+      "warnings": {}
+    },
+    "c8": {
+      "legs": [
+        {
+          "leg": "r1-a1",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1388.397,
+          "median_ms": 3.4466,
+          "p95_ms": 17.1082,
+          "mean_ms": 5.5936,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": null,
+          "window": {
+            "action_latency_ns_total": {
+              "close": 5152177691,
+              "open": 9282085585,
+              "statement": 822216970
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 1288.044,
+            "close_latency_ns_total": 5152177691,
+            "deferred_session_close": null,
+            "eligibility_ratio": null,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 45.8938,
+            "mean_ms": 5.5936,
+            "min_ms": 0.6331,
+            "p50_ms": 3.4466,
+            "p95_ms": 17.1082,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1388.397,
+            "wall_ms": 2304.816292
+          }
+        },
+        {
+          "leg": "r1-b1",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1600.503,
+          "median_ms": 3.2726,
+          "p95_ms": 12.9797,
+          "mean_ms": 4.7892,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": {
+            "enqueued_total": 3895,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 105,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 4,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "window": {
+            "action_latency_ns_total": {
+              "close": 2569164392,
+              "open": 9401397358,
+              "statement": 800070573
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 642.291,
+            "close_latency_ns_total": 2569164392,
+            "deferred_session_close": {
+              "enqueued_total": 3895,
+              "failed_total": 0,
+              "flushed_total": 0,
+              "inline_total": 105,
+              "maximum": 256,
+              "pending": 0,
+              "pending_max": 4,
+              "per_database_maximum": 4,
+              "retried_total": 0,
+              "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+              "unresolved_total": 0
+            },
+            "eligibility_ratio": 0.97375,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 45.0018,
+            "mean_ms": 4.7892,
+            "min_ms": 0.5499,
+            "p50_ms": 3.2726,
+            "p95_ms": 12.9797,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1600.503,
+            "wall_ms": 1999.371251
+          }
+        },
+        {
+          "leg": "r1-b2",
+          "side": "b",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1603.507,
+          "median_ms": 2.8584,
+          "p95_ms": 12.9187,
+          "mean_ms": 4.8116,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": {
+            "enqueued_total": 3891,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 109,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 4,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "window": {
+            "action_latency_ns_total": {
+              "close": 2691191610,
+              "open": 9791682453,
+              "statement": 917036939
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 672.798,
+            "close_latency_ns_total": 2691191610,
+            "deferred_session_close": {
+              "enqueued_total": 3891,
+              "failed_total": 0,
+              "flushed_total": 0,
+              "inline_total": 109,
+              "maximum": 256,
+              "pending": 0,
+              "pending_max": 4,
+              "per_database_maximum": 4,
+              "retried_total": 0,
+              "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+              "unresolved_total": 0
+            },
+            "eligibility_ratio": 0.97275,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 32.9155,
+            "mean_ms": 4.8116,
+            "min_ms": 0.5865,
+            "p50_ms": 2.8584,
+            "p95_ms": 12.9187,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1603.507,
+            "wall_ms": 1995.625623
+          }
+        },
+        {
+          "leg": "r1-a2",
+          "side": "a",
+          "round": "r1",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1356.764,
+          "median_ms": 3.7264,
+          "p95_ms": 17.0819,
+          "mean_ms": 5.6759,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": null,
+          "window": {
+            "action_latency_ns_total": {
+              "close": 5234795132,
+              "open": 9295860481,
+              "statement": 850611075
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 1308.699,
+            "close_latency_ns_total": 5234795132,
+            "deferred_session_close": null,
+            "eligibility_ratio": null,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 48.1504,
+            "mean_ms": 5.6759,
+            "min_ms": 0.6623,
+            "p50_ms": 3.7264,
+            "p95_ms": 17.0819,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1356.764,
+            "wall_ms": 2358.553375
+          }
+        },
+        {
+          "leg": "r2-a1",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1342.325,
+          "median_ms": 3.9126,
+          "p95_ms": 17.2782,
+          "mean_ms": 5.77,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": null,
+          "window": {
+            "action_latency_ns_total": {
+              "close": 5775104767,
+              "open": 9435588684,
+              "statement": 858944856
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 1443.776,
+            "close_latency_ns_total": 5775104767,
+            "deferred_session_close": null,
+            "eligibility_ratio": null,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 48.8163,
+            "mean_ms": 5.77,
+            "min_ms": 0.6858,
+            "p50_ms": 3.9126,
+            "p95_ms": 17.2782,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1342.325,
+            "wall_ms": 2383.923044
+          }
+        },
+        {
+          "leg": "r2-b1",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1664.361,
+          "median_ms": 3.0941,
+          "p95_ms": 11.9734,
+          "mean_ms": 4.6237,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": {
+            "enqueued_total": 3895,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 105,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 4,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "window": {
+            "action_latency_ns_total": {
+              "close": 2564348820,
+              "open": 9537488246,
+              "statement": 829510172
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 641.087,
+            "close_latency_ns_total": 2564348820,
+            "deferred_session_close": {
+              "enqueued_total": 3895,
+              "failed_total": 0,
+              "flushed_total": 0,
+              "inline_total": 105,
+              "maximum": 256,
+              "pending": 0,
+              "pending_max": 4,
+              "per_database_maximum": 4,
+              "retried_total": 0,
+              "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+              "unresolved_total": 0
+            },
+            "eligibility_ratio": 0.97375,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 34.3704,
+            "mean_ms": 4.6237,
+            "min_ms": 0.5325,
+            "p50_ms": 3.0941,
+            "p95_ms": 11.9734,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1664.361,
+            "wall_ms": 1922.6595810000001
+          }
+        },
+        {
+          "leg": "r2-b2",
+          "side": "b",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1650.061,
+          "median_ms": 2.9815,
+          "p95_ms": 13.1554,
+          "mean_ms": 4.6689,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": {
+            "enqueued_total": 3869,
+            "failed_total": 0,
+            "flushed_total": 0,
+            "inline_total": 131,
+            "maximum": 256,
+            "pending": 0,
+            "pending_max": 4,
+            "per_database_maximum": 4,
+            "retried_total": 0,
+            "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+            "unresolved_total": 0
+          },
+          "window": {
+            "action_latency_ns_total": {
+              "close": 2505336595,
+              "open": 9450328940,
+              "statement": 861193917
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 626.334,
+            "close_latency_ns_total": 2505336595,
+            "deferred_session_close": {
+              "enqueued_total": 3869,
+              "failed_total": 0,
+              "flushed_total": 0,
+              "inline_total": 131,
+              "maximum": 256,
+              "pending": 0,
+              "pending_max": 4,
+              "per_database_maximum": 4,
+              "retried_total": 0,
+              "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+              "unresolved_total": 0
+            },
+            "eligibility_ratio": 0.96725,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 31.4179,
+            "mean_ms": 4.6689,
+            "min_ms": 0.5688,
+            "p50_ms": 2.9815,
+            "p95_ms": 13.1554,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1650.061,
+            "wall_ms": 1939.321708
+          }
+        },
+        {
+          "leg": "r2-a2",
+          "side": "a",
+          "round": "r2",
+          "driver_exit": {
+            "driver": 0
+          },
+          "present": true,
+          "requests": 3200,
+          "throughput_qps": 1500.701,
+          "median_ms": 3.262,
+          "p95_ms": 13.6118,
+          "mean_ms": 5.1095,
+          "failures": 0,
+          "warmup_failures": 0,
+          "calibration_failures": 0,
+          "worker_errors": [],
+          "deferred": null,
+          "window": {
+            "action_latency_ns_total": {
+              "close": 5051564503,
+              "open": 8759968611,
+              "statement": 752109122
+            },
+            "actions_total": {
+              "close": 4000,
+              "open": 4000,
+              "statement": 4000
+            },
+            "active_permits_after": 0,
+            "admitted_requests_total": 12000,
+            "cleanup_ledger_after": {
+              "isolated_records": {
+                "count": 0,
+                "oldest_age_ms": 0,
+                "state_read": "ok"
+              },
+              "orphan_sessions": {
+                "count": 0,
+                "oldest_age_ms": 0
+              },
+              "pending_close": {
+                "count": 0,
+                "exhausted": 0,
+                "last_failure": "",
+                "oldest_age_ms": 0
+              }
+            },
+            "close_actions": 4000,
+            "close_latency_mean_us": 1262.891,
+            "close_latency_ns_total": 5051564503,
+            "deferred_session_close": null,
+            "eligibility_ratio": null,
+            "errors_total": {},
+            "rejected_requests_total": 0,
+            "rejection_reasons_total": {},
+            "session_seats_after": 0,
+            "successful_requests_total": 12000,
+            "unknown_held_permits_after": 0
+          },
+          "timed_detail": {
+            "error_codes": {},
+            "failures": 0,
+            "first_failure": null,
+            "max_ms": 48.2357,
+            "mean_ms": 5.1095,
+            "min_ms": 0.6545,
+            "p50_ms": 3.262,
+            "p95_ms": 13.6118,
+            "requests": 3200,
+            "status_counts": {
+              "200": 3200
+            },
+            "throughput_qps": 1500.701,
+            "wall_ms": 2132.336542
+          }
+        }
+      ],
+      "checks": {
+        "throughput_qps": {
+          "sides": {
+            "a": 1372.5805,
+            "b": 1626.784
+          },
+          "merged_b_over_a": 1.1852,
+          "round_ratios": {
+            "r1": 1.16715,
+            "r2": 1.16581
+          },
+          "reproducible_degradation": false
+        },
+        "median_ms": {
+          "sides": {
+            "a": 3.5865,
+            "b": 3.0378
+          },
+          "merged_b_over_a": 0.84701,
+          "round_ratios": {
+            "r1": 0.85473,
+            "r2": 0.84682
+          },
+          "reproducible_degradation": false
+        },
+        "p95_ms": {
+          "sides": {
+            "a": 17.0951,
+            "b": 12.9492
+          },
+          "merged_b_over_a": 0.75748,
+          "round_ratios": {
+            "r1": 0.75748,
+            "r2": 0.81349
+          },
+          "reproducible_degradation": false
+        }
+      },
+      "invalid_legs": [],
+      "diagnostics": {
+        "r1-a1": {
+          "p50_ms": 3.4466,
+          "p95_ms": 17.1082,
+          "throughput_qps": 1388.397,
+          "failures": 0
+        },
+        "r1-b1": {
+          "p50_ms": 3.2726,
+          "p95_ms": 12.9797,
+          "throughput_qps": 1600.503,
+          "failures": 0
+        },
+        "r1-b2": {
+          "p50_ms": 2.8584,
+          "p95_ms": 12.9187,
+          "throughput_qps": 1603.507,
+          "failures": 0
+        },
+        "r1-a2": {
+          "p50_ms": 3.7264,
+          "p95_ms": 17.0819,
+          "throughput_qps": 1356.764,
+          "failures": 0
+        },
+        "r2-a1": {
+          "p50_ms": 3.9126,
+          "p95_ms": 17.2782,
+          "throughput_qps": 1342.325,
+          "failures": 0
+        },
+        "r2-b1": {
+          "p50_ms": 3.0941,
+          "p95_ms": 11.9734,
+          "throughput_qps": 1664.361,
+          "failures": 0
+        },
+        "r2-b2": {
+          "p50_ms": 2.9815,
+          "p95_ms": 13.1554,
+          "throughput_qps": 1650.061,
+          "failures": 0
+        },
+        "r2-a2": {
+          "p50_ms": 3.262,
+          "p95_ms": 13.6118,
+          "throughput_qps": 1500.701,
+          "failures": 0
+        }
+      },
+      "driver_exits": {
+        "r1-a1": {
+          "driver": 0
+        },
+        "r1-b1": {
+          "driver": 0
+        },
+        "r1-b2": {
+          "driver": 0
+        },
+        "r1-a2": {
+          "driver": 0
+        },
+        "r2-a1": {
+          "driver": 0
+        },
+        "r2-b1": {
+          "driver": 0
+        },
+        "r2-b2": {
+          "driver": 0
+        },
+        "r2-a2": {
+          "driver": 0
+        }
+      },
+      "warnings": {}
+    }
+  },
+  "degradations": [
+    "l1 p95_ms >10% reproducible"
+  ],
+  "invalid_legs": [],
+  "verdict": "FAIL"
+}
