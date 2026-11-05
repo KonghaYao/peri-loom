@@ -1,0 +1,27 @@
+R70 Gate 0 binaries and stacks
+
+Host: Darwin 25.5.0 arm64, 29.4.0
+Image: ghcr.io/konghayao/peri-loom:v1.2.7
+  image id: sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+  repo digests: ghcr.io/konghayao/peri-loom@sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+
+Platform
+  path:   /tmp/peri-release-ab/bin/peri-platform-v1.2.7
+  sha256: 95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912
+  source: v1.2.7 release artifact (repo diff since v1.2.7 is docs plus
+          sql_failure.go error-path evidence; no F1/L1 hot-path change)
+
+Worker
+  path:   /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+  sha256: b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+  source: v1.2.7 (640ae7e), rustc 1.98.1, linux/arm64
+
+Stack
+  container: peri-r70-gate0
+  volume:    peri-r70-gate0-data (fresh, kept after measurement)
+  port:      20731
+  harness:   /Users/kk/code/peri-loom/scripts/perf-reliability/issue28/run.py
+  params:    rounds=3 warmup=1 samples=5; c8 = 8 clients x same shape
+  quotas:    platform defaults (not relaxed)
+95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912  /usr/local/bin/peri-platform
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /usr/local/bin/peri-loom-v1

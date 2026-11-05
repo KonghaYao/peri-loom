@@ -1,0 +1,128 @@
+{
+  "metadata": {
+    "concurrency": 8,
+    "rounds": 3,
+    "warmup": 1,
+    "samples": 5,
+    "timed_samples": 120,
+    "scenario": "F1.select-1",
+    "protocol": "json-pipeline",
+    "timed_outcomes": {
+      "ok": 120
+    }
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "F1.select-1",
+      "protocol": "json-pipeline",
+      "concurrency": 8,
+      "timed_samples": 120,
+      "median_ms": 2.0683125,
+      "mean_ms": 3.014817391666667,
+      "p95_ms": 7.348167,
+      "min_ms": 0.841,
+      "max_ms": 8.054375,
+      "per_worker": [
+        {
+          "worker": 0,
+          "timed_samples": 15,
+          "median_ms": 2.32125,
+          "mean_ms": 2.8028612666666666
+        },
+        {
+          "worker": 1,
+          "timed_samples": 15,
+          "median_ms": 2.253916,
+          "mean_ms": 3.2792082666666666
+        },
+        {
+          "worker": 2,
+          "timed_samples": 15,
+          "median_ms": 2.026958,
+          "mean_ms": 3.1074250666666665
+        },
+        {
+          "worker": 3,
+          "timed_samples": 15,
+          "median_ms": 1.969375,
+          "mean_ms": 2.9645832
+        },
+        {
+          "worker": 4,
+          "timed_samples": 15,
+          "median_ms": 2.098625,
+          "mean_ms": 2.702438933333333
+        },
+        {
+          "worker": 5,
+          "timed_samples": 15,
+          "median_ms": 2.405666,
+          "mean_ms": 3.3215139333333337
+        },
+        {
+          "worker": 6,
+          "timed_samples": 15,
+          "median_ms": 1.766666,
+          "mean_ms": 2.7942111333333335
+        },
+        {
+          "worker": 7,
+          "timed_samples": 15,
+          "median_ms": 1.997416,
+          "mean_ms": 3.1462973333333335
+        }
+      ]
+    }
+  ],
+  "warnings": [],
+  "fatal": ""
+}

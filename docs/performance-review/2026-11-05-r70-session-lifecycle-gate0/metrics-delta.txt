@@ -1,0 +1,95 @@
+[f1-c1  F1 json-pipeline c1 (primary)]
+  window    open      count=19 total_ns=14944625 mean_us=786.559
+  window    close     count=19 total_ns=10694357 mean_us=562.861
+  window    statement count=18 total_ns=3503338 mean_us=194.630
+  window    query     count=4 total_ns=73880917 mean_us=18470.229
+  corrected open      count=18 total_ns=3754926 mean_us=208.607
+  corrected close     count=18 total_ns=9614050 mean_us=534.114
+  corrected statement count=18 total_ns=3503338 mean_us=194.630
+  corrected query     count=0 total_ns=-9981681 mean_us=0.000
+  requests issued=18 (open=18 close=18)
+  open_mean_us=208.607 close_mean_us=534.114 session_us=742.721
+  raw_open_us=786.559 raw_close_us=562.861 raw_session_us=1349.420
+  F1.select-1 p50_ms=1.3958 round_medians_ms=3.760,0.831,4.076
+  session_share(corrected) = 742.721us / 1.3958ms = 53.21%
+  session_share(raw)       = 1349.420us / 1.3958ms = 96.68%
+
+[f1-c1b F1 json-pipeline c1 (stability)]
+  window    open      count=19 total_ns=9967016 mean_us=524.580
+  window    close     count=19 total_ns=4555315 mean_us=239.753
+  window    statement count=18 total_ns=3437757 mean_us=190.987
+  window    query     count=4 total_ns=63113222 mean_us=15778.306
+  corrected open      count=18 total_ns=7193018 mean_us=399.612
+  corrected close     count=18 total_ns=3118628 mean_us=173.257
+  corrected statement count=18 total_ns=3437757 mean_us=190.987
+  corrected query     count=0 total_ns=-34556655 mean_us=0.000
+  requests issued=18 (open=18 close=18)
+  open_mean_us=399.612 close_mean_us=173.257 session_us=572.869
+  raw_open_us=524.580 raw_close_us=239.753 raw_session_us=764.333
+  F1.select-1 p50_ms=0.7947 round_medians_ms=0.886,0.710,0.794
+  session_share(corrected) = 572.869us / 0.7947ms = 72.09%
+  session_share(raw)       = 764.333us / 0.7947ms = 96.18%
+
+[l1-c1  L1 json-pipeline c1 (primary)]
+  window    open      count=19 total_ns=21224467 mean_us=1117.077
+  window    close     count=19 total_ns=29765212 mean_us=1566.590
+  window    statement count=18 total_ns=1995530 mean_us=110.863
+  window    query     count=4 total_ns=65737217 mean_us=16434.304
+  corrected open      count=18 total_ns=19216272 mean_us=1067.571
+  corrected close     count=18 total_ns=28803907 mean_us=1600.217
+  corrected statement count=18 total_ns=1995530 mean_us=110.863
+  corrected query     count=0 total_ns=-4587940 mean_us=0.000
+  requests issued=18 (open=18 close=18)
+  open_mean_us=1067.571 close_mean_us=1600.217 session_us=2667.788
+  raw_open_us=1117.077 raw_close_us=1566.590 raw_session_us=2683.667
+  L1.list-20 p50_ms=3.1521 round_medians_ms=4.471,2.564,3.152
+  session_share(corrected) = 2667.788us / 3.1521ms = 84.63%
+  session_share(raw)       = 2683.667us / 3.1521ms = 85.14%
+
+[l1-c1b L1 json-pipeline c1 (stability)]
+  window    open      count=19 total_ns=22400316 mean_us=1178.964
+  window    close     count=19 total_ns=26591791 mean_us=1399.568
+  window    statement count=18 total_ns=1020553 mean_us=56.697
+  window    query     count=4 total_ns=67816456 mean_us=16954.114
+  corrected open      count=18 total_ns=19811863 mean_us=1100.659
+  corrected close     count=18 total_ns=25632069 mean_us=1424.004
+  corrected statement count=18 total_ns=1020553 mean_us=56.697
+  corrected query     count=0 total_ns=-18821557 mean_us=0.000
+  requests issued=18 (open=18 close=18)
+  open_mean_us=1100.659 close_mean_us=1424.004 session_us=2524.663
+  raw_open_us=1178.964 raw_close_us=1399.568 raw_session_us=2578.532
+  L1.list-20 p50_ms=4.1400 round_medians_ms=4.140,3.842,4.143
+  session_share(corrected) = 2524.663us / 4.1400ms = 60.98%
+  session_share(raw)       = 2578.532us / 4.1400ms = 62.28%
+
+[f1-c8  F1 json-pipeline c8 (run A)]
+  metrics: this run captured only the admission subset; no action delta
+
+[f1-c8b F1 json-pipeline c8 (run B, metrics-complete)]
+  window    open      count=144 total_ns=216235552 mean_us=1501.636
+  window    close     count=144 total_ns=184308341 mean_us=1279.919
+  window    statement count=144 total_ns=18877346 mean_us=131.093
+  corrected open      count=144 total_ns=216235552 mean_us=1501.636
+  corrected close     count=144 total_ns=184308341 mean_us=1279.919
+  corrected statement count=144 total_ns=18877346 mean_us=131.093
+  requests issued=144 (open=144 close=144)
+  open_mean_us=1501.636 close_mean_us=1279.919 session_us=2781.555
+  raw_open_us=1501.636 raw_close_us=1279.919 raw_session_us=2781.555
+  F1.select-1 p50_ms=2.4216 round_medians_ms=-
+  session_share(corrected) = 2781.555us / 2.4216ms = 114.87%
+  session_share(raw)       = 2781.555us / 2.4216ms = 114.87%
+
+[frozen-formula summary]
+  window   p50_ms  session_us  share_corrected  share_raw
+  f1-c1    1.3958     742.721           53.21%     96.68%
+  f1-c1b   0.7947     572.869           72.09%     96.18%
+  l1-c1    3.1521    2667.788           84.63%     85.14%
+  l1-c1b   4.1400    2524.663           60.98%     62.28%
+  f1-c8    2.0683           -       no metrics          -
+  f1-c8b   2.4216    2781.555          114.87%    114.87%
+
+[final account]
+  active_permits=0
+  unknown_held_permits=0
+  session_seats=0
+
