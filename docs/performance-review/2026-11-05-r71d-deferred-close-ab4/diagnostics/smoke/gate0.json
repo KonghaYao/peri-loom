@@ -1,0 +1,20 @@
+{
+  "deferred_session_close_present": false,
+  "operation_settle": {
+    "exhausted_total": 0,
+    "refusal_values": [
+      "queue_full",
+      "state_closed",
+      "state_uncertain",
+      "state_frozen",
+      "operation_refused",
+      "other"
+    ],
+    "refused_total": {},
+    "retry_budget_ms": 300,
+    "retry_success_total": 0,
+    "retry_total": 0,
+    "semantics": "only a local journal queue refusal before any write is retried; the SQL call is never replayed and no lock is held across a backoff"
+  },
+  "operation_settle_present": true
+}

@@ -1,0 +1,21 @@
+{
+  "audit_dir": "evidence/t5b/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "8ccc88a712801f67080aa5c6537a59053221807ef4127a38212836815d6f7c36",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 1105,
+  "last_hash": "8ccc88a712801f67080aa5c6537a59053221807ef4127a38212836815d6f7c36",
+  "last_sequence": 1105,
+  "leg": "t5b",
+  "present": true,
+  "records": 1105,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 1105
+    }
+  ]
+}

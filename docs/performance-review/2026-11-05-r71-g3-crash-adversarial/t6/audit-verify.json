@@ -1,0 +1,21 @@
+{
+  "audit_dir": "evidence/t6/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "1791b97c5d93ec34c195e1b2a1b83114ee598380a508fa7df8591800f3601cc4",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 40,
+  "last_hash": "1791b97c5d93ec34c195e1b2a1b83114ee598380a508fa7df8591800f3601cc4",
+  "last_sequence": 40,
+  "leg": "t6",
+  "present": true,
+  "records": 40,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 40
+    }
+  ]
+}

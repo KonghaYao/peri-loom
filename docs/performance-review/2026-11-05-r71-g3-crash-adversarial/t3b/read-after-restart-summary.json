@@ -1,0 +1,60 @@
+{
+  "rows": [
+    [
+      "r71-g3-acked-b"
+    ]
+  ],
+  "steps": [
+    {
+      "code": "",
+      "duration_ms": 5.2745,
+      "path": "/v1/sql/open",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "038cc792e4ad72037be26cb9e5585821",
+        "result": {
+          "readonly": false,
+          "session": "88f29c0630cc87b11edd74d585884fe2"
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "open"
+    },
+    {
+      "code": "",
+      "duration_ms": 2.63575,
+      "path": "/v1/sql/query",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "f209358d7ecd8a514e1c332428c9dcd5",
+        "result": [
+          [
+            "r71-g3-acked-b"
+          ]
+        ],
+        "version": 1
+      },
+      "status": 200,
+      "step": "query"
+    },
+    {
+      "code": "",
+      "duration_ms": 2.778667,
+      "path": "/v1/sql/close",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "1fd6771bcbc566519eb835336b385bf8",
+        "result": {
+          "closed": true
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "close"
+    }
+  ]
+}

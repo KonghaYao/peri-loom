@@ -1,0 +1,101 @@
+{
+  "campaign": "p0",
+  "complete": true,
+  "valid_triples": 30,
+  "void_triples": 0,
+  "failed_blocks": 0,
+  "requests_total": 1800,
+  "a_requests": 1200,
+  "b_requests": 600,
+  "blocks": {
+    "A1": {
+      "count": 30,
+      "median": 3.260542,
+      "mean": 3.177301,
+      "p95": 4.076598,
+      "min": 1.802344,
+      "max": 4.468817,
+      "stdev": 0.570081
+    },
+    "A2": {
+      "count": 30,
+      "median": 3.320525,
+      "mean": 3.322671,
+      "p95": 4.481594,
+      "min": 2.011767,
+      "max": 4.601608,
+      "stdev": 0.733568
+    },
+    "B": {
+      "count": 30,
+      "median": 3.425639,
+      "mean": 3.222854,
+      "p95": 3.95234,
+      "min": 1.374508,
+      "max": 4.408583,
+      "stdev": 0.747201
+    }
+  },
+  "zero_control": {
+    "per_triple": {
+      "median": 1.010204,
+      "ci95": [
+        0.900133,
+        1.142177
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "pass": true
+  },
+  "effect": {
+    "per_triple": {
+      "median": 1.093173,
+      "ci95": [
+        0.931393,
+        1.176325
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "paired_difference_ms": {
+      "median": 0.317138,
+      "ci95": [
+        -0.238754,
+        0.555877
+      ],
+      "draws": 10000
+    },
+    "rounds": {
+      "1": {
+        "triples": 30,
+        "effect": {
+          "median": 1.093173,
+          "ci95": [
+            0.931393,
+            1.176325
+          ],
+          "draws": 10000
+        },
+        "zero_ratio": {
+          "median": 1.010204,
+          "ci95": [
+            0.900133,
+            1.142177
+          ],
+          "draws": 10000
+        },
+        "paired_difference_ms": {
+          "median": 0.317138,
+          "ci95": [
+            -0.238754,
+            0.555877
+          ],
+          "draws": 10000
+        }
+      }
+    },
+    "pass": true
+  },
+  "verdict": "PASS"
+}

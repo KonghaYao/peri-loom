@@ -1,0 +1,140 @@
+{
+  "label": "b",
+  "requests": [
+    {
+      "index": 0,
+      "status": 200,
+      "bytes": 312,
+      "raw_sha256": "ebf8451a44125af341a30fd91c0b4fb554fb7097029e135dab2f25f348e5044b",
+      "normalized_sha256": "c8cda4a455789dbf1811d3a6b0d7a1f2d653b2225da50724ff44eba7c9f00b80",
+      "normalized": {
+        "baton": null,
+        "results": [
+          {
+            "response": {
+              "result": {
+                "affected_row_count": 0,
+                "cols": [
+                  {
+                    "decltype": null,
+                    "name": "1"
+                  }
+                ],
+                "last_insert_rowid": null,
+                "query_duration_ms": "<DURATION>",
+                "rows": [
+                  [
+                    {
+                      "type": "integer",
+                      "value": "1"
+                    }
+                  ]
+                ],
+                "rows_read": 0,
+                "rows_written": 0
+              },
+              "type": "execute"
+            },
+            "type": "ok"
+          },
+          {
+            "response": {
+              "type": "close"
+            },
+            "type": "ok"
+          }
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "status": 200,
+      "bytes": 312,
+      "raw_sha256": "b0e4608264e0a4abe8fba3e0610920bf6d050f1cecc888c0eeecce3fed63ae2d",
+      "normalized_sha256": "c8cda4a455789dbf1811d3a6b0d7a1f2d653b2225da50724ff44eba7c9f00b80",
+      "normalized": {
+        "baton": null,
+        "results": [
+          {
+            "response": {
+              "result": {
+                "affected_row_count": 0,
+                "cols": [
+                  {
+                    "decltype": null,
+                    "name": "1"
+                  }
+                ],
+                "last_insert_rowid": null,
+                "query_duration_ms": "<DURATION>",
+                "rows": [
+                  [
+                    {
+                      "type": "integer",
+                      "value": "1"
+                    }
+                  ]
+                ],
+                "rows_read": 0,
+                "rows_written": 0
+              },
+              "type": "execute"
+            },
+            "type": "ok"
+          },
+          {
+            "response": {
+              "type": "close"
+            },
+            "type": "ok"
+          }
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "status": 200,
+      "bytes": 324,
+      "raw_sha256": "b1f8ab4ff07d34df49551efed43f4cb57537d11808ecf4def8c8a514b28790fb",
+      "normalized_sha256": "c8cda4a455789dbf1811d3a6b0d7a1f2d653b2225da50724ff44eba7c9f00b80",
+      "normalized": {
+        "baton": null,
+        "results": [
+          {
+            "response": {
+              "result": {
+                "affected_row_count": 0,
+                "cols": [
+                  {
+                    "decltype": null,
+                    "name": "1"
+                  }
+                ],
+                "last_insert_rowid": null,
+                "query_duration_ms": "<DURATION>",
+                "rows": [
+                  [
+                    {
+                      "type": "integer",
+                      "value": "1"
+                    }
+                  ]
+                ],
+                "rows_read": 0,
+                "rows_written": 0
+              },
+              "type": "execute"
+            },
+            "type": "ok"
+          },
+          {
+            "response": {
+              "type": "close"
+            },
+            "type": "ok"
+          }
+        ]
+      }
+    }
+  ]
+}

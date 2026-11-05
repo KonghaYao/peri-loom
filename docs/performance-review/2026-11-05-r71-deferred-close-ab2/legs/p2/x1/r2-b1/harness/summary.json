@@ -1,0 +1,77 @@
+{
+  "concurrency": 8,
+  "failures": 0,
+  "first_failure": null,
+  "label": "x1-c8",
+  "leg": "r2-b1",
+  "ok": 100,
+  "payload": "f1-select-1-json-pipeline-close-c8",
+  "request_ms": {
+    "max": 35.342833,
+    "mean": 7.761917469999999,
+    "min": 1.435375,
+    "p50": 5.2495,
+    "p95": 24.912
+  },
+  "requests": 100,
+  "wall_ms": 99.849458,
+  "window": {
+    "action_latency_ns_total": {
+      "close": 158796355,
+      "open": 365848317,
+      "statement": 36971171
+    },
+    "actions_total": {
+      "close": 100,
+      "open": 100,
+      "statement": 100
+    },
+    "active_permits_after": 0,
+    "admitted_requests_total": 300,
+    "cleanup_ledger_after": {
+      "isolated_records": {
+        "count": 0,
+        "oldest_age_ms": 0,
+        "state_read": "ok"
+      },
+      "orphan_sessions": {
+        "count": 0,
+        "oldest_age_ms": 0
+      },
+      "pending_close": {
+        "count": 0,
+        "exhausted": 0,
+        "last_failure": "",
+        "oldest_age_ms": 0
+      }
+    },
+    "close_actions": 100,
+    "close_latency_mean_us": 1587.964,
+    "close_latency_ns_total": 158796355,
+    "deferred_session_close": {
+      "enqueued_total": 97,
+      "failed_total": 0,
+      "flushed_total": 0,
+      "inline_total": 3,
+      "maximum": 256,
+      "pending": 0,
+      "pending_max": 4,
+      "per_database_maximum": 4,
+      "retried_total": 0,
+      "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+      "unresolved_total": 0
+    },
+    "eligibility_ratio": 0.97,
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "rejection_reasons_total": {},
+    "session_seats_after": 0,
+    "successful_requests_total": 300,
+    "unknown_held_permits_after": 0
+  },
+  "window_files": {
+    "after": "window-after.json",
+    "before": "window-before.json"
+  },
+  "wire_bytes_total": 31449
+}

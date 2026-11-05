@@ -80,15 +80,17 @@ func matchStatementResultField(content, quoted []byte) int {
 // accepts. Both decode the same map semantics: duplicate keys keep the last
 // value, keys are unquoted before matching, and the unique key count picks the
 // five-field or eight-field form. Any unknown key is refused immediately
-// because the accepted counts leave no room for one.
-func validScannedStatementResult(result []byte) bool {
+// because the accepted counts leave no room for one. The autocommit flag is
+// returned so the open can keep the session's transaction state without a
+// second scan of the statement result.
+func validScannedStatementResult(result []byte) (valid, autocommitValue bool) {
 	if len(result) == 0 {
-		return false
+		return false, false
 	}
 	scanner := fusedReplyScanner{data: result}
 	scanner.skipSpace()
 	if scanner.pos >= len(result) || result[scanner.pos] != '{' {
-		return false
+		return false, false
 	}
 	scanner.pos++
 	var (
@@ -112,24 +114,24 @@ func validScannedStatementResult(result []byte) bool {
 	scanner.skipSpace()
 	if scanner.pos < len(result) && result[scanner.pos] == '}' {
 		// An empty object has no unique key count the validator accepts.
-		return false
+		return false, false
 	}
 scanResult:
 	for {
 		if scanner.pos >= len(result) || result[scanner.pos] != '"' {
-			return false
+			return false, false
 		}
 		keyStart, keyEnd, ok := scanner.scanString()
 		if !ok {
-			return false
+			return false, false
 		}
 		field := matchStatementResultField(result[keyStart:keyEnd], result[keyStart-1:keyEnd+1])
 		if field < 0 {
-			return false
+			return false, false
 		}
 		scanner.skipSpace()
 		if scanner.pos >= len(result) || result[scanner.pos] != ':' {
-			return false
+			return false, false
 		}
 		scanner.pos++
 		scanner.skipSpace()
@@ -141,7 +143,7 @@ scanResult:
 			// anyway: a later duplicate cols key makes this value stale, and
 			// the last one is the only value the validator would have seen.
 			if !scanner.scanValue() {
-				return false
+				return false, false
 			}
 			columns = result[valueStart:scanner.pos]
 			columnsRevision++
@@ -166,16 +168,16 @@ scanResult:
 				} else {
 					scanner.pos = valueStart
 					if !scanner.scanValue() {
-						return false
+						return false, false
 					}
 				}
 			} else if !scanner.scanValue() {
-				return false
+				return false, false
 			}
 			rowsSpan = result[valueStart:scanner.pos]
 		default:
 			if !scanner.scanValue() {
-				return false
+				return false, false
 			}
 			value := result[valueStart:scanner.pos]
 			switch field {
@@ -195,7 +197,7 @@ scanResult:
 		}
 		scanner.skipSpace()
 		if scanner.pos >= len(result) {
-			return false
+			return false, false
 		}
 		switch result[scanner.pos] {
 		case ',':
@@ -205,64 +207,64 @@ scanResult:
 			scanner.pos++
 			break scanResult
 		default:
-			return false
+			return false, false
 		}
 	}
 	scanner.skipSpace()
 	if scanner.pos != len(result) {
-		return false
+		return false, false
 	}
 	count := bits.OnesCount32(seen)
 	if (count != 5 && count != 8) || seen&fusedStatementRequiredFields != fusedStatementRequiredFields {
-		return false
+		return false, false
 	}
 	if columns == nil || !columnsValid || !rowsPresent {
-		return false
+		return false, false
 	}
 	if rowsChecked && rowsRevision == columnsRevision {
 		if !rowsValid {
-			return false
+			return false, false
 		}
 	} else if !validScannedStatementRows(rowsSpan, columnCount) {
-		return false
+		return false, false
 	}
 	var affectedRows int64
 	if json.Unmarshal(affected, &affectedRows) != nil || affectedRows < 0 {
-		return false
+		return false, false
 	}
 	if !fusedKeyEqual(rowid, "null") {
 		var inserted int64
 		if json.Unmarshal(rowid, &inserted) != nil {
-			return false
+			return false, false
 		}
 	}
 	if !fusedKeyEqual(autocommit, "true") && !fusedKeyEqual(autocommit, "false") {
-		return false
+		return false, false
 	}
 	if count == 8 {
 		if fusedKeyEqual(rowsRead, "null") {
-			return false
+			return false, false
 		}
 		var read uint64
 		if json.Unmarshal(rowsRead, &read) != nil {
-			return false
+			return false, false
 		}
 		if fusedKeyEqual(rowsWritten, "null") {
-			return false
+			return false, false
 		}
 		var written uint64
 		if json.Unmarshal(rowsWritten, &written) != nil {
-			return false
+			return false, false
 		}
 		if fusedKeyEqual(duration, "null") {
-			return false
+			return false, false
 		}
 		var elapsed float64
 		if json.Unmarshal(duration, &elapsed) != nil || math.IsNaN(elapsed) || math.IsInf(elapsed, 0) || elapsed < 0 {
-			return false
+			return false, false
 		}
 	}
-	return true
+	return true, fusedKeyEqual(autocommit, "true")
 }
 
 const (

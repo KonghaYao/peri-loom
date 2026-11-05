@@ -1,0 +1,127 @@
+{
+  "close_action_mean_ms": {
+    "max": 0.219167,
+    "mean": 0.0911959,
+    "min": 0.047375,
+    "n": 10,
+    "p50": 0.07375,
+    "p90": 0.110417,
+    "p95": 0.219167,
+    "p99": 0.219167
+  },
+  "failures": 0,
+  "label": "t5b-delay",
+  "records": [
+    {
+      "close_action_mean_ms": 0.06375,
+      "close_actions": 1,
+      "duration_ms": 2.758375,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 0,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.087875,
+      "close_actions": 1,
+      "duration_ms": 3.913042,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 1,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.090417,
+      "close_actions": 1,
+      "duration_ms": 3.393084,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 2,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.047375,
+      "close_actions": 1,
+      "duration_ms": 2.410875,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 3,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.050667,
+      "close_actions": 1,
+      "duration_ms": 2.034834,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 4,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.219167,
+      "close_actions": 1,
+      "duration_ms": 3.844625,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 5,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.098666,
+      "close_actions": 1,
+      "duration_ms": 4.280041,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 6,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.07375,
+      "close_actions": 1,
+      "duration_ms": 1.975166,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 7,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.069875,
+      "close_actions": 1,
+      "duration_ms": 3.311209,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 8,
+      "status": 200
+    },
+    {
+      "close_action_mean_ms": 0.110417,
+      "close_actions": 1,
+      "duration_ms": 3.775167,
+      "error": "",
+      "ok": true,
+      "pending_after": 0,
+      "sample": 9,
+      "status": 200
+    }
+  ],
+  "request_latency_ms": {
+    "max": 4.280041,
+    "mean": 3.1696418,
+    "min": 1.975166,
+    "n": 10,
+    "p50": 3.311209,
+    "p90": 3.913042,
+    "p95": 4.280041,
+    "p99": 4.280041
+  },
+  "samples": 10
+}

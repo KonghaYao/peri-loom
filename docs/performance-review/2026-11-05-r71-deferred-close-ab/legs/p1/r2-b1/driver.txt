@@ -1,0 +1,32 @@
+r2-b1 b block 0 (warmup) 1.727 ms/request
+r2-b1 b block 1 1.513 ms/request
+r2-b1 b block 2 2.273 ms/request
+r2-b1 b block 3 2.027 ms/request
+r2-b1 b block 4 2.103 ms/request
+r2-b1 b block 5 2.122 ms/request
+r2-b1 b block 6 1.934 ms/request
+r2-b1 b block 7 1.846 ms/request
+r2-b1 b block 8 1.421 ms/request
+r2-b1 b block 9 2.131 ms/request
+r2-b1 b block 10 2.247 ms/request
+r2-b1 b block 11 1.983 ms/request
+r2-b1 b block 12 1.803 ms/request
+r2-b1 b block 13 1.674 ms/request
+r2-b1 b block 14 2.069 ms/request
+r2-b1 b block 15 2.136 ms/request
+r2-b1 b block 16 1.993 ms/request
+r2-b1 b block 17 1.960 ms/request
+r2-b1 b block 18 2.129 ms/request
+r2-b1 b block 19 1.295 ms/request
+r2-b1 b block 20 1.378 ms/request
+r2-b1 b block 21 1.868 ms/request
+r2-b1 b block 22 2.237 ms/request
+r2-b1 b block 23 2.405 ms/request
+r2-b1 b block 24 2.199 ms/request
+r2-b1 b block 25 1.557 ms/request
+r2-b1 b block 26 1.944 ms/request
+r2-b1 b block 27 1.694 ms/request
+r2-b1 b block 28 2.294 ms/request
+r2-b1 b block 29 1.789 ms/request
+r2-b1 b block 30 2.021 ms/request
+{"leg": "r2-b1", "side": "b", "round": "r2", "block_size": 100, "blocks": 30, "block_gap_seconds": 0.75, "initial_refill_seconds": 1.2, "timed_blocks": 30, "warmup_blocks": 1, "warmup_median_ms": 1.727, "median_ms": 1.9877, "mean_ms": 1.9348, "stdev_ms": 0.2891, "min_ms": 1.2946, "max_ms": 2.4045, "failures": 0, "first_failure": null}

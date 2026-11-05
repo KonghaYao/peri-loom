@@ -1,0 +1,198 @@
+{
+  "complete": true,
+  "legs": [
+    {
+      "leg": "r1-a1",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.4816,
+      "mean_ms": 2.4224,
+      "p95_ms": 2.8436,
+      "stdev_ms": 0.2792,
+      "min_ms": 1.8251,
+      "max_ms": 3.0176,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r1-b1",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 1.9853,
+      "mean_ms": 1.9201,
+      "p95_ms": 2.3772,
+      "stdev_ms": 0.326,
+      "min_ms": 1.2616,
+      "max_ms": 2.5429,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r1-b2",
+      "side": "b",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 1.8649,
+      "mean_ms": 1.8559,
+      "p95_ms": 2.3648,
+      "stdev_ms": 0.3392,
+      "min_ms": 1.0786,
+      "max_ms": 2.5085,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r1-a2",
+      "side": "a",
+      "round": "r1",
+      "blocks": 30,
+      "median_ms": 2.6411,
+      "mean_ms": 2.6313,
+      "p95_ms": 3.2439,
+      "stdev_ms": 0.3275,
+      "min_ms": 1.8792,
+      "max_ms": 3.3637,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r2-a1",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.481,
+      "mean_ms": 2.5236,
+      "p95_ms": 3.0841,
+      "stdev_ms": 0.3571,
+      "min_ms": 1.7754,
+      "max_ms": 3.1892,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r2-b1",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 1.9877,
+      "mean_ms": 1.9348,
+      "p95_ms": 2.2939,
+      "stdev_ms": 0.2891,
+      "min_ms": 1.2946,
+      "max_ms": 2.4045,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r2-b2",
+      "side": "b",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 1.85,
+      "mean_ms": 1.8783,
+      "p95_ms": 2.3907,
+      "stdev_ms": 0.3288,
+      "min_ms": 1.2517,
+      "max_ms": 2.6282,
+      "failures": 0,
+      "requests": 3000
+    },
+    {
+      "leg": "r2-a2",
+      "side": "a",
+      "round": "r2",
+      "blocks": 30,
+      "median_ms": 2.735,
+      "mean_ms": 2.6671,
+      "p95_ms": 3.2092,
+      "stdev_ms": 0.3998,
+      "min_ms": 1.7984,
+      "max_ms": 3.2362,
+      "failures": 0,
+      "requests": 3000
+    }
+  ],
+  "sides": {
+    "a": {
+      "blocks": 120,
+      "median_ms": 2.56,
+      "mean_ms": 2.5611,
+      "p95_ms": 3.1892
+    },
+    "b": {
+      "blocks": 120,
+      "median_ms": 1.9414,
+      "mean_ms": 1.8973,
+      "p95_ms": 2.3889
+    }
+  },
+  "p0_1_positional_a2_over_a1": {
+    "ratio": 1.068,
+    "ci95": [
+      1.02864,
+      1.11644
+    ],
+    "draws": 10000
+  },
+  "p0_2_positive_control_citation": {
+    "source": "Gate 1b campaign 3 (spin 100us probe)",
+    "merged_b_over_a": 1.13258,
+    "ci95": [
+      1.08304,
+      1.20891
+    ],
+    "rounds": {
+      "r1": 1.13602,
+      "r2": 1.12804
+    },
+    "rerun_this_round": false
+  },
+  "merged_b_over_a": {
+    "ratio": 0.75835,
+    "ci95": [
+      0.71521,
+      0.78866
+    ],
+    "draws": 10000
+  },
+  "round_ratios": {
+    "r1": 0.76663,
+    "r2": 0.74216
+  },
+  "round_details": {
+    "r1": {
+      "ratio": 0.76663,
+      "ci95": [
+        0.7041,
+        0.81215
+      ],
+      "draws": 10000
+    },
+    "r2": {
+      "ratio": 0.74216,
+      "ci95": [
+        0.67679,
+        0.79651
+      ],
+      "draws": 10000
+    }
+  },
+  "paired_b_minus_a": {
+    "pairs": 120,
+    "median_difference_ms": -0.621842,
+    "mean_difference_ms": -0.663844,
+    "ci95_ms": [
+      -0.760196,
+      -0.503498
+    ],
+    "percent_of_paired_a_median": -24.291,
+    "draws": 10000
+  },
+  "same_direction": true,
+  "reasons": [
+    "P0.1 positional A/A ratio outside 1.00 +/- 0.05: power insufficient"
+  ],
+  "verdict": "FAIL"
+}

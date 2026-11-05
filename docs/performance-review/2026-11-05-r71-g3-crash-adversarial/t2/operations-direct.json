@@ -1,0 +1,22 @@
+{
+  "operation_count": 1,
+  "operations": [
+    {
+      "action": "open",
+      "ambiguous": false,
+      "business_outcome": "completed",
+      "cleanup_outcome": "unknown",
+      "decision": null,
+      "execution_proven": true,
+      "local_resources_retired": false,
+      "may_have_committed": true,
+      "operation_id": "ae87d85098a957b97a5b1c142004af71",
+      "release_authority_mode": null,
+      "release_request_id": null,
+      "request_id": "a34f5019d86f5a84720612166d46c6c6",
+      "session": "159e6fabe9cbef97317d90b3c303a1281861ee436d4ce880485f50ede2ae1a38",
+      "state": "quarantined",
+      "worker_id": "worker-a"
+    }
+  ]
+}

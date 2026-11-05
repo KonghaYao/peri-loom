@@ -1,0 +1,132 @@
+R71 deferred session close — frozen A/B criteria
+================================================================
+Frozen at 2026-11-05T04:01:52Z, BEFORE the first leg of this campaign.
+Source: the R71 Gate 1b pre-registered protocol (2026-11-05-r71-deferred-close-gate)
+plus the Gate 2 hand-off. Nothing below may be changed after data is seen.
+
+Candidate
+---------
+Branch      perf/r71-deferred-session-close
+Candidate   ac5e0c7 (parent 02a05a7, root 9e30afa)
+Gate 2 SHA  3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014
+The candidate is rebuilt from ac5e0c7 before any leg; if the SHA differs the
+campaign stops and reports instead of measuring.
+
+Sides
+-----
+A (baseline) = THE SAME candidate binary, PERI_DEFERRED_SESSION_CLOSE unset.
+B (candidate) = THE SAME candidate binary, PERI_DEFERRED_SESSION_CLOSE=1.
+The image's own platform binary is NOT the baseline. Every leg mounts the same
+platform binary, the same worker binary, and the same launcher (branch dev.py);
+A and B differ only in that environment variable. Worker binaries are identical
+on both sides.
+
+Environment (fixed for all legs)
+--------------------------------
+Image       ghcr.io/konghayao/peri-loom:v1.2.7
+Image id    sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+Worker      sha256 b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+Quotas      platform defaults, not relaxed:
+            max_databases=8, max_sessions=16, max_concurrent=100,
+            requests_per_second=500, max_sql_bytes=65536,
+            max_result_bytes=4194304
+Observer    none (no phase / durability observer)
+Fixture     docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py
+            verified per leg: threads=201 messages=8625 chars=20177069 focus=8625
+Stack       one isolated container + fresh named volume + dedicated port per leg;
+            only one stack runs at a time. volumes are preserved, leg containers
+            are stopped cleanly and removed.
+
+P0 — power check
+----------------
+P0.1 A/A positional ratio
+  a1 = pooled timed blocks of legs r1-a1 and r2-a1 (flag off)
+  a2 = pooled timed blocks of legs r1-a2 and r2-a2 (flag off)
+  ratio = median(a2) / median(a1).  PASS iff 0.95 <= ratio <= 1.05.
+  Outside that band the protocol has insufficient power and the candidate
+  result must NOT be interpreted.
+P0.2 Positive control
+  Cite the Gate 1b registered result: 100us busy-wait probe, merged B/A =
+  1.1326, CI 1.0830-1.2089, rounds 1.136 / 1.128 (+13.3% detected).
+  It is not re-run and is never mixed with the candidate legs. If it were
+  re-run, the same probe binary and the same block-mean protocol would be
+  required.
+
+P1 — primary metric (block mean)
+--------------------------------
+Sample     total wall clock of 100 consecutive pipeline requests
+           {"requests":[{"type":"execute","stmt":{"sql":"SELECT 1",
+            "want_rows":true}},{"type":"close"}]} divided by 100.
+Leg        1 warm-up block + 30 timed blocks, first block after 1.2 s,
+           block gap 0.75 s (default quota refill; requests inside a block stay
+           consecutive and the quota is not relaxed), one keep-alive connection.
+Design     2 rounds x A/B/B/A = 8 legs:
+           r1-a1 r1-b1 r1-b2 r1-a2 r2-a1 r2-b1 r2-b2 r2-a2
+Merged     median of all pooled timed blocks on B / median of all pooled timed
+           blocks on A.
+Round      same ratio computed per round from that round's two A legs and two B
+           legs.
+Bootstrap  percentile bootstrap, 10,000 draws, fixed 20261105 seed.
+           (a) ratio CI: resample blocks within each side;
+           (b) paired CI: within each round pair a1<->b1 and a2<->b2 by block
+               index; 120 pairs total; resample pairs; the 95% CI of the median
+               per-request difference (B - A, milliseconds) must exclude 0
+               (i.e. its upper bound must be < 0 for an improvement).
+PASS       both rounds same direction (B/A < 1 in both rounds)
+           AND merged median ratio <= 0.92 (>= 8% improvement; this round's
+           pre-registered exception, because Gate 1b A/A showed ~9%
+           position/round drift)
+           AND paired bootstrap 95% CI excludes 0.
+           0.92 < merged ratio < 1.00 (less than 8%) => FAIL.
+           No post-hoc threshold changes.
+Leg validity: a leg with any 429, transport error, non-200, or rejected pipeline
+           result is void; the leg is re-run after fixing the pacing and is not
+           counted. Failures are reported, never hidden.
+
+P2 — regression gate (standard issue28 harness)
+-----------------------------------------------
+F1.select-1 json-pipeline and L1.list-20 json-pipeline:
+  per leg: --rounds 1 --warmup 1 --samples 125 = 125 timed requests;
+  2 rounds x A/B/B/A = 8 legs per scenario => exactly 500 timed requests per
+  side per scenario. Fresh volume, same fixture, default quotas.
+X1.concurrency json-pipeline:
+  2 rounds x A/B/B/A = 8 legs; the c8 level (100 requests) is the regression
+  metric; throughput = 100 / elapsed wall clock, p50/p95 from the harness.
+Comparisons
+  p50 and p95 pooled per side per scenario; per-round ratios reported.
+  X1 c8 throughput per round and merged.
+Reproducible degradation
+  p50/p95: merged B/A > 1.10 AND both round ratios > 1.0.
+  X1 c8 throughput: merged B/A < 0.90 AND both round ratios < 1.0.
+PASS       no reproducible degradation in F1 p50/p95, L1 p50/p95, or X1 c8
+           throughput.
+Regression-gate p50 improvements are supporting evidence only, never part of
+the P1 decision.
+
+P3 — invariants
+---------------
+1. deferred_session_close counter direction:
+   A legs: the key is absent from the window-after and settled metrics.
+   B legs: enqueued_total > 0, failed_total = 0, unresolved_total = 0,
+           pending = 0 after drain.
+2. session_seats = 0 and active_permits = 0 after settle.
+3. worker sessions 0 after settle (native.workers.worker-a/worker-b.sessions),
+   or a recorded explanation of idle sessions.
+4. cleanup_ledger.pending_close.count = 0 and worker lifecycle
+   pending_close.count = 0 after settle/drain.
+5. Audit chain continuous: every copied audit record increments sequence by 1
+   and payload.previous equals the previous record's hash; record counts from
+   the same workload are equal across A and B legs.
+6. Wire bytes byte-identical for the same request: F1 execute response 312 B
+   (JSON pipeline, Gate 1b reference), L1 ~15.6 KB; the exact distributions are
+   compared and reported.
+7. No 429 / 503 / outcome_unknown / session_moved / audit_unavailable in any
+   leg (driver records + metrics errors_total / rejection_reasons_total).
+8. Clean stop: launcher-stop.json outcome=clean and
+   unresolved_operations=false for every leg.
+
+Decision rule
+-------------
+Candidate passes only if P1 PASS AND no P2 reproducible >10% degradation AND
+P3 all green. Otherwise this round FAILS and the branch stays as evidence; it
+must not be merged. No criterion is relaxed after seeing data.

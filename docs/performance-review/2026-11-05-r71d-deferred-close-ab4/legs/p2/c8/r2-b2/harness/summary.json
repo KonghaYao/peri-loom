@@ -1,0 +1,309 @@
+{
+  "active_permits_after": 0,
+  "block_gap_seconds": 1.2,
+  "blocks": [
+    {
+      "block": 0,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1533.292,
+      "wall_ms": 130.438334,
+      "warmup": true
+    },
+    {
+      "block": 1,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1459.983,
+      "wall_ms": 136.987917,
+      "warmup": true
+    },
+    {
+      "block": 2,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1432.227,
+      "wall_ms": 139.642708,
+      "warmup": true
+    },
+    {
+      "block": 3,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1940.365,
+      "wall_ms": 103.073375,
+      "warmup": true
+    },
+    {
+      "block": 4,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1428.116,
+      "wall_ms": 140.044625,
+      "warmup": false
+    },
+    {
+      "block": 5,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1397.74,
+      "wall_ms": 143.088083,
+      "warmup": false
+    },
+    {
+      "block": 6,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1920.786,
+      "wall_ms": 104.124042,
+      "warmup": false
+    },
+    {
+      "block": 7,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1330.961,
+      "wall_ms": 150.267333,
+      "warmup": false
+    },
+    {
+      "block": 8,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1945.078,
+      "wall_ms": 102.823666,
+      "warmup": false
+    },
+    {
+      "block": 9,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1676.468,
+      "wall_ms": 119.298417,
+      "warmup": false
+    },
+    {
+      "block": 10,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1411.196,
+      "wall_ms": 141.723792,
+      "warmup": false
+    },
+    {
+      "block": 11,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1441.201,
+      "wall_ms": 138.773167,
+      "warmup": false
+    },
+    {
+      "block": 12,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 2057.434,
+      "wall_ms": 97.208459,
+      "warmup": false
+    },
+    {
+      "block": 13,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1626.411,
+      "wall_ms": 122.970166,
+      "warmup": false
+    },
+    {
+      "block": 14,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1520.944,
+      "wall_ms": 131.49725,
+      "warmup": false
+    },
+    {
+      "block": 15,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1424.258,
+      "wall_ms": 140.423958,
+      "warmup": false
+    },
+    {
+      "block": 16,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1301.705,
+      "wall_ms": 153.644584,
+      "warmup": false
+    },
+    {
+      "block": 17,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1738.434,
+      "wall_ms": 115.046083,
+      "warmup": false
+    },
+    {
+      "block": 18,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1624.743,
+      "wall_ms": 123.096416,
+      "warmup": false
+    },
+    {
+      "block": 19,
+      "failures": 0,
+      "first_failure": null,
+      "requests": 200,
+      "throughput_qps": 1614.953,
+      "wall_ms": 123.842625,
+      "warmup": false
+    }
+  ],
+  "calibration": {
+    "failures": 0,
+    "first_failure": null,
+    "requests": 8
+  },
+  "cleanup_ledger_after": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "concurrency": 8,
+  "deferred_session_close": {
+    "enqueued_total": 3900,
+    "failed_total": 0,
+    "flushed_total": 0,
+    "inline_total": 100,
+    "maximum": 256,
+    "pending": 0,
+    "pending_max": 4,
+    "per_database_maximum": 4,
+    "retried_total": 0,
+    "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+    "unresolved_total": 0
+  },
+  "initial_refill_seconds": 1.5,
+  "label": "sustained-c8",
+  "leg": "r2-b2",
+  "payload": "f1-select-1-json-pipeline-implicit-open-close-c8",
+  "per_client_block": 25,
+  "requests_per_block": 200,
+  "requests_per_client": 500,
+  "session_seats_after": 0,
+  "timed": {
+    "error_codes": {},
+    "failures": 0,
+    "first_failure": null,
+    "max_ms": 36.821,
+    "mean_ms": 4.8908,
+    "min_ms": 0.5381,
+    "p50_ms": 2.8286,
+    "p95_ms": 14.0817,
+    "requests": 3200,
+    "status_counts": {
+      "200": 3200
+    },
+    "throughput_qps": 1562.597,
+    "wall_ms": 2047.872666
+  },
+  "timed_blocks": 16,
+  "total_blocks": 20,
+  "warmup": {
+    "failures": 0,
+    "requests": 800
+  },
+  "warmup_blocks": 4,
+  "warmup_per_client": 100,
+  "window": {
+    "action_latency_ns_total": {
+      "close": 2627386399,
+      "open": 9780075850,
+      "statement": 953147702
+    },
+    "actions_total": {
+      "close": 4000,
+      "open": 4000,
+      "statement": 4000
+    },
+    "active_permits_after": 0,
+    "admitted_requests_total": 12000,
+    "cleanup_ledger_after": {
+      "isolated_records": {
+        "count": 0,
+        "oldest_age_ms": 0,
+        "state_read": "ok"
+      },
+      "orphan_sessions": {
+        "count": 0,
+        "oldest_age_ms": 0
+      },
+      "pending_close": {
+        "count": 0,
+        "exhausted": 0,
+        "last_failure": "",
+        "oldest_age_ms": 0
+      }
+    },
+    "close_actions": 4000,
+    "close_latency_mean_us": 656.847,
+    "close_latency_ns_total": 2627386399,
+    "deferred_session_close": {
+      "enqueued_total": 3900,
+      "failed_total": 0,
+      "flushed_total": 0,
+      "inline_total": 100,
+      "maximum": 256,
+      "pending": 0,
+      "pending_max": 4,
+      "per_database_maximum": 4,
+      "retried_total": 0,
+      "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+      "unresolved_total": 0
+    },
+    "eligibility_ratio": 0.975,
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "rejection_reasons_total": {},
+    "session_seats_after": 0,
+    "successful_requests_total": 12000,
+    "unknown_held_permits_after": 0
+  },
+  "worker_errors": []
+}

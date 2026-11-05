@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/tmp/peri-r71-g3/evidence/t1a/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "ee3738ab25797f0aebf4b3e6322d4fda162c07e2609cd7eeaa5ff19bc5dcf5b0",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 7231,
+  "last_hash": "ee3738ab25797f0aebf4b3e6322d4fda162c07e2609cd7eeaa5ff19bc5dcf5b0",
+  "last_sequence": 7231,
+  "leg": "t1a",
+  "present": true,
+  "records": 7231,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 7231
+    }
+  ]
+}

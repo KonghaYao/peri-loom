@@ -38,6 +38,10 @@ type Gateway struct {
 	// deferred is the fail-closed account of completion barriers paid after the
 	// reply. NewGateway always sets it; a nil value pays every barrier inline.
 	deferred *deferredDurability
+	// deferredClose is the account of worker closes for proven stateless
+	// sessions. It is nil unless PERI_DEFERRED_SESSION_CLOSE enables it, which
+	// keeps today's synchronous close exactly as it was.
+	deferredClose *deferredSessionClose
 	// settle counts local settlement refusals and the bounded retries that recover
 	// from a full operation journal. Its zero value is ready and the success path
 	// only reads it when a submit is refused.
@@ -73,6 +77,16 @@ type gatewaySession struct {
 	// stand in for a native reply.
 	writeCursorOpen      bool
 	writeCursorCommitted bool
+	// readCursorOpen records a read cursor the session still holds. A deferred
+	// close is only safe once no cursor can outlive it, so an open cursor keeps
+	// the close synchronous.
+	readCursorOpen bool
+	// pristine records that nothing this session ran could commit, open a
+	// transaction or hold a cursor. statementAutocommit is the last statement
+	// result's own flag; a session that never ran SQL needs neither.
+	pristine                 bool
+	statementAutocommitKnown bool
+	statementAutocommit      bool
 	// cleanup is this session's bounded retirement account, and unownedAt marks
 	// when an unproven outcome stopped its owner from addressing it.
 	cleanup   sessionCleanup
@@ -200,7 +214,11 @@ func NewGateway(config GatewayConfig) (*Gateway, error) {
 	}
 	ledger := &cleanupLedger{}
 	ledger.observe(isolated, time.Now())
-	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, deferred: newDeferredDurability(), counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
+	var deferredClose *deferredSessionClose
+	if config.DeferredSessionClose {
+		deferredClose = newDeferredSessionClose()
+	}
+	return &Gateway{config: config, sessions: map[string]*gatewaySession{}, admission: gate, operationHolds: holds, cleanup: ledger, deferred: newDeferredDurability(), deferredClose: deferredClose, counters: &gatewayCounters{actions: map[string]uint64{}, errors: map[string]uint64{}, latency: map[string]uint64{}, reasons: map[string]uint64{}, goodput: map[string]uint64{}}}, nil
 }
 
 func gatewayFailure(status int, code string) gatewayResult {
@@ -274,9 +292,12 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 		gateway.mu.Unlock()
 		if len(sessions) == 0 && active == 0 {
 			// Every deferred record was queued before its reply; a clean shutdown
-			// pays what is left before the audit and state stores close.
+			// pays what is left before the audit and state stores close. A worker
+			// close the cleanup budget could not finish turns into the same
+			// unresolved-close error the synchronous drain reports.
+			closeErr := gateway.deferredClose.stop(ctx)
 			gateway.deferred.stop()
-			return nil
+			return closeErr
 		}
 		for _, session := range sessions {
 			if !session.mu.TryLock() {

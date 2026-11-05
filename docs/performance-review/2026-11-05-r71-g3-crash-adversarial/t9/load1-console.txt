@@ -1,0 +1,22 @@
+{
+  "concurrency": 8,
+  "duration_s": 10.0,
+  "failures": 0,
+  "first_failures": [],
+  "label": "t9-queue2-c8",
+  "latency_ms": {
+    "max": 18.87525,
+    "mean": 2.5633619758131774,
+    "min": 1.206542,
+    "n": 1199,
+    "p50": 2.23825,
+    "p90": 3.793,
+    "p95": 5.076041,
+    "p99": 7.710791
+  },
+  "ok": 1199,
+  "requests": 1199,
+  "requests_per_second": 119.26459056045388,
+  "target_rps": 120.0,
+  "wall_s": 10.053277291823179
+}

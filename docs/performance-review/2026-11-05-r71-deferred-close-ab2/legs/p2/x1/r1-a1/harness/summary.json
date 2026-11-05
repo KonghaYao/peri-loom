@@ -1,0 +1,65 @@
+{
+  "concurrency": 8,
+  "failures": 0,
+  "first_failure": null,
+  "label": "x1-c8",
+  "leg": "r1-a1",
+  "ok": 100,
+  "payload": "f1-select-1-json-pipeline-close-c8",
+  "request_ms": {
+    "max": 13.779875,
+    "mean": 6.29062091,
+    "min": 1.627,
+    "p50": 5.534833,
+    "p95": 12.762375
+  },
+  "requests": 100,
+  "wall_ms": 86.077916,
+  "window": {
+    "action_latency_ns_total": {
+      "close": 155755423,
+      "open": 283771314,
+      "statement": 22547753
+    },
+    "actions_total": {
+      "close": 100,
+      "open": 100,
+      "statement": 100
+    },
+    "active_permits_after": 0,
+    "admitted_requests_total": 300,
+    "cleanup_ledger_after": {
+      "isolated_records": {
+        "count": 0,
+        "oldest_age_ms": 0,
+        "state_read": "ok"
+      },
+      "orphan_sessions": {
+        "count": 0,
+        "oldest_age_ms": 0
+      },
+      "pending_close": {
+        "count": 0,
+        "exhausted": 0,
+        "last_failure": "",
+        "oldest_age_ms": 0
+      }
+    },
+    "close_actions": 100,
+    "close_latency_mean_us": 1557.554,
+    "close_latency_ns_total": 155755423,
+    "deferred_session_close": null,
+    "eligibility_ratio": null,
+    "errors_total": {},
+    "rejected_requests_total": 0,
+    "rejection_reasons_total": {},
+    "session_seats_after": 0,
+    "successful_requests_total": 300,
+    "unknown_held_permits_after": 0
+  },
+  "window_files": {
+    "after": "window-after.json",
+    "before": "window-before.json"
+  },
+  "wire_bytes_total": 31515
+}

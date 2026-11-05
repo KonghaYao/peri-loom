@@ -613,10 +613,14 @@ scanEnvelope:
 
 	switch statusKind {
 	case fusedReplyStatusOK:
-		if reasonPresent || errorPresent || completedPresent || !validScannedStatementResult(result) {
+		if reasonPresent || errorPresent || completedPresent {
 			return fusedStatementAnswer{}, false
 		}
-		return fusedStatementAnswer{kind: fusedStatementOK, result: result}, true
+		valid, autocommit := validScannedStatementResult(result)
+		if !valid {
+			return fusedStatementAnswer{}, false
+		}
+		return fusedStatementAnswer{kind: fusedStatementOK, result: result, autocommit: autocommit, autocommitKnown: true}, true
 	case fusedReplyStatusRequiresIntent:
 		if !reasonPresent || result != nil || errorPresent || completedPresent {
 			return fusedStatementAnswer{}, false

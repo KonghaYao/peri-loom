@@ -1,0 +1,6 @@
+open               /v1/sql/open             status=200 code= ok=True 3.54ms
+statement          /v1/sql/statement        status=200 code= ok=True 1.07ms
+close              /v1/sql/close            status=200 code= ok=True 0.48ms
+reuse_statement    /v1/sql/statement        status=403 code=invalid_session ok=False 8.85ms
+reuse_cursor       /v1/sql/cursor/open      status=403 code=invalid_session ok=False 1.33ms
+reuse_query        /v1/sql/query            status=403 code=invalid_session ok=False 1.47ms

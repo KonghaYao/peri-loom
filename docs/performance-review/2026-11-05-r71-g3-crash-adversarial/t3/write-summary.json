@@ -1,0 +1,92 @@
+{
+  "database": {
+    "branch": "main",
+    "namespace": {
+      "database": "demo",
+      "tenant": "local_default"
+    }
+  },
+  "insert_ok": true,
+  "session": "057740093bf850d9ffa948f9e3fdebc0",
+  "steps": [
+    {
+      "code": "",
+      "duration_ms": 3.158625,
+      "path": "/v1/sql/open",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "0a260596fa0fcbcd193ec9d7764ea8b4",
+        "result": {
+          "readonly": false,
+          "session": "057740093bf850d9ffa948f9e3fdebc0"
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "open"
+    },
+    {
+      "code": "",
+      "duration_ms": 79.319,
+      "path": "/v1/sql/statement",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "57fb880d72f352327f9d8ec060975b1d",
+        "result": {
+          "affected_row_count": 0,
+          "autocommit": true,
+          "cols": [],
+          "last_insert_rowid": null,
+          "query_duration_ms": 64.922438,
+          "rows": [],
+          "rows_read": 0,
+          "rows_written": 1
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "create"
+    },
+    {
+      "code": "",
+      "duration_ms": 13.740333,
+      "path": "/v1/sql/statement",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "3c2ca8b5f762a0fd3a653cb79305faed",
+        "result": {
+          "affected_row_count": 1,
+          "autocommit": true,
+          "cols": [],
+          "last_insert_rowid": 1,
+          "query_duration_ms": 8.526175,
+          "rows": [],
+          "rows_read": 0,
+          "rows_written": 1
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "insert"
+    },
+    {
+      "code": "",
+      "duration_ms": 0.781583,
+      "path": "/v1/sql/close",
+      "response": {
+        "error": null,
+        "ok": true,
+        "request_id": "49003424a5bcfc865a88919224566418",
+        "result": {
+          "closed": true
+        },
+        "version": 1
+      },
+      "status": 200,
+      "step": "close"
+    }
+  ]
+}

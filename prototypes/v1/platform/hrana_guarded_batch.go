@@ -24,12 +24,16 @@ const (
 
 // guardedBatchItem is one decided entry of a block, as the gateway consumes it
 // later in the same pipeline. The raw result is the worker's statement result;
-// the failure keeps the worker's own execution evidence.
+// the failure keeps the worker's own execution evidence. The autocommit flag is
+// kept from the same validation that accepted the result, so the session's
+// transaction state costs no second parse.
 type guardedBatchItem struct {
-	status  guardedBatchItemStatus
-	result  json.RawMessage
-	reason  guardedIntentReason
-	failure *SQLRPCError
+	status          guardedBatchItemStatus
+	result          json.RawMessage
+	reason          guardedIntentReason
+	failure         *SQLRPCError
+	autocommit      bool
+	autocommitKnown bool
 }
 
 type guardedBatchStatement struct {

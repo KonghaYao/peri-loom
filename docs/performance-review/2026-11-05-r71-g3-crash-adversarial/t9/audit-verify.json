@@ -1,0 +1,21 @@
+{
+  "audit_dir": "evidence/t9/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "ea53d4015b01656503774595edfe5a746e2ede802ea2595469c54f6050db916b",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 3631,
+  "last_hash": "ea53d4015b01656503774595edfe5a746e2ede802ea2595469c54f6050db916b",
+  "last_sequence": 3631,
+  "leg": "t9",
+  "present": true,
+  "records": 3631,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 3631
+    }
+  ]
+}

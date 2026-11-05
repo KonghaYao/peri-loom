@@ -152,6 +152,30 @@ class ObserverTests(unittest.TestCase):
             self.assertEqual(children[name]["PERI_WORK_METRICS"], "1")
             self.assertEqual(children[name]["PERI_MAINTENANCE_SCHEDULE"], "1")
 
+    def test_deferred_session_close_switch_reaches_only_the_platform_when_set(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                project = self.project(False)
+                project.directory = self.root / ("deferred-on" if enabled else "deferred-off")
+                project.arguments.run_dir = str(project.directory)
+                children = {}
+
+                def record_start(name, command, environment):
+                    children[name] = dict(environment)
+                    return {}
+
+                with patch.dict(dev.os.environ, {}, clear=False) as environment:
+                    environment.pop("PERI_DEFERRED_SESSION_CLOSE", None)
+                    if enabled:
+                        environment["PERI_DEFERRED_SESSION_CLOSE"] = "1"
+                    with patch.object(project, "start", side_effect=record_start), patch.object(project, "start_maintenance"), patch.object(dev, "request", side_effect=RuntimeError("offline stop before API")):
+                        with self.assertRaisesRegex(RuntimeError, "offline stop before API"):
+                            project.run()
+                self.assertEqual(children["platform"].get("PERI_DEFERRED_SESSION_CLOSE"), "1" if enabled else None)
+                for name, child in children.items():
+                    if name != "platform":
+                        self.assertNotIn("PERI_DEFERRED_SESSION_CLOSE", child)
+
     def test_rpc_links_are_forwarded_by_exact_name_with_existing_slow_switches(self):
         with patch.dict(dev.os.environ, {
             "PERI_DIAG_RPC_LINK": "1", "PERI_DIAG_SLOW": "1",

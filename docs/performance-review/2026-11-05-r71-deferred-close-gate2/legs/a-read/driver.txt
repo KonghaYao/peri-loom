@@ -1,0 +1,48 @@
+warmup block 1 median=2.100ms failures=0
+block 1 median=0.842ms failures=0
+block 2 median=2.334ms failures=0
+block 3 median=1.851ms failures=0
+block 4 median=0.917ms failures=0
+block 5 median=1.993ms failures=0
+{
+  "action_latency_ns_total": {
+    "close": 294391990,
+    "open": 304865474,
+    "statement": 67600781
+  },
+  "actions_total": {
+    "close": 500,
+    "open": 500,
+    "statement": 500
+  },
+  "active_permits_after": 0,
+  "admitted_requests_total": 1500,
+  "cleanup_ledger_after": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "close_actions": 500,
+  "close_latency_mean_us": 588.784,
+  "close_latency_ns_total": 294391990,
+  "deferred_session_close": null,
+  "eligibility_ratio": null,
+  "errors_total": {},
+  "rejected_requests_total": 0,
+  "rejection_reasons_total": {},
+  "session_seats_after": 0,
+  "successful_requests_total": 1500,
+  "unknown_held_permits_after": 0
+}

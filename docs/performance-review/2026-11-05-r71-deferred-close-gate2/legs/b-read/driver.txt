@@ -1,0 +1,60 @@
+warmup block 1 median=1.299ms failures=0
+block 1 median=0.950ms failures=0
+block 2 median=1.593ms failures=0
+block 3 median=0.995ms failures=0
+block 4 median=1.042ms failures=0
+block 5 median=0.845ms failures=0
+{
+  "action_latency_ns_total": {
+    "close": 47849073,
+    "open": 349554997,
+    "statement": 46483783
+  },
+  "actions_total": {
+    "close": 500,
+    "open": 500,
+    "statement": 500
+  },
+  "active_permits_after": 0,
+  "admitted_requests_total": 1500,
+  "cleanup_ledger_after": {
+    "isolated_records": {
+      "count": 0,
+      "oldest_age_ms": 0,
+      "state_read": "ok"
+    },
+    "orphan_sessions": {
+      "count": 0,
+      "oldest_age_ms": 0
+    },
+    "pending_close": {
+      "count": 0,
+      "exhausted": 0,
+      "last_failure": "",
+      "oldest_age_ms": 0
+    }
+  },
+  "close_actions": 500,
+  "close_latency_mean_us": 95.698,
+  "close_latency_ns_total": 47849073,
+  "deferred_session_close": {
+    "enqueued_total": 500,
+    "failed_total": 0,
+    "flushed_total": 0,
+    "inline_total": 0,
+    "maximum": 256,
+    "pending": 0,
+    "pending_max": 2,
+    "per_database_maximum": 4,
+    "retried_total": 0,
+    "semantics": "read-only stateless session worker closes dispatched after the reply; a session beyond the bound closes inline before the reply, a failed close retries through the cleanup ledger",
+    "unresolved_total": 0
+  },
+  "eligibility_ratio": 1.0,
+  "errors_total": {},
+  "rejected_requests_total": 0,
+  "rejection_reasons_total": {},
+  "session_seats_after": 0,
+  "successful_requests_total": 1500,
+  "unknown_held_permits_after": 0
+}

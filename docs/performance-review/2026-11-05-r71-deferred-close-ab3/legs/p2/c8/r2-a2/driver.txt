@@ -1,0 +1,21 @@
+block 00 warmup n=200 118.1ms 1693.7 qps failures=0
+block 01 warmup n=200 162.1ms 1234.0 qps failures=0
+block 02 warmup n=200 135.2ms 1479.5 qps failures=0
+block 03 warmup n=200 312.3ms 640.4 qps failures=0
+block 04 timed n=200 167.8ms 1192.0 qps failures=0
+block 05 timed n=200 133.0ms 1503.2 qps failures=0
+block 06 timed n=200 152.1ms 1315.3 qps failures=0
+block 07 timed n=200 150.2ms 1331.8 qps failures=0
+block 08 timed n=200 93.1ms 2148.4 qps failures=0
+block 09 timed n=200 146.9ms 1361.4 qps failures=0
+block 10 timed n=200 131.5ms 1521.3 qps failures=0
+block 11 timed n=200 166.7ms 1199.8 qps failures=0
+block 12 timed n=200 139.0ms 1439.0 qps failures=0
+block 13 timed n=200 214.2ms 933.6 qps failures=0
+block 14 timed n=200 154.5ms 1294.3 qps failures=1
+block 15 timed n=200 147.8ms 1353.5 qps failures=0
+block 16 timed n=200 143.2ms 1396.6 qps failures=0
+block 17 timed n=200 146.9ms 1361.5 qps failures=0
+block 18 timed n=200 174.7ms 1144.7 qps failures=0
+block 19 timed n=200 199.9ms 1000.3 qps failures=0
+{"leg": "r2-a2", "timed": {"requests": 3200, "failures": 1, "first_failure": {"duration_ns": 103826625, "status": 502, "bytes": 284, "ok": false, "error": "http_502", "worker": 1, "block": 14, "offset": 14}, "wall_ms": 2461.472876, "throughput_qps": 1300.035, "p50_ms": 3.5399, "p95_ms": 16.921, "mean_ms": 5.7884, "min_ms": 0.6564, "max_ms": 103.8266, "status_counts": {"200": 3199, "502": 1}, "error_codes": {"http_502": 1}}, "warmup": {"requests": 800, "failures": 0}, "deferred": null}

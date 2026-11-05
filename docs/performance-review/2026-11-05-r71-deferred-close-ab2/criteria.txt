@@ -1,0 +1,196 @@
+R71b deferred session close — frozen interleaved criteria
+=========================================================
+Frozen at 2026-11-05T04:26:05Z, BEFORE the first measured block of this
+campaign. Nothing below may be changed after data is seen.
+
+Source: the R71 Gate 1b / Gate 2 protocol and the R71b round instruction
+(2026-11-05). The previous frozen A/B (2026-11-05-r71-deferred-close-ab) is
+cited only as the reason this design replaces its sequential legs; none of its
+measurements are reused, pooled, or re-interpreted here.
+
+Candidate
+---------
+Branch      perf/r71-deferred-session-close
+Candidate   ac5e0c7 (parent 02a05a7, root 9e30afa)
+Platform    rebuilt from ac5e0c7 before any stack starts with
+            GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath.
+            Expected SHA256
+            3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014
+            (Gate 2 / previous round). If the rebuilt SHA differs, the
+            campaign stops and reports instead of measuring.
+
+Sides and stacks
+----------------
+Two identical isolated stacks run CONCURRENTLY for the whole campaign:
+
+  A (baseline)  = the candidate platform binary, PERI_DEFERRED_SESSION_CLOSE
+                  unset.
+  B (candidate) = the same candidate platform binary, same worker, same
+                  launcher, with PERI_DEFERRED_SESSION_CLOSE=1 in the
+                  platform process environment.
+
+A and B have different ports, run-dirs, named volumes and container names.
+Every other input is identical: image, worker binary, launcher, fixture,
+default quotas, no observer. The image's own platform binary is not used on
+either side.
+
+Environment (fixed for every stack of this campaign)
+----------------------------------------------------
+Image       ghcr.io/konghayao/peri-loom:v1.2.7
+Image id    sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+Worker      sha256 b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+Quotas      platform defaults, not relaxed:
+            max_databases=8, max_sessions=16, max_concurrent=100,
+            requests_per_second=500, max_sql_bytes=65536,
+            max_result_bytes=4194304
+Observer    none (no phase / durability observer)
+Fixture     docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py
+            verified per stack: threads=201 messages=8625 chars=20177069
+            focus=8625
+Volumes     fresh named volumes created by this campaign; no previous round's
+            volume is reused, modified or deleted.
+
+P1 design (interleaved, block means)
+------------------------------------
+Request    one Hrana JSON pipeline request
+           {"requests":[{"type":"execute","stmt":{"sql":"SELECT 1",
+            "want_rows":true}},{"type":"close"}]}
+           over one keep-alive connection per stack.
+Block      exactly 20 consecutive requests; the block sample is the wall clock
+           of those 20 requests divided by 20 (milliseconds per request).
+Triple     three blocks: A1 (stack A), A2 (stack A), B (stack B).
+Order      the order of A1, A2 and B inside every triple is a random
+           permutation drawn sequentially from random.Random(20261105). A
+           void triple retried later draws a fresh permutation from the same
+           stream.
+Pacing     0.75 s between consecutive blocks (including across triple and
+           round boundaries), 1.2 s after seeding before the first block, 5 s
+           between round 1 and round 2. Requests inside a block stay
+           consecutive; the quota is never relaxed.
+Rounds     2 rounds x 30 triples = 60 triples.
+Volume      A side: 2 x 20 x 60 = 2400 requests; B side: 1 x 20 x 60 = 1200
+           requests.
+Continuity The same two stacks, binaries, volumes and configuration run both
+           rounds. No restart, rebuild or re-seed between rounds.
+Validity   A block with any transport error, non-200 response, or rejected
+           pipeline result is failed. A triple with any failed block is VOID:
+           it is recorded, excluded from every statistic, and retried after an
+           extra pause (3 s, doubling on each consecutive void up to 60 s).
+           Failures are reported, never hidden.
+
+P0 — power controls (both must pass before P1 may be interpreted)
+-----------------------------------------------------------------
+P0.1 zero control (A1 vs A2, same stack, same time window)
+  For every valid triple i:  r_i = A2_i / A1_i   (block means).
+  merged = median(r_i over the 60 valid triples).
+  PASS iff 0.95 <= merged <= 1.05 AND the percentile-bootstrap 95% CI of the
+  median covers 1.0.
+  Bootstrap: 10,000 draws, seed 20261105, resampling the 60 per-triple ratios
+  with replacement (percentile interval).
+  Per-round medians and CIs are reported but do not add a pass condition.
+  If P0.1 fails, the design has insufficient power and P1 must NOT be
+  interpreted.
+
+P0.2 positive control (100 us busy wait, same interleaved design)
+  Probe platform binary: SHA256
+  6517583e751e2dd936c44fcbd80dd77d13b10757503a0917a7f83bad16096916
+  (probe branch probe/r70-deferred-close-ceiling commit f01cd8e; busy wait
+  measured at 100.04 us p50 in Gate 1b). Both stacks of this control use the
+  probe binary and the probe worktree's dev.py. The B stack additionally has
+  PERI_R71_CLOSE_DELAY_US=100; the A stack does not.
+  Design: exactly the P1 triple design, 1 round x 30 triples (same block size,
+  pacing, randomization seed and validity rule).
+  effect_i = B_i / mean(A1_i, A2_i).
+  PASS iff the median of the 30 effects is >= 1.08 (B slower in the correct
+  direction). The bootstrap 95% CI (10,000 draws, seed 20261105) is reported
+  as supporting evidence but is not a pass condition.
+  This control is run separately and is never pooled with the candidate
+  triples. If the probe binary cannot run under the dual-stack design, the
+  campaign reports that fact and does not relax the criterion; the
+  coordinator decides whether to fall back to the Gate 1b registered result
+  (which is a different design and must be labelled as such).
+
+P1 — primary metric
+-------------------
+  For every valid triple i:
+    a_i = mean(A1_i, A2_i)          (mean of the two block means)
+    effect_i = B_i / a_i
+  merged ratio = median(effect_i over the 60 valid triples).
+  Bootstrap: 10,000 percentile draws, seed 20261105, resampling the 60
+  per-triple effects with replacement.
+  Per-round ratio = median of that round's 30 effects; per-round bootstrap CIs
+  are reported.
+  PASS iff ALL of:
+    (a) merged ratio <= 0.92  (>= 8% improvement);
+    (b) bootstrap 95% CI upper bound < 1.0 (the interval excludes 1.0);
+    (c) both round ratios are < 1.0 (same direction in both rounds).
+  0.92 < merged ratio < 1.00 => FAIL. No post-hoc threshold changes.
+  Also reported (not a pass condition): paired absolute difference
+  d_i = B_i - a_i in ms, its median, and the percentile-bootstrap 95% CI of
+  that median (10,000 draws, seed 20261105, resampling the 60 pairs).
+
+P2 — regression gate (standard Issue 28 harness, this round only)
+-----------------------------------------------------------------
+F1.select-1 json-pipeline and L1.list-20 json-pipeline:
+  per leg: --rounds 1 --warmup 1 --samples 125 = 125 timed requests;
+  2 rounds x A/B/B/A = 8 legs per scenario => exactly 500 timed requests per
+  side per scenario. Fresh volume per leg, same fixture, default quotas.
+X1 c8 throughput:
+  measured with the Gate 2 c8 driver (read_concurrency_driver.py, same
+  F1-shaped [execute SELECT 1, close] request, 8 concurrent keep-alive
+  connections), --requests 100 per leg; 2 rounds x A/B/B/A = 8 legs.
+  throughput = 100 / wall clock; p50/p95 reported.
+  Runner choice fixed BEFORE the first measured block: the stock X1 scenario
+  also runs a c16 level, which exceeds the default per-project admission burst
+  and produces a known 429 pacing artifact on both sides (recorded in the
+  previous round). That level is outside the frozen c8 metric; measuring it
+  would inject a quota artifact into P3. The c8-only driver measures exactly
+  the frozen metric and no other level.
+Comparisons
+  p50 and p95 pooled per side per scenario; per-round ratios reported.
+  X1 c8 throughput per round and merged.
+Reproducible degradation
+  p50/p95: merged B/A > 1.10 AND both round ratios > 1.0.
+  X1 c8 throughput: merged B/A < 0.90 AND both round ratios < 1.0.
+PASS       no reproducible degradation in F1 p50/p95, L1 p50/p95, or X1 c8
+           throughput.
+P2 numbers are measured in this round; none are copied from the previous
+round. Regression-gate improvements are supporting evidence only and never
+feed the P1 decision.
+
+P3 — invariants (P1 stacks A and B, plus every P2 leg)
+------------------------------------------------------
+1. deferred_session_close direction:
+   A stack: the key is absent from metrics-before and metrics-after.
+   B stack: enqueued_total > 0, failed_total = 0, retried_total = 0,
+            unresolved_total = 0, pending = 0 after drain.
+2. session_seats = 0 and active_permits = 0 after settle.
+3. worker sessions = 0 for every worker after settle.
+4. cleanup_ledger.pending_close.count = 0 and every worker
+   lifecycle.pending_close.count = 0 after settle/drain.
+5. Audit chain continuous in every stack/leg: every record increments
+   sequence by 1 and payload.previous equals the previous record's hash.
+   Record counts are reported per side and explained against that side's
+   request count (the A stack performs twice the B stack's requests by
+   design); no unexplained gap or duplicate is accepted.
+6. No 429 / 503 / outcome_unknown / session_moved / audit_unavailable in any
+   measured stack/leg (the P1 interleaved stacks, the P2 F1/L1 legs and the
+   X1 c8 legs; driver records plus metrics errors_total /
+   rejection_reasons_total deltas).
+7. Clean stop: launcher-stop.json outcome=clean and
+   unresolved_operations=false for every stack/leg; docker stop exit 0.
+Wire-byte equality is reported as supporting evidence for the P2 F1/L1 legs;
+it is not a P3 pass condition beyond what the harness reports.
+
+Decision rule
+-------------
+PASS only if P0.1 and P0.2 pass, P1 passes, P2 shows no reproducible >10%
+degradation, and every P3 check is green.
+Otherwise this round FAILS and the branch stays as evidence; it must not be
+merged. No criterion is relaxed after seeing data.
+
+Explicit non-reuse clause
+-------------------------
+The previous round's numbers (including its P1 B/A = 0.75835 and its P0 A/A =
+1.06800) are historical context only. This round's P0, P1, P2 and P3 are
+computed solely from this round's files under legs/p1, legs/p0 and legs/p2.

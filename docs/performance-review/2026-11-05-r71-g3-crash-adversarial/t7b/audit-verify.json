@@ -1,0 +1,21 @@
+{
+  "audit_dir": "evidence/t7b/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "c1cfde0b79a1cfba1d48651030cb9bab17fd3a21c86e76f57c129d7e1355738e",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 28901,
+  "last_hash": "c1cfde0b79a1cfba1d48651030cb9bab17fd3a21c86e76f57c129d7e1355738e",
+  "last_sequence": 28901,
+  "leg": "t7b",
+  "present": true,
+  "records": 28901,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 28901
+    }
+  ]
+}

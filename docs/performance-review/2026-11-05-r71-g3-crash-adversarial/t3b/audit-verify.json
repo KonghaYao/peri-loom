@@ -1,0 +1,21 @@
+{
+  "audit_dir": "/tmp/peri-r71-g3/evidence/t3b/volume/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "44b974217b15ebdf9d13327264d541717f0cfb31c91b7f209e70075a1b12393d",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 22,
+  "last_hash": "44b974217b15ebdf9d13327264d541717f0cfb31c91b7f209e70075a1b12393d",
+  "last_sequence": 22,
+  "leg": "volume",
+  "present": true,
+  "records": 22,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 22
+    }
+  ]
+}

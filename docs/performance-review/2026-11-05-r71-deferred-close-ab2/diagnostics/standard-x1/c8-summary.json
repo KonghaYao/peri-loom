@@ -1,0 +1,87 @@
+{
+  "design": "post-hoc diagnostic, NOT the frozen P2 metric; stock Issue28 X1 scenario (levels 1,4,8,16; 100 requests each), c8 level extracted",
+  "legs": [
+    {
+      "leg": "r1-a1",
+      "elapsed_ms": 50,
+      "qps": 2000.0,
+      "p50_ms": 2.92,
+      "p95_ms": 7.33,
+      "c8_429": 0
+    },
+    {
+      "leg": "r1-b1",
+      "elapsed_ms": 58,
+      "qps": 1724.138,
+      "p50_ms": 2.91,
+      "p95_ms": 10.62,
+      "c8_429": 0
+    },
+    {
+      "leg": "r1-b2",
+      "elapsed_ms": 52,
+      "qps": 1923.077,
+      "p50_ms": 2.65,
+      "p95_ms": 10.13,
+      "c8_429": 0
+    },
+    {
+      "leg": "r1-a2",
+      "elapsed_ms": 58,
+      "qps": 1724.138,
+      "p50_ms": 3.25,
+      "p95_ms": 7.86,
+      "c8_429": 0
+    },
+    {
+      "leg": "r2-a1",
+      "elapsed_ms": 72,
+      "qps": 1388.889,
+      "p50_ms": 4.52,
+      "p95_ms": 13.66,
+      "c8_429": 0
+    },
+    {
+      "leg": "r2-b1",
+      "elapsed_ms": 50,
+      "qps": 2000.0,
+      "p50_ms": 2.74,
+      "p95_ms": 6.91,
+      "c8_429": 0
+    },
+    {
+      "leg": "r2-b2",
+      "elapsed_ms": 50,
+      "qps": 2000.0,
+      "p50_ms": 3.49,
+      "p95_ms": 7.41,
+      "c8_429": 0
+    },
+    {
+      "leg": "r2-a2",
+      "elapsed_ms": 83,
+      "qps": 1204.819,
+      "p50_ms": 5.94,
+      "p95_ms": 13.42,
+      "c8_429": 0
+    }
+  ],
+  "rounds": {
+    "r1": {
+      "a_median_qps": 1862.069,
+      "b_median_qps": 1823.608,
+      "ratio": 0.97934
+    },
+    "r2": {
+      "a_median_qps": 1296.854,
+      "b_median_qps": 2000.0,
+      "ratio": 1.54219
+    }
+  },
+  "merged": {
+    "a_median_qps": 1556.514,
+    "b_median_qps": 1961.539,
+    "ratio": 1.26021
+  },
+  "note": "c16 produced 13-53 x 429 per leg (known default-quota pacing artifact); c8 had 429=0 on every leg"
+}

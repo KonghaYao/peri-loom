@@ -1,0 +1,10 @@
+{
+ "status": 200,
+ "body": {
+  "baton": null,
+  "results": [
+   "PipelineResult(ok=True, response_type='execute', rows=1, rows_read=0, rows_written=0, affected_row_count=0, query_ms=0.103, error_code='', error_message='')",
+   "PipelineResult(ok=True, response_type='close', rows=0, rows_read=0, rows_written=0, affected_row_count=0, query_ms=None, error_code='', error_message='')"
+  ]
+ }
+}

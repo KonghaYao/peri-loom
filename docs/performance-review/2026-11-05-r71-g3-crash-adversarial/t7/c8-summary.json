@@ -1,0 +1,22 @@
+{
+  "concurrency": 8,
+  "duration_s": 65.0,
+  "failures": 0,
+  "first_failures": [],
+  "label": "t7-c8-65s",
+  "latency_ms": {
+    "max": 56.844708,
+    "mean": 2.570868523589744,
+    "min": 1.045209,
+    "n": 7800,
+    "p50": 2.253334,
+    "p90": 3.514709,
+    "p95": 4.601917,
+    "p99": 7.683959
+  },
+  "ok": 7800,
+  "requests": 7800,
+  "requests_per_second": 119.87266257522482,
+  "target_rps": 120.0,
+  "wall_s": 65.06904770806432
+}

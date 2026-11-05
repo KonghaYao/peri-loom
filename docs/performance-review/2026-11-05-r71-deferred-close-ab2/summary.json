@@ -1,0 +1,444 @@
+{
+  "round": "R71b",
+  "candidate": {
+    "branch": "perf/r71-deferred-session-close",
+    "commit": "ac5e0c7",
+    "platform_sha256": "3059c47a116b51ed034621d594f4d5eea34e146937dcbf5f755286d68e6cd014",
+    "worker_sha256": "b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "image_id": "sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff"
+  },
+  "criteria_sha256": "57a38ba4df5b8e08abe69c81195eac2a5fc5b82c8468f041c27bf7160bd1234a",
+  "verdicts": {
+    "p0_zero_control": "PASS",
+    "p0_positive_control": "PASS",
+    "p1": "PASS",
+    "p2": "FAIL",
+    "p3": "PASS",
+    "overall": "FAIL"
+  },
+  "p0_zero_control": {
+    "triples": 60,
+    "median_ratio": 1.028836,
+    "ci95": [
+      0.948509,
+      1.092547
+    ],
+    "rounds": {
+      "1": {
+        "median": 1.028495,
+        "ci95": [
+          0.96735,
+          1.085766
+        ],
+        "draws": 10000
+      },
+      "2": {
+        "median": 1.043741,
+        "ci95": [
+          0.905375,
+          1.181028
+        ],
+        "draws": 10000
+      }
+    }
+  },
+  "p0_positive_control": {
+    "triples": 30,
+    "median_effect": 1.093173,
+    "ci95": [
+      0.931393,
+      1.176325
+    ],
+    "paired_difference_ms": {
+      "median": 0.317138,
+      "ci95": [
+        -0.238754,
+        0.555877
+      ],
+      "draws": 10000
+    },
+    "zero_control": {
+      "median_ratio": 1.010204,
+      "ci95": [
+        0.900133,
+        1.142177
+      ]
+    },
+    "runner": "probe binary 6517583e..., dual-stack interleaved design"
+  },
+  "p1": {
+    "triples": 60,
+    "void_triples": 0,
+    "a_requests": 2400,
+    "b_requests": 1200,
+    "blocks": {
+      "A1": {
+        "count": 60,
+        "median": 4.497117,
+        "mean": 4.260475,
+        "p95": 5.361706,
+        "min": 2.309429,
+        "max": 5.608054,
+        "stdev": 0.912333
+      },
+      "A2": {
+        "count": 60,
+        "median": 4.44764,
+        "mean": 4.382451,
+        "p95": 5.669383,
+        "min": 2.351879,
+        "max": 5.836919,
+        "stdev": 0.867164
+      },
+      "B": {
+        "count": 60,
+        "median": 3.73444,
+        "mean": 3.440698,
+        "p95": 4.413935,
+        "min": 0.990394,
+        "max": 4.656233,
+        "stdev": 0.838716
+      }
+    },
+    "effect": {
+      "median": 0.818095,
+      "ci95": [
+        0.745575,
+        0.917848
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "paired_difference_ms": {
+      "median": -0.859561,
+      "ci95": [
+        -1.252371,
+        -0.339134
+      ],
+      "draws": 10000
+    },
+    "rounds": {
+      "1": {
+        "median": 0.810175,
+        "ci95": [
+          0.721879,
+          0.925135
+        ],
+        "draws": 10000
+      },
+      "2": {
+        "median": 0.827928,
+        "ci95": [
+          0.747039,
+          0.984576
+        ],
+        "draws": 10000
+      }
+    }
+  },
+  "p2": {
+    "f1": {
+      "median_ms": {
+        "sides": {
+          "a": 1.7499,
+          "b": 0.9734
+        },
+        "merged_b_over_a": 0.55629,
+        "round_ratios": {
+          "r1": 0.57648,
+          "r2": 0.53082
+        },
+        "reproducible_degradation": false
+      },
+      "p95_ms": {
+        "sides": {
+          "a": 5.7942,
+          "b": 4.5157
+        },
+        "merged_b_over_a": 0.77936,
+        "round_ratios": {
+          "r1": 0.77798,
+          "r2": 0.76767
+        },
+        "reproducible_degradation": false
+      }
+    },
+    "l1": {
+      "median_ms": {
+        "sides": {
+          "a": 2.2736,
+          "b": 1.5283
+        },
+        "merged_b_over_a": 0.67219,
+        "round_ratios": {
+          "r1": 0.62242,
+          "r2": 0.67219
+        },
+        "reproducible_degradation": false
+      },
+      "p95_ms": {
+        "sides": {
+          "a": 5.708,
+          "b": 4.1873
+        },
+        "merged_b_over_a": 0.73358,
+        "round_ratios": {
+          "r1": 0.73378,
+          "r2": 0.72201
+        },
+        "reproducible_degradation": false
+      }
+    },
+    "x1_c8": {
+      "sides": {
+        "a": 1193.055,
+        "b": 1006.746
+      },
+      "merged_b_over_a": 0.84384,
+      "round_ratios": {
+        "r1": 0.73235,
+        "r2": 0.79333
+      },
+      "reproducible_degradation": true
+    },
+    "verdict": "FAIL",
+    "degradations": [
+      "x1 throughput >10% reproducible"
+    ]
+  },
+  "p3": {
+    "legs_total": 26,
+    "legs_passed": 26,
+    "audit_count_checks": [
+      {
+        "a": [
+          [
+            "a",
+            7200
+          ]
+        ],
+        "a_requests": 2400,
+        "b": [
+          [
+            "b",
+            3600
+          ]
+        ],
+        "b_requests": 1200,
+        "count_ratio": 2.0,
+        "equal": true,
+        "key": "p1/block-mean",
+        "request_ratio": 2.0
+      },
+      {
+        "a": [
+          [
+            "r1-a1",
+            384
+          ],
+          [
+            "r1-a2",
+            384
+          ],
+          [
+            "r2-a1",
+            384
+          ],
+          [
+            "r2-a2",
+            384
+          ]
+        ],
+        "b": [
+          [
+            "r1-b1",
+            384
+          ],
+          [
+            "r1-b2",
+            384
+          ],
+          [
+            "r2-b1",
+            384
+          ],
+          [
+            "r2-b2",
+            384
+          ]
+        ],
+        "equal": true,
+        "key": "f1/"
+      },
+      {
+        "a": [
+          [
+            "r1-a1",
+            384
+          ],
+          [
+            "r1-a2",
+            384
+          ],
+          [
+            "r2-a1",
+            384
+          ],
+          [
+            "r2-a2",
+            384
+          ]
+        ],
+        "b": [
+          [
+            "r1-b1",
+            384
+          ],
+          [
+            "r1-b2",
+            384
+          ],
+          [
+            "r2-b1",
+            384
+          ],
+          [
+            "r2-b2",
+            384
+          ]
+        ],
+        "equal": true,
+        "key": "l1/"
+      },
+      {
+        "a": [
+          [
+            "r1-a1",
+            324
+          ],
+          [
+            "r1-a2",
+            324
+          ],
+          [
+            "r2-a1",
+            324
+          ],
+          [
+            "r2-a2",
+            324
+          ]
+        ],
+        "b": [
+          [
+            "r1-b1",
+            324
+          ],
+          [
+            "r1-b2",
+            324
+          ],
+          [
+            "r2-b1",
+            324
+          ],
+          [
+            "r2-b2",
+            324
+          ]
+        ],
+        "equal": true,
+        "key": "x1/"
+      }
+    ]
+  },
+  "diagnostics_standard_x1_c8": {
+    "design": "post-hoc diagnostic, NOT the frozen P2 metric; stock Issue28 X1 scenario (levels 1,4,8,16; 100 requests each), c8 level extracted",
+    "legs": [
+      {
+        "leg": "r1-a1",
+        "elapsed_ms": 50,
+        "qps": 2000.0,
+        "p50_ms": 2.92,
+        "p95_ms": 7.33,
+        "c8_429": 0
+      },
+      {
+        "leg": "r1-b1",
+        "elapsed_ms": 58,
+        "qps": 1724.138,
+        "p50_ms": 2.91,
+        "p95_ms": 10.62,
+        "c8_429": 0
+      },
+      {
+        "leg": "r1-b2",
+        "elapsed_ms": 52,
+        "qps": 1923.077,
+        "p50_ms": 2.65,
+        "p95_ms": 10.13,
+        "c8_429": 0
+      },
+      {
+        "leg": "r1-a2",
+        "elapsed_ms": 58,
+        "qps": 1724.138,
+        "p50_ms": 3.25,
+        "p95_ms": 7.86,
+        "c8_429": 0
+      },
+      {
+        "leg": "r2-a1",
+        "elapsed_ms": 72,
+        "qps": 1388.889,
+        "p50_ms": 4.52,
+        "p95_ms": 13.66,
+        "c8_429": 0
+      },
+      {
+        "leg": "r2-b1",
+        "elapsed_ms": 50,
+        "qps": 2000.0,
+        "p50_ms": 2.74,
+        "p95_ms": 6.91,
+        "c8_429": 0
+      },
+      {
+        "leg": "r2-b2",
+        "elapsed_ms": 50,
+        "qps": 2000.0,
+        "p50_ms": 3.49,
+        "p95_ms": 7.41,
+        "c8_429": 0
+      },
+      {
+        "leg": "r2-a2",
+        "elapsed_ms": 83,
+        "qps": 1204.819,
+        "p50_ms": 5.94,
+        "p95_ms": 13.42,
+        "c8_429": 0
+      }
+    ],
+    "rounds": {
+      "r1": {
+        "a_median_qps": 1862.069,
+        "b_median_qps": 1823.608,
+        "ratio": 0.97934
+      },
+      "r2": {
+        "a_median_qps": 1296.854,
+        "b_median_qps": 2000.0,
+        "ratio": 1.54219
+      }
+    },
+    "merged": {
+      "a_median_qps": 1556.514,
+      "b_median_qps": 1961.539,
+      "ratio": 1.26021
+    },
+    "note": "c16 produced 34 x 429 on every leg (known default-quota pacing artifact); c8 had 429=0 on every leg"
+  },
+  "note": "The frozen P2 metric uses the Gate 2 c8-only driver. The post-hoc stock X1 diagnostic is reported separately and does not change the frozen verdict."
+}

@@ -1,0 +1,22 @@
+{
+  "concurrency": 16,
+  "duration_s": 65.0,
+  "failures": 0,
+  "first_failures": [],
+  "label": "t7-c16-65s",
+  "latency_ms": {
+    "max": 63.490208,
+    "mean": 2.642393259648673,
+    "min": 1.141583,
+    "n": 7799,
+    "p50": 2.296458,
+    "p90": 3.524375,
+    "p95": 4.663125,
+    "p99": 7.637625
+  },
+  "ok": 7799,
+  "requests": 7799,
+  "requests_per_second": 119.74621333962632,
+  "target_rps": 120.0,
+  "wall_s": 65.1294081248343
+}

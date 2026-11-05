@@ -1,0 +1,1 @@
+{"ready": true, "service": "local-project", "address": "http://127.0.0.1:20880", "connection_file": "/data/peri/connection.json", "topology_file": "/data/peri/topology.json"}

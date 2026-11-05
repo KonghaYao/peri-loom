@@ -1,0 +1,20 @@
+{"block": 0, "warmup": true, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 114.094417, "throughput_qps": 1752.934}
+{"block": 1, "warmup": true, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 183.011208, "throughput_qps": 1092.829}
+{"block": 2, "warmup": true, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 154.128666, "throughput_qps": 1297.617}
+{"block": 3, "warmup": true, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 129.303083, "throughput_qps": 1546.754}
+{"block": 4, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 149.042166, "throughput_qps": 1341.902}
+{"block": 5, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 106.547625, "throughput_qps": 1877.095}
+{"block": 6, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 172.706166, "throughput_qps": 1158.036}
+{"block": 7, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 176.944209, "throughput_qps": 1130.3}
+{"block": 8, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 111.811625, "throughput_qps": 1788.723}
+{"block": 9, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 156.083375, "throughput_qps": 1281.366}
+{"block": 10, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 115.274083, "throughput_qps": 1734.995}
+{"block": 11, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 136.324625, "throughput_qps": 1467.086}
+{"block": 12, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 184.585916, "throughput_qps": 1083.506}
+{"block": 13, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 133.297375, "throughput_qps": 1500.405}
+{"block": 14, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 142.503458, "throughput_qps": 1403.475}
+{"block": 15, "warmup": false, "requests": 200, "failures": 1, "first_failure": {"duration_ns": 77766333, "status": 502, "bytes": 284, "ok": false, "error": "http_502", "worker": 5, "block": 15, "offset": 16}, "wall_ms": 119.5305, "throughput_qps": 1673.213}
+{"block": 16, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 122.332084, "throughput_qps": 1634.894}
+{"block": 17, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 101.820625, "throughput_qps": 1964.239}
+{"block": 18, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 183.583708, "throughput_qps": 1089.421}
+{"block": 19, "warmup": false, "requests": 200, "failures": 0, "first_failure": null, "wall_ms": 188.649584, "throughput_qps": 1060.167}

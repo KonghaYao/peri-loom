@@ -1,0 +1,32 @@
+r1-a2 a block 0 (warmup) 3.203 ms/request
+r1-a2 a block 1 2.191 ms/request
+r1-a2 a block 2 2.729 ms/request
+r1-a2 a block 3 2.918 ms/request
+r1-a2 a block 4 2.674 ms/request
+r1-a2 a block 5 3.244 ms/request
+r1-a2 a block 6 2.720 ms/request
+r1-a2 a block 7 2.719 ms/request
+r1-a2 a block 8 2.567 ms/request
+r1-a2 a block 9 2.765 ms/request
+r1-a2 a block 10 2.654 ms/request
+r1-a2 a block 11 3.189 ms/request
+r1-a2 a block 12 2.503 ms/request
+r1-a2 a block 13 3.364 ms/request
+r1-a2 a block 14 2.351 ms/request
+r1-a2 a block 15 2.999 ms/request
+r1-a2 a block 16 2.700 ms/request
+r1-a2 a block 17 2.656 ms/request
+r1-a2 a block 18 2.375 ms/request
+r1-a2 a block 19 1.879 ms/request
+r1-a2 a block 20 2.153 ms/request
+r1-a2 a block 21 2.638 ms/request
+r1-a2 a block 22 2.521 ms/request
+r1-a2 a block 23 3.066 ms/request
+r1-a2 a block 24 2.563 ms/request
+r1-a2 a block 25 2.311 ms/request
+r1-a2 a block 26 2.644 ms/request
+r1-a2 a block 27 2.550 ms/request
+r1-a2 a block 28 2.579 ms/request
+r1-a2 a block 29 2.354 ms/request
+r1-a2 a block 30 2.362 ms/request
+{"leg": "r1-a2", "side": "a", "round": "r1", "block_size": 100, "blocks": 30, "block_gap_seconds": 0.75, "initial_refill_seconds": 1.2, "timed_blocks": 30, "warmup_blocks": 1, "warmup_median_ms": 3.2028, "median_ms": 2.6411, "mean_ms": 2.6313, "stdev_ms": 0.3275, "min_ms": 1.8792, "max_ms": 3.3637, "failures": 0, "first_failure": null}

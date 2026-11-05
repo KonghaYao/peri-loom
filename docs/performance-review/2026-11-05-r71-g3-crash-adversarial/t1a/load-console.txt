@@ -1,0 +1,22 @@
+{
+  "concurrency": 8,
+  "duration_s": 20.0,
+  "failures": 0,
+  "first_failures": [],
+  "label": "t1a-c8",
+  "latency_ms": {
+    "max": 44.85,
+    "mean": 2.6668899612338475,
+    "min": 1.162625,
+    "n": 2399,
+    "p50": 2.242083,
+    "p90": 3.783583,
+    "p95": 5.073625,
+    "p99": 8.969625
+  },
+  "ok": 2399,
+  "requests": 2399,
+  "requests_per_second": 119.629686029501,
+  "target_rps": 120.0,
+  "wall_s": 20.05355091718957
+}
