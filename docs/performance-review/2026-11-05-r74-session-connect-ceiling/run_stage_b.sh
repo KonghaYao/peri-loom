@@ -145,7 +145,10 @@ sleep 2
 
   docker exec "$container" sh -c 'cat /data/peri/audit/events.json /data/peri/audit/events.json.segment.* 2>/dev/null | wc -l' | tr -d ' ' > "$legdir/audit-count-after.txt"
   docker logs "$container" > "$legdir/container.txt" 2>&1 || true
-  grep -E 'R74POOL|R74WORKER' "$legdir/container.txt" > "$legdir/probe.txt" 2>/dev/null || true
+  for name in worker-a worker-b authority platform; do
+    docker cp "$container":/data/peri/logs/$name.log "$legdir/$name.log" 2>/dev/null || true
+  done
+  cat "$legdir"/worker-*.log 2>/dev/null | grep -E 'R74POOL|R74WORKER' > "$legdir/probe.txt" || true
 
   stop_start=$(python3 -c 'import time;print(time.time())')
   docker stop -t 60 "$container" >/dev/null 2>&1 || true
