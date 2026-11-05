@@ -1,0 +1,11 @@
+stage=a
+image=ghcr.io/konghayao/peri-loom:v1.2.8
+image_id=sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d
+repo_digest=ghcr.io/konghayao/peri-loom@sha256:2efe4f813b43ac3b8146296eac206b862c4cd207cd00a73a864b3db96928fe9d
+host=Darwin 25.5.0 arm64
+docker=29.4.0
+harness=/Users/kk/code/peri-loom/scripts/perf-reliability/issue28/run.py sha256=499ad87f0d6264f8c387209fcc832204274058119604cd6fea0febacaec36676
+seed=/Users/kk/code/peri-loom/docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py sha256=092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210
+snap=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/snap_metrics.py sha256=046f913673bf718b36d4c31e5a3166692f7df2367216027d290746a7cb8a9855
+wait=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/wait_settled.py sha256=1ec6542632ca0178809e832546dc76c4eca30660550e11713f59abba9cd8acaa
+verify=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/verify_audit.py sha256=9aa19d1d30d347503b1023b430cdb12b6be31cc128f19cdefd5b0fef1bece9fb

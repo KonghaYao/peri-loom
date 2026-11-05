@@ -1,0 +1,146 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:21900",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "d28cecf5baa7e0ca02d728a4cde48c2c329424a9",
+    "connection_file": "provided (redacted)",
+    "container": "peri-r74-probe-f1-stagea",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.8",
+    "peri_image_version": "v1.2.8",
+    "peri_image_revision": "518c40dc0aa041f1b297f6a30111bdb9d206ef55",
+    "platform_label": "HEAD d28cecf / rust v1.2.8",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-05T11:29:17.404082+00:00",
+    "ended_utc": "2026-11-05T11:29:17.632222+00:00",
+    "duration_seconds": 0.228,
+    "rounds": 1,
+    "warmup": 1,
+    "samples": 125,
+    "concurrency_requests": 100,
+    "resource_before": {
+      "mem_usage": "203.6MiB / 11.73GiB",
+      "cpu_percent": "1.21%",
+      "memory_stat": {
+        "anon": 157569024,
+        "file": 192315392,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 137998336,
+        "active_file": 54317056,
+        "slab": 0,
+        "pgfault": 65387,
+        "pgmajfault": 45
+      }
+    },
+    "resource_after": {
+      "mem_usage": "204.7MiB / 11.73GiB",
+      "cpu_percent": "2.87%",
+      "memory_stat": {
+        "anon": 158289920,
+        "file": 192856064,
+        "file_dirty": 139264,
+        "file_writeback": 0,
+        "inactive_file": 138539008,
+        "active_file": 54317056,
+        "slab": 0,
+        "pgfault": 66662,
+        "pgmajfault": 45
+      }
+    },
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "F1.select-1",
+      "title": "固定开销 select 1（返回 1 行）",
+      "protocol": "json-pipeline",
+      "kind": "read",
+      "samples": 125,
+      "median_ms": 1.096792,
+      "p95_ms": 4.592875,
+      "min_ms": 0.568708,
+      "max_ms": 5.398417,
+      "round_medians_ms": [
+        1.096792
+      ],
+      "rows": 1,
+      "response_bytes": 312,
+      "query_ms": 0.014957999999999999,
+      "status_counts": {
+        "200": 125
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 125
+      },
+      "verdict": "PASS",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}
