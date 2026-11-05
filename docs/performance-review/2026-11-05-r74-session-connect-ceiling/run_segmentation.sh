@@ -77,7 +77,10 @@ printf '{"driver": %d}\n' "$status" > "$legdir/exit-code.json"
 python3 "$SNAP" "$conn" "$legdir/metrics-immediate.json"
 python3 "$WAIT" "$conn" "$legdir/metrics-after.json" "$legdir/settle.json" > "$legdir/settle.txt" 2>&1 || true
 docker logs "$container" > "$legdir/container.txt" 2>&1 || true
-grep -E 'R74WORKER|R74POOL' "$legdir/container.txt" > "$legdir/probe.txt" 2>/dev/null || true
+for name in worker-a worker-b; do
+  docker cp "$container":/data/peri/logs/$name.log "$legdir/$name.log" 2>/dev/null || true
+done
+cat "$legdir"/worker-*.log 2>/dev/null | grep -E 'R74WORKER|R74POOL' > "$legdir/probe.txt" || true
 docker stop -t 60 "$container" >/dev/null 2>&1 || true
 docker inspect "$container" --format '{{.State.ExitCode}}' > "$legdir/stop-exit.txt" 2>/dev/null || echo missing > "$legdir/stop-exit.txt"
 docker cp "$container":/data/peri/launcher-stop.json "$legdir/launcher-stop.json" 2>/dev/null || true

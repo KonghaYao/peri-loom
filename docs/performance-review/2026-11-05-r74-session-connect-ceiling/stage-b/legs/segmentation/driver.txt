@@ -1,0 +1,1 @@
+{"label": "segmentation", "blocks_planned": 10, "block_size": 100, "block_median_ns": 1924818, "request_p50_ns": 1017333, "request_p95_ns": 5584125} failures=0
