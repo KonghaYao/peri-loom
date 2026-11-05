@@ -39,8 +39,8 @@ type Gateway struct {
 	// reply. NewGateway always sets it; a nil value pays every barrier inline.
 	deferred *deferredDurability
 	// deferredClose is the account of worker closes for proven stateless
-	// sessions. It is nil unless PERI_DEFERRED_SESSION_CLOSE enables it, which
-	// keeps today's synchronous close exactly as it was.
+	// sessions. It is nil only when PERI_DEFERRED_SESSION_CLOSE=0, which keeps
+	// today's synchronous close exactly as it was.
 	deferredClose *deferredSessionClose
 	// settle counts local settlement refusals and the bounded retries that recover
 	// from a full operation journal. Its zero value is ready and the success path

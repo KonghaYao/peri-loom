@@ -3022,7 +3022,8 @@ fused close 未证明 ≥20% 且属红线；legacy settle 安全版本没有 ≥
 #### R71：延迟会话关闭——close 的 worker 等待移出回复路径（2026-11-05，合入）
 
 **机制与改动边界**：Route A 延迟会话关闭——把 close 的 worker 等待移出回复路径。kill switch
-`PERI_DEFERRED_SESSION_CLOSE` **默认关闭**（关闭时行为与改动前完全一致）；每库最多 4 个
+`PERI_DEFERRED_SESSION_CLOSE`（R71 合入时默认关闭；R72 起**默认启用**，显式 `=0` 回退到同步关闭，
+行为与改动前完全一致）；每库最多 4 个
 pending close、全局队列 256 / 8 worker；队列饱和时回退为内联等待（**绝不返回 503**）；
 `removeSession` 在入队前执行，seat 立即归还；仅 **pristine 只读会话**可延迟关闭（提交型语句、
 `RequiresIntent`、`autocommit=false`、写游标、`outcome_unknown` 一律不走该路径）；

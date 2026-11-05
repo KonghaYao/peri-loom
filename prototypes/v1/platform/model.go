@@ -230,7 +230,8 @@ type GatewayConfig struct {
 	RequestTimeout  time.Duration
 	// DeferredSessionClose dispatches the worker close of a proven stateless
 	// session after its reply. Service startup maps PERI_DEFERRED_SESSION_CLOSE
-	// onto this field; false keeps the synchronous close.
+	// onto this field: enabled when unset, disabled by "0"; false keeps the
+	// synchronous close.
 	DeferredSessionClose bool
 	// WakeWaitBudget bounds how long an open waits for an idle database to
 	// activate before it publishes a structured loading answer. Zero derives

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -666,9 +667,10 @@ func TestDeferredSessionCloseKeepsTheCursorFallbackBeforeTheClose(t *testing.T) 
 	}
 }
 
-// TestDeferredSessionCloseDisabledKeepsTheSynchronousClose pins the kill
-// switch: with the flag off there is no account, no goroutine, no counter and
-// the worker close still finishes before the reply is written.
+// TestDeferredSessionCloseDisabledKeepsTheSynchronousClose pins the gateway end
+// of the kill switch: with DeferredSessionClose false (what service startup
+// derives from PERI_DEFERRED_SESSION_CLOSE=0) there is no account, no goroutine,
+// no counter and the worker close still finishes before the reply is written.
 func TestDeferredSessionCloseDisabledKeepsTheSynchronousClose(t *testing.T) {
 	fixture := newGatewayFixture(t)
 	worker := &deferredCloseFixtureWorker{autocommit: true}
@@ -692,21 +694,27 @@ func TestDeferredSessionCloseDisabledKeepsTheSynchronousClose(t *testing.T) {
 
 func TestDeferredSessionCloseFlagParsing(t *testing.T) {
 	for _, test := range []struct {
+		name    string
 		value   string
+		unset   bool
 		want    bool
 		wantErr bool
 	}{
-		{"", false, false},
-		{"0", false, false},
-		{"1", true, false},
-		{" 1 ", true, false},
-		{"yes", false, true},
+		{"unset enables the account", "", true, true, false},
+		{"empty value enables the account", "", false, true, false},
+		{"explicit 0 keeps the synchronous close", "0", false, false, false},
+		{"explicit 1 enables the account", "1", false, true, false},
+		{"surrounding whitespace is trimmed", " 1 ", false, true, false},
+		{"an illegal value is refused", "yes", false, false, true},
 	} {
-		t.Run(fmt.Sprintf("%q", test.value), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("PERI_DEFERRED_SESSION_CLOSE", test.value)
+			if test.unset {
+				os.Unsetenv("PERI_DEFERRED_SESSION_CLOSE")
+			}
 			got, err := deferredSessionCloseEnabled()
 			if (err != nil) != test.wantErr || got != test.want {
-				t.Fatalf("value %q: enabled=%t err=%v", test.value, got, err)
+				t.Fatalf("value %q unset=%t: enabled=%t err=%v", test.value, test.unset, got, err)
 			}
 		})
 	}
