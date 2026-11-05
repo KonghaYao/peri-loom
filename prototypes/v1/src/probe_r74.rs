@@ -166,7 +166,10 @@ fn print_summary(summary: &Summary) {
         percentile(&sorted, 50, 100) as f64 / 1000.0,
         percentile(&sorted, 95, 100) as f64 / 1000.0,
     );
-    let (takes, failures) = pool_stats();
+    let (takes, failures) = (
+        POOL_TAKES.load(Ordering::Relaxed),
+        POOL_FAILURES.load(Ordering::Relaxed),
+    );
     eprintln!("R74WORKER pool takes={} failures={}", takes, failures);
 }
 
@@ -266,6 +269,7 @@ impl ConnectPool {
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             if queue.len() < POOL_SIZE {
                                 queue.push_back(connection);
+                                POOL_CREATED.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         Err(_) => std::thread::sleep(Duration::from_millis(1)),
@@ -287,9 +291,22 @@ impl ConnectPool {
 static POOLS: Mutex<Option<HashMap<usize, Arc<ConnectPool>>>> = Mutex::new(None);
 static POOL_FAILURES: AtomicU64 = AtomicU64::new(0);
 static POOL_TAKES: AtomicU64 = AtomicU64::new(0);
+static POOL_MISSES: AtomicU64 = AtomicU64::new(0);
+static POOL_CREATED: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn pool_stats() -> (u64, u64) {
-    (POOL_TAKES.load(Ordering::Relaxed), POOL_FAILURES.load(Ordering::Relaxed))
+fn note_pool_progress() {
+    let takes = POOL_TAKES.load(Ordering::Relaxed);
+    let misses = POOL_MISSES.load(Ordering::Relaxed);
+    if (takes + misses) % 500 != 0 {
+        return;
+    }
+    eprintln!(
+        "R74POOL takes={} misses={} created={} failures={}",
+        takes,
+        misses,
+        POOL_CREATED.load(Ordering::Relaxed),
+        POOL_FAILURES.load(Ordering::Relaxed),
+    );
 }
 
 /// Returns a pre-connected connection when the pool arm is enabled and warm.
@@ -317,8 +334,13 @@ pub(crate) fn take_connection(database: &Arc<RemoteDatabase>) -> Option<Arc<Conn
     match pool.take() {
         Some(connection) => {
             POOL_TAKES.fetch_add(1, Ordering::Relaxed);
+            note_pool_progress();
             Some(connection)
         }
-        None => None,
+        None => {
+            POOL_MISSES.fetch_add(1, Ordering::Relaxed);
+            note_pool_progress();
+            None
+        }
     }
 }
