@@ -1,0 +1,434 @@
+{
+  "phase_file": "legs/f1-c1/request-phase-observation.jsonl",
+  "after_bytes": 408641,
+  "window_bytes": 51745,
+  "unparsed_lines": 0,
+  "observer": null,
+  "actions": {
+    "close": {
+      "requests": 19,
+      "outcomes": {
+        "ok": 19
+      },
+      "total": {
+        "n": 19,
+        "p50_us": 302.792,
+        "p90_us": 3648.338,
+        "mean_us": 887.76,
+        "min_us": 175.959,
+        "max_us": 3788.963
+      },
+      "phases": {
+        "admission": {
+          "n": 19,
+          "p50_us": 6.708,
+          "p90_us": 19.001,
+          "mean_us": 8.715,
+          "min_us": 5.0,
+          "max_us": 21.0
+        },
+        "audit": {
+          "n": 19,
+          "p50_us": 4.417,
+          "p90_us": 6.75,
+          "mean_us": 4.971,
+          "min_us": 2.959,
+          "max_us": 14.833
+        },
+        "auth": {
+          "n": 19,
+          "p50_us": 0.458,
+          "p90_us": 0.792,
+          "mean_us": 0.542,
+          "min_us": 0.291,
+          "max_us": 1.541
+        },
+        "decode": {
+          "n": 19,
+          "p50_us": 3.125,
+          "p90_us": 5.125,
+          "mean_us": 3.504,
+          "min_us": 2.209,
+          "max_us": 7.792
+        },
+        "entry": {
+          "n": 19,
+          "p50_us": 1.333,
+          "p90_us": 3.292,
+          "mean_us": 1.763,
+          "min_us": 1.042,
+          "max_us": 3.75
+        },
+        "intent": {
+          "n": 19,
+          "p50_us": 7.917,
+          "p90_us": 14.542,
+          "mean_us": 8.836,
+          "min_us": 6.875,
+          "max_us": 15.292
+        },
+        "native": {
+          "n": 19,
+          "p50_us": 154.875,
+          "p90_us": 1359.335,
+          "mean_us": 335.847,
+          "min_us": 115.25,
+          "max_us": 1460.169
+        },
+        "respond": {
+          "n": 19,
+          "p50_us": 4.791,
+          "p90_us": 6.333,
+          "mean_us": 5.028,
+          "min_us": 2.917,
+          "max_us": 13.75
+        },
+        "session": {
+          "n": 19,
+          "p50_us": 0.042,
+          "p90_us": 0.125,
+          "mean_us": 0.061,
+          "min_us": 0.0,
+          "max_us": 0.208
+        },
+        "state_read": {
+          "n": 19,
+          "p50_us": 0.083,
+          "p90_us": 0.125,
+          "mean_us": 0.408,
+          "min_us": 0.041,
+          "max_us": 6.292
+        },
+        "terminal": {
+          "n": 19,
+          "p50_us": 51.583,
+          "p90_us": 3476.713,
+          "mean_us": 515.442,
+          "min_us": 34.75,
+          "max_us": 3629.213
+        },
+        "worker": {
+          "n": 19,
+          "p50_us": 0.084,
+          "p90_us": 0.167,
+          "mean_us": 0.107,
+          "min_us": 0.042,
+          "max_us": 0.167
+        }
+      }
+    },
+    "open": {
+      "requests": 19,
+      "outcomes": {
+        "ok": 19
+      },
+      "total": {
+        "n": 19,
+        "p50_us": 551.542,
+        "p90_us": 3652.005,
+        "mean_us": 982.321,
+        "min_us": 346.458,
+        "max_us": 4241.338
+      },
+      "phases": {
+        "admission": {
+          "n": 19,
+          "p50_us": 21.584,
+          "p90_us": 51.249,
+          "mean_us": 45.195,
+          "min_us": 16.334,
+          "max_us": 424.374
+        },
+        "audit": {
+          "n": 19,
+          "p50_us": 4.334,
+          "p90_us": 13.0,
+          "mean_us": 6.199,
+          "min_us": 3.208,
+          "max_us": 20.666
+        },
+        "auth": {
+          "n": 19,
+          "p50_us": 0.459,
+          "p90_us": 1.667,
+          "mean_us": 0.724,
+          "min_us": 0.333,
+          "max_us": 3.25
+        },
+        "decode": {
+          "n": 19,
+          "p50_us": 8.083,
+          "p90_us": 28.292,
+          "mean_us": 11.292,
+          "min_us": 4.667,
+          "max_us": 55.959
+        },
+        "entry": {
+          "n": 19,
+          "p50_us": 2.333,
+          "p90_us": 7.166,
+          "mean_us": 3.493,
+          "min_us": 1.625,
+          "max_us": 19.042
+        },
+        "intent": {
+          "n": 19,
+          "p50_us": 14.5,
+          "p90_us": 28.958,
+          "mean_us": 17.32,
+          "min_us": 11.292,
+          "max_us": 32.292
+        },
+        "native": {
+          "n": 19,
+          "p50_us": 416.667,
+          "p90_us": 612.376,
+          "mean_us": 443.536,
+          "min_us": 276.542,
+          "max_us": 1031.751
+        },
+        "respond": {
+          "n": 19,
+          "p50_us": 0.875,
+          "p90_us": 2.666,
+          "mean_us": 1.526,
+          "min_us": 0.542,
+          "max_us": 9.291
+        },
+        "state_read": {
+          "n": 19,
+          "p50_us": 0.083,
+          "p90_us": 0.166,
+          "mean_us": 0.601,
+          "min_us": 0.041,
+          "max_us": 9.708
+        },
+        "terminal": {
+          "n": 19,
+          "p50_us": 16.583,
+          "p90_us": 3168.921,
+          "mean_us": 441.814,
+          "min_us": 11.5,
+          "max_us": 3545.838
+        },
+        "worker": {
+          "n": 19,
+          "p50_us": 6.0,
+          "p90_us": 18.25,
+          "mean_us": 8.45,
+          "min_us": 3.958,
+          "max_us": 27.626
+        }
+      }
+    },
+    "query": {
+      "requests": 4,
+      "outcomes": {
+        "ok": 4
+      },
+      "total": {
+        "n": 4,
+        "p50_us": 7855.719,
+        "p90_us": 34176.127,
+        "mean_us": 18525.107,
+        "min_us": 779.96,
+        "max_us": 34176.127
+      },
+      "phases": {
+        "admission": {
+          "n": 4,
+          "p50_us": 22.375,
+          "p90_us": 25.084,
+          "mean_us": 20.542,
+          "min_us": 11.75,
+          "max_us": 25.084
+        },
+        "audit": {
+          "n": 4,
+          "p50_us": 7.666,
+          "p90_us": 18.208,
+          "mean_us": 12.719,
+          "min_us": 6.792,
+          "max_us": 18.208
+        },
+        "auth": {
+          "n": 4,
+          "p50_us": 1.583,
+          "p90_us": 2.542,
+          "mean_us": 1.833,
+          "min_us": 1.083,
+          "max_us": 2.542
+        },
+        "classify": {
+          "n": 4,
+          "p50_us": 231.5,
+          "p90_us": 248.125,
+          "mean_us": 208.292,
+          "min_us": 107.416,
+          "max_us": 248.125
+        },
+        "decode": {
+          "n": 4,
+          "p50_us": 14.0,
+          "p90_us": 18.75,
+          "mean_us": 13.5,
+          "min_us": 6.416,
+          "max_us": 18.75
+        },
+        "entry": {
+          "n": 4,
+          "p50_us": 4.125,
+          "p90_us": 5.833,
+          "mean_us": 4.354,
+          "min_us": 2.709,
+          "max_us": 5.833
+        },
+        "intent": {
+          "n": 4,
+          "p50_us": 32.834,
+          "p90_us": 45.376,
+          "mean_us": 34.928,
+          "min_us": 22.834,
+          "max_us": 45.376
+        },
+        "native": {
+          "n": 4,
+          "p50_us": 7682.718,
+          "p90_us": 33816.043,
+          "mean_us": 18211.711,
+          "min_us": 417.209,
+          "max_us": 33816.043
+        },
+        "respond": {
+          "n": 4,
+          "p50_us": 6.042,
+          "p90_us": 10.333,
+          "mean_us": 7.677,
+          "min_us": 5.542,
+          "max_us": 10.333
+        },
+        "session": {
+          "n": 4,
+          "p50_us": 0.25,
+          "p90_us": 0.334,
+          "mean_us": 0.261,
+          "min_us": 0.125,
+          "max_us": 0.334
+        },
+        "state_read": {
+          "n": 4,
+          "p50_us": 5.625,
+          "p90_us": 7.667,
+          "mean_us": 6.354,
+          "min_us": 4.834,
+          "max_us": 7.667
+        },
+        "terminal": {
+          "n": 4,
+          "p50_us": 0.125,
+          "p90_us": 0.291,
+          "mean_us": 0.166,
+          "min_us": 0.041,
+          "max_us": 0.291
+        },
+        "worker": {
+          "n": 4,
+          "p50_us": 0.125,
+          "p90_us": 0.209,
+          "mean_us": 0.156,
+          "min_us": 0.125,
+          "max_us": 0.209
+        }
+      }
+    },
+    "statement": {
+      "requests": 18,
+      "outcomes": {
+        "ok": 18
+      },
+      "total": {
+        "n": 18,
+        "p50_us": 50.667,
+        "p90_us": 2089.544,
+        "mean_us": 293.112,
+        "min_us": 35.75,
+        "max_us": 2261.712
+      },
+      "phases": {
+        "admission": {
+          "n": 18,
+          "p50_us": 29.5,
+          "p90_us": 2070.044,
+          "mean_us": 266.771,
+          "min_us": 23.333,
+          "max_us": 2229.961
+        },
+        "audit": {
+          "n": 18,
+          "p50_us": 3.666,
+          "p90_us": 4.875,
+          "mean_us": 3.685,
+          "min_us": 2.416,
+          "max_us": 6.541
+        },
+        "auth": {
+          "n": 18,
+          "p50_us": 0.625,
+          "p90_us": 1.041,
+          "mean_us": 0.662,
+          "min_us": 0.375,
+          "max_us": 1.166
+        },
+        "decode": {
+          "n": 18,
+          "p50_us": 8.792,
+          "p90_us": 14.334,
+          "mean_us": 9.329,
+          "min_us": 5.209,
+          "max_us": 16.042
+        },
+        "entry": {
+          "n": 18,
+          "p50_us": 2.334,
+          "p90_us": 4.709,
+          "mean_us": 9.935,
+          "min_us": 1.25,
+          "max_us": 137.833
+        },
+        "respond": {
+          "n": 18,
+          "p50_us": 1.375,
+          "p90_us": 1.667,
+          "mean_us": 1.333,
+          "min_us": 0.792,
+          "max_us": 2.708
+        },
+        "session": {
+          "n": 18,
+          "p50_us": 0.083,
+          "p90_us": 0.125,
+          "mean_us": 0.072,
+          "min_us": 0.041,
+          "max_us": 0.125
+        },
+        "state_read": {
+          "n": 18,
+          "p50_us": 0.125,
+          "p90_us": 0.292,
+          "mean_us": 0.144,
+          "min_us": 0.083,
+          "max_us": 0.292
+        },
+        "terminal": {
+          "n": 18,
+          "p50_us": 0.042,
+          "p90_us": 0.125,
+          "mean_us": 0.056,
+          "min_us": 0.041,
+          "max_us": 0.125
+        }
+      }
+    }
+  },
+  "note": "diagnostic phase capture; absolute durations are not end-to-end performance"
+}

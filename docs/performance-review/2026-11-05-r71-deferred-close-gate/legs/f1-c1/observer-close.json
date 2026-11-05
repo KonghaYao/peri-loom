@@ -1,0 +1,1 @@
+{"stream":"1b50f38a0014ee30d38be988ffe8f519","action":"observer","outcome":"stopped","complete":true,"accepted":508,"sampled":0,"filtered":0,"kept_slow":508,"kept_failure":0,"dropped":0,"dropped_sampled_out":0,"dropped_ring_overwritten":0,"windows":0,"window_ms":60000,"sample_permille":1000,"slow_threshold_ms":0,"capacity":8192}

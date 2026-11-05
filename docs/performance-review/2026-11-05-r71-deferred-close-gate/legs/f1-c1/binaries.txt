@@ -1,0 +1,27 @@
+R71 Gate 1a: close native phase
+
+Host: Darwin 25.5.0 arm64, 29.4.0
+Image: ghcr.io/konghayao/peri-loom:v1.2.7
+  image id: sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+
+Platform
+  path:   /tmp/peri-release-ab/bin/peri-platform-v1.2.7
+  sha256: 95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912
+  source: v1.2.7 release artifact (95716e4d...)
+
+Worker
+  path:   /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7
+  sha256: b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+  source: v1.2.7 release artifact (b17a0708...)
+
+Stack
+  container: peri-r71-gate1a
+  volume:    peri-r71-gate1a-data (fresh)
+  port:      20771
+  harness:   /Users/kk/code/peri-loom/scripts/perf-reliability/issue28/run.py
+  params:    F1 json-pipeline c1 rounds=3 warmup=1 samples=5
+  observer:  PERI_SQL_OPEN_OBSERVER=1 (--sql-open-observer),
+             PHASE_THRESHOLD_MS=0, PHASE_SAMPLE_PERMILLE=1000
+  quotas:    platform defaults (not relaxed)
+95716e4d7937d6b72f9224355737c91c4c4cb5231420b9277a7f0e7809e56912  /usr/local/bin/peri-platform
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /usr/local/bin/peri-loom-v1
