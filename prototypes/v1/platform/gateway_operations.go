@@ -123,7 +123,9 @@ func (gateway *Gateway) settleOperationUsingCaller(ctx context.Context, database
 	}
 	// The record is ordered for one namespace before the fence drops, so several
 	// settlements of one database can share the barrier they wait for afterwards.
-	// A local queue refusal is retried with the fence already released.
+	// Only the submit call is retried when it reports a full journal queue; that
+	// refusal happens before any write, no backoff holds the fence, and the barrier
+	// this call hands back is paid once.
 	wait, err := gateway.settle.submit(ctx, database.Namespace, caller, submit, func(edit *operationEdit) error {
 		edit.caller = caller
 		key := operationKey(database, operationID)

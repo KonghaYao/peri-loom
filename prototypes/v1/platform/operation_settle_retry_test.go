@@ -50,9 +50,18 @@ func settleFixtures(test *testing.T, durable *stateStore, database controller.Da
 		case <-time.After(10 * time.Second):
 			test.Fatal("the committer never reached its gate")
 		}
-		waitOrdered(test, durable, operationJournalQueueMaximum)
-		if depth := operationQueuedDepth(durable); depth != operationJournalQueueMaximum {
-			test.Fatalf("operation queue depth = %d, want %d", depth, operationJournalQueueMaximum)
+		// The queue depth is the fill state; the ordered counter is cumulative, so a
+		// caller that already registered a record before the fillers start makes
+		// ordered >= operationJournalQueueMaximum true one filler early. Waiting on
+		// the depth holds until every filler is queued, which is what makes the next
+		// submit meet the full queue.
+		deadline := time.Now().Add(10 * time.Second)
+		for operationQueuedDepth(durable) < operationJournalQueueMaximum {
+			if time.Now().After(deadline) {
+				depth := operationQueuedDepth(durable)
+				test.Fatalf("operation queue depth = %d, want %d", depth, operationJournalQueueMaximum)
+			}
+			time.Sleep(time.Millisecond)
 		}
 	}
 	waitFillers = func() {
