@@ -1,0 +1,2246 @@
+{
+  "polls": [
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 0.0191,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 0.2423,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 0.455,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 0.6712,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 0.8904,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 1.1072,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 1.3203,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 1.5285,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 1.7402,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 1.9573,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 2.1795,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 2.3934,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 2.6047,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 2.8206,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 3.0399,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 3.2588,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 3.4802,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 3.6877,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 3.9092,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 4.1284,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 4.3388,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 4.5493,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 4.7682,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 4.9878,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 5.2092,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 5.4284,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 5.6438,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 5.862,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 6.0817,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 6.289,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 6.5105,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 6.7269,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 6.9445,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 7.1583,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 7.379,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 7.5912,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 7.8035,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 8.0242,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 8.2414,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 8.4609,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 8.6707,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 8.8931,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 9.1143,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 9.3276,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 9.544,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 9.7579,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 9.9719,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 10.1856,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 10.4018,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 10.6163,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 10.8404,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 11.0623,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 11.277,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 11.4951,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 11.7112,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 11.9258,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 12.1472,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 12.3643,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 12.5768,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 12.7894,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 13.0034,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 13.2215,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 13.4301,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 13.6468,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 13.8675,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 14.0843,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 14.3008,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 14.5191,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 14.7366,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 14.9547,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 15.1771,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 15.3983,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 15.611,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 15.8323,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 16.0522,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 16.271,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 16.4887,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 16.7011,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 16.9144,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 17.1321,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 17.3548,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 17.5618,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 17.7749,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 17.9887,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 18.2051,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 18.4294,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 18.6419,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 18.8555,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 19.0741,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 19.2864,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 19.5014,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 19.7084,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 19.9301,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 20.1465,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 20.365,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 20.5743,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 20.7951,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 21.0173,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 21.2404,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 21.4642,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 21.6748,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 21.8966,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 22.1122,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 22.3277,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 22.5436,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 22.7539,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 22.9742,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 23.1947,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 23.4101,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 23.6248,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 23.8416,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 24.0623,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 24.2818,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 24.5008,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 24.716,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 24.937,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 25.1541,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 25.3868,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 25.6004,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 25.8229,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 26.0397,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 26.2633,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 26.4873,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 26.6989,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 26.9167,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 27.1393,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 27.3583,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 27.5696,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 27.7823,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 27.9977,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 28.2179,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 28.4439,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 28.6523,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 28.8675,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 29.0745,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 29.2885,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 29.5043,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 29.7193,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 29.9406,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    },
+    {
+      "active_permits": 1,
+      "cleanup_pending_close": 0,
+      "deferred_pending": 0,
+      "deferred_present": false,
+      "elapsed_s": 30.1522,
+      "session_seats": 1,
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_sessions": {
+        "worker-a": 1,
+        "worker-b": 0
+      }
+    }
+  ],
+  "timeout_s": 30.0,
+  "verdict": "timeout"
+}
