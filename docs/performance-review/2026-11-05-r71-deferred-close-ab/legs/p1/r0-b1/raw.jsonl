@@ -1,0 +1,3 @@
+{"leg": "r0-b1", "side": "b", "round": "r0", "block": 0, "warmup": true, "requests": 10, "requests_ok": 10, "seconds": 0.053598583, "per_request_ms": 5.3598583, "statuses": {"200": 10}}
+{"leg": "r0-b1", "side": "b", "round": "r0", "block": 1, "warmup": false, "requests": 10, "requests_ok": 10, "seconds": 0.02415875, "per_request_ms": 2.415875, "statuses": {"200": 10}}
+{"leg": "r0-b1", "side": "b", "round": "r0", "block": 2, "warmup": false, "requests": 10, "requests_ok": 10, "seconds": 0.044025917, "per_request_ms": 4.4025917, "statuses": {"200": 10}}

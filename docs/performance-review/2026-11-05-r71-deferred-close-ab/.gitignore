@@ -1,0 +1,4 @@
+__pycache__/
+# Raw audit segments stay in the working tree and named volumes; the committed
+# evidence is audit-verify.json plus the chain summary.
+legs/**/audit/

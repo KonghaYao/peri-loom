@@ -1,0 +1,21 @@
+{
+  "audit_dir": "legs/p2/x1/r2-b2/audit",
+  "chain_ok": true,
+  "errors": [],
+  "first_sequence": 1,
+  "head_hash": "956a35014af6f49de9344f338039c34bd846177ac08cee9ed2f7b6bc29fb0387",
+  "head_matches_tail": true,
+  "head_present": true,
+  "head_sequence": 1567,
+  "last_hash": "956a35014af6f49de9344f338039c34bd846177ac08cee9ed2f7b6bc29fb0387",
+  "last_sequence": 1567,
+  "leg": "r2-b2",
+  "present": true,
+  "records": 1567,
+  "segments": [
+    {
+      "file": "events.json",
+      "records": 1567
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+37d2cec465d1175c8d542f34104023dbd471803424ea27a3e9ae60f4e264f19f  docs/performance-review/2026-11-05-r71-deferred-close-ab/criteria.txt
+2026-11-05T12:02:03Z docs/performance-review/2026-11-05-r71-deferred-close-ab/criteria.txt
