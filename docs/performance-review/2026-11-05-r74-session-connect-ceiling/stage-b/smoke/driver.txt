@@ -1,0 +1,1 @@
+{"label": "pool-smoke", "blocks_planned": 6, "block_size": 100, "block_median_ns": 2128335, "request_p50_ns": 1163958, "request_p95_ns": 5916166} failures=0

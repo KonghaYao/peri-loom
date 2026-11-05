@@ -1,0 +1,9 @@
+1c7b38252bf277ec31eddced46f79dcdd0b9e1b0c0a6f74ff192d8f1f0f2c6cf  /usr/local/bin/peri-platform
+8a5a7d539468f16543c8aed289de54567b8a32916d2cf29c1c26dcf096a86150  /usr/local/bin/peri-loom-v1
+launcher_sha256=706ba07d571eb5a49760d2eb4bd65cdec3e393e01bcc958d3a275824db815ce8
+PERI_R74_CONNECT_POOL=unset
+PERI_R74_SEGMENTS=unset
+observer PERI_DURABILITY_OBSERVER: PERI_DURABILITY_OBSERVER=0
+observer PERI_SQL_OPEN_OBSERVER: PERI_SQL_OPEN_OBSERVER=0
+observer PERI_COMPLETION_JOURNAL: PERI_COMPLETION_JOURNAL=0
+project quotas: {"default": {"max_concurrent": 100, "max_databases": 8, "max_result_bytes": 4194304, "max_sessions": 16, "max_sql_bytes": 65536, "requests_per_second": 500}}

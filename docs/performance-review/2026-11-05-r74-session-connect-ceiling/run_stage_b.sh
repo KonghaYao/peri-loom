@@ -17,6 +17,7 @@ SNAP=$REPO/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/snap
 WAIT=$REPO/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/wait_settled.py
 VERIFY=$REPO/docs/performance-review/2026-11-05-r72-deferred-close-default-ab/verify_audit.py
 STATE=/tmp/r74-probe/state/stage-b
+RUN_TAG=${RUN_TAG:-v2}
 
 mkdir -p "$ROOT" "$STATE"
 chmod 700 "$STATE"
@@ -24,7 +25,7 @@ chmod 700 "$STATE"
 run_leg() {
   round=$1; seq=$2; arm=$3; regression=${4:-0}
   port=$((21900 + seq))
-  container="peri-r74-probe-r${round}-${seq}${arm}"
+  container="peri-r74-probe-${RUN_TAG}-r${round}-${seq}${arm}"
   volume="${container}-data"
   legdir="$ROOT/legs/r${round}/${seq}${arm}"
   conn="$STATE/${container}-connection.json"
