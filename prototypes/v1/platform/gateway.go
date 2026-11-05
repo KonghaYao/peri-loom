@@ -42,6 +42,10 @@ type Gateway struct {
 	// sessions. It is nil unless PERI_DEFERRED_SESSION_CLOSE enables it, which
 	// keeps today's synchronous close exactly as it was.
 	deferredClose *deferredSessionClose
+	// settle counts local settlement refusals and the bounded retries that recover
+	// from a full operation journal. Its zero value is ready and the success path
+	// only reads it when a submit is refused.
+	settle operationSettleAccount
 }
 
 type gatewaySession struct {
