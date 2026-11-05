@@ -263,6 +263,7 @@ localhost、无 TLS；201 threads / 8,625 messages / 20,177,069 chars；配额 `
 | R66 | 探针轮（无生产代码）；`probe/r66-legacy-settle-ceiling` @ `066ba9e` 未合入 | legacy settle / GC / fused close 三个上限探针 | legacy settle 移除：c8/c16 尾部无改善（c16 p95/p99 两轮 2.12–3.33×反向）；GOGC=off 仍有同样 15.7–32.9ms 停顿；F1 close 均值 0.248ms 但 fused close 当前仅约 4% 且属红线 | 全部判停，不合入；授权内无可过 ≥10% 门槛的方向 |
 | R67 | 测量轮（无代码改动） | 复测 v1.2.7 发布 A/B 的 F1 FAIL：v1.2.6 vs v1.2.7，2 轮 × A/B/B/A、每腿 20 个 timed 样本 | 两轮 0.800 / 1.276（方向相反），合并 2.631→2.413ms（**0.917**）；样本级 Mann-Whitney p=0.997，原窗口 40 样本 p=0.989 | 判为低功效估计量导致的噪声，不改写原 FAIL 记录；验收改用样本级合并统计 |
 | R68 | 无代码改动（只读反思轮） | 复核「现有授权内是否还剩 ≥10% 方向」，并定位 c128 的 `audit_unavailable` 与 `deferred_durability` 上限行为 | 逐候选上限：适配器→网关内部 HTTP 转发 25µs/条（F1 4.7%、L1 2.4%、C1 7.0%），而其中可移除部分仅 2.6µs/条（F1≈1%、B1≈2.4%）；worker 会话生命周期 341µs/请求（F1 64%、L1 33%）需会话语义授权；H1 三条路径上限均 <10%；X1 尾部由宿主级暂停主导；编码/分配/GC ≤2–8%，且 c64 时 CPU 仅 0.30 core；唯一实测 ≥20% 的方向（W1 intent 屏障重排，R61 −20.9%~−23.1%）需耐久语义授权 | 无合入；结论记录为 R68 |
+| R71 | `perf/r71-deferred-session-close` / `af2e542`（merge `1d0185c`） | close 的 worker 等待移出回复路径（延迟会话关闭，kill switch 默认关闭） | R71d：P1 0.76577（−23.4%，CI 0.66563–0.87018，26/30 同向）；F1/L1/标准 X1/持续 c8 全 PASS（持续 c8 1.02246，8/8 legs 零错误）；P3 34/34；Gate 3 T1–T9 PASS | 合入 main |
 
 - R1 的 H1 主指标为 −8.5%，未达 10%；同路径 H3 达 −11.2%，且消除了“protobuf 比 JSON 慢”的回归。
   wire 字节 H1 25,162,268/23,600,883、H2 336,595/60,440、H3 25,300,319/23,635,410 与基线逐字节一致；
@@ -3017,6 +3018,71 @@ fused close 未证明 ≥20% 且属红线；legacy settle 安全版本没有 ≥
 - c128 的 v2 槽位结论来自代码阅读，未实跑；
 - `deferred_durability` 4096 的上限逼近未标定；
 - 现有授权内已无 ≥10% 方向，继续迭代需要用户授权上表任一项。
+
+#### R71：延迟会话关闭——close 的 worker 等待移出回复路径（2026-11-05，合入）
+
+**机制与改动边界**：Route A 延迟会话关闭——把 close 的 worker 等待移出回复路径。kill switch
+`PERI_DEFERRED_SESSION_CLOSE` **默认关闭**（关闭时行为与改动前完全一致）；每库最多 4 个
+pending close、全局队列 256 / 8 worker；队列饱和时回退为内联等待（**绝不返回 503**）；
+`removeSession` 在入队前执行，seat 立即归还；仅 **pristine 只读会话**可延迟关闭（提交型语句、
+`RequiresIntent`、`autocommit=false`、写游标、`outcome_unknown` 一律不走该路径）；
+`/v1/sql/execute` 与 `/v1/sql/query` 始终同步关闭（native query 缺 `autocommit` 字段，属设计
+边界）。Route B（worker 会话池化 / 连接复用）为 **HARD NO-GO**：Turso `Connection::close()`
+是终态、无会话状态复位，且复用 upstream session ID 会破坏 `dischargePendingOpenSessions`。
+
+**证据目录**：`docs/performance-review/2026-11-05-r71-deferred-close-gate/`、`…-gate2/`、
+`…-ab/`、`…-ab2/`、`…-ab3/`（早期轮次，含失败结论，按规则留档）、
+`docs/performance-review/2026-11-05-r71d-deferred-close-ab4/`（R71d 验收）、
+`docs/performance-review/2026-11-05-r71-g3-crash-adversarial/`（Gate 3）。
+
+**验收数字（R71d）**：判据 SHA256 `4a04203e1f9e4e9cf2ad598fd1a2829cbf779b00f5615970eaadf6c86fb2fd29`，
+冻结于 `2026-11-05T06:32:23Z`。P0.1 零对照 1.01602（CI 0.88079–1.16322）；P0.2 正对照
+1.09317（引自 R71b）；主指标 P1 **0.76577（−23.4%）**，CI 0.66563–0.87018，配对 26/30 同向，
+配对差值 −1.0359 ms；F1 p50 0.40600 / p95 0.82209；L1 p50 0.61364 / p95 0.83476（两侧响应
+字节 15,627）；标准 X1 c8 1.11257；持续 c8 **1.02246 且 8/8 legs 零错误**；P3 **34/34**。
+
+**Gate 0 机制核验**：`operation_settle` 新路径在 34/34 legs 命中，`retry_total=0`，0 个 502 /
+`outcome_unknown`；候选 platform SHA256
+`a07ec7b874df3d941ea274823857f2a42ed63497f0c76f50795fb8bef8577cca`、worker
+`b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff`、镜像 digest
+`sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff`、launcher
+`80cd2a3c…`。
+
+**Gate 3 崩溃/对抗（PASS，`…-g3-crash-adversarial/`）**：
+
+- **T1 优雅 drain**：`pending=0`、`unresolved=0`、`failed=0`、2407 条 close 审计记录、干净停止；
+  注入 2000 ms 时 4/4 在 1907 ms 内排空。
+- **T2 确定性丢弃 close 记录**：启动隔离 + HTTP 409 `database_isolated` + 干净门拒绝；经
+  `operations/decision` → `operations/retire-local` → `isolation/release`（或 `peri recover`）
+  恢复服务，且 ownership marker 哈希不变。
+- **T3 SIGKILL 平台**：已 ack 插入仍可读、审计链正常。
+- **T4 worker SIGSTOP**：close 仍 3.28 ms 应答、一次 `cleanup_timeout` 重试、SIGCONT 后
+  `pending` 归 0。
+- **T5 200 ms close 延迟注入**：A 臂 close 203.422 ms vs B 臂 0.091 ms，请求 p50 3.31 ms；
+  饱和后退化为内联延迟（p50≈204 ms）且无 429/502。
+- **T6 close 后复用会话**：403 `invalid_session` ×15。
+- **T7 c8/c16 各 65 s soak**：7,800/7,799 请求、0 失败、seats/queue 平稳，c16 无节流仅 429
+  `quota_exceeded`。
+- **T8 kill-switch 等价**：无 `deferred_session_close` 键、同步 close。
+- **T9 队列上限注入** `PERI_R71_G3_OPERATION_QUEUE_MAX=2`：1,199/1,199 OK、`retry_total=90`、
+  `retry_success_total=58`、`exhausted_total=0`、`refused_total={}`、零 `outcome_unknown`。
+- Gate 3 探针分支 `probe/r71-g3-fault-injection` @ `090aad5`，探针二进制 SHA256
+  `5c3e8f2a…71152`，**未合并**。
+
+**早期轮次失败（未修正，证据保留）**：R71 / R71b / R71c 均未通过验收；R71c 为 P1 0.77194
+（−22.8%）、3/8 legs 各出现一个 502 `outcome_unknown` → P3 31/34。该 502 的根因是**本地操作
+日志队列满（`ErrOperationQueueFull`）在写任何记录之前被误判为 SQL unknown**；修复在 PR #35
+（`c9b522c` + `1c93103`，merge `b1e8ae9`），与 R71 机制无关，但 R71d 在修复后的基线上通过。
+
+**测试**：Go 定向测试（新增 `session_close_deferred_test.go` 等）、`go vet`、`gofmt`、Gate 3
+故障注入矩阵；Rust worker 二进制未改（SHA 见上）。
+
+**剩余风险与未测量**：① 真实掉电/机器崩溃未测，用确定性丢记录探针替代；② worker 崩溃丢会话
+状态的恢复未端到端验证（依赖 cleanup 预算与 idle 回收）；③ `deferred_session_close.flushed_total`
+的计数口径是「按库 flush 等待次数」而非 drained jobs，Gate 3 T1 判据措辞已按实际口径更正，
+drain 由 `pending`/`unresolved`/`failed` + 审计条数 + 干净停止共同证明；④ 饱和时退化为内联
+延迟（p50≈204 ms @200 ms 注入）而非拒绝，属设计行为但应视为容量边界；⑤ native
+`/v1/sql/query` 无 `autocommit` 字段，该路径保持同步关闭。
 
 ## 代码约定
 
