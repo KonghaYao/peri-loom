@@ -1,0 +1,19 @@
+# R69 Gate 0 measurement windows
+# W1.insert / json-pipeline / c1 / rounds=3 warmup=1 samples=5 per window (15 timed samples)
+# F = delta(operation_journal_sync_ns_total)/delta(operation_journal_syncs_total)
+# syncs/iter counts 18 iterations (3 warmup + 15 timed; each iteration = create + insert + drop HTTP requests)
+# A and intent_wait are sliced to the 54 W1 intents of each probe window (quantile: lower-middle of the sorted sample)
+
+window            syncs  syncs/iter  appends  F_ms    W1_p50_ms  W1_rounds_ms                         A_run_p50_ms  A_last_p50_ms  intent_wait_p50_ms
+base-run1           182      10.11      218  0.9155     14.491  21.83/16.77/13.26                              -             -  -
+base-run2           181      10.06      218  0.9640     16.777  18.10/13.30/17.57                              -             -  -
+probe1-run1         179       9.94      218  0.9584     13.444  22.29/12.85/12.75                          1.377         0.068  -
+probe1-run2         175       9.72      218  0.9240     14.016  17.47/12.14/10.78                          1.324         0.058  -
+probe2-run1         179       9.94      218  1.0699     17.658  17.66/16.90/17.77                          1.334         0.062  1.421
+probe2-run2         177       9.83      218  1.1155     16.872  18.60/16.05/16.54                          1.343         0.067  1.546
+
+F median across 6 windows: 0.9612 ms (range 0.9155-1.1155)
+W1.insert p50 median across 6 windows: 15.634 ms (range 13.444-17.658)
+Absolute ceiling if A were zero: F/W1 = 5.75% .. 7.13% (per-window)
+With per-window A_last: (F-A_last)/W1 = 5.71% .. 6.62%
+With per-window A_run: F-A_run is negative in the median of every probe window (no recoverable in-flight close barrier)

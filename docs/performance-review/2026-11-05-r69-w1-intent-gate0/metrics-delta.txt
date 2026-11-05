@@ -1,0 +1,20 @@
+# baseline window run1 deltas (nested keys only)
+state_operation_cost.operation_journal_appends_total                   1746 -> 1964         delta=218
+state_operation_cost.operation_journal_syncs_total                     1601 -> 1783         delta=182
+state_operation_cost.operation_journal_sync_ns_total             1986982071 -> 2153611228   delta=166629157
+state_operation_cost.operation_journal_coalesced_total                  145 -> 181          delta=36
+state_operation_cost.operation_journal_batch_max                          2 -> 2            delta=0
+state_operation_cost.operation_journal_queue_max                          2 -> 2            delta=0
+state_operation_cost.operation_journal_queued                             0 -> 0            delta=0
+state_operation_cost.operation_journal_wait_ns_total              128875378 -> 158082233    delta=29206855
+state_operation_cost.operation_journal_compactions_total                  0 -> 0            delta=0
+state_operation_cost.operation_journal_compaction_ns_total                0 -> 0            delta=0
+audit.fsync_count                                                      1101 -> 1267         delta=166
+audit.fsync_ns_total                                             1351491877 -> 1529262266   delta=177770389
+deferred_durability.enqueued_total                                      877 -> 1101         delta=224
+deferred_durability.inline_total                                          0 -> 0            delta=0
+deferred_durability.pending_max                                           4 -> 4            delta=0
+session_seats                                                             0 -> 0            delta=0
+active_permits                                                            0 -> 0            delta=0
+
+F = delta(operation_journal_sync_ns_total) / delta(operation_journal_syncs_total) = 0.9155 ms

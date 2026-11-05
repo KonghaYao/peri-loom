@@ -1,0 +1,19 @@
+# baseline window run1: /v1/metrics snapshot before the W1.insert run
+# selected nested keys only; the full /v1/metrics document is not copied
+state_operation_cost.operation_journal_appends_total           1746
+state_operation_cost.operation_journal_syncs_total             1601
+state_operation_cost.operation_journal_sync_ns_total           1986982071
+state_operation_cost.operation_journal_coalesced_total         145
+state_operation_cost.operation_journal_batch_max               2
+state_operation_cost.operation_journal_queue_max               2
+state_operation_cost.operation_journal_queued                  0
+state_operation_cost.operation_journal_wait_ns_total           128875378
+state_operation_cost.operation_journal_compactions_total       0
+state_operation_cost.operation_journal_compaction_ns_total     0
+audit.fsync_count                                              1101
+audit.fsync_ns_total                                           1351491877
+deferred_durability.enqueued_total                             877
+deferred_durability.inline_total                               0
+deferred_durability.pending_max                                4
+session_seats                                                  0
+active_permits                                                 0

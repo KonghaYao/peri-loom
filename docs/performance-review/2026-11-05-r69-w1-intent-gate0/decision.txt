@@ -1,0 +1,19 @@
+# R69 Gate 0 decision inputs (all from the six windows in metrics-windows.txt)
+
+per-window: F_ms  W1_p50_ms  A_run_p50_ms  A_last_p50_ms  (F-A_last)/W1  F/W1
+base-run1    0.9155     14.491             -              -              -  6.32%
+base-run2    0.9640     16.777             -              -              -  5.75%
+probe1-run1  0.9584     13.444         1.377          0.068          6.62%  7.13%
+probe1-run2  0.9240     14.016         1.324          0.058          6.18%  6.59%
+probe2-run1  1.0699     17.658         1.334          0.062          5.71%  6.06%
+probe2-run2  1.1155     16.872         1.343          0.067          6.21%  6.61%
+
+F median = 0.9612 ms
+W1.insert p50 median = 15.634 ms
+A_last (design wording, last deferred submit -> intent) median = 0.0645 ms
+A_run (previous close -> intent) median = 1.339 ms
+decision ratio (F-A_last)/W1 = 5.74%
+decision ratio (F-A_run)/W1 = -2.41% (negative; no recoverable barrier)
+absolute ceiling F/W1 = 6.15%
+10% threshold in absolute ms = 1.563 ms; F = 0.9612 ms
+verdict: STOP (all definitions below 10%)

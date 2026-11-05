@@ -1,0 +1,59 @@
+# R69 gap probe (branch probe/r69-intent-gap, final commit 7881c38)
+# run_gap_ms: first deferred submit after the previous intent -> next intent submit
+# last_gap_ms: most recent deferred submit -> next intent submit
+# intent_wait_ms: the intent barrier wait itself (probe2 build only)
+# run_gap is cumulative over the stack lifetime; intent_wait below is sliced to the W1 window
+
+== probe1-run1
+samples 1 -> 55 ; intents 439 -> 493 ; deferred records 2 -> 112
+run_gap_ms {"count": 55, "max": 6466.718703, "mean": 118.9874225090909, "min": 0.989478, "p50": 1.382735, "p90": 1.72795, "p99": 2.810555}
+last_gap_ms {"count": 55, "max": 1.48703, "mean": 0.11991374545454547, "min": 0.046251, "p50": 0.067918, "p90": 0.172295, "p99": 0.367007}
+deferred_records_per_sample {"count": 55, "max": 4, "mean": 2.018181818181818, "min": 1, "p50": 2, "p90": 2, "p99": 2}
+run_gap_below_ms {"0.25": 0, "0.5": 0, "0.75": 0, "1": 1, "1.5": 35, "10": 54, "2": 51, "3": 54, "5": 54}
+
+== probe1-run2
+samples 55 -> 109 ; intents 493 -> 547 ; deferred records 112 -> 222
+run_gap_ms {"count": 109, "max": 27961.81267, "mean": 317.2482637155963, "min": 0.989478, "p50": 1.367521, "p90": 1.791994, "p99": 2.992629}
+last_gap_ms {"count": 109, "max": 1.48703, "mean": 0.09786758715596332, "min": 0.043918, "p50": 0.061793, "p90": 0.158545, "p99": 0.367007}
+deferred_records_per_sample {"count": 109, "max": 4, "mean": 2.0275229357798166, "min": 1, "p50": 2, "p90": 2, "p99": 2}
+run_gap_below_ms {"0.25": 0, "0.5": 0, "0.75": 0, "1": 1, "1.5": 79, "10": 107, "2": 100, "3": 107, "5": 107}
+
+== probe2-run1
+samples 1 -> 55 ; intents 439 -> 493 ; deferred records 2 -> 112
+run_gap_ms {"count": 55, "max": 13629.004047, "mean": 249.15827610909093, "min": 1.001432, "p50": 1.334062, "p90": 1.598691, "p99": 2.522122}
+last_gap_ms {"count": 55, "max": 1.288895, "mean": 0.13045803636363637, "min": 0.046584, "p50": 0.062126, "p90": 0.151794, "p99": 1.286561}
+deferred_records_per_sample {"count": 55, "max": 4, "mean": 2.018181818181818, "min": 1, "p50": 2, "p90": 2, "p99": 2}
+run_gap_below_ms {"0.25": 0, "0.5": 0, "0.75": 0, "1": 0, "1.5": 44, "10": 54, "2": 51, "3": 54, "5": 54}
+intent_submitted_during_fsync {"count": 28, "total": 493}
+intent_wait_ms {"count": 493, "max": 7.302403, "mean": 1.2819646490872205, "min": 0.494508, "p50": 1.14481, "p90": 1.777485, "p99": 3.731599}
+
+== probe2-run2
+samples 55 -> 109 ; intents 493 -> 547 ; deferred records 112 -> 222
+run_gap_ms {"count": 109, "max": 13629.004047, "mean": 154.50025242201835, "min": 1.001432, "p50": 1.339104, "p90": 1.886571, "p99": 3.119594}
+last_gap_ms {"count": 109, "max": 1.288895, "mean": 0.10895201834862385, "min": 0.046584, "p50": 0.065335, "p90": 0.151794, "p99": 0.649551}
+deferred_records_per_sample {"count": 109, "max": 4, "mean": 2.0275229357798166, "min": 1, "p50": 2, "p90": 2, "p99": 2}
+run_gap_below_ms {"0.25": 0, "0.5": 0, "0.75": 0, "1": 0, "1.5": 83, "10": 107, "2": 101, "3": 106, "5": 107}
+intent_submitted_during_fsync {"count": 54, "total": 547}
+intent_wait_ms {"count": 547, "max": 7.938841, "mean": 1.3279571553930525, "min": 0.494508, "p50": 1.160268, "p90": 1.955364, "p99": 4.062687}
+
+# W1-window slices (n=54 per window; quantile: lower-middle of the sorted sample)
+
+== probe1-run1 W1 slice
+run_gap     n=54 p50=1.377 p90=1.728 p99=2.811 min=0.989 max=6466.719
+last_gap    n=54 p50=0.068 p90=0.172 p99=0.316 min=0.046 max=0.367
+intent_wait -
+
+== probe1-run2 W1 slice
+run_gap     n=54 p50=1.324 p90=1.607 p99=2.993 min=1.052 max=27961.813
+last_gap    n=54 p50=0.058 p90=0.112 p99=0.196 min=0.044 max=0.432
+intent_wait -
+
+== probe2-run1 W1 slice
+run_gap     n=54 p50=1.334 p90=1.599 p99=2.522 min=1.001 max=13629.004
+last_gap    n=54 p50=0.062 p90=0.148 p99=0.650 min=0.047 max=1.287
+intent_wait n=54 p50=1.421 p90=2.704 p99=4.063 min=0.536 max=5.227
+
+== probe2-run2 W1 slice
+run_gap     n=54 p50=1.343 p90=1.844 p99=3.120 min=1.023 max=3061.304
+last_gap    n=54 p50=0.067 p90=0.147 p99=0.260 min=0.048 max=0.264
+intent_wait n=54 p50=1.546 p90=2.647 p99=4.355 min=0.525 max=7.939

@@ -1,0 +1,232 @@
+{
+  "metadata": {
+    "target": {
+      "endpoint": "http://127.0.0.1:20711",
+      "database": {
+        "namespace": {
+          "tenant": "local_default",
+          "database": "demo"
+        },
+        "branch": "main"
+      },
+      "tls": false
+    },
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "git_revision": "6060eb0d99d21dd29333149c885608ff47dad85d",
+    "connection_file": "provided (redacted)",
+    "container": "peri-r69-gate0-base",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "peri_image_version": "v1.2.7",
+    "peri_image_revision": "640ae7e3ce035f1d2b02d9367dc6aa755a018789",
+    "platform_label": "HEAD 6060eb0 / rust v1.2.7",
+    "quota_max_sessions": 16,
+    "quota_max_concurrent": 100,
+    "quota_requests_per_second": 500,
+    "quota_max_result_bytes": 4194304,
+    "started_utc": "2026-11-05T01:19:48.998137+00:00",
+    "ended_utc": "2026-11-05T01:19:52.533338+00:00",
+    "duration_seconds": 3.535,
+    "rounds": 3,
+    "warmup": 1,
+    "samples": 5,
+    "concurrency_requests": 100,
+    "resource_before": {
+      "mem_usage": "180.3MiB / 11.73GiB",
+      "cpu_percent": "1.07%",
+      "memory_stat": {
+        "anon": 158511104,
+        "file": 34668544,
+        "file_dirty": 135168,
+        "file_writeback": 0,
+        "inactive_file": 5525504,
+        "active_file": 29147136,
+        "slab": 0,
+        "pgfault": 55151,
+        "pgmajfault": 264
+      }
+    },
+    "resource_after": {
+      "mem_usage": "183.8MiB / 11.73GiB",
+      "cpu_percent": "0.52%",
+      "memory_stat": {
+        "anon": 160997376,
+        "file": 65716224,
+        "file_dirty": 135168,
+        "file_writeback": 0,
+        "inactive_file": 36376576,
+        "active_file": 29343744,
+        "slab": 0,
+        "pgfault": 57124,
+        "pgmajfault": 266
+      }
+    },
+    "resource_after_idle": {}
+  },
+  "fixture": {
+    "threads": 201,
+    "messages": 8625,
+    "content_chars": 20177069,
+    "content_bytes": 20177069,
+    "focus_thread": "issue28-focus",
+    "focus_messages": 8625,
+    "focus_content_bytes": 20177069,
+    "list_cwd": "/workspace/issue28",
+    "list_threads": 40,
+    "empty_cwd": "/workspace/issue28/__issue28_missing__",
+    "projection_non_null": 0,
+    "projection_bytes": 0,
+    "quotas": {
+      "max_databases": 8,
+      "max_sessions": 16,
+      "max_concurrent": 100,
+      "requests_per_second": 500,
+      "max_sql_bytes": 65536,
+      "max_result_bytes": 4194304
+    },
+    "complete": true,
+    "checks": [
+      {
+        "name": "threads",
+        "expected": 201,
+        "actual": 201,
+        "ok": true
+      },
+      {
+        "name": "messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      },
+      {
+        "name": "content_chars",
+        "expected": 20177069,
+        "actual": 20177069,
+        "ok": true
+      },
+      {
+        "name": "focus_messages",
+        "expected": 8625,
+        "actual": 8625,
+        "ok": true
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "W1.create",
+      "title": "写入 create table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 17.817125,
+      "p95_ms": 30.641792,
+      "min_ms": 11.612417,
+      "max_ms": 30.641792,
+      "round_medians_ms": [
+        21.747292,
+        18.378042,
+        13.186458
+      ],
+      "rows": 0,
+      "response_bytes": 253,
+      "query_ms": 13.262357000000002,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.insert",
+      "title": "写入 insert table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 16.092875,
+      "p95_ms": 17.717083,
+      "min_ms": 12.140166,
+      "max_ms": 17.717083,
+      "round_medians_ms": [
+        16.092875,
+        16.064166,
+        16.227541
+      ],
+      "rows": 0,
+      "response_bytes": 252,
+      "query_ms": 11.455563,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.delete",
+      "title": "写入 delete table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 17.808208,
+      "p95_ms": 20.212417,
+      "min_ms": 11.048708,
+      "max_ms": 20.212417,
+      "round_medians_ms": [
+        17.034333,
+        18.975542,
+        16.8185
+      ],
+      "rows": 0,
+      "response_bytes": 253,
+      "query_ms": 12.402711,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    },
+    {
+      "scenario": "W1.drop",
+      "title": "写入 drop table",
+      "protocol": "json-pipeline",
+      "kind": "write",
+      "samples": 15,
+      "median_ms": 18.136375,
+      "p95_ms": 21.971334,
+      "min_ms": 12.338,
+      "max_ms": 21.971334,
+      "round_medians_ms": [
+        19.376583,
+        18.56225,
+        13.021458
+      ],
+      "rows": 0,
+      "response_bytes": 253,
+      "query_ms": 13.129228999999999,
+      "status_counts": {
+        "200": 15
+      },
+      "error_codes": {},
+      "outcomes": {
+        "ok": 15
+      },
+      "verdict": "—",
+      "verdict_detail": ""
+    }
+  ],
+  "concurrency": [],
+  "warnings": [],
+  "fatal": ""
+}

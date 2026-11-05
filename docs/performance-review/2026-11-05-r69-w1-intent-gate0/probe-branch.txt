@@ -1,0 +1,16 @@
+R69 Gate 0 probe branch (evidence only; never merged, never pushed as a candidate)
+
+branch:  probe/r69-intent-gap
+worktree: /tmp/peri-r69-gap
+base:    6060eb0d99d21dd29333149c885608ff47dad85d (main)
+commits:
+  4f18ce4  probe(perf)：R69 Gate 0 测量延迟记录到 intent 的间隔
+  2e58c0e  probe(perf)：R69 探针导出原始间隔样本
+  7881c38  probe(perf)：R69 记录 intent 自身屏障等待与提交时 journal 状态
+
+The final probe binary is built from 7881c38. The probe is read-only with
+respect to durability: it adds monotonic timestamps around existing submit/wait
+calls and exposes counters under /v1/metrics -> r69_gap_probe. No record order,
+durability point, journal format or admission rule is changed.
+
+Per the Gate 0 decision the branch is stopped: main keeps no probe code.

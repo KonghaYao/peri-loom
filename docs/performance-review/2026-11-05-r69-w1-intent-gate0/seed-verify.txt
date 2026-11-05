@@ -1,0 +1,8 @@
+base (peri-r69-gate0-base, volume peri-r69-gate0-base-data):
+verify threads=201 messages=8625 chars=20177069 focus=8625
+
+probe1 (peri-r69-gate0-probe, volume peri-r69-gate0-probe-data):
+verify threads=201 messages=8625 chars=20177069 focus=8625
+
+probe2 (peri-r69-gate0-probe2, volume peri-r69-gate0-probe2-data):
+verify threads=201 messages=8625 chars=20177069 focus=8625
