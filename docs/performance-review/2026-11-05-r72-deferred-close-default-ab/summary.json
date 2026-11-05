@@ -1,0 +1,879 @@
+{
+  "campaign": "R72 deferred session close default enable — independent verification",
+  "criteria_freeze": [
+    "frozen_at_utc: 2026-11-05T07:57:03Z",
+    "criteria_file: criteria.json",
+    "criteria_sha256: de7860a1b1737d4fd20b14fd0f743c1f14f38455892e8b162d44c6b59ce0ba39",
+    "candidate_branch: perf/r72-deferred-close-default",
+    "candidate_commit: 56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6",
+    "baseline_commit: ee1da7d",
+    "note: frozen before the first Docker stack of this campaign was started. No measurement leg,",
+    "      Gate 0 leg or smoke run existed at freeze time. Nothing in criteria.json may be changed",
+    "      after data is seen."
+  ],
+  "C1_gate0_mechanism": {
+    "pass": true,
+    "legs": [
+      {
+        "deferred_enqueued_total": 0,
+        "deferred_failed_total": 0,
+        "deferred_inline_total": 0,
+        "deferred_pending": 0,
+        "deferred_pending_max": 0,
+        "deferred_present_after": false,
+        "deferred_present_before": false,
+        "deferred_retried_total": 0,
+        "deferred_unresolved_total": 0,
+        "errors_total": {},
+        "kind": "gate0",
+        "leg": "gate0/a",
+        "operation_settle_after": true,
+        "operation_settle_before": true,
+        "retry_total": 0,
+        "switch": "explicit-0"
+      },
+      {
+        "deferred_enqueued_total": 5,
+        "deferred_failed_total": 0,
+        "deferred_inline_total": 0,
+        "deferred_pending": 0,
+        "deferred_pending_max": 1,
+        "deferred_present_after": true,
+        "deferred_present_before": true,
+        "deferred_retried_total": 0,
+        "deferred_unresolved_total": 0,
+        "errors_total": {},
+        "kind": "gate0",
+        "leg": "gate0/b",
+        "operation_settle_after": true,
+        "operation_settle_before": true,
+        "retry_total": 0,
+        "switch": "unset-default"
+      }
+    ],
+    "failures": []
+  },
+  "C2_p1_primary": {
+    "pass": true,
+    "complete": true,
+    "valid_triples": 30,
+    "void_triples": 0,
+    "failed_blocks": 0,
+    "blocks": {
+      "A1": {
+        "count": 30,
+        "median": 4.08129,
+        "mean": 3.817166,
+        "p95": 4.977704,
+        "min": 2.100902,
+        "max": 4.99499,
+        "stdev": 0.864778
+      },
+      "A2": {
+        "count": 30,
+        "median": 3.950916,
+        "mean": 3.910046,
+        "p95": 5.138467,
+        "min": 2.274338,
+        "max": 5.357819,
+        "stdev": 0.809786
+      },
+      "B": {
+        "count": 30,
+        "median": 3.124521,
+        "mean": 3.087133,
+        "p95": 4.166269,
+        "min": 1.923971,
+        "max": 4.278483,
+        "stdev": 0.620779
+      }
+    },
+    "effect_median": 0.770102,
+    "effect_ci95": [
+      0.695077,
+      0.834904
+    ],
+    "paired_difference_ms": {
+      "median": -0.933768,
+      "ci95": [
+        -1.178368,
+        -0.643512
+      ],
+      "draws": 10000
+    },
+    "direction_triples_below_one": 24,
+    "zero_control_context": {
+      "median": 0.978294,
+      "ci95": [
+        0.844517,
+        1.207982
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "threshold": "median <= 0.90, CI upper < 1.0, >= 20/30 triples B faster"
+  },
+  "C3_f1_c1": {
+    "pass": true,
+    "merged_p50_b_over_a": 0.49494,
+    "merged_p95_b_over_a": 0.80161,
+    "invalid_legs": []
+  },
+  "C4_l1_c1": {
+    "pass": false,
+    "merged_p50_b_over_a": 0.69538,
+    "merged_p95_b_over_a": 1.17471,
+    "invalid_legs": []
+  },
+  "C5_standard_x1_c8": {
+    "pass": true,
+    "merged_throughput_b_over_a": 1.05891,
+    "invalid_legs": []
+  },
+  "C6_sustained_c8": {
+    "pass": true,
+    "merged_throughput_b_over_a": 1.1852,
+    "invalid_legs": []
+  },
+  "C7_invariants": {
+    "pass": true,
+    "p3_passed": true,
+    "response_shape_passed": true,
+    "log_scan": {
+      "legs": [
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "gate0/a",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "gate0/b",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p1/a",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p1/b",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r1-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r1-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r1-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r1-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r2-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r2-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r2-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/c8/r2-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r1-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r1-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r1-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r1-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r2-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r2-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r2-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/f1/r2-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r1-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r1-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r1-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r1-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r2-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r2-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r2-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/l1/r2-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r1-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r1-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r1-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r1-b2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r2-a1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r2-a2",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r2-b1",
+          "present": true,
+          "total": 0
+        },
+        {
+          "counts": {
+            " 502": 0,
+            "audit unavailable": 0,
+            "audit_unavailable": 0,
+            "outcome unknown": 0,
+            "outcome_unknown": 0,
+            "session_moved": 0
+          },
+          "leg": "p2/x1/r2-b2",
+          "present": true,
+          "total": 0
+        }
+      ],
+      "legs_total": 36,
+      "legs_with_hits": [],
+      "passed": true,
+      "pattern": [
+        "outcome unknown",
+        "outcome_unknown",
+        " 502",
+        "audit unavailable",
+        "audit_unavailable",
+        "session_moved"
+      ]
+    }
+  },
+  "C8_p3": {
+    "pass": true,
+    "legs_total": 34,
+    "legs_passed": 34,
+    "audit_count_checks": [
+      {
+        "a": [
+          [
+            "a",
+            3603
+          ]
+        ],
+        "a_requests": 1200,
+        "b": [
+          [
+            "b",
+            1803
+          ]
+        ],
+        "b_requests": 600,
+        "count_ratio": 1.998336,
+        "equal": true,
+        "key": "p1/block-mean",
+        "request_ratio": 2.0
+      },
+      {
+        "a": [
+          [
+            "r1-a1",
+            12024
+          ],
+          [
+            "r1-a2",
+            12024
+          ]
+        ],
+        "b": [
+          [
+            "r1-b1",
+            12024
+          ],
+          [
+            "r1-b2",
+            12024
+          ]
+        ],
+        "equal": true,
+        "key": "c8/r1"
+      },
+      {
+        "a": [
+          [
+            "r2-a1",
+            12024
+          ],
+          [
+            "r2-a2",
+            12024
+          ]
+        ],
+        "b": [
+          [
+            "r2-b1",
+            12024
+          ],
+          [
+            "r2-b2",
+            12024
+          ]
+        ],
+        "equal": true,
+        "key": "c8/r2"
+      },
+      {
+        "a": [
+          [
+            "r1-a1",
+            384
+          ],
+          [
+            "r1-a2",
+            384
+          ]
+        ],
+        "b": [
+          [
+            "r1-b1",
+            384
+          ],
+          [
+            "r1-b2",
+            384
+          ]
+        ],
+        "equal": true,
+        "key": "f1/r1"
+      },
+      {
+        "a": [
+          [
+            "r2-a1",
+            384
+          ],
+          [
+            "r2-a2",
+            384
+          ]
+        ],
+        "b": [
+          [
+            "r2-b1",
+            384
+          ],
+          [
+            "r2-b2",
+            384
+          ]
+        ],
+        "equal": true,
+        "key": "f1/r2"
+      },
+      {
+        "a": [
+          [
+            "r1-a1",
+            384
+          ],
+          [
+            "r1-a2",
+            384
+          ]
+        ],
+        "b": [
+          [
+            "r1-b1",
+            384
+          ],
+          [
+            "r1-b2",
+            384
+          ]
+        ],
+        "equal": true,
+        "key": "l1/r1"
+      },
+      {
+        "a": [
+          [
+            "r2-a1",
+            384
+          ],
+          [
+            "r2-a2",
+            384
+          ]
+        ],
+        "b": [
+          [
+            "r2-b1",
+            384
+          ],
+          [
+            "r2-b2",
+            384
+          ]
+        ],
+        "equal": true,
+        "key": "l1/r2"
+      }
+    ],
+    "x1_audit_checks": [
+      {
+        "audit_delta": 1151,
+        "c16_429": 29,
+        "explainable": true,
+        "leg": "r1-a1",
+        "successful_requests": 1111
+      },
+      {
+        "audit_delta": 1127,
+        "c16_429": 41,
+        "explainable": true,
+        "leg": "r1-a2",
+        "successful_requests": 1078
+      },
+      {
+        "audit_delta": 1079,
+        "c16_429": 65,
+        "explainable": true,
+        "leg": "r1-b1",
+        "successful_requests": 995
+      },
+      {
+        "audit_delta": 1133,
+        "c16_429": 38,
+        "explainable": true,
+        "leg": "r1-b2",
+        "successful_requests": 1074
+      },
+      {
+        "audit_delta": 1157,
+        "c16_429": 26,
+        "explainable": true,
+        "leg": "r2-a1",
+        "successful_requests": 1114
+      },
+      {
+        "audit_delta": 1117,
+        "c16_429": 46,
+        "explainable": true,
+        "leg": "r2-a2",
+        "successful_requests": 1054
+      },
+      {
+        "audit_delta": 1119,
+        "c16_429": 45,
+        "explainable": true,
+        "leg": "r2-b1",
+        "successful_requests": 1057
+      },
+      {
+        "audit_delta": 1105,
+        "c16_429": 52,
+        "explainable": true,
+        "leg": "r2-b2",
+        "successful_requests": 1043
+      }
+    ]
+  },
+  "C9_crash_semantics": {
+    "status": "cited",
+    "source": "R71 Gate 3 crash/adversarial evidence",
+    "source_path": "docs/performance-review/2026-11-05-r71-g3-crash-adversarial/README.md",
+    "gates": "T1-T9 PASS",
+    "probe_branch": "probe/r71-g3-fault-injection @ 090aad5e8b81364463b657ef5449f6d3448017d5",
+    "probe_platform_sha256": "5c3e8f2a9a290620de39d56ffcb02292381ba0616873efa04f03cfa0b9c71152",
+    "probe_platform_sha256_verified": true,
+    "code_path_check": "git diff probe/r71-g3-fault-injection 56dc914 -- prototypes/v1/platform/session_close_deferred.go shows only the default flip (unset now enables; explicit 0 disables) and the comment. The probe branch's other platform differences are probe-only hooks (probe_r71_g3.go plus four call-site hooks) that are inert unless PERI_R71_G3_CLOSE_DELAY_MS, PERI_R71_G3_DROP_CLOSE_RECORD or PERI_R71_G3_OPERATION_QUEUE_MAX is set. With PERI_DEFERRED_SESSION_CLOSE=1 and no PERI_R71_G3_* variables, the probe binary executes the same deferred-close path as the R72 B arm.",
+    "rerun": false,
+    "rerun_reason": "The R72 campaign's P1 (30 triples) and P2 regression gates (32 legs) consume the time budget. The R72 candidate changes only the default value; R71 Gate 3 already exercised the explicitly enabled path. T2 was therefore cited, not rerun.",
+    "evidence_file": "c9-code-path-check.txt",
+    "notes": [
+      "R71 Gate 3 T2: deterministic drop of the close durable record -> restart quarantines the namespace, Hrana SELECT 1 returns HTTP 409 database_isolated, verify_no_unresolved_operations refuses a clean restart, and the supported recover path (decision -> retire-local -> release) restores HTTP 200 without deleting the ownership marker.",
+      "R71 Gate 3 T1: graceful stop drains pending deferred closes and completes cleanly.",
+      "R71 Gate 3 T3b/T4b/T5/T6/T7/T8/T9 cover SIGKILL-confirmed-write durability, worker stop/resume, 200ms close injection, post-close requests, c8/c16 soak, kill switch equivalence and settlement-queue-full interaction."
+    ]
+  },
+  "p2_verdict": "FAIL",
+  "p2_degradations": [
+    "l1 p95_ms >10% reproducible"
+  ],
+  "p2_invalid_legs": [],
+  "verdict": "FAIL"
+}

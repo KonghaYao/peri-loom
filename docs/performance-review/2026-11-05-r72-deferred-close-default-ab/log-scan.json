@@ -1,0 +1,483 @@
+{
+  "legs": [
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "gate0/a",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "gate0/b",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p1/a",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p1/b",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r1-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r1-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r1-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r1-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r2-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r2-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r2-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/c8/r2-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r1-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r1-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r1-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r1-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r2-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r2-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r2-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/f1/r2-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r1-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r1-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r1-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r1-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r2-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r2-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r2-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/l1/r2-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r1-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r1-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r1-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r1-b2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r2-a1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r2-a2",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r2-b1",
+      "present": true,
+      "total": 0
+    },
+    {
+      "counts": {
+        " 502": 0,
+        "audit unavailable": 0,
+        "audit_unavailable": 0,
+        "outcome unknown": 0,
+        "outcome_unknown": 0,
+        "session_moved": 0
+      },
+      "leg": "p2/x1/r2-b2",
+      "present": true,
+      "total": 0
+    }
+  ],
+  "legs_total": 36,
+  "legs_with_hits": [],
+  "passed": true,
+  "pattern": [
+    "outcome unknown",
+    "outcome_unknown",
+    " 502",
+    "audit unavailable",
+    "audit_unavailable",
+    "session_moved"
+  ]
+}

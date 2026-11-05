@@ -1,0 +1,103 @@
+{
+  "campaign": "p1",
+  "complete": true,
+  "valid_triples": 30,
+  "void_triples": 0,
+  "failed_blocks": 0,
+  "requests_total": 1800,
+  "a_requests": 1200,
+  "b_requests": 600,
+  "blocks": {
+    "A1": {
+      "count": 30,
+      "median": 4.08129,
+      "mean": 3.817166,
+      "p95": 4.977704,
+      "min": 2.100902,
+      "max": 4.99499,
+      "stdev": 0.864778
+    },
+    "A2": {
+      "count": 30,
+      "median": 3.950916,
+      "mean": 3.910046,
+      "p95": 5.138467,
+      "min": 2.274338,
+      "max": 5.357819,
+      "stdev": 0.809786
+    },
+    "B": {
+      "count": 30,
+      "median": 3.124521,
+      "mean": 3.087133,
+      "p95": 4.166269,
+      "min": 1.923971,
+      "max": 4.278483,
+      "stdev": 0.620779
+    }
+  },
+  "zero_control": {
+    "per_triple": {
+      "median": 0.978294,
+      "ci95": [
+        0.844517,
+        1.207982
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "pass": true
+  },
+  "effect": {
+    "per_triple": {
+      "median": 0.770102,
+      "ci95": [
+        0.695077,
+        0.834904
+      ],
+      "draws": 10000,
+      "pass": true
+    },
+    "paired_difference_ms": {
+      "median": -0.933768,
+      "ci95": [
+        -1.178368,
+        -0.643512
+      ],
+      "draws": 10000
+    },
+    "rounds": {
+      "1": {
+        "triples": 30,
+        "effect": {
+          "median": 0.770102,
+          "ci95": [
+            0.695077,
+            0.834904
+          ],
+          "draws": 10000
+        },
+        "zero_ratio": {
+          "median": 0.978294,
+          "ci95": [
+            0.844517,
+            1.207982
+          ],
+          "draws": 10000
+        },
+        "paired_difference_ms": {
+          "median": -0.933768,
+          "ci95": [
+            -1.178368,
+            -0.643512
+          ],
+          "draws": 10000
+        }
+      }
+    },
+    "pass": true
+  },
+  "direction_triples_below_one": 24,
+  "direction_triples_above_one": 6,
+  "verdict": "PASS"
+}

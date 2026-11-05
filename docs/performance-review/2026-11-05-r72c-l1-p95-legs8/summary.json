@@ -1,0 +1,1721 @@
+{
+  "campaign": "R72c L1 c1 p95 non-inferiority retest (8 pairs x 125 timed requests)",
+  "generated_at_utc": "2026-11-05T08:36:37.424590+00:00",
+  "criteria_file": "criteria-r72c.json",
+  "criteria_sha256": "5d89e33b72c64afd4999d494b69695060ae809d401653f608793733bca27a9a4",
+  "criteria_frozen_at_utc": "2026-11-05T08:32:12Z",
+  "criteria_freeze_matches": true,
+  "candidate_commit": "56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6",
+  "design": {
+    "pairs": 8,
+    "legs": 16,
+    "leg_sequence": [
+      "p1-a",
+      "p1-b",
+      "p2-b",
+      "p2-a",
+      "p3-b",
+      "p3-a",
+      "p4-a",
+      "p4-b",
+      "p5-b",
+      "p5-a",
+      "p6-a",
+      "p6-b",
+      "p7-a",
+      "p7-b",
+      "p8-b",
+      "p8-a"
+    ],
+    "per_leg_timed_samples": 125,
+    "workload": "L1.list-20 json-pipeline c1"
+  },
+  "primary": {
+    "metric": "median of the 8 per-pair p95(B)/p95(A) ratios",
+    "value": 0.71738,
+    "threshold": 1.1,
+    "pass": true,
+    "bootstrap_over_pairs": {
+      "draws": 10000,
+      "seed": 20261105,
+      "median": 0.7173849999999999,
+      "ci95_low": 0.53011,
+      "ci95_high": 0.96912
+    }
+  },
+  "auxiliary": {
+    "metric": "median of the 8 per-pair p50(B)/p50(A) ratios",
+    "value": 0.61882,
+    "threshold": 1.1,
+    "pass": true,
+    "bootstrap_over_pairs": {
+      "draws": 10000,
+      "seed": 20261105,
+      "median": 0.6188199999999999,
+      "ci95_low": 0.47967,
+      "ci95_high": 0.72431
+    }
+  },
+  "halves": {
+    "first_4_pairs_p95_median": 0.61238,
+    "last_4_pairs_p95_median": 0.79189,
+    "first_4_pairs_p50_median": 0.61882,
+    "last_4_pairs_p50_median": 0.58861
+  },
+  "pooled": {
+    "a_samples": 1000,
+    "b_samples": 1000,
+    "a_p50_ms": 2.068,
+    "b_p50_ms": 1.2631,
+    "a_p95_ms": 5.1944,
+    "b_p95_ms": 3.6418,
+    "p50_ratio": 0.61076,
+    "p95_ratio": 0.7011,
+    "bootstrap": {
+      "draws": 2000,
+      "seed": 20261105,
+      "median": 0.7003437032838676,
+      "ci95_low": 0.6113317124662819,
+      "ci95_high": 0.7693803438949954
+    }
+  },
+  "pairs": [
+    {
+      "pair": "p1",
+      "order": "A_then_B",
+      "a_leg": "p1-a",
+      "b_leg": "p1-b",
+      "a_p50_ms": 2.6492,
+      "b_p50_ms": 1.1112,
+      "a_p95_ms": 5.8411,
+      "b_p95_ms": 3.0964,
+      "p50_ratio": 0.41945,
+      "p95_ratio": 0.53011,
+      "valid": true
+    },
+    {
+      "pair": "p2",
+      "order": "B_then_A",
+      "a_leg": "p2-a",
+      "b_leg": "p2-b",
+      "a_p50_ms": 1.8658,
+      "b_p50_ms": 1.098,
+      "a_p95_ms": 4.0442,
+      "b_p95_ms": 4.0476,
+      "p50_ratio": 0.58849,
+      "p95_ratio": 1.00084,
+      "valid": true
+    },
+    {
+      "pair": "p3",
+      "order": "B_then_A",
+      "a_leg": "p3-a",
+      "b_leg": "p3-b",
+      "a_p50_ms": 1.5053,
+      "b_p50_ms": 1.4832,
+      "a_p95_ms": 5.5765,
+      "b_p95_ms": 2.937,
+      "p50_ratio": 0.98532,
+      "p95_ratio": 0.52667,
+      "valid": true
+    },
+    {
+      "pair": "p4",
+      "order": "A_then_B",
+      "a_leg": "p4-a",
+      "b_leg": "p4-b",
+      "a_p50_ms": 2.0205,
+      "b_p50_ms": 1.3116,
+      "a_p95_ms": 4.9104,
+      "b_p95_ms": 3.411,
+      "p50_ratio": 0.64915,
+      "p95_ratio": 0.69465,
+      "valid": true
+    },
+    {
+      "pair": "p5",
+      "order": "B_then_A",
+      "a_leg": "p5-a",
+      "b_leg": "p5-b",
+      "a_p50_ms": 2.5336,
+      "b_p50_ms": 1.2153,
+      "a_p95_ms": 6.5257,
+      "b_p95_ms": 4.8298,
+      "p50_ratio": 0.47967,
+      "p95_ratio": 0.74012,
+      "valid": true
+    },
+    {
+      "pair": "p6",
+      "order": "A_then_B",
+      "a_leg": "p6-a",
+      "b_leg": "p6-b",
+      "a_p50_ms": 2.2112,
+      "b_p50_ms": 1.1653,
+      "a_p95_ms": 5.0012,
+      "b_p95_ms": 2.8333,
+      "p50_ratio": 0.527,
+      "p95_ratio": 0.56652,
+      "valid": true
+    },
+    {
+      "pair": "p7",
+      "order": "A_then_B",
+      "a_leg": "p7-a",
+      "b_leg": "p7-b",
+      "a_p50_ms": 1.9478,
+      "b_p50_ms": 1.2665,
+      "a_p95_ms": 4.1285,
+      "b_p95_ms": 4.001,
+      "p50_ratio": 0.65022,
+      "p95_ratio": 0.96912,
+      "valid": true
+    },
+    {
+      "pair": "p8",
+      "order": "B_then_A",
+      "a_leg": "p8-a",
+      "b_leg": "p8-b",
+      "a_p50_ms": 2.0084,
+      "b_p50_ms": 1.4547,
+      "a_p95_ms": 4.1742,
+      "b_p95_ms": 3.5216,
+      "p50_ratio": 0.72431,
+      "p95_ratio": 0.84366,
+      "valid": true
+    }
+  ],
+  "legs": [
+    {
+      "leg": "p1-a",
+      "pair": "p1",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 0,
+      "port": "21600",
+      "volume": "peri-r72c-l1-p2-l1-p1-a-data",
+      "container": "peri-r72c-l1-p2-l1-p1-a",
+      "timed": 125,
+      "p50_ms": 2.6492,
+      "p95_ms": 5.8411,
+      "p99_ms": 7.1135,
+      "mean_ms": 2.9025,
+      "min_ms": 0.8832,
+      "max_ms": 8.0442,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 90,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.426,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p1-b",
+      "pair": "p1",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 1,
+      "port": "21601",
+      "volume": "peri-r72c-l1-p2-l1-p1-b-data",
+      "container": "peri-r72c-l1-p2-l1-p1-b",
+      "timed": 125,
+      "p50_ms": 1.1112,
+      "p95_ms": 3.0964,
+      "p99_ms": 4.7257,
+      "mean_ms": 1.4552,
+      "min_ms": 0.7897,
+      "max_ms": 5.047,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 78,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.215,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p2-b",
+      "pair": "p2",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 2,
+      "port": "21602",
+      "volume": "peri-r72c-l1-p2-l1-p2-b-data",
+      "container": "peri-r72c-l1-p2-l1-p2-b",
+      "timed": 125,
+      "p50_ms": 1.098,
+      "p95_ms": 4.0476,
+      "p99_ms": 6.6762,
+      "mean_ms": 1.4992,
+      "min_ms": 0.7415,
+      "max_ms": 6.9105,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 94,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.242,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p2-a",
+      "pair": "p2",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 3,
+      "port": "21603",
+      "volume": "peri-r72c-l1-p2-l1-p2-a-data",
+      "container": "peri-r72c-l1-p2-l1-p2-a",
+      "timed": 125,
+      "p50_ms": 1.8658,
+      "p95_ms": 4.0442,
+      "p99_ms": 5.524,
+      "mean_ms": 2.1495,
+      "min_ms": 0.95,
+      "max_ms": 5.8237,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 85,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.321,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p3-b",
+      "pair": "p3",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 4,
+      "port": "21604",
+      "volume": "peri-r72c-l1-p2-l1-p3-b-data",
+      "container": "peri-r72c-l1-p2-l1-p3-b",
+      "timed": 125,
+      "p50_ms": 1.4832,
+      "p95_ms": 2.937,
+      "p99_ms": 4.2027,
+      "mean_ms": 1.6687,
+      "min_ms": 0.801,
+      "max_ms": 5.051,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 83,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 2,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.263,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p3-a",
+      "pair": "p3",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 5,
+      "port": "21605",
+      "volume": "peri-r72c-l1-p2-l1-p3-a-data",
+      "container": "peri-r72c-l1-p2-l1-p3-a",
+      "timed": 125,
+      "p50_ms": 1.5053,
+      "p95_ms": 5.5765,
+      "p99_ms": 7.7247,
+      "mean_ms": 2.3268,
+      "min_ms": 0.8522,
+      "max_ms": 8.1711,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 81,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.387,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p4-a",
+      "pair": "p4",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 6,
+      "port": "21606",
+      "volume": "peri-r72c-l1-p2-l1-p4-a-data",
+      "container": "peri-r72c-l1-p2-l1-p4-a",
+      "timed": 125,
+      "p50_ms": 2.0205,
+      "p95_ms": 4.9104,
+      "p99_ms": 7.7259,
+      "mean_ms": 2.4174,
+      "min_ms": 0.963,
+      "max_ms": 7.9672,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 78,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.358,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p4-b",
+      "pair": "p4",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 7,
+      "port": "21607",
+      "volume": "peri-r72c-l1-p2-l1-p4-b-data",
+      "container": "peri-r72c-l1-p2-l1-p4-b",
+      "timed": 125,
+      "p50_ms": 1.3116,
+      "p95_ms": 3.411,
+      "p99_ms": 4.8647,
+      "mean_ms": 1.5846,
+      "min_ms": 0.8023,
+      "max_ms": 4.9374,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 89,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 2,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.248,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p5-b",
+      "pair": "p5",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 8,
+      "port": "21608",
+      "volume": "peri-r72c-l1-p2-l1-p5-b-data",
+      "container": "peri-r72c-l1-p2-l1-p5-b",
+      "timed": 125,
+      "p50_ms": 1.2153,
+      "p95_ms": 4.8298,
+      "p99_ms": 6.0024,
+      "mean_ms": 1.8189,
+      "min_ms": 0.7953,
+      "max_ms": 6.3077,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 83,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.27,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p5-a",
+      "pair": "p5",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 9,
+      "port": "21609",
+      "volume": "peri-r72c-l1-p2-l1-p5-a-data",
+      "container": "peri-r72c-l1-p2-l1-p5-a",
+      "timed": 125,
+      "p50_ms": 2.5336,
+      "p95_ms": 6.5257,
+      "p99_ms": 8.7741,
+      "mean_ms": 2.8786,
+      "min_ms": 0.9211,
+      "max_ms": 8.8444,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 79,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.416,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p6-a",
+      "pair": "p6",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 10,
+      "port": "21610",
+      "volume": "peri-r72c-l1-p2-l1-p6-a-data",
+      "container": "peri-r72c-l1-p2-l1-p6-a",
+      "timed": 125,
+      "p50_ms": 2.2112,
+      "p95_ms": 5.0012,
+      "p99_ms": 6.5827,
+      "mean_ms": 2.4871,
+      "min_ms": 0.911,
+      "max_ms": 9.4962,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 83,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.365,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p6-b",
+      "pair": "p6",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 11,
+      "port": "21611",
+      "volume": "peri-r72c-l1-p2-l1-p6-b-data",
+      "container": "peri-r72c-l1-p2-l1-p6-b",
+      "timed": 125,
+      "p50_ms": 1.1653,
+      "p95_ms": 2.8333,
+      "p99_ms": 3.7931,
+      "mean_ms": 1.4355,
+      "min_ms": 0.7971,
+      "max_ms": 4.6501,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 90,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.221,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p7-a",
+      "pair": "p7",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 12,
+      "port": "21612",
+      "volume": "peri-r72c-l1-p2-l1-p7-a-data",
+      "container": "peri-r72c-l1-p2-l1-p7-a",
+      "timed": 125,
+      "p50_ms": 1.9478,
+      "p95_ms": 4.1285,
+      "p99_ms": 7.6472,
+      "mean_ms": 2.1657,
+      "min_ms": 0.9612,
+      "max_ms": 7.744,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 93,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.322,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p7-b",
+      "pair": "p7",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 13,
+      "port": "21613",
+      "volume": "peri-r72c-l1-p2-l1-p7-b-data",
+      "container": "peri-r72c-l1-p2-l1-p7-b",
+      "timed": 125,
+      "p50_ms": 1.2665,
+      "p95_ms": 4.001,
+      "p99_ms": 5.3378,
+      "mean_ms": 1.611,
+      "min_ms": 0.7979,
+      "max_ms": 5.4995,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 77,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.251,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p8-b",
+      "pair": "p8",
+      "side": "b",
+      "arm": "unset-default",
+      "order_index": 14,
+      "port": "21614",
+      "volume": "peri-r72c-l1-p2-l1-p8-b-data",
+      "container": "peri-r72c-l1-p2-l1-p8-b",
+      "timed": 125,
+      "p50_ms": 1.4547,
+      "p95_ms": 3.5216,
+      "p99_ms": 4.6654,
+      "mean_ms": 1.6873,
+      "min_ms": 0.766,
+      "max_ms": 6.5233,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 87,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": true,
+      "deferred_delta": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "flushed_total": 0,
+        "inline_total": 0
+      },
+      "deferred_now": {
+        "enqueued_total": 126,
+        "failed_total": 0,
+        "retried_total": 0,
+        "unresolved_total": 0,
+        "pending": 0,
+        "pending_max": 1,
+        "maximum": 256,
+        "per_database_maximum": 4
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.248,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    },
+    {
+      "leg": "p8-a",
+      "pair": "p8",
+      "side": "a",
+      "arm": "explicit-0",
+      "order_index": 15,
+      "port": "21615",
+      "volume": "peri-r72c-l1-p2-l1-p8-a-data",
+      "container": "peri-r72c-l1-p2-l1-p8-a",
+      "timed": 125,
+      "p50_ms": 2.0084,
+      "p95_ms": 4.1742,
+      "p99_ms": 5.9069,
+      "mean_ms": 2.262,
+      "min_ms": 0.8875,
+      "max_ms": 6.0109,
+      "failures": 0,
+      "failure_sample": [],
+      "response_mode": {
+        "response_bytes": 15627,
+        "rows": 40,
+        "rows_read": 201,
+        "rows_written": 0,
+        "affected_row_count": 0,
+        "mode_samples": 89,
+        "distinct_response_bytes": [
+          15626,
+          15627,
+          15637,
+          15638
+        ]
+      },
+      "driver_exit": 0,
+      "settle_exit": 0,
+      "settle_verdict": "settled",
+      "stop_exit": "0",
+      "stop_outcome": "clean",
+      "unresolved_operations": false,
+      "audit_records": 836,
+      "audit_chain_ok": true,
+      "audit_errors": [],
+      "audit_delta": 384,
+      "errors_delta": {},
+      "rejection_delta": {},
+      "actions_delta": {
+        "close": 127,
+        "open": 127,
+        "query": 4,
+        "statement": 126
+      },
+      "operation_settle": {
+        "retry_total": 0,
+        "retry_success_total": 0,
+        "exhausted_total": 0,
+        "refused_total": {},
+        "retry_budget_ms": 300
+      },
+      "session_seats": 0,
+      "active_permits": 0,
+      "unknown_held_permits": 0,
+      "worker_sessions": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "worker_pending_close": {
+        "worker-a": 0,
+        "worker-b": 0
+      },
+      "deferred_present_after": false,
+      "deferred_delta": {},
+      "deferred_now": {
+        "enqueued_total": null,
+        "failed_total": null,
+        "retried_total": null,
+        "unresolved_total": null,
+        "pending": null,
+        "pending_max": null,
+        "maximum": null,
+        "per_database_maximum": null
+      },
+      "seed_line": "verify threads=201 messages=8625 chars=20177069 focus=8625",
+      "row_verdicts": {
+        "L1.list-20": "PASS"
+      },
+      "summary_duration_seconds": 0.338,
+      "platform_sha_check": true,
+      "worker_sha_check": true,
+      "image_check": true,
+      "valid": true,
+      "invalid_reasons": []
+    }
+  ],
+  "invariants": {
+    "checks": {
+      "criteria_freeze_matches": true,
+      "all_16_legs_present_with_125_samples": true,
+      "platform_sha_recorded_in_every_leg": true,
+      "worker_sha_recorded_in_every_leg": true,
+      "image_digest_recorded_in_every_leg": true,
+      "all_legs_valid": true
+    },
+    "invalid_legs": {},
+    "failure_reasons": []
+  },
+  "blocked_reason": "",
+  "executed_legs": [
+    "p1-a",
+    "p1-b",
+    "p2-b",
+    "p2-a",
+    "p3-b",
+    "p3-a",
+    "p4-a",
+    "p4-b",
+    "p5-b",
+    "p5-a",
+    "p6-a",
+    "p6-b",
+    "p7-a",
+    "p7-b",
+    "p8-b",
+    "p8-a"
+  ],
+  "not_run_legs": [],
+  "frozen_rule_note": "invalid legs are recorded mechanically; the campaign did not complete 8 valid pairs, so the p95 non-inferiority threshold was not evaluated and no p95 FAIL is claimed",
+  "verdict": "PASS"
+}

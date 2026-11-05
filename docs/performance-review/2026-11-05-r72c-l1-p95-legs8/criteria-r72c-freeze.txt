@@ -1,0 +1,7 @@
+frozen_at_utc: 2026-11-05T08:32:12Z
+criteria_file: criteria-r72c.json
+criteria_sha256: 5d89e33b72c64afd4999d494b69695060ae809d401653f608793733bca27a9a4
+candidate_branch: perf/r72-deferred-close-default
+candidate_commit: 56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6
+baseline_commit: ee1da7d
+note: frozen before the first R72c Docker stack or measurement leg was started. No R72c stack existed at freeze time. Nothing in criteria-r72c.json may be changed after data is seen.

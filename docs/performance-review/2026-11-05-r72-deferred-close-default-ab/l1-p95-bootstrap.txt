@@ -1,0 +1,7 @@
+point: A 3.912187 B 4.595667 ratio 1.174705
+per-leg p95 A: r1-a1=3.638708, r1-a2=3.706250, r2-a1=4.118125, r2-a2=5.434166
+per-leg p95 B: r1-b1=4.580792, r1-b2=4.713834, r2-b1=4.610542, r2-b2=3.329458
+leg bootstrap 95%: [0.808489, 1.271861] share>1.10=0.549
+sample bootstrap 95%: [0.846990, 1.324147] share>1.10=0.435
+pooled-sample p95 (not the frozen aggregation): A 4.674250 B 4.580792 ratio 0.980006
+note: context only; the frozen C4 verdict uses the point estimate 1.17471 -> FAIL

@@ -1,0 +1,37 @@
+R72b execution command (only the first pair was executed)
+
+Working directory:
+  /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72-deferred-close-default-ab
+
+Command:
+  OUT=/Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r72b-l1-p95-retest \
+  PREFIX=peri-r72b-l1 \
+  BASE_PORT=21500 \
+  SAMPLES=500 \
+  ./run_p2.sh l1 p1-a p1-b
+
+The runner is the unmodified R72 run_p2.sh:
+  path: docs/performance-review/2026-11-05-r72-deferred-close-default-ab/run_p2.sh
+  sha256: fd02651bdf071c535ad77df1cecfb684f57ef0323694597885dc699f2f53928d
+
+The run was stopped after the first pair (p1-a, p1-b) when p1-b hit the
+default 500 requests/s project quota at timed sample 488. The remaining
+pairs p2-p8 were not started; see README.md and quota-conflict.txt.
+
+Per-leg invocation performed by run_p2.sh:
+  python3 scripts/perf-reliability/issue28/run.py \
+    --connection-file <private /tmp connection file, mode 0600> \
+    --out <leg>/harness \
+    --container <leg container> \
+    --scenario L1 --protocol json-pipeline \
+    --rounds 1 --warmup 1 --samples 500
+
+Container/volume/port for the two executed legs:
+  p1-a: peri-r72b-l1-p2-l1-p1-a / peri-r72b-l1-p2-l1-p1-a-data / 21500
+  p1-b: peri-r72b-l1-p2-l1-p1-b / peri-r72b-l1-p2-l1-p1-b-data / 21501
+
+Both legs used:
+  platform /tmp/peri-r72-ab/bin/peri-platform-r72 sha256=e07e6da8...c621ba
+  worker   /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7 sha256=b17a0708...b4cff
+  image    ghcr.io/konghayao/peri-loom:v1.2.7 digest=sha256:8a8ba43b...7fff
+  observer off, platform default quotas, audit_file_v1

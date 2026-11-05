@@ -1,0 +1,26 @@
+generated_at_utc: 2026-11-05T08:32:30Z
+host: Darwin 25.5.0 arm64
+git_branch: perf/r72-deferred-close-default
+git_head: 56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6
+git_baseline: ee1da7d0e0593692bc2aa24b28924c605f043990
+docker: 29.4.0 (OrbStack)
+load_average_at_start: 2.00 1.99 2.02
+platform: /tmp/peri-r72-ab/bin/peri-platform-r72 sha256=e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba
+worker: /tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7 sha256=b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff
+image: ghcr.io/konghayao/peri-loom:v1.2.7 digest=sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff
+launcher: prototypes/v1/platform/dev.py sha256=80bcab2ab246ab280647f4b3452ba6ef9f9c3334eb7d2b1f15960c8c0c9497b2
+fixture: docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py sha256=092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210
+harness: scripts/perf-reliability/issue28/run.py sha256=499ad87f0d6264f8c387209fcc832204274058119604cd6fea0febacaec36676
+runner: docs/performance-review/2026-11-05-r72-deferred-close-default-ab/run_p2.sh sha256=fd02651bdf071c535ad77df1cecfb684f57ef0323694597885dc699f2f53928d
+criteria: criteria-r72c.json sha256=5d89e33b72c64afd4999d494b69695060ae809d401653f608793733bca27a9a4 frozen_at_utc=2026-11-05T08:32:12Z
+r72_evidence: docs/performance-review/2026-11-05-r72-deferred-close-default-ab
+r72_criteria_sha256: de7860a1b1737d4fd20b14fd0f743c1f14f38455892e8b162d44c6b59ce0ba39
+r72b_evidence: docs/performance-review/2026-11-05-r72b-l1-p95-retest
+r72b_criteria_sha256: 0b2f2769344a8798d64130e68d75e3acd710349fe4d1f17e8e53209316a8af00
+observer: none
+quotas: platform defaults, not relaxed (requests_per_second=500, max_sessions=16, max_concurrent=100)
+network: docker --network host, localhost, no TLS
+ports: 21600-21615 (replacements 21616+)
+volumes: fresh peri-r72c-l1-* per leg
+leg_order: p1-a p1-b p2-b p2-a p3-b p3-a p4-a p4-b p5-b p5-a p6-a p6-b p7-a p7-b p8-b p8-a
+prod_container_policy: peri-loom and all unrelated containers untouched; no prune, no daemon restart, no volume deletion

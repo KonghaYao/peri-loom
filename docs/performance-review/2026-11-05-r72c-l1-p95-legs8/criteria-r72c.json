@@ -1,0 +1,142 @@
+{
+  "campaign": "R72c - high-power targeted retest of L1 c1 p95 non-inferiority for the R72 deferred-session-close default flip, using 8 pairs of 125 timed requests so that no leg can approach the default requests_per_second=500 quota",
+  "frozen_at_utc": "2026-11-05T08:32:06Z",
+  "frozen_before_any_measurement_leg": true,
+  "frozen_before_any_r72c_stack": true,
+  "rule": "Nothing in this file may be changed after data is seen. The criteria win over the measurements. No post-hoc threshold, aggregation, eligibility, sample-size, quota or pacing change. No code, test or criterion change followed by a retest.",
+  "lineage": {
+    "r72_evidence": "docs/performance-review/2026-11-05-r72-deferred-close-default-ab/",
+    "r72_criteria_sha256": "de7860a1b1737d4fd20b14fd0f743c1f14f38455892e8b162d44c6b59ce0ba39",
+    "r72_single_failed_criterion": "C4 L1 c1 merged p95 B/A = 1.17471 > 1.10, with round ratios 1.26545 and 0.83121 (opposite directions) and a bootstrap interval of roughly 0.81-1.27; treated as a frozen-rule FAIL but not as a proven stable regression",
+    "r72b_evidence": "docs/performance-review/2026-11-05-r72b-l1-p95-retest/",
+    "r72b_criteria_sha256": "0b2f2769344a8798d64130e68d75e3acd710349fe4d1f17e8e53209316a8af00",
+    "r72b_outcome": "ENVIRONMENT_BLOCKED: 500 timed requests per leg made the faster B arm exhaust the default 500 requests/s project quota before completion (11 quota rejections); that campaign did not change quotas or add pacing and produced no primary statistic",
+    "purpose": "increase the number of independent A/B pairs (8) for the same L1 list-20 c1 scenario and the same A/B treatment, while keeping each leg at 125 timed requests, a load that R72 already showed never approached the default quota; this campaign does not re-open any other R72 criterion"
+  },
+  "candidate": {
+    "branch": "perf/r72-deferred-close-default",
+    "commit": "56dc9142d62c8ce22445b2b8aa90ed00fa8fbba6",
+    "baseline_commit": "ee1da7d",
+    "change_scope": "PERI_DEFERRED_SESSION_CLOSE default enabled when unset; explicit 0 remains the synchronous-close fallback. Mechanism code otherwise identical to the R71 merged version."
+  },
+  "environment": {
+    "platform_binary": "/tmp/peri-r72-ab/bin/peri-platform-r72",
+    "platform_sha256": "e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba",
+    "platform_build_if_rebuilt": "cd prototypes/v1/platform && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o /tmp/peri-r72-ab/bin/peri-platform-r72 ./cmd/peri-platform",
+    "platform_rebuild_rule": "reuse the R72 build product; if a rebuild is unavoidable, its SHA256 must equal e07e6da8331d6d40b9f68663899739c75d20f13c8379d685960b74b418c621ba, otherwise the campaign stops and reports a blocker",
+    "worker_binary": "/tmp/peri-release-ab/bin/peri-loom-v1-v1.2.7",
+    "worker_sha256": "b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff",
+    "image": "ghcr.io/konghayao/peri-loom:v1.2.7",
+    "image_digest": "sha256:8a8ba43b1efac3574bb8f0896f9eb041fa7400080cd51679eb81441e50ad7fff",
+    "launcher": "prototypes/v1/platform/dev.py",
+    "launcher_sha256": "80bcab2ab246ab280647f4b3452ba6ef9f9c3334eb7d2b1f15960c8c0c9497b2",
+    "fixture": "docs/performance-review/2026-11-04-v1.2.7-release/seed_fixture.py; every stack must report threads=201 messages=8625 content_chars=20177069 focus=8625 and complete=True",
+    "fixture_sha256": "092c2ad78024084cc9364de6b7710276e2fd04a03a552cc61dd1699f86626210",
+    "harness": "scripts/perf-reliability/issue28/run.py",
+    "harness_sha256": "499ad87f0d6264f8c387209fcc832204274058119604cd6fea0febacaec36676",
+    "runner": "docs/performance-review/2026-11-05-r72-deferred-close-default-ab/run_p2.sh (read-only reuse, unmodified)",
+    "runner_sha256": "fd02651bdf071c535ad77df1cecfb684f57ef0323694597885dc699f2f53928d",
+    "quotas": "platform defaults, not relaxed: max_databases=8, max_sessions=16, max_concurrent=100, requests_per_second=500, max_sql_bytes=65536, max_result_bytes=4194304",
+    "durability": "audit_file_v1, read from each leg's metrics",
+    "observer": "none (no PERI_DURABILITY_OBSERVER and no phase observer on any leg)",
+    "network": "docker --network host, localhost only, no TLS, one dedicated stack per leg",
+    "runtime": "docker 29.4.0 on OrbStack, Darwin arm64; production container peri-loom and all unrelated containers are untouched"
+  },
+  "design": {
+    "pairs": 8,
+    "legs": 16,
+    "arms": {
+      "A": "same platform binary with PERI_DEFERRED_SESSION_CLOSE=0 explicitly set in the container and platform process environment (synchronous close)",
+      "B": "same platform binary with PERI_DEFERRED_SESSION_CLOSE completely unset in the container and platform process environment (deferred close default)"
+    },
+    "pair_order_pattern": [
+      "A_then_B",
+      "B_then_A",
+      "B_then_A",
+      "A_then_B",
+      "B_then_A",
+      "A_then_B",
+      "A_then_B",
+      "B_then_A"
+    ],
+    "leg_sequence": [
+      "p1-a",
+      "p1-b",
+      "p2-b",
+      "p2-a",
+      "p3-b",
+      "p3-a",
+      "p4-a",
+      "p4-b",
+      "p5-b",
+      "p5-a",
+      "p6-a",
+      "p6-b",
+      "p7-a",
+      "p7-b",
+      "p8-b",
+      "p8-a"
+    ],
+    "balance": "4 pairs A-first and 4 pairs B-first; every pair contains exactly one A leg and one B leg; 8 A legs and 8 B legs in total",
+    "ports": "21600-21615 in leg_sequence order, one dedicated host port per leg",
+    "volumes": "one fresh volume per leg, all named with the prefix peri-r72c-l1-; no previous round's volume is reused, modified or deleted",
+    "containers": "one dedicated container per leg named with the prefix peri-r72c-l1-; removed after evidence collection; the production container peri-loom and all unrelated containers are untouched",
+    "workload": "L1.list-20 json-pipeline, c1 (single connection), exactly the R72 L1 scenario and request shape",
+    "harness_command": "python3 scripts/perf-reliability/issue28/run.py --connection-file <private conn> --out <leg>/harness --container <leg container> --scenario L1 --protocol json-pipeline --rounds 1 --warmup 1 --samples 125",
+    "per_leg_samples": "1 discarded warm-up request + exactly 125 timed requests",
+    "quota_safety": "125 timed requests per leg is below one quarter of the default 500 requests/s budget; R72 ran 8 L1 legs at exactly this load with zero 429 or quota rejections. No quota is changed and no pacing is added.",
+    "leg_evidence": "leg.txt, binaries.txt, seed.txt, metrics-before.json, metrics-after.json, settle.json, audit-count-before/after.txt, driver.txt, container.txt, exit-code.json, settle-exit-code.json, stop-exit.txt, launcher-stop.json, audit/, harness/raw.jsonl, harness/summary.json"
+  },
+  "primary_criterion": {
+    "name": "L1 c1 p95 non-inferiority",
+    "metric": "per-pair ratio r_i = p95(B_i) / p95(A_i) using the two legs of pair i; primary statistic = median(r_1 ... r_8)",
+    "p95_definition": "sort the 125 timed duration_ms values ascending and take index min(n-1, int(n * 95 / 100)) (same definition as the R72 analyze_p2.py and the Issue 28 harness); n=125 gives index 118",
+    "pass_condition": "median per-pair p95 ratio < 1.10",
+    "fail_condition": "median per-pair p95 ratio >= 1.10",
+    "aggregation_floor": "the median is over the 8 valid pairs; a pair made invalid by an environment anomaly is replaced at most once under the replacement rule below, and both the void and the replacement are listed in the report"
+  },
+  "auxiliary_criterion": {
+    "name": "L1 c1 p50 non-inferiority",
+    "metric": "per-pair ratio p50(B_i) / p50(A_i); p50 is statistics.median over the 125 timed durations; auxiliary statistic = median over the 8 valid pairs",
+    "pass_condition": "median per-pair p50 ratio < 1.10",
+    "role": "auxiliary; the overall campaign verdict requires both the primary and the auxiliary criterion to pass"
+  },
+  "verdict_rules": {
+    "PASS": "primary p95 median < 1.10 AND auxiliary p50 median < 1.10 AND all 16 legs are valid AND all invariant checks below pass",
+    "FAIL": "primary p95 median >= 1.10; or the auxiliary p50 median >= 1.10; or any leg/invariant failure that is not an isolated environment anomaly resolved by the single allowed replacement",
+    "ENVIRONMENT_BLOCKED": "the platform binary, worker, image, fixture or Docker runtime cannot satisfy the frozen environment, or a measurement cannot be completed (including an invalid leg whose single replacement is also invalid); the report states exactly what was verified and what was not",
+    "no_post_hoc_changes": "a single leg outlier, a direction change between halves, or a wide confidence interval never changes the frozen decision rule; it is reported as context only"
+  },
+  "leg_validity": {
+    "timed_samples": "exactly 125 timed samples in harness/raw.jsonl",
+    "request_success": "every timed sample has status == 200, outcome == ok and empty error_code; zero request failures; zero 429 status codes",
+    "driver": "driver exit code 0; harness fatal empty; harness warnings empty",
+    "settle": "settle exit code 0 and settle.json verdict == settled",
+    "stop": "docker stop exit code 0; launcher-stop.json outcome == clean and unresolved_operations == false",
+    "fixture": "seed fixture PASS with threads=201 messages=8625 content_chars=20177069 focus=8625",
+    "response_shape": "modal (response_bytes, rows, rows_read, rows_written, affected_row_count) over the 125 timed samples equals (15627, 40, 201, 0, 0); every timed sample has rows=40 and rows_read=201; the small response_bytes spread caused by the embedded query_duration_ms digit width is allowed only if the mode is exactly 15627",
+    "audit": "verify_audit.py chain_ok true with a positive audit count delta",
+    "accounting": "metrics-after session_seats == 0, active_permits == 0, unknown_held_permits == 0, all worker session counts == 0, all worker pending_close counts == 0, cleanup_ledger.pending_close.count == 0, errors_total delta empty, operation_settle exhausted_total == 0 and refused_total == 0",
+    "arm_mechanism": "A legs publish no deferred_session_close key in metrics-before or metrics-after; B legs publish it in metrics-after with enqueued_total delta > 0, failed_total delta == 0, retried_total delta == 0, unresolved_total == 0, pending == 0 and pending_max <= 4",
+    "quota": "any 429 response, quota_exceeded error counter, or rate_limit rejection reason makes the leg invalid",
+    "binaries": "binaries.txt records platform sha256 e07e6da8..., worker sha256 b17a0708..., image digest sha256:8a8ba43b..., in-container binary hashes equal the host hashes, A legs show the flag explicitly in the platform process environment, B legs show the flag unset"
+  },
+  "environment_anomaly_and_replacement": {
+    "definition": "a leg is invalid under leg_validity, including a quota/429 refusal, a stack start failure, a fixture seed failure or mismatch, a port or Docker runtime failure, or an evidence collection failure. A slow leg, a tail outlier, or a direction change is NOT an environment anomaly and is never replaced.",
+    "procedure": "keep the voided evidence, then rerun exactly the same pair and the same arm on a fresh volume. The replacement leg is named <original>-repl, runs on the next free port starting at 21616 in replacement order, uses a fresh volume and a fresh container, and keeps the same 125 timed samples and the same default quotas. No quota change and no pacing.",
+    "limit": "each invalid leg may be rerun at most once in the entire campaign; if the replacement is also invalid the campaign reports ENVIRONMENT_BLOCKED. No valid leg is ever rerun.",
+    "reporting": "the report lists the voided leg, its reason, the replacement leg, its port/volume, and both numbers"
+  },
+  "reported_not_gating": {
+    "per_pair": "p95 and p50 ratios for every pair",
+    "halves": "median p95/p50 ratio over the first 4 pairs and over the last 4 pairs",
+    "pooled": "p95 and p50 computed by pooling all 8 x 125 = 1000 timed samples per side",
+    "bootstrap": "percentile bootstrap over the 8 per-pair p95 ratios and over the 8 per-pair p50 ratios, fixed seed 20261105, 10000 draws; percentile bootstrap over the 1000 pooled samples per side for the p95 ratio, 2000 draws; context only",
+    "timing": "per-leg p50/p95/p99 in ms, sample counts and error counts"
+  },
+  "excluded_claims": [
+    "No capacity or SLA claim is made from this campaign.",
+    "No claim of complete crash-durability coverage; R72c only measures the L1 c1 latency distribution at 125 requests per leg.",
+    "No other R72 criterion is re-litigated here; the R72 results for C1/C2/C3/C5/C6/C7/C8 stand as published."
+  ]
+}

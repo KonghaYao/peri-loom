@@ -1,0 +1,30 @@
+R72b quota-conflict analysis (generated from leg evidence; no new stack)
+project quota: requests_per_second=500 (read from state.json in both legs)
+
+p1-a: timed=500 timed_sum_s=1.0153 mean_ms=2.0305 p50_ms=1.8229 p95_ms=3.7360 failures=0
+
+p1-b: timed=500 timed_sum_s=0.7981 mean_ms=1.5962 p50_ms=1.2066 p95_ms=3.6258 failures=11
+  first failure: sample=488 status=200 outcome=mismatch harness_error_code=row_count_mismatch response_bytes=147 rows=0
+  failure samples: [488, 489, 490, 491, 492, 494, 496, 497, 498, 499, 500]
+
+Metrics correction for p1-b: errors_total delta = {'quota_exceeded': 11};
+rejection_reasons_total delta = {'rate_limit': 11}. The harness labels the ten
+HTTP-200 pipeline errors as row_count_mismatch because its expected-rows check
+runs after the pipeline-error check and overwrites outcome/error_code.
+
+p1-b first refusal: sample=488 cumulative_timed_s=0.7739 available_tokens=886.94 effective_tokens_per_request=1.8175
+to complete 500 requests without refusal: timed_sum_s >= 0.8175 (mean_ms >= 1.635)
+p1-b timed_sum_s=0.7981 -> below the completion threshold; p1-a timed_sum_s=1.0153 -> above it
+
+R72 125-sample L1 legs: projected 500-request timed sums (mean x 500):
+  r1-a1 side=a mean_ms=2.0869 projected_500_sum_s=1.0435
+  r1-b1 side=b mean_ms=2.0368 projected_500_sum_s=1.0184
+  r1-b2 side=b mean_ms=1.7848 projected_500_sum_s=0.8924
+  r1-a2 side=a mean_ms=2.0183 projected_500_sum_s=1.0091
+  r2-a1 side=a mean_ms=2.1240 projected_500_sum_s=1.0620
+  r2-b1 side=b mean_ms=1.7817 projected_500_sum_s=0.8909
+  r2-b2 side=b mean_ms=1.6049 projected_500_sum_s=0.8025
+  r2-a2 side=a mean_ms=2.5894 projected_500_sum_s=1.2947
+
+Interpretation: the fast arm (B) is the one that crosses the 500 req/s bucket
+before 500 requests; this is not independent of the A/B treatment.

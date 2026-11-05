@@ -1,0 +1,483 @@
+{
+  "failures": [],
+  "legs": [
+    {
+      "deferred_enqueued_total": 0,
+      "deferred_failed_total": 0,
+      "deferred_inline_total": 0,
+      "deferred_pending": 0,
+      "deferred_pending_max": 0,
+      "deferred_present_after": false,
+      "deferred_present_before": false,
+      "deferred_retried_total": 0,
+      "deferred_unresolved_total": 0,
+      "errors_total": {},
+      "kind": "gate0",
+      "leg": "gate0/a",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "retry_total": 0,
+      "switch": "explicit-0"
+    },
+    {
+      "deferred_enqueued_total": 5,
+      "deferred_failed_total": 0,
+      "deferred_inline_total": 0,
+      "deferred_pending": 0,
+      "deferred_pending_max": 1,
+      "deferred_present_after": true,
+      "deferred_present_before": true,
+      "deferred_retried_total": 0,
+      "deferred_unresolved_total": 0,
+      "errors_total": {},
+      "kind": "gate0",
+      "leg": "gate0/b",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "retry_total": 0,
+      "switch": "unset-default"
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p1/a",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p1/b",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/f1/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/l1/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 40
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 40
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 49
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 49
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 84
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 84
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 59
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 59
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 43
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 43
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 63
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 63
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 62
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 62
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 62
+      },
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/x1/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 62
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 8,
+      "retry_total": 33
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "kind": "measurement",
+      "leg": "p2/c8/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    }
+  ],
+  "note": "C1: explicit-0 publishes no deferred key; default arm publishes deferred_session_close with enqueued_total > 0; both arms operation_settle.retry_total == 0. Queue-full must be attributed to retries, never to outcome_unknown.",
+  "passed": true
+}

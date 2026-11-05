@@ -1,0 +1,74 @@
+=== RUN   TestDeferredSessionCloseEligibility
+--- PASS: TestDeferredSessionCloseEligibility (0.00s)
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP/read_only_autocommit
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP/autocommit_false
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP/committing_statement
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP/execute_without_autocommit
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP/write_cursor
+=== RUN   TestDeferredSessionCloseEligibilityThroughHTTP/unknown_outcome
+2026/11/05 16:19:43 SQL outcome unknown: request_id=5ceb9fd9c5455187ffbf246a300b27b7 action=statement stage=tool_rpc database=tenant-a/db-a/main session=4c45c26b7d1d16240c6499479fd4de3f worker=worker-tenant-a rpc=ambiguous=true,rejected=false,execution_completed=false observation=none
+--- PASS: TestDeferredSessionCloseEligibilityThroughHTTP (0.01s)
+    --- PASS: TestDeferredSessionCloseEligibilityThroughHTTP/read_only_autocommit (0.00s)
+    --- PASS: TestDeferredSessionCloseEligibilityThroughHTTP/autocommit_false (0.00s)
+    --- PASS: TestDeferredSessionCloseEligibilityThroughHTTP/committing_statement (0.00s)
+    --- PASS: TestDeferredSessionCloseEligibilityThroughHTTP/execute_without_autocommit (0.00s)
+    --- PASS: TestDeferredSessionCloseEligibilityThroughHTTP/write_cursor (0.00s)
+    --- PASS: TestDeferredSessionCloseEligibilityThroughHTTP/unknown_outcome (0.00s)
+=== RUN   TestDeferredSessionCloseReturnsTheSeatAndKeepsTheCommand
+--- PASS: TestDeferredSessionCloseReturnsTheSeatAndKeepsTheCommand (0.00s)
+=== RUN   TestDeferredSessionCloseFallsBackInlineAtThePerDatabaseBound
+--- PASS: TestDeferredSessionCloseFallsBackInlineAtThePerDatabaseBound (0.00s)
+=== RUN   TestDeferredSessionCloseFlushesBeforeTheCapacityRetry
+--- PASS: TestDeferredSessionCloseFlushesBeforeTheCapacityRetry (0.01s)
+=== RUN   TestDeferredSessionCloseCapacityRetryHappensOnce
+=== RUN   TestDeferredSessionCloseCapacityRetryHappensOnce/capacity_refusal
+2026/11/05 16:19:43 SQL worker failure: code=sql_unavailable status=503 executed=false rejected=true worker_error=database session capacity exceeded
+=== RUN   TestDeferredSessionCloseCapacityRetryHappensOnce/other_refusal
+2026/11/05 16:19:43 SQL worker failure: code=sql_unavailable status=503 executed=false rejected=true worker_error=worker saturated
+--- PASS: TestDeferredSessionCloseCapacityRetryHappensOnce (0.00s)
+    --- PASS: TestDeferredSessionCloseCapacityRetryHappensOnce/capacity_refusal (0.00s)
+    --- PASS: TestDeferredSessionCloseCapacityRetryHappensOnce/other_refusal (0.00s)
+=== RUN   TestDeferredSessionCloseFusedCapacityRetryHappensOnce
+=== RUN   TestDeferredSessionCloseFusedCapacityRetryHappensOnce/capacity_refusal
+=== RUN   TestDeferredSessionCloseFusedCapacityRetryHappensOnce/other_refusal
+2026/11/05 16:19:43 SQL worker failure: code=sql_unavailable status=503 executed=false rejected=true worker_error=worker saturated
+2026/11/05 16:19:43 Hrana internal gateway failure: path=/v1/sql/open status=503 code=sql_unavailable
+--- PASS: TestDeferredSessionCloseFusedCapacityRetryHappensOnce (0.00s)
+    --- PASS: TestDeferredSessionCloseFusedCapacityRetryHappensOnce/capacity_refusal (0.00s)
+    --- PASS: TestDeferredSessionCloseFusedCapacityRetryHappensOnce/other_refusal (0.00s)
+=== RUN   TestDeferredSessionCloseStopDrainsPending
+--- PASS: TestDeferredSessionCloseStopDrainsPending (0.00s)
+=== RUN   TestDeferredSessionCloseStopReportsUnresolved
+2026/11/05 16:19:43 deferred session close failed; retrying: database=tenant-a/db-a/main session=0000000000000000000000000000000000000000000000000000000000000001 failure=upstream_failure
+2026/11/05 16:19:43 ERROR deferred session close unresolved: database=tenant-a/db-a/main session=0000000000000000000000000000000000000000000000000000000000000001 attempts=1 failure=upstream_failure
+--- PASS: TestDeferredSessionCloseStopReportsUnresolved (0.00s)
+=== RUN   TestDeferredSessionCloseStopAbandonsTheQueueWhenTheBudgetExpires
+2026/11/05 16:19:43 ERROR deferred session close unresolved: database=tenant-a/db-a/main session=0000000000000000000000000000000000000000000000000000000000000002 attempts=0 failure=cleanup_timeout
+2026/11/05 16:19:43 ERROR deferred session close unresolved: database=tenant-a/db-a/main session=0000000000000000000000000000000000000000000000000000000000000003 attempts=0 failure=cleanup_timeout
+2026/11/05 16:19:43 ERROR deferred session close unresolved: database=tenant-a/db-a/main session=0000000000000000000000000000000000000000000000000000000000000004 attempts=0 failure=cleanup_timeout
+--- PASS: TestDeferredSessionCloseStopAbandonsTheQueueWhenTheBudgetExpires (0.00s)
+=== RUN   TestDeferredSessionCloseKeepsTheCursorFallbackBeforeTheClose
+--- PASS: TestDeferredSessionCloseKeepsTheCursorFallbackBeforeTheClose (0.00s)
+=== RUN   TestDeferredSessionCloseDisabledKeepsTheSynchronousClose
+--- PASS: TestDeferredSessionCloseDisabledKeepsTheSynchronousClose (0.00s)
+=== RUN   TestDeferredSessionCloseFlagParsing
+=== RUN   TestDeferredSessionCloseFlagParsing/unset_enables_the_account
+=== RUN   TestDeferredSessionCloseFlagParsing/empty_value_enables_the_account
+=== RUN   TestDeferredSessionCloseFlagParsing/explicit_0_keeps_the_synchronous_close
+=== RUN   TestDeferredSessionCloseFlagParsing/explicit_1_enables_the_account
+=== RUN   TestDeferredSessionCloseFlagParsing/surrounding_whitespace_is_trimmed
+=== RUN   TestDeferredSessionCloseFlagParsing/an_illegal_value_is_refused
+--- PASS: TestDeferredSessionCloseFlagParsing (0.00s)
+    --- PASS: TestDeferredSessionCloseFlagParsing/unset_enables_the_account (0.00s)
+    --- PASS: TestDeferredSessionCloseFlagParsing/empty_value_enables_the_account (0.00s)
+    --- PASS: TestDeferredSessionCloseFlagParsing/explicit_0_keeps_the_synchronous_close (0.00s)
+    --- PASS: TestDeferredSessionCloseFlagParsing/explicit_1_enables_the_account (0.00s)
+    --- PASS: TestDeferredSessionCloseFlagParsing/surrounding_whitespace_is_trimmed (0.00s)
+    --- PASS: TestDeferredSessionCloseFlagParsing/an_illegal_value_is_refused (0.00s)
+=== RUN   TestDeferredSessionCloseRetriesThroughTheCleanupLedger
+2026/11/05 16:19:43 deferred session close failed; retrying: database=tenant-a/db-a/main session=0000000000000000000000000000000000000000000000000000000000000001 failure=upstream_failure
+--- PASS: TestDeferredSessionCloseRetriesThroughTheCleanupLedger (0.00s)
+PASS
+ok  	peri-loom/platform	0.757s
+exit=0
