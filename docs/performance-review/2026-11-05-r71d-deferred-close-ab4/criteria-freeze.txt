@@ -1,0 +1,8 @@
+frozen_at_utc: 2026-11-05T06:32:23Z
+criteria_sha256: 4a04203e1f9e4e9cf2ad598fd1a2829cbf779b00f5615970eaadf6c86fb2fd29
+candidate_merge_commit: af669318b73e763e43385492cb97149a1a73c2c3
+candidate_implementation: 02a05a7
+candidate_fix: ac5e0c7
+main_fix: b1e8ae9e8702ddd8c1badd97640c4c7d214c7e9c
+candidate_sha256: a07ec7b874df3d941ea274823857f2a42ed63497f0c76f50795fb8bef8577cca
+note: frozen before any docker run / measurement of this campaign

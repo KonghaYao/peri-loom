@@ -1,0 +1,4 @@
+a07ec7b874df3d941ea274823857f2a42ed63497f0c76f50795fb8bef8577cca  /usr/local/bin/peri-platform
+b17a0708c6adb6af0f5a8416a4873926eb33479feb72ded140eb5a7aa11b4cff  /usr/local/bin/peri-loom-v1
+deferred flag: <unset>
+project quotas: {"default": {"max_concurrent": 100, "max_databases": 8, "max_result_bytes": 4194304, "max_sessions": 16, "max_sql_bytes": 65536, "requests_per_second": 500}}

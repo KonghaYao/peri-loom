@@ -1,0 +1,413 @@
+{
+  "failures": [],
+  "legs": [
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p1/a",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p1/b",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/f1/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/l1/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 35
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 35
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 52
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 52
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 74
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 74
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 50
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 50
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 36
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 36
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 52
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 52
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 60
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 60
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {
+        "quota_exceeded": 68
+      },
+      "exhausted_total": 0,
+      "leg": "p2/x1/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {
+        "rate_limit": 68
+      },
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r1-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r1-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r1-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r1-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r2-a1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r2-a2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r2-b1",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    },
+    {
+      "errors_total": {},
+      "exhausted_total": 0,
+      "leg": "p2/c8/r2-b2",
+      "operation_settle_after": true,
+      "operation_settle_before": true,
+      "refused_total": {},
+      "rejection_reasons_total": {},
+      "retry_success_total": 0,
+      "retry_total": 0
+    }
+  ],
+  "note": "queue_full must be attributed to operation_settle retries, not to outcome_unknown; every leg must publish operation_settle",
+  "passed": true
+}

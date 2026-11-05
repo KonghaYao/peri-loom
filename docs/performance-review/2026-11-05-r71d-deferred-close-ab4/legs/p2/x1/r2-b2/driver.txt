@@ -1,0 +1,12 @@
+fixture: threads=201 messages=8625 content_chars=20177069 content_bytes=20177069 complete=True
+  threads          expected=201 actual=201 OK
+  messages         expected=8625 actual=8625 OK
+  content_chars    expected=20177069 actual=20177069 OK
+  focus_messages   expected=8625 actual=8625 OK
+plan: 1 scenarios
+  X1.concurrency           concurrency json-pipeline
+  X1 concurrency=1  n=100/100 elapsed=163ms p50=0.77ms p95=4.68ms p99=5.16ms 429=0
+  X1 concurrency=4  n=100/100 elapsed=58ms p50=1.35ms p95=5.10ms p99=5.58ms 429=0
+  X1 concurrency=8  n=100/100 elapsed=53ms p50=3.78ms p95=8.72ms p99=12.45ms 429=0
+  X1 concurrency=16 n=100/100 elapsed=66ms p50=8.25ms p95=22.49ms p99=24.49ms 429=48
+wrote /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r71d-deferred-close-ab4/legs/p2/x1/r2-b2/harness/summary.md and /Users/kk/code/peri-loom/docs/performance-review/2026-11-05-r71d-deferred-close-ab4/legs/p2/x1/r2-b2/harness/summary.json
