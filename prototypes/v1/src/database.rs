@@ -465,11 +465,29 @@ impl RemoteDatabase {
             })
     }
 
+    /// Probe-only: the engine handle used by the R74 connect pool.
+    pub(crate) fn probe_engine(&self) -> Option<Arc<Database>> {
+        self.engine.lock().ok().and_then(|engine| engine.clone())
+    }
+
+    /// Probe-only: build and pre-configure one connection for the R74 pool.
+    pub(crate) fn probe_connect_configured(
+        &self,
+        engine: &Arc<Database>,
+    ) -> Result<Arc<Connection>> {
+        let connection = Self::connect(engine, self.key.as_ref())?;
+        configure(&connection);
+        Ok(connection)
+    }
+
     pub fn session(self: &Arc<Self>) -> Result<RemoteSession> {
+        crate::probe_r74::mark(crate::probe_r74::Seg::SessionEntry);
         let deadline = RequestDeadline::new(&Budget::trusted_default())?;
         let _operation = self.operation_until(&deadline, false)?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::OperationGate);
         self.admission.healthy()?;
         self.storage().store().validate_transaction(false)?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::ValidateAuthority);
         let engine = self
             .engine
             .lock()
@@ -477,10 +495,22 @@ impl RemoteDatabase {
             .as_ref()
             .cloned()
             .ok_or(AdmissionError::Quarantine)?;
-        let connection = Self::connect(&engine, self.key.as_ref())
-            .context("connect independent remote session")?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::EngineLock);
+        let (connection, preconfigured) = match crate::probe_r74::take_connection(self) {
+            Some(connection) => (connection, true),
+            None => (
+                Self::connect(&engine, self.key.as_ref())
+                    .context("connect independent remote session")?,
+                false,
+            ),
+        };
+        crate::probe_r74::mark(crate::probe_r74::Seg::Connect);
         self.storage().store().validate_transaction(false)?;
-        configure(&connection);
+        crate::probe_r74::mark(crate::probe_r74::Seg::ValidateLocal);
+        if !preconfigured {
+            configure(&connection);
+        }
+        crate::probe_r74::mark(crate::probe_r74::Seg::Configure);
         deadline.check()?;
         self.admission.healthy()?;
         RemoteSession::new(self.clone(), connection)

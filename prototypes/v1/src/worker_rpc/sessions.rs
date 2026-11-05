@@ -238,6 +238,7 @@ impl Sessions {
         owner_incarnation: Option<String>,
         request_id: &str,
     ) -> Result<(JsonValue, Option<SessionState>)> {
+        crate::probe_r74::begin_open();
         database.validate()?;
         {
             let mut registry = self
@@ -257,8 +258,10 @@ impl Sessions {
         let _waiter_deadline = crate::runtime::WaiterDeadlineScope::until(deadline);
         let refresh = self.image_refresh.for_database(database)?;
         let _pin = self.pin_image(&refresh, database, deadline)?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::PreOpen);
         ensure!(Instant::now() < deadline, AdmissionError::Deadline);
         let handle = Arc::new(self.runtime.open_session(database)?);
+        crate::probe_r74::mark(crate::probe_r74::Seg::SessionOpenTotal);
         // The cold load is allowed to outrun the RPC deadline: `WorkerRuntime::open`
         // anchors the session budget after the load returns. The probes below are part
         // of the same request, so without a new anchor they inherit the RPC deadline the
@@ -274,8 +277,10 @@ impl Sessions {
             .as_ref()
             .context("opened session vanished")?
             .is_readonly()?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::IsReadonly);
         let mut random = [0u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::Urandom);
         let identifier = random
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -286,6 +291,7 @@ impl Sessions {
             owner_incarnation,
             request_id.to_owned(),
         )?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::EntryNew);
         let terminal = if version == 2 {
             Some(entry.opened_state(&identifier)?)
         } else {
@@ -301,6 +307,8 @@ impl Sessions {
             anyhow::bail!("session identity collision");
         };
         slot.insert(entry);
+        crate::probe_r74::mark(crate::probe_r74::Seg::RegistryInsert);
+        crate::probe_r74::end_open();
         Ok((
             json!({"session": identifier, "readonly": readonly}),
             terminal,

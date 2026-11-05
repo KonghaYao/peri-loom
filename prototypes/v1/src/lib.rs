@@ -20,6 +20,7 @@ pub mod namespace;
 pub mod object_store;
 pub mod ownership;
 pub mod provider;
+pub(crate) mod probe_r74;
 pub mod recovery;
 pub mod resources;
 pub mod runtime;

@@ -91,8 +91,11 @@ impl RemoteSession {
     pub(crate) fn new(database: Arc<RemoteDatabase>, connection: Arc<Connection>) -> Result<Self> {
         connection.set_busy_timeout(Duration::from_secs(4));
         let lane = Arc::new(SessionLane::new(connection, database.admission())?);
+        crate::probe_r74::mark(crate::probe_r74::Seg::LaneNew);
         database.register_lane(&lane)?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::Register);
         lane.attach_database(database)?;
+        crate::probe_r74::mark(crate::probe_r74::Seg::Attach);
         Ok(Self { lane })
     }
 
