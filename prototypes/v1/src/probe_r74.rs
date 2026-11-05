@@ -284,7 +284,13 @@ impl ConnectPool {
             .connections
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        queue.pop_front()
+        let connection = queue.pop_front();
+        if connection.is_some() {
+            // Without this wake-up the refiller only notices the empty slot on its
+            // 100 ms timeout, which caps the pool at ten hits per second.
+            self.room.notify_all();
+        }
+        connection
     }
 }
 
