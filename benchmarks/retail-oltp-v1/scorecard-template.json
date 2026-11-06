@@ -1,0 +1,58 @@
+{
+  "schema": "pl-retail-oltp-scorecard/1.0.0",
+  "note": "Template only. The scorer writes a real scorecard.json next to the evidence; a bundle whose scorecard still matches this template has not been scored and must not be treated as a result.",
+  "contract": {
+    "id": "PL-RETAIL-OLTP",
+    "version": "1.0.0",
+    "profile": "local-8c8g-legacy-hrana-v1",
+    "sha256": null
+  },
+  "run": {
+    "run_id": null,
+    "mode": null,
+    "scale": null,
+    "repetitions": null,
+    "window_seconds": null,
+    "driver_sha256": null,
+    "certified_driver_sha256": null,
+    "certifiable": false
+  },
+  "status": null,
+  "dimensions": {
+    "performance": {
+      "status": null,
+      "qualified_uniform_level": null,
+      "qualified_uniform_business_goodput": null
+    },
+    "correctness": {
+      "status": null,
+      "failed_rounds": []
+    },
+    "recovery": {
+      "status": null,
+      "failures": []
+    },
+    "load": {
+      "status": null
+    },
+    "idle": {
+      "status": null
+    },
+    "evidence": {
+      "status": null,
+      "violations": [],
+      "files_checked": null
+    },
+    "cleanup_ab": {
+      "status": null,
+      "rounds": [],
+      "violations": []
+    }
+  },
+  "levels": {},
+  "load_rounds": [],
+  "idle_rounds": [],
+  "recovery_rounds": [],
+  "failures": [],
+  "warnings": []
+}

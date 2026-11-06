@@ -1,0 +1,26 @@
+{
+  "contract": "PL-RETAIL-OLTP",
+  "version_reported": "1.2.6",
+  "profile": "local-8c8g-legacy-hrana-v1",
+  "status": "historical reference only",
+  "acceptance_source": false,
+  "note": "These are the published v1.2.6 numbers quoted by the 1.0.0 contract. They are context for the package; they are not a target another run may copy, and the 1.0.0 delivery makes no new measurement.",
+  "business": {
+    "median_ops_per_second": 69.1,
+    "checkout_median_ops_per_second": 15.1,
+    "read_pooled_p99_ms": 9.2,
+    "read_pooled_p99_range_ms": [9.2, 40.0],
+    "checkout_pooled_p99_ms": 525.6,
+    "success_rate_percent": 99.99,
+    "checkout_success_rate_percent": 99.86,
+    "non_expected_errors": 40,
+    "days_later_equivalent_speed_ratio": 0.97
+  },
+  "environment": {
+    "cpu_quota": 8,
+    "memory_gib": 8,
+    "storage_backend": "local",
+    "durability": "legacy_completion",
+    "tls_verify": true
+  }
+}
